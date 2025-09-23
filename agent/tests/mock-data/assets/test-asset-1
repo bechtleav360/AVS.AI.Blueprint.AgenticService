@@ -1,0 +1,26 @@
+{
+  "id": "test-asset-1",
+  "name": "Test Database Server",
+  "type": "database",
+  "provider": "aws",
+  "region": "us-east-1",
+  "resource_id": "db-instance-123",
+  "resource_arn": "arn:aws:rds:us-east-1:123456789012:db:test-db",
+  "tags": {
+    "Environment": "production",
+    "backup": "enabled",
+    "backup-schedule": "daily"
+  },
+  "uris": [
+    "s3://backup-bucket/database-backups/test-db/",
+    "rds://test-db.cluster-xyz.us-east-1.rds.amazonaws.com"
+  ],
+  "environment": "production",
+  "owner": "database-team",
+  "cost_center": "engineering",
+  "properties": {
+    "engine": "postgresql",
+    "version": "13.7",
+    "backup_retention": "30 days"
+  }
+}

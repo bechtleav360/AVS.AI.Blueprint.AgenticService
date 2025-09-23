@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agent-service
+    ports:
+      - "8000:8000"
+    environment:
+      # FIXME: Set your environment variables here.
+      - ENV_FOR_DYNACONF=development
+      - LOG_LEVEL=INFO
+    volumes:
+      # Mount the source code for live-reloading during development.
+      - ./src:/home/app/src
+    networks:
+      - agent-network
+
+  # FIXME: Add your own dependencies here, such as a database, message broker, or
+  # other services. The following is an example of a PostgreSQL database.
+  #
+  # db:
+  #   image: postgres:15
+  #   container_name: postgres
+  #   ports:
+  #     - "5432:5432"
+  #   environment:
+  #     - POSTGRES_DB=agentdb
+  #     - POSTGRES_USER=agent
+  #     - POSTGRES_PASSWORD=secret
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #   networks:
+  #     - agent-network
+
+networks:
+  agent-network:
+    driver: bridge
+
+# volumes:
+#   postgres_data:

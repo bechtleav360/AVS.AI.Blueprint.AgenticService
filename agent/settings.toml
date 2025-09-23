@@ -1,0 +1,43 @@
+[default]
+app_name = "asset-backup-checker"
+app_port = 8000
+log_level = "INFO"
+log_format = "json"
+
+# Data Gateway Configuration
+data_gateway_base_url = "http://localhost:8001"
+data_gateway_timeout_s = 30
+retry_max_attempts = 3
+retry_backoff_factor = 2
+
+# Dapr Configuration
+dapr_pubsub_name = "rabbitmq-pubsub"
+dapr_http_port = 3500
+dapr_grpc_port = 50001
+
+# Circuit Breaker Configuration
+circuit_breaker_failure_threshold = 5
+circuit_breaker_timeout_s = 60
+
+# Cache Configuration
+cache_ttl_seconds = 3600
+cache_max_size = 10000
+
+# AI Agent Configuration
+ai_model_provider = "openai"
+ai_model_name = "gpt-4"
+ai_max_tokens = 1000
+ai_temperature = 0.1
+
+[development]
+log_level = "DEBUG"
+data_gateway_base_url = "http://localhost:8001"
+
+[testing]
+log_level = "DEBUG"
+data_gateway_base_url = "http://localhost:8001"
+cache_ttl_seconds = 60
+
+[production]
+log_level = "INFO"
+# Production values should come from environment variables or secret stores

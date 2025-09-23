@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  agent:
+    build:
+      context: .
+      dockerfile: agent/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_NAME=agent-service
+      - LOG_LEVEL=INFO
+      - LOG_FORMAT=json
+      - APP_PORT=8000
+      - AI_PROVIDER=openai
+      - AI_MODEL_NAME=gpt-4
+      - OTEL_ENDPOINT=http://jaeger:14268/api/traces
+      - OTEL_SERVICE_NAME=agent-service
+    depends_on:
+      - jaeger
+    volumes:
+      - ./agent/src/custom/prompts:/home/app/agent/src/custom/prompts:ro
+    networks:
+      - agent-network
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    networks:
+      - agent-network
+
+networks:
+  agent-network:
+    driver: bridge

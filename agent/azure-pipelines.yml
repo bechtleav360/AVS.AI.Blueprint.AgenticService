@@ -1,0 +1,227 @@
+# Azure DevOps Pipeline for Asset Backup Checker
+
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+      - feature/*
+  paths:
+    exclude:
+      - README.md
+      - docs/*
+
+pr:
+  branches:
+    include:
+      - main
+      - develop
+
+variables:
+  pythonVersion: '3.11'
+  vmImageName: 'ubuntu-latest'
+
+stages:
+- stage: Lint
+  displayName: 'Code Quality & Linting'
+  jobs:
+  - job: Lint
+    displayName: 'Lint and Format Check'
+    pool:
+      vmImage: $(vmImageName)
+    
+    steps:
+    - task: UsePythonVersion@0
+      inputs:
+        versionSpec: '$(pythonVersion)'
+      displayName: 'Use Python $(pythonVersion)'
+
+    - script: |
+        python -m pip install --upgrade pip
+        pip install black ruff isort mypy bandit
+      displayName: 'Install linting tools'
+
+    - script: |
+        black --check --line-length 140 src/ tests/
+      displayName: 'Check code formatting with Black'
+
+    - script: |
+        isort --check-only --profile black --line-length 140 src/ tests/
+      displayName: 'Check import sorting with isort'
+
+    - script: |
+        ruff check src/ tests/
+      displayName: 'Lint with Ruff'
+
+    - script: |
+        mypy src/ --ignore-missing-imports --no-strict-optional
+      displayName: 'Type check with MyPy'
+      continueOnError: true
+
+    - script: |
+        bandit -r src/ -f json -o bandit-report.json || true
+        cat bandit-report.json
+      displayName: 'Security scan with Bandit'
+
+    - task: PublishTestResults@2
+      condition: succeededOrFailed()
+      inputs:
+        testResultsFiles: 'bandit-report.json'
+        testRunTitle: 'Security Scan Results'
+      displayName: 'Publish security scan results'
+
+- stage: Test
+  displayName: 'Testing'
+  dependsOn: Lint
+  jobs:
+  - job: UnitTests
+    displayName: 'Unit Tests'
+    pool:
+      vmImage: $(vmImageName)
+    
+    steps:
+    - task: UsePythonVersion@0
+      inputs:
+        versionSpec: '$(pythonVersion)'
+      displayName: 'Use Python $(pythonVersion)'
+
+    - script: |
+        python -m pip install --upgrade pip
+        pip install -e ".[dev]"
+      displayName: 'Install dependencies'
+
+    - script: |
+        pytest tests/unit/ -v --junitxml=junit/unit-test-results.xml --cov=src --cov-report=xml --cov-report=html
+      displayName: 'Run unit tests'
+
+    - task: PublishTestResults@2
+      condition: succeededOrFailed()
+      inputs:
+        testResultsFiles: 'junit/unit-test-results.xml'
+        testRunTitle: 'Unit Test Results'
+      displayName: 'Publish unit test results'
+
+    - task: PublishCodeCoverageResults@1
+      inputs:
+        codeCoverageTool: Cobertura
+        summaryFileLocation: 'coverage.xml'
+        reportDirectory: 'htmlcov'
+      displayName: 'Publish code coverage results'
+
+  - job: IntegrationTests
+    displayName: 'Integration Tests'
+    pool:
+      vmImage: $(vmImageName)
+    
+    steps:
+    - task: UsePythonVersion@0
+      inputs:
+        versionSpec: '$(pythonVersion)'
+      displayName: 'Use Python $(pythonVersion)'
+
+    - script: |
+        python -m pip install --upgrade pip
+        pip install -e ".[dev]"
+      displayName: 'Install dependencies'
+
+    - script: |
+        pytest tests/integration/ -v --junitxml=junit/integration-test-results.xml
+      displayName: 'Run integration tests'
+
+    - task: PublishTestResults@2
+      condition: succeededOrFailed()
+      inputs:
+        testResultsFiles: 'junit/integration-test-results.xml'
+        testRunTitle: 'Integration Test Results'
+      displayName: 'Publish integration test results'
+
+- stage: Build
+  displayName: 'Build & Package'
+  dependsOn: Test
+  jobs:
+  - job: BuildDocker
+    displayName: 'Build Docker Image'
+    pool:
+      vmImage: $(vmImageName)
+    
+    steps:
+    - task: Docker@2
+      displayName: 'Build Docker image'
+      inputs:
+        command: 'build'
+        dockerfile: 'Dockerfile'
+        tags: |
+          $(Build.Repository.Name):$(Build.BuildId)
+          $(Build.Repository.Name):latest
+
+    - task: Docker@2
+      displayName: 'Run Docker security scan'
+      inputs:
+        command: 'run'
+        arguments: '--rm -v /var/run/docker.sock:/var/run/docker.sock -v $(pwd):/app aquasec/trivy image --exit-code 0 --severity HIGH,CRITICAL $(Build.Repository.Name):$(Build.BuildId)'
+      continueOnError: true
+
+    - script: |
+        docker save $(Build.Repository.Name):$(Build.BuildId) -o asset-backup-checker-$(Build.BuildId).tar
+      displayName: 'Save Docker image'
+
+    - task: PublishBuildArtifacts@1
+      inputs:
+        pathToPublish: 'asset-backup-checker-$(Build.BuildId).tar'
+        artifactName: 'docker-image'
+      displayName: 'Publish Docker image artifact'
+
+- stage: Deploy
+  displayName: 'Deploy'
+  dependsOn: Build
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  jobs:
+  - deployment: DeployToStaging
+    displayName: 'Deploy to Staging'
+    pool:
+      vmImage: $(vmImageName)
+    environment: 'staging'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - download: current
+            artifact: docker-image
+
+          - script: |
+              echo "Deploying to staging environment..."
+              echo "Image: $(Build.Repository.Name):$(Build.BuildId)"
+              # Add actual deployment commands here
+              # e.g., kubectl apply, docker-compose up, etc.
+            displayName: 'Deploy to staging'
+
+          - script: |
+              echo "Running smoke tests..."
+              # Add smoke test commands here
+              # e.g., curl health endpoints, basic functionality tests
+            displayName: 'Run smoke tests'
+
+  - deployment: DeployToProduction
+    displayName: 'Deploy to Production'
+    pool:
+      vmImage: $(vmImageName)
+    environment: 'production'
+    dependsOn: DeployToStaging
+    condition: succeeded()
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - download: current
+            artifact: docker-image
+
+          - script: |
+              echo "Deploying to production environment..."
+              echo "Image: $(Build.Repository.Name):$(Build.BuildId)"
+              # Add actual production deployment commands here
+            displayName: 'Deploy to production'
+
+          - script: |
+              echo "Running production smoke tests..."
+              # Add production smoke test commands here
+            displayName: 'Run production smoke tests'
