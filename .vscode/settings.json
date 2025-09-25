@@ -1,0 +1,43 @@
+{
+    "python.defaultInterpreterPath": "${workspaceFolder}/venv/bin/python",
+    "python.formatting.provider": "black",
+    "python.formatting.blackArgs": [
+        "--line-length",
+        "140"
+    ],
+    "python.linting.enabled": true,
+    "python.linting.ruffEnabled": true,
+    "python.linting.mypyEnabled": true,
+    "python.linting.mypyArgs": [
+        "--ignore-missing-imports",
+        "--no-strict-optional"
+    ],
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+        "source.organizeImports": "explicit",
+        "source.fixAll": "explicit",
+        "source.fixAll.ruff": "explicit"
+    },
+    "files.trimTrailingWhitespace": true,
+    "files.insertFinalNewline": true,
+    "terminal.integrated.env.linux": {
+        "APP_NAME": "agent-service",
+        "LOG_LEVEL": "INFO",
+        "LOG_FORMAT": "json",
+        "AI_PROVIDER": "openai",
+        "AI_MODEL_NAME": "gpt-4"
+    },
+    "python.testing.pytestEnabled": true,
+    "python.testing.pytestArgs": [
+        "agent/tests"
+    ],
+    "python.analysis.typeCheckingMode": "basic",
+    "ruff.importStrategy": "fromEnvironment",
+    "ruff.arguments": [
+        "--line-length",
+        "140"
+    ],
+    "[python]": {
+        "editor.defaultFormatter": "ms-python.black-formatter"
+    }
+}

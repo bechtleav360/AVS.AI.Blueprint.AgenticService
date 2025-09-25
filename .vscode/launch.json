@@ -1,0 +1,41 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "FastAPI: agent-service",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "uvicorn",
+            "args": [
+                "agent.src.main:app",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "8001",
+                "--reload"
+            ],
+            "jinja": true,
+            "justMyCode": false,
+            "console": "integratedTerminal",
+            "env": {
+                "APP_NAME": "agent-service",
+                "LOG_LEVEL": "INFO",
+                "LOG_FORMAT": "json",
+                "AI_PROVIDER": "openai",
+                "AI_MODEL_NAME": "gpt-4"
+            }
+        },
+        {
+            "name": "Pytest: agent/tests",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "agent/tests"
+            ],
+            "jinja": true,
+            "justMyCode": false,
+            "console": "integratedTerminal"
+        }
+    ]
+}

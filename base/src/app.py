@@ -7,6 +7,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .api import actuators, rest, events
+# Telemetry utilities
+from .telemetry import setup_logging
 # Dapr generic endpoints
 try:
     from .api import dapr
@@ -31,6 +33,9 @@ async def lifespan(app: FastAPI):
     """
     # Startup
     # FIXME: Replace with your service name
+    root_logger = logging.getLogger()
+    if not root_logger.handlers:
+        setup_logging(log_level="INFO", log_format="text")
     logger.info("Starting agent service")
 
     # FIXME: Add your custom startup logic here

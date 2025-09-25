@@ -6,41 +6,41 @@ spec:
   type: pubsub.rabbitmq
   version: v1
   metadata:
-  - name: connectionString
-    secretKeyRef:
-      name: rabbitmq-secret
-      key: connectionString
-  - name: hostname
-    value: "localhost"
-  - name: username
-    secretKeyRef:
-      name: rabbitmq-secret
-      key: username
-  - name: password
-    secretKeyRef:
-      name: rabbitmq-secret
-      key: password
-  - name: protocol
-    value: "amqp"
-  - name: port
-    value: "5672"
-  - name: vhost
-    value: "/"
-  - name: durable
-    value: "true"
-  - name: deletedWhenUnused
-    value: "false"
-  - name: autoAck
-    value: "false"
-  - name: deliveryMode
-    value: "2"  # Persistent messages
-  - name: requeueInFailure
-    value: "true"
-  - name: prefetchCount
-    value: "10"
-  - name: reconnectWait
-    value: "5s"
-  - name: concurrency
-    value: "parallel"
+    - name: connectionString
+      secretKeyRef:
+        name: rabbitmq-secret
+        key: connectionString
+    - name: hostname
+      value: "localhost"
+    - name: username
+      secretKeyRef:
+        name: rabbitmq-secret
+        key: username
+    - name: password
+      secretKeyRef:
+        name: rabbitmq-secret
+        key: password
+    - name: protocol
+      value: "amqp"
+    - name: port
+      value: "5672"
+    - name: vhost
+      value: "/"
+    - name: durable
+      value: "true"
+    - name: deletedWhenUnused
+      value: "false"
+    - name: autoAck
+      value: "false"
+    - name: deliveryMode
+      value: "2" # Persistent messages
+    - name: requeueInFailure
+      value: "true"
+    - name: prefetchCount
+      value: "10"
+    - name: reconnectWait
+      value: "5s"
+    - name: concurrency
+      value: "parallel"
 scopes:
-- asset-backup-checker
+  - asset-backup-checker

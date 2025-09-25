@@ -57,6 +57,8 @@ from base.src.agent.base.decisions import EventHandler
 
 logger = logging.getLogger(__name__)
 
+# FIXME: Event type muss konfigurierbar
+
 
 class ValidationHandler(EventHandler):
     """Example handler for validating incoming events."""
@@ -78,7 +80,6 @@ class ValidationHandler(EventHandler):
         logger.info("Event passed validation.")
         context["validated_at"] = "timestamp_placeholder"
         return None  # Pass to the next handler
-
 
 
 class ProcessingHandler(EventHandler):

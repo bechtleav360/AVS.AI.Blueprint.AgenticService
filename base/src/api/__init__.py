@@ -1,11 +1,9 @@
-"""FastAPI routes and dependencies."""
+"""Public API exports for framework-provided routers."""
 
-from .deps import get_backup_agent, get_data_gateway, get_decision_engine
-from .routes import router
+from . import actuators, events, rest
 
 __all__ = [
-    "router",
-    "get_backup_agent",
-    "get_data_gateway", 
-    "get_decision_engine",
+    "actuators",
+    "events",
+    "rest",
 ]

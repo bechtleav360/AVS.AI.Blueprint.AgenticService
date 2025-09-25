@@ -1,7 +1,6 @@
 """OpenTelemetry configuration and setup."""
 
 import logging
-import os
 from typing import Optional
 
 from opentelemetry import trace
@@ -14,119 +13,132 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExport
 
 from .config import Config
 
-logger = logging.getLogger(__name__)
+
+class TelemetryManager:
+    """Object-oriented manager for logging and tracing setup."""
+
+    def __init__(self, settings: Optional[Config] = None, *, logger: Optional[logging.Logger] = None) -> None:
+        self.settings = settings
+        self.logger = logger or logging.getLogger(self.__class__.__name__)
+
+    # ---------------------------------------------------------------------
+    # Public API
+    # ---------------------------------------------------------------------
+    def configure_tracing(self) -> None:
+        """Configure OpenTelemetry tracing using the provided settings."""
+
+        if self.settings is None:
+            raise ValueError("TelemetryManager.configure_tracing requires a Config instance")
+
+        try:
+            observability = self.settings.get_observability_config()
+            service_name = observability.get("service_name", "agent-service")
+
+            resource = Resource.create({"service.name": service_name})
+            tracer_provider = TracerProvider(resource=resource)
+            trace.set_tracer_provider(tracer_provider)
+
+            exporters = self._build_exporters(observability)
+            for exporter in exporters:
+                tracer_provider.add_span_processor(BatchSpanProcessor(exporter))
+
+            self.setup_instrumentation()
+            self.logger.info("OpenTelemetry configured for service '%s'", service_name)
+
+        except Exception as exc:  # pragma: no cover - defensive logging
+            self.logger.error("Failed to configure telemetry", exc_info=exc)
+
+    def setup_instrumentation(self) -> None:
+        """Enable automatic instrumentation for supported libraries."""
+
+        try:
+            HTTPXClientInstrumentor().instrument()
+            self.logger.debug("HTTPX instrumentation enabled")
+        except Exception as exc:  # pragma: no cover - defensive logging
+            self.logger.warning("Failed to setup HTTPX instrumentation: %s", exc)
+
+    def instrument_fastapi(self, app) -> None:
+        """Instrument the FastAPI application."""
+
+        try:
+            FastAPIInstrumentor.instrument_app(
+                app,
+                excluded_urls="actuators/livez,actuators/readyz",
+            )
+            self.logger.info("FastAPI instrumentation enabled")
+        except Exception as exc:  # pragma: no cover - defensive logging
+            self.logger.warning("Failed to instrument FastAPI: %s", exc)
+
+    def setup_logging(self, log_level: str = "INFO", log_format: str = "json") -> None:
+        """Configure structured logging for the application."""
+
+        try:
+            logging.basicConfig(
+                level=getattr(logging, log_level.upper()),
+                format=(
+                    "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+                    if log_format == "text"
+                    else "%(message)s"
+                ),
+            )
+
+            logging.getLogger("uvicorn").setLevel(logging.INFO)
+            logging.getLogger("httpx").setLevel(logging.WARNING)
+            logging.getLogger("opentelemetry").setLevel(logging.WARNING)
+
+            self.logger.info("Logging configured: level=%s, format=%s", log_level, log_format)
+
+        except Exception as exc:  # pragma: no cover - defensive logging
+            print(f"Failed to set up logging: {exc}")
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+    def _build_exporters(self, observability: dict) -> list:
+        exporters = []
+
+        otlp_endpoint = observability.get("otel_endpoint")
+        if otlp_endpoint:
+            try:
+                exporters.append(OTLPSpanExporter(endpoint=otlp_endpoint))
+                self.logger.info("OTLP exporter configured for %s", otlp_endpoint)
+            except Exception as exc:
+                self.logger.warning("Failed to configure OTLP exporter: %s", exc)
+
+        if observability.get("log_level", "INFO").upper() == "DEBUG":
+            exporters.append(ConsoleSpanExporter())
+            self.logger.info("Console span exporter enabled for debug log level")
+
+        return exporters
+
+
+# ----------------------------------------------------------------------
+# Backwards-compatible functional wrappers
+# ----------------------------------------------------------------------
 
 
 def setup_telemetry(settings: Config) -> None:
-    """
-    Set up OpenTelemetry tracing and instrumentation.
-    
-    Args:
-        app_name: Name of the application
-    """
-    try:
-        config = settings.get_observability_config()
-        
-        # Create resource with service information
-        resource = Resource.create({
-            "service.name": config["service_name"],
-        })
-        
-        # Parse additional resource attributes
-        
-        # Set up tracer provider
-        tracer_provider = TracerProvider(resource=resource)
-        trace.set_tracer_provider(tracer_provider)
-        
-        # Set up span exporters
-        exporters = []
-        
-        # OTLP exporter (if endpoint configured)
-        otlp_endpoint = config.get("otel_endpoint")
-        if otlp_endpoint:
-            try:
-                otlp_exporter = OTLPSpanExporter(endpoint=otlp_endpoint)
-                exporters.append(otlp_exporter)
-                logger.info(f"OTLP exporter configured for {otlp_endpoint}")
-            except Exception as e:
-                logger.warning(f"Failed to configure OTLP exporter: {e}")
-        
-        # Console exporter (for development)
-        if config.get("log_level", "INFO").upper() == "DEBUG":
-            console_exporter = ConsoleSpanExporter()
-            exporters.append(console_exporter)
-            logger.info("Console span exporter enabled for debug mode")
-        
-        # Add span processors
-        for exporter in exporters:
-            span_processor = BatchSpanProcessor(exporter)
-            tracer_provider.add_span_processor(span_processor)
-        
-        # Set up automatic instrumentation
-        setup_instrumentation()
-        
-        logger.info("OpenTelemetry telemetry configured successfully")
-        
-    except Exception as e:
-        logger.error(f"Failed to set up telemetry: {e}")
-        # Don't fail the application if telemetry setup fails
-        pass
+    """Legacy wrapper to configure telemetry using the default manager."""
+
+    TelemetryManager(settings=settings).configure_tracing()
 
 
 def setup_instrumentation() -> None:
-    """Set up automatic instrumentation for common libraries."""
-    try:
-        # Instrument HTTP clients
-        HTTPXClientInstrumentor().instrument()
-        logger.debug("HTTPX instrumentation enabled")
-        
-    except Exception as e:
-        logger.warning(f"Failed to set up instrumentation: {e}")
+    """Legacy wrapper for instrumentation setup."""
+
+    TelemetryManager().setup_instrumentation()
 
 
 def instrument_fastapi(app) -> None:
-    """
-    Instrument FastAPI application with OpenTelemetry.
-    
-    Args:
-        app: FastAPI application instance
-    """
-    try:
-        FastAPIInstrumentor.instrument_app(
-            app,
-            excluded_urls="actuators/livez,actuators/readyz",  # Exclude health checks
-        )
-        logger.info("FastAPI instrumentation enabled")
-        
-    except Exception as e:
-        logger.warning(f"Failed to instrument FastAPI: {e}")
+    """Legacy wrapper to instrument FastAPI applications."""
+
+    TelemetryManager().instrument_fastapi(app)
 
 
 def setup_logging(log_level: str = "INFO", log_format: str = "json") -> None:
-    """
-    Set up structured logging.
-    
-    Args:
-        log_level: Logging level
-        log_format: Logging format (json or text)
-    """
-    try:
-        # Configure root logger
-        logging.basicConfig(
-            level=getattr(logging, log_level.upper()),
-            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s" if log_format == "text"
-            else "%(message)s",  # JSON formatting would be handled by a JSON formatter
-        )
-        
-        # Set specific logger levels
-        logging.getLogger("uvicorn").setLevel(logging.INFO)
-        logging.getLogger("httpx").setLevel(logging.WARNING)
-        logging.getLogger("opentelemetry").setLevel(logging.WARNING)
-        
-        logger.info(f"Logging configured: level={log_level}, format={log_format}")
-        
-    except Exception as e:
-        print(f"Failed to set up logging: {e}")
+    """Legacy wrapper for logging configuration."""
+
+    TelemetryManager().setup_logging(log_level=log_level, log_format=log_format)
 
 
 def get_tracer(name: str) -> trace.Tracer:
