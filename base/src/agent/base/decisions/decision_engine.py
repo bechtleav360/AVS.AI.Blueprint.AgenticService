@@ -23,9 +23,7 @@ class DecisionEngine:
             handlers: A list of event handlers to use for processing.
         """
         self.handlers = sorted(handlers)
-        logger.info(
-            f"Initialized with handlers: {[h.name for h in self.handlers]}"
-        )
+        logger.info(f"Initialized with handlers: {[h.name for h in self.handlers]}")
 
     async def process_event(self, event: CloudEvent) -> Optional[Any]:
         """
@@ -49,10 +47,10 @@ class DecisionEngine:
                         result = await handler.handle(event, context)
                         if result is not None:
                             span.set_attribute("handled_by", handler.name)
-                            logger.info(f"Event handled by {handler.name}.")
+                            logger.info("Event handled by %s.", handler.name)
                             return result
                     except Exception as e:
-                        logger.exception(f"Handler {handler.name} failed.")
+                        logger.exception("Handler %s failed.", handler.name)
                         span.record_exception(e)
                         break  # Stop processing on error
 

@@ -22,17 +22,18 @@ repos:
 
   # Python code formatting
   - repo: https://github.com/psf/black
-    rev: 23.9.1
+    rev: 24.10.0
     hooks:
       - id: black
         args: ["--line-length", "140"]
 
-  # Python linting
-  - repo: https://github.com/charliermarsh/ruff-pre-commit
-    rev: v0.1.3
+  # Python linting and formatting
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.13.2
     hooks:
       - id: ruff
         args: ["--fix", "--exit-non-zero-on-fix"]
+      - id: ruff-format
 
   # Type checking (optional - can be resource intensive)
   - repo: https://github.com/pre-commit/mirrors-mypy

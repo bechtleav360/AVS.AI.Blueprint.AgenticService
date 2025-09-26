@@ -3,18 +3,24 @@
 from abc import ABC, abstractmethod
 import logging
 import time
-from typing import Any, Dict, List, Optional, Type
+from typing import Any, Dict, List, Optional, Type, TypeVar
+
+from openai import AsyncOpenAI
+from pydantic_ai.models import Model
+from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.providers.openai import OpenAIProvider
+
+T = TypeVar("T")
 
 from pydantic_ai import Agent
-from pydantic_ai.main import T
 
 from opentelemetry import trace
 
 import inspect
 from pathlib import Path
 
-from ....config import Config
-from ....models.domain import AgentOutput
+from base.src.config import Config
+from base.src.models.result import AgentOutput
 
 # Initialize the tracer
 tracer = trace.get_tracer(__name__)
@@ -34,14 +40,42 @@ class BaseAgent(ABC):
         )
         self._register_tools()
 
-    def _get_model(self) -> str:
+    def _get_model(self) -> Model:
         """Return the AI model configuration string (e.g., 'openai:gpt-4')."""
         ai_config = self.settings.get_ai_config()
-        return f"{ai_config['provider']}:{ai_config['model_name']}"
+
+        if ai_config["provider"] == "openai":
+            client = AsyncOpenAI(
+                max_retries=3,
+                api_key=ai_config["api_key"],
+            )
+            provider = OpenAIProvider(openai_client=client)
+            return OpenAIChatModel(
+                provider=provider,
+                model_name=ai_config["model_name"],
+            )
+        elif ai_config["provider"] == "vllm":
+            client = AsyncOpenAI(
+                max_retries=3,
+                base_url=ai_config["base_url"],
+                api_key=ai_config["api_key"],
+            )
+
+            provider = OpenAIProvider(
+                openai_client=client,
+            )
+
+            model = OpenAIChatModel(
+                provider=provider,
+                model_name=ai_config["model_name"],
+            )
+
+            return model
 
     @abstractmethod
     def _get_prompt_name(self) -> str:
-        """Return the system prompt string for the agent (implemented by custom)."""
+        """Return the system prompt string for the agent
+        (implemented by custom)."""
         pass
 
     def _get_system_prompt(self) -> str:
@@ -101,24 +135,27 @@ class BaseAgent(ABC):
         with tracer.start_as_current_span("agent.process_request") as span:
             try:
                 # Normalize context to a plain dict for the agent deps
-
-
                 prompt = self._get_system_prompt()
                 context = self._build_context(**context_kwargs)
 
                 if context is None:
                     context: Optional[Dict[str, Any]] = None
                 else:
-                    context = context.dict() if hasattr(context, "dict") else dict(context)  # type: ignore[arg-type]
+                    context = (
+                        context.dict() if hasattr(context, "dict") else dict(context)
+                    )  # type: ignore[arg-type]
 
                 result = await self._process_request(prompt, context)
                 span.set_attribute("agent.model", self._get_model())
-                span.set_attribute("processing.time_ms", int((time.time() - start_time) * 1000))
+                span.set_attribute(
+                    "processing.time_ms", int((time.time() - start_time) * 1000)
+                )
                 logger.info(
-                    f"Agent process_request completed in {time.time() - start_time:.2f}s"
+                    f"Agent process_request completed in "
+                    f"{time.time() - start_time:.2f}s"
                 )
                 return result
-            except Exception as e:
+            except Exception:
                 logger.exception("Agent process_request failed")
                 raise
 
@@ -134,7 +171,9 @@ class BaseAgent(ABC):
             return kwargs or None
 
     @abstractmethod
-    async def _process_request(self, prompt: str, context: Optional[Dict[str, Any]] | Any) -> Any:
+    async def _process_request(
+        self, prompt: str, context: Optional[Dict[str, Any]] | Any
+    ) -> Any:
         """
         Implementation hook that performs the actual processing.
 
@@ -155,14 +194,18 @@ class BaseAgent(ABC):
 
     def _register_tools(self):
         """Register the tools with the Pydantic AI agent."""
-        for tool in self._get_tools():
-            self.agent.register(tool)
+        # TODO: Implement tool registration when pydantic_ai API is clarified
+        # for tool in self._get_tools():
+        #     self.agent.register(tool)
+        pass
 
     def get_agent(self) -> Agent:
         """Accessor for the underlying Pydantic AI Agent instance."""
         return self.agent
 
-    async def run_with_agent(self, instruction: str, deps: Optional[Dict[str, Any]] = None) -> Any:
+    async def run_with_agent(
+        self, instruction: str, deps: Optional[Dict[str, Any]] = None
+    ) -> Any:
         """
         Convenience wrapper to run the underlying Pydantic AI Agent.
 
@@ -171,7 +214,7 @@ class BaseAgent(ABC):
         handled in `process_request`; individual handler logic should add
         spans as needed.
         """
-        return await self.get_agent().arun(instruction, deps=deps)
+        return await self.get_agent().run(instruction, deps=deps)
 
     async def close(self):
         """Perform any cleanup required by the agent."""
@@ -188,7 +231,7 @@ class BaseAgent(ABC):
             start_time = time.time()
             try:
                 # A simple, low-token instruction to test model connectivity.
-                await self.agent.arun("Respond with only the word 'OK'.")
+                await self.agent.run("Respond with only the word 'OK'.")
                 processing_time = time.time() - start_time
 
                 model_check_passed = True

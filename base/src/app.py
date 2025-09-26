@@ -6,9 +6,18 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .api import actuators, rest, events
+from .api import actuators, events, root
+
 # Telemetry utilities
 from .telemetry import setup_logging
+
+from typing import List, Type
+
+from .agent.base.decisions.event_handler import EventHandler
+from .agent.base.runtime.base_agent import BaseAgent
+from .config import Config
+from .startup import StartupManager, startup_manager
+
 # Dapr generic endpoints
 try:
     from .api import dapr
@@ -20,64 +29,125 @@ except Exception:
 logger = logging.getLogger(__name__)
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """
-    Application lifespan manager for startup and shutdown events.
+def create_lifespan_manager(
+    config: Config,
+    startup_manager_instance: "StartupManager",
+):
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        """
+        Application lifespan manager for startup and shutdown events.
+        """
+        # Startup
+        root_logger = logging.getLogger()
+        if not root_logger.handlers:
+            setup_logging(log_level="INFO", log_format="text")
+        logger.info("Starting agent service")
 
-    FIXME: Customize with your domain-specific startup/shutdown logic
-    FIXME: Add initialization of your custom components and services
+        # Initialize components by injecting dependencies
+        startup_manager_instance.initialize_components()
 
-    Args:
-        app: FastAPI application instance
-    """
-    # Startup
-    # FIXME: Replace with your service name
-    root_logger = logging.getLogger()
-    if not root_logger.handlers:
-        setup_logging(log_level="INFO", log_format="text")
-    logger.info("Starting agent service")
+        logger.info("Service startup completed")
 
-    # FIXME: Add your custom startup logic here
-    # - Initialize database connections
-    # - Setup external service clients
-    # - Load configuration
-    # - Start background tasks
-    # - Initialize caches
+        yield
 
-    # Setup telemetry and logging (if using observability)
-    # FIXME: Replace with your observability setup
-    # obs_config = get_observability_config()
-    # setup_logging(obs_config["log_level"], obs_config["log_format"])
-    # setup_telemetry(obs_config["service_name"])
+        # Shutdown
+        logger.info("Shutting down agent service")
+        logger.info("Service shutdown completed")
 
-    # Instrument FastAPI (if using observability)
-    # FIXME: Replace with your instrumentation setup
-    # instrument_fastapi(app)
-
-    logger.info("Service startup completed")
-
-    yield
-
-    # Shutdown
-    # FIXME: Replace with your service name
-    logger.info("Shutting down agent service")
-
-    # FIXME: Add your custom cleanup logic here
-    # - Close database connections
-    # - Cleanup external service clients
-    # - Stop background tasks
-    # - Flush caches
-    # - Save state if needed
-
-    # Cleanup dependencies (if using dependency injection)
-    # FIXME: Replace with your cleanup logic
-    # await cleanup_dependencies()
-
-    logger.info("Service shutdown completed")
+    return lifespan
 
 
-def create_app() -> FastAPI:
+class AppBuilder:
+    """Builds the FastAPI application with a fluent interface."""
+
+    def __init__(self, settings_files: list[str] = None, root_path: str = None):
+        self.config = Config(settings_files=settings_files, root_path=root_path)
+        self.startup_manager = StartupManager(self.config)
+        self._custom_routers = []
+        self._rest_api_class = None
+
+    def with_handler(self, handler_class: Type[EventHandler]) -> "AppBuilder":
+        """Register a handler class with the startup manager."""
+        self.startup_manager.register_handler(handler_class)
+        return self
+
+    def with_agent_runtime(
+        self, runtime_class: Type[BaseAgent], is_default: bool = False
+    ) -> "AppBuilder":
+        """Register an agent runtime class with the startup manager."""
+        self.startup_manager.register_runtime(runtime_class, is_default)
+        return self
+
+    def with_rest_api(self, api_class: Type) -> "AppBuilder":
+        """Register a custom REST API class."""
+        self._rest_api_class = api_class
+        return self
+
+    def with_router(
+        self, router, prefix: str = "", tags: list[str] = None
+    ) -> "AppBuilder":
+        """Add a custom router to the application."""
+        self._custom_routers.append(
+            {"router": router, "prefix": prefix, "tags": tags or []}
+        )
+        return self
+
+    def build(self) -> FastAPI:
+        """Create and configure the FastAPI application."""
+        app = FastAPI(
+            title=self.config.get("app_name"),
+            description="Generic microservice blueprint for building intelligent agents",
+            version="0.1.0",
+            lifespan=create_lifespan_manager(
+                config=self.config,
+                startup_manager_instance=self.startup_manager,
+            ),
+            docs_url="/docs",
+            redoc_url="/redoc",
+            openapi_url="/openapi.json",
+        )
+
+        # Add CORS middleware
+        # FIXME: Replace with your security configuration
+        # security_config = get_security_config()
+        # app.add_middleware(
+        #     CORSMiddleware,
+        #     allow_origins=security_config["cors_origins"],
+        #     allow_credentials=True,
+        #     allow_methods=["GET", "POST", "PUT", "DELETE"],
+        #     allow_headers=["*"],
+        # )
+
+        # Include base routers
+        app.include_router(actuators.router, tags=["actuators"])
+        app.include_router(events.router, prefix="/events", tags=["events"])
+        app.include_router(root.router, tags=["root"])
+        if dapr is not None:
+            app.include_router(dapr.router, tags=["dapr"])
+
+        # Include custom routers
+        for custom_router in self._custom_routers:
+            app.include_router(
+                custom_router["router"],
+                prefix=custom_router["prefix"],
+                tags=custom_router["tags"],
+            )
+
+        # Include custom REST API
+        if self._rest_api_class:
+            rest_api = self._rest_api_class()
+            app.include_router(
+                rest_api.router, prefix="/api", tags=["rest"]
+            )
+
+        return app
+
+
+def create_app(
+    settings_files: list[str] = None,
+    root_path: str = None,
+) -> FastAPI:
     """
     Create and configure the FastAPI application.
 
@@ -87,91 +157,8 @@ def create_app() -> FastAPI:
     Returns:
         Configured FastAPI application
     """
-    # Create FastAPI app
-    # FIXME: Replace with your service information
-    app = FastAPI(
-        title="Agent Service",
-        description="Generic microservice blueprint for building intelligent agents",
-        version="0.1.0",
-        lifespan=lifespan,
-        docs_url="/docs",
-        redoc_url="/redoc",
-        openapi_url="/openapi.json",
-    )
-
-    # FIXME: Add your custom middleware here
-    # Security middleware
-    # app.add_middleware(HTTPSRedirectMiddleware)
-
-    # Add CORS middleware
-    # FIXME: Replace with your security configuration
-    # security_config = get_security_config()
-    # app.add_middleware(
-    #     CORSMiddleware,
-    #     allow_origins=security_config["cors_origins"],
-    #     allow_credentials=True,
-    #     allow_methods=["GET", "POST", "PUT", "DELETE"],
-    #     allow_headers=["*"],
-    # )
-
-    # FIXME: Add your custom authentication middleware
-    # app.add_middleware(AuthenticationMiddleware)
-
-    # Include only base routers here. Custom routers can be added by the agent app if needed.
-    app.include_router(actuators.router, tags=["actuators"])
-    app.include_router(rest.router, prefix="/api", tags=["rest"])
-    app.include_router(events.router, prefix="/events", tags=["events"])
-    if dapr is not None:
-        app.include_router(dapr.router, tags=["dapr"]) 
-
-    # FIXME: Add your custom root endpoint
-    @app.get("/")
-    async def root():
-        """
-        Root endpoint with service information.
-
-        FIXME: Customize with your service-specific information
-        FIXME: Add links to your domain-specific endpoints
-        """
-        return {
-            "service": "agent-service",
-            "version": "0.1.0",
-            "description": "Generic microservice blueprint for building intelligent agents",
-            "docs": "/docs",
-            "health": "/actuators/health",
-            # FIXME: Add your custom endpoints
-            # "your-custom-endpoint": "/your-endpoint",
-        }
-
-    return app
+    return AppBuilder(settings_files=settings_files, root_path=root_path).build()
 
 
-# Create the application instance
+# Create the application instance for default execution (e.g., uvicorn base.src.app:app)
 app = create_app()
-
-
-if __name__ == "__main__":
-    # FIXME: Replace with your configuration imports
-    # import uvicorn
-    # from .config import settings
-
-    # FIXME: Add your custom startup logic
-    # - Import your custom modules
-    # - Setup your dependencies
-    # - Configure your services
-
-    # Run the application
-    # FIXME: Replace with your configuration
-    # uvicorn.run(
-    #     "src.app:app",
-    #     host="0.0.0.0",
-    #     port=settings.app_port,
-    #     reload=True,
-    #     log_level=settings.log_level.lower(),
-    # )
-
-    print("FIXME: Add your custom startup logic for running the application")
-    print("Example:")
-    print("  import uvicorn")
-    print("  from .config import settings")
-    print("  uvicorn.run('src.app:app', host='0.0.0.0', port=settings.app_port, reload=True)")

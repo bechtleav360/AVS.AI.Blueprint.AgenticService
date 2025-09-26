@@ -2,12 +2,12 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "FastAPI: agent-service",
+            "name": "FastAPI: custom-service",
             "type": "debugpy",
             "request": "launch",
             "module": "uvicorn",
             "args": [
-                "agent.src.main:app",
+                "custom.src.main:app",
                 "--host",
                 "0.0.0.0",
                 "--port",
@@ -26,12 +26,12 @@
             }
         },
         {
-            "name": "Pytest: agent/tests",
+            "name": "Pytest: custom/tests",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
             "args": [
-                "agent/tests"
+                "custom/tests"
             ],
             "jinja": true,
             "justMyCode": false,

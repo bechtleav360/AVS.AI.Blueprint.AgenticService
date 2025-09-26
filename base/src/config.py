@@ -2,30 +2,34 @@
 
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from dynaconf import Dynaconf, Validator
 
 
 class ConfigError(Exception):
     """Custom exception for configuration-related errors."""
-    pass
 
 
 class Config:
-    """A class to manage the application's configuration using Dynaconf."""
+    """A class to manage the application's configuration using dynaconf."""
 
-    def __init__(self):
+    def __init__(self, settings_files=None, root_path=None):
         """Initialize the configuration manager."""
-        project_root = Path(__file__).parent.parent
+        if root_path is None:
+            root_path = Path(__file__).parent.parent  # Default to 'base' dir
+
+        if settings_files is None:
+            settings_files = ["settings.toml", ".secrets.toml"]
+
         self.settings = Dynaconf(
-            settings_files=["settings.toml", ".secrets.toml"],
+            settings_files=settings_files,
             environments=True,
             env_switcher="ENV_FOR_DYNACONF",
-            load_dotenv=True,
-            dotenv_path=project_root / ".env",
+            load_dotenv=False,
+            dotenv_path=root_path / ".env",
             merge_enabled=True,
-            root_path=project_root,
+            root_path=root_path,
             validators=[
                 Validator("app_name", must_exist=True, default="agent-service"),
                 Validator("app_port", must_exist=True, default=8000, is_type_of=int),
@@ -52,6 +56,9 @@ class Config:
             "provider": self.get("ai_model_provider", "openai"),
             "model_name": self.get("ai_model_name", "gpt-4"),
             "api_key": self.get_secret("ai_api_key"),
+            "base_url": self.get_secret("ai_model_base_url"),
+            "max_tokens": self.get("ai_model_max_tokens", 1000),
+            "temperature": self.get("ai_model_temperature", 0.1),
         }
 
     def get_observability_config(self) -> Dict[str, Any]:
@@ -71,4 +78,3 @@ class Config:
             # FIXME: Add your domain-specific validations here.
         except Exception as e:
             raise ConfigError(f"Configuration validation failed: {e}")
-

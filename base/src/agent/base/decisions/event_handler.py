@@ -75,10 +75,12 @@ class EventHandler(ABC):
         pass
 
     @abstractmethod
-    async def _handle(self, event: CloudEvent, context: Dict[str, Any]) -> Optional[Any]:
+    async def _handle(
+        self, event: CloudEvent, context: Dict[str, Any]
+    ) -> Optional[Any]:
         """Process the event and optionally return a result (implemented by custom)."""
         pass
 
-    def __lt__(self, other: 'EventHandler') -> bool:
+    def __lt__(self, other: "EventHandler") -> bool:
         """Support sorting by priority."""
         return self.priority < other.priority

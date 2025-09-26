@@ -1,10 +1,11 @@
 """Pydantic models for CloudEvents v1.0 specification."""
 
 from datetime import datetime
-from typing import Any, Generic, Optional, TypeVar
+from typing import Any, Dict, Generic, Literal, Optional, TypeVar
 from uuid import UUID, uuid4
 
-from pydantic import AnyUrl, BaseModel, Field
+from pydantic import AnyUrl, BaseModel, Field, root_validator
+from pydantic.config import ConfigDict
 
 # Generic type for the CloudEvent data payload.
 T = TypeVar("T")
@@ -17,49 +18,45 @@ class CloudEvent(BaseModel, Generic[T]):
     """
 
     # Required attributes
-    spec_version: str = Field("1.0", alias="specversion", const=True)
-    id: UUID = Field(default_factory=uuid4)
-    source: AnyUrl
-    type: str
-    time: datetime = Field(default_factory=datetime.utcnow)
+    specversion: Literal["1.0"] = Field("1.0", description="CloudEvents spec version")
+    id: str = Field(..., description="Unique identifier for the event")
+    source: str = Field(..., description="URI reference that identifies the event producer")
+    type: str = Field(..., description="Type of event that occurred")
 
     # Optional attributes
-    subject: Optional[str] = None
-    data_content_type: Optional[str] = Field(None, alias="datacontenttype")
-    data_schema: Optional[AnyUrl] = Field(None, alias="dataschema")
-    data: Optional[T] = None
+    subject: Optional[str] = Field(None, description="Subject of the event")
+    time: Optional[datetime] = Field(default_factory=datetime.utcnow, description="Timestamp of the event")
+    datacontenttype: Optional[str] = Field(None, description="Content type of the data")
+    dataschema: Optional[str] = Field(None, description="Schema of the data")
+    data: Optional[T] = Field(None, description="Event payload")
+    data_base64: Optional[str] = Field(None, description="Base64-encoded event payload")
 
-    class Config:
-        # Allow population by field name OR alias.
-        allow_population_by_field_name = True
+    model_config = ConfigDict(
+        extra="allow",
+        validate_by_name=True,
+        json_schema_extra={
+            "example": {
+                "specversion": "1.0",
+                "id": "evt-20240101-0001",
+                "type": "asset.backup.completed",
+                "source": "/services/asset-backup-checker",
+                "subject": "asset-12345",
+                "time": "2024-01-01T12:34:56Z",
+                "datacontenttype": "application/json",
+                "data": {
+                    "tenantId": "tenant-42",
+                    "assetId": "asset-12345",
+                },
+            }
+        },
+    )
+
+    @root_validator(pre=True)
+    def validate_data_exclusivity(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+        if values.get("data") is not None and values.get("data_base64") is not None:
+            raise ValueError("CloudEvent cannot include both 'data' and 'data_base64'")
+        return values
 
 
-# --- Helper Functions ---
-
-
-def create_cloud_event(
-    source: AnyUrl,
-    type: str,
-    data: Optional[Any] = None,
-    **kwargs: Any,
-) -> CloudEvent:
-    """
-    Create a new CloudEvent.
-
-    This helper function simplifies the creation of a CloudEvent by automatically
-    setting the required attributes and allowing optional attributes to be passed
-    as keyword arguments.
-
-    Args:
-        source: The source of the event (a URI).
-        type: The type of the event (e.g., 'com.example.item.created').
-        data: The event payload (can be any Pydantic model or dict).
-        **kwargs: Additional CloudEvent attributes (e.g., subject, data_content_type).
-
-    Returns:
-        A new CloudEvent instance.
-    """
-    if data is not None and "data_content_type" not in kwargs:
-        kwargs["data_content_type"] = "application/json"
-
-    return CloudEvent(source=source, type=type, data=data, **kwargs)
+# A generic CloudEvent for use in API layers, accepting any JSON payload.
+GenericCloudEvent = CloudEvent[Dict[str, Any]]
