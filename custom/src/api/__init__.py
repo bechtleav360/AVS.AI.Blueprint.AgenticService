@@ -1,5 +1,5 @@
 """Expose the custom API routers."""
 
-from .rest import router
+from .rest import CustomRestApi
 
-__all__ = ["router"]
+__all__ = ["CustomRestApi"]

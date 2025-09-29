@@ -1,6 +1,6 @@
 """Generic unit tests for placeholder agent tools in `custom.src.agent.tools`."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from pydantic_ai import RunContext
@@ -28,7 +28,7 @@ def sample_resource_input():
         id="test-resource-123",
         tags={"service-type": "database"},
         properties={"is_serverless": False},
-        attributes={"encryption_enabled": True}
+        attributes={"encryption_enabled": True},
     )
 
 

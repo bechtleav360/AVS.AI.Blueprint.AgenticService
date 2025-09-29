@@ -17,7 +17,12 @@ from .config import Config
 class TelemetryManager:
     """Object-oriented manager for logging and tracing setup."""
 
-    def __init__(self, settings: Optional[Config] = None, *, logger: Optional[logging.Logger] = None) -> None:
+    def __init__(
+        self,
+        settings: Optional[Config] = None,
+        *,
+        logger: Optional[logging.Logger] = None,
+    ) -> None:
         self.settings = settings
         self.logger = logger or logging.getLogger(self.__class__.__name__)
 
@@ -28,7 +33,9 @@ class TelemetryManager:
         """Configure OpenTelemetry tracing using the provided settings."""
 
         if self.settings is None:
-            raise ValueError("TelemetryManager.configure_tracing requires a Config instance")
+            raise ValueError(
+                "TelemetryManager.configure_tracing requires a Config instance"
+            )
 
         try:
             observability = self.settings.get_observability_config()
@@ -86,7 +93,9 @@ class TelemetryManager:
             logging.getLogger("httpx").setLevel(logging.WARNING)
             logging.getLogger("opentelemetry").setLevel(logging.WARNING)
 
-            self.logger.info("Logging configured: level=%s, format=%s", log_level, log_format)
+            self.logger.info(
+                "Logging configured: level=%s, format=%s", log_level, log_format
+            )
 
         except Exception as exc:  # pragma: no cover - defensive logging
             print(f"Failed to set up logging: {exc}")
@@ -112,128 +121,28 @@ class TelemetryManager:
         return exporters
 
 
-# ----------------------------------------------------------------------
-# Backwards-compatible functional wrappers
-# ----------------------------------------------------------------------
-
-
-def setup_telemetry(settings: Config) -> None:
-    """Legacy wrapper to configure telemetry using the default manager."""
-
-    TelemetryManager(settings=settings).configure_tracing()
-
-
-def setup_instrumentation() -> None:
-    """Legacy wrapper for instrumentation setup."""
-
-    TelemetryManager().setup_instrumentation()
-
-
-def instrument_fastapi(app) -> None:
-    """Legacy wrapper to instrument FastAPI applications."""
-
-    TelemetryManager().instrument_fastapi(app)
-
-
-def setup_logging(log_level: str = "INFO", log_format: str = "json") -> None:
-    """Legacy wrapper for logging configuration."""
-
-    TelemetryManager().setup_logging(log_level=log_level, log_format=log_format)
-
-
-def get_tracer(name: str) -> trace.Tracer:
-    """
-    Get a tracer instance.
-    
-    Args:
-        name: Tracer name (usually module name)
-        
-    Returns:
-        Tracer instance
-    """
-    return trace.get_tracer(name)
-
-
-def add_span_attributes(span: trace.Span, attributes: dict) -> None:
-    """
-    Add multiple attributes to a span.
-    
-    Args:
-        span: OpenTelemetry span
-        attributes: Dictionary of attributes to add
-    """
-    for key, value in attributes.items():
-        if value is not None:
-            span.set_attribute(key, str(value))
-
-
-def create_child_span(name: str, parent_span: Optional[trace.Span] = None) -> trace.Span:
-    """
-    Create a child span.
-    
-    Args:
-        name: Span name
-        parent_span: Parent span (if None, uses current span)
-        
-    Returns:
-        New child span
-    """
-    tracer = trace.get_tracer(__name__)
-    
-    if parent_span:
-        with trace.use_span(parent_span):
-            return tracer.start_span(name)
-    else:
-        return tracer.start_span(name)
-
-
 class TracingContext:
     """Context manager for creating and managing spans."""
-    
+
     def __init__(self, name: str, attributes: Optional[dict] = None):
         self.name = name
         self.attributes = attributes or {}
         self.span = None
         self.tracer = trace.get_tracer(__name__)
-    
+
     def __enter__(self) -> trace.Span:
         self.span = self.tracer.start_span(self.name)
-        add_span_attributes(self.span, self.attributes)
+        self._add_span_attributes(self.span, self.attributes)
         return self.span
-    
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self.span:
             if exc_type is not None:
-                self.span.set_status(
-                    trace.Status(trace.StatusCode.ERROR, str(exc_val))
-                )
+                self.span.set_status(trace.Status(trace.StatusCode.ERROR, str(exc_val)))
             self.span.end()
 
-
-# Convenience function for creating traced functions
-def traced(name: Optional[str] = None, attributes: Optional[dict] = None):
-    """
-    Decorator for automatically tracing function calls.
-    
-    Args:
-        name: Span name (defaults to function name)
-        attributes: Additional span attributes
-        
-    Returns:
-        Decorated function
-    """
-    def decorator(func):
-        def wrapper(*args, **kwargs):
-            span_name = name or f"{func.__module__}.{func.__name__}"
-            
-            with TracingContext(span_name, attributes) as span:
-                try:
-                    result = func(*args, **kwargs)
-                    return result
-                except Exception as e:
-                    span.set_attribute("error", True)
-                    span.set_attribute("error.message", str(e))
-                    raise
-        
-        return wrapper
-    return decorator
+    @staticmethod
+    def _add_span_attributes(span: trace.Span, attributes: dict) -> None:
+        for key, value in attributes.items():
+            if value is not None:
+                span.set_attribute(key, str(value))

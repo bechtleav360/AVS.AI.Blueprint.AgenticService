@@ -1,5 +1,6 @@
 """Root endpoints providing service metadata."""
 
+from typing import Any
 from fastapi import APIRouter
 
 
@@ -16,14 +17,14 @@ class RootApi:
             tags=["root"],
             summary="Service metadata",
         )
-        async def root() -> dict[str, str]:
+        async def root() -> dict[str, Any]:
             """Return basic information about the service and useful links."""
             return {
                 "service": "agent-service",
                 "version": "0.1.0",
                 "description": "Generic microservice blueprint for building intelligent agents",
                 "docs": "/docs",
-                "health": "/actuators/health",
+                "probes": {"liveness": "/health/live", "readiness": "/health/ready"},
                 # FIXME: Add your custom endpoints
                 # "your-custom-endpoint": "/your-endpoint",
             }

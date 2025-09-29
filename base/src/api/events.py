@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from fastapi import APIRouter, Body, HTTPException, Request, status
 from opentelemetry import trace
 
@@ -22,7 +21,7 @@ class CloudEventProcessor:
         """Process a CloudEvent through the unified processing service."""
         try:
             result = await processing_service.process_event(event)
-            
+
             if result["status"] == "processed":
                 return CloudEventResponse(
                     status="processed",
@@ -33,7 +32,7 @@ class CloudEventProcessor:
                     status="no_processor",
                     message="No handler or agent processed this event",
                 )
-                
+
         except Exception as e:
             logger.error("CloudEvent processing failed: %s", str(e), exc_info=True)
             raise

@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from opentelemetry import trace
 
-from ....models.events import CloudEvent
+from ..models import CloudEvent
 from .event_handler import EventHandler
 
 logger = logging.getLogger(__name__)
@@ -23,7 +23,7 @@ class DecisionEngine:
             handlers: A list of event handlers to use for processing.
         """
         self.handlers = sorted(handlers)
-        logger.info(f"Initialized with handlers: {[h.name for h in self.handlers]}")
+        logger.info("Initialized with handlers: %s", [h.name for h in self.handlers])
 
     async def process_event(self, event: CloudEvent) -> Optional[Any]:
         """

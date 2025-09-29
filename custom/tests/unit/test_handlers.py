@@ -27,7 +27,9 @@ class TestGenericHandlers:
     """Tests for the placeholder handlers to ensure the chain-of-responsibility is intact."""
 
     @pytest.mark.asyncio
-    async def test_validation_handler_can_handle_any_event(self, mock_event, mock_context):
+    async def test_validation_handler_can_handle_any_event(
+        self, mock_event, mock_context
+    ):
         """Ensures the default ValidationHandler always runs."""
         handler = CustomHandler()
         assert await handler._can_handle(mock_event, mock_context) is True
@@ -41,7 +43,9 @@ class TestGenericHandlers:
         assert "validated_at" in mock_context
 
     @pytest.mark.asyncio
-    async def test_validation_handler_fails_without_data(self, mock_event, mock_context):
+    async def test_validation_handler_fails_without_data(
+        self, mock_event, mock_context
+    ):
         """Ensures the ValidationHandler returns a result to stop the chain if data is missing."""
         handler = CustomHandler()
         mock_event.data = None
@@ -50,7 +54,9 @@ class TestGenericHandlers:
         assert result["status"] == "validation_failed"
 
     @pytest.mark.asyncio
-    async def test_processing_handler_can_handle_after_validation(self, mock_event, mock_context):
+    async def test_processing_handler_can_handle_after_validation(
+        self, mock_event, mock_context
+    ):
         """Ensures the ProcessingHandler runs only after the ValidationHandler."""
         handler = ProcessingHandler()
         # Should not handle if validation has not run
@@ -61,7 +67,9 @@ class TestGenericHandlers:
         assert await handler._can_handle(mock_event, mock_context) is True
 
     @pytest.mark.asyncio
-    async def test_processing_handler_handle_returns_none(self, mock_event, mock_context):
+    async def test_processing_handler_handle_returns_none(
+        self, mock_event, mock_context
+    ):
         """Ensures the placeholder ProcessingHandler returns None."""
         handler = ProcessingHandler()
         result = await handler._handle(mock_event, mock_context)

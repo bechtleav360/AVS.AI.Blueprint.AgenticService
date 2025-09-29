@@ -3,8 +3,8 @@
 import logging
 from typing import Any
 
-from base.src.agent.base.runtime import BaseAgent
-from ..config import CustomConfig
+from base.src.agent import BaseAgent
+from base.src.config import Config
 
 from ..models.processing import ProcessingContext
 from ..models.results import CustomAgentOutput
@@ -22,7 +22,7 @@ class AgentRuntime(BaseAgent):
     requirements.
     """
 
-    def __init__(self, settings: CustomConfig):
+    def __init__(self, settings: Config):
         """Initialize the generic agent."""
         super().__init__(settings)
 

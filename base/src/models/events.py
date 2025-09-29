@@ -2,9 +2,8 @@
 
 from datetime import datetime
 from typing import Any, Dict, Generic, Literal, Optional, TypeVar
-from uuid import UUID, uuid4
 
-from pydantic import AnyUrl, BaseModel, Field, root_validator
+from pydantic import BaseModel, Field, root_validator
 from pydantic.config import ConfigDict
 
 # Generic type for the CloudEvent data payload.
@@ -20,12 +19,16 @@ class CloudEvent(BaseModel, Generic[T]):
     # Required attributes
     specversion: Literal["1.0"] = Field("1.0", description="CloudEvents spec version")
     id: str = Field(..., description="Unique identifier for the event")
-    source: str = Field(..., description="URI reference that identifies the event producer")
+    source: str = Field(
+        ..., description="URI reference that identifies the event producer"
+    )
     type: str = Field(..., description="Type of event that occurred")
 
     # Optional attributes
     subject: Optional[str] = Field(None, description="Subject of the event")
-    time: Optional[datetime] = Field(default_factory=datetime.utcnow, description="Timestamp of the event")
+    time: Optional[datetime] = Field(
+        default_factory=datetime.utcnow, description="Timestamp of the event"
+    )
     datacontenttype: Optional[str] = Field(None, description="Content type of the data")
     dataschema: Optional[str] = Field(None, description="Schema of the data")
     data: Optional[T] = Field(None, description="Event payload")

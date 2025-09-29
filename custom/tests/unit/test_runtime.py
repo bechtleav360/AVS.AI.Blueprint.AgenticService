@@ -1,6 +1,6 @@
 """Generic unit tests for the agent runtime in `custom.src.agent.runtime`."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from base.src.config import Config

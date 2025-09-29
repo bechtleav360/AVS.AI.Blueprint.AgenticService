@@ -23,17 +23,19 @@ circuit_breaker_timeout_s = 60
 cache_ttl_seconds = 3600
 cache_max_size = 10000
 
-# AI Agent Configuration
-ai_model_provider = "vllm"
-ai_model_base_url = "https://avs-vllm.q14.net/v1"
-ai_model_name = "gpt-4o"
-ai_model_api_key = "" # set in environment variable
-ai_max_tokens = 1000
-ai_temperature = 0.1
+
 
 [development]
 log_level = "DEBUG"
 data_gateway_base_url = "http://localhost:8001"
+
+# AI Agent Configuration
+ai_model_provider = "vllm"
+ai_model_base_url = "https://avs-vllm.q14.net/v1"
+ai_model_name = "Qwen/Qwen2.5-32B-Instruct-AWQ"
+# ai_model_api_key = "" # set in environment variable
+ai_max_tokens = 1000
+ai_temperature = 0.1
 
 [testing]
 log_level = "DEBUG"

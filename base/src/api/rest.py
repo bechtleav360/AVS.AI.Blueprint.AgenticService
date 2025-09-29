@@ -2,17 +2,19 @@
 
 import logging
 from time import perf_counter
-from typing import Any, Dict, Generic, Optional, Type, TypeVar
+from typing import Generic, Type, TypeVar
 from uuid import uuid4
 
 from fastapi import APIRouter, Body, HTTPException, Request, status
 from opentelemetry import trace
 from pydantic import BaseModel
 
+from ..registry.service_registry import ServiceRegistry
+
 from ..models import ProcessResourceResponse
-from ..services import processing_service
 
 logger = logging.getLogger(__name__)
+tracer = trace.get_tracer(__name__)
 
 
 # Define a TypeVar for the generic payload model
@@ -22,9 +24,10 @@ PayloadT = TypeVar("PayloadT", bound=BaseModel)
 class RestApi(Generic[PayloadT]):
     """Generic OOP wrapper for the REST API router."""
 
-    def __init__(self, payload_type: Type[PayloadT]) -> None:
+    def __init__(self, payload_type: Type[PayloadT], registry: ServiceRegistry) -> None:
         self.router = APIRouter()
         self.payload_type = payload_type
+        self._service_registry = registry
         self._register_routes()
 
     def _register_routes(self) -> None:
@@ -84,7 +87,9 @@ class RestApi(Generic[PayloadT]):
                     "client_ip": request.client.host if request.client else None,
                 }
 
-                result = await processing_service.process_rest_request(payload, context)
+                result = await self._service_registry.get_processing_service().process_rest_request(
+                    payload, context
+                )
 
                 # Determine success based on processing result
                 success = result["status"] == "processed"
@@ -134,10 +139,3 @@ class RestApi(Generic[PayloadT]):
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail="Resource processing failed",
                 )
-
-
-# This base router is no longer used directly; the custom API will be used instead.
-# You can define a default instance for testing or simple cases if needed.
-# from ..models import CloudEventDataPayload
-# rest_api = RestApi(CloudEventDataPayload)
-# router = rest_api.router

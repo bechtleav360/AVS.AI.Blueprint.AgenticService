@@ -5,8 +5,11 @@ from typing import Any, Dict, List, Optional
 
 from opentelemetry import trace
 
-from ..agent.base.decisions.event_handler import EventHandler
-from ..models.events import CloudEvent
+from ..config import Config
+from .service_registry import ServiceRegistry
+
+from ..agent import EventHandler
+from ..models import CloudEvent
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -15,14 +18,17 @@ tracer = trace.get_tracer(__name__)
 class HandlerRegistry:
     """Registry for managing event handlers in the application."""
 
-    def __init__(self):
+    def __init__(self, settings: Config, service_registry: ServiceRegistry):
         self._handlers: List[EventHandler] = []
+        self._settings = settings
+        self._service_registry = service_registry
 
     def register_handler(self, handler: EventHandler) -> None:
         """Register a new event handler."""
         logger.info(
             "Registering handler: %s with priority %d", handler.name, handler.priority
         )
+        handler.link_service_registry(self._service_registry)
         self._handlers.append(handler)
         # Keep handlers sorted by priority (lower numbers first)
         self._handlers.sort()
@@ -139,7 +145,3 @@ class HandlerRegistry:
         """Clear all registered handlers (useful for testing)."""
         logger.info("Clearing all registered handlers")
         self._handlers.clear()
-
-
-# Global singleton instance
-handler_registry = HandlerRegistry()

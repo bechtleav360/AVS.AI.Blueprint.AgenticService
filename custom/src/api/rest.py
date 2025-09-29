@@ -2,6 +2,7 @@
 
 from pydantic import BaseModel, Field
 from base.src.api.rest import RestApi
+from base.src.registry.service_registry import ServiceRegistry
 
 
 class CustomPayload(BaseModel):
@@ -16,5 +17,5 @@ class CustomPayload(BaseModel):
 class CustomRestApi(RestApi[CustomPayload]):
     """Custom REST API definition."""
 
-    def __init__(self):
-        super().__init__(CustomPayload)
+    def __init__(self, registry: ServiceRegistry):
+        super().__init__(payload_type=CustomPayload, registry=registry)

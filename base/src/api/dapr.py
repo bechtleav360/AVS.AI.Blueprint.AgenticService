@@ -51,27 +51,29 @@ class DaprApi:
             try:
                 payload = await request.json()
                 logger.info("Received Dapr event on topic %s", topic)
-                
+
                 # Convert Dapr payload to CloudEvent format
                 cloud_event = CloudEvent(
                     specversion="1.0",
                     id=payload.get("id", f"dapr-{topic}"),
                     source=f"/dapr/topic/{topic}",
                     type=f"dapr.{topic}",
-                    data=payload
+                    data=payload,
                 )
-                
+
                 # Process through the unified service
                 context = {"dapr_topic": topic}
                 result = await processing_service.process_event(cloud_event, context)
-                
+
                 # Return Dapr-compatible response
                 if result["status"] == "processed":
                     return {"status": "SUCCESS"}
                 else:
                     logger.warning("No processor handled Dapr event on topic %s", topic)
-                    return {"status": "SUCCESS"}  # Still return SUCCESS to avoid retries
-                    
+                    return {
+                        "status": "SUCCESS"
+                    }  # Still return SUCCESS to avoid retries
+
             except Exception as e:
                 span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
                 logger.error("Dapr event handling failed: %s", str(e), exc_info=True)

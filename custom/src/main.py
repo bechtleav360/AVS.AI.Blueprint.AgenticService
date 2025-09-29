@@ -7,7 +7,7 @@ custom agent code, but most logic remains in `base`.
 """
 
 from pathlib import Path
-from base.src.app import AppBuilder
+from base.src.app_builder import AppBuilder
 
 # Import custom components to be injected
 from .agent.handlers import CustomHandler, ProcessingHandler

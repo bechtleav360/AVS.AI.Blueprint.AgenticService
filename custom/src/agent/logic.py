@@ -37,11 +37,15 @@ class ProcessingLogic:
         confidence_factors = []
 
         # FIXME: Example of calling a sub-analysis function. Replace with your own logic.
-        classification, class_evidence = ProcessingLogic._classify_resource(resource.get("tags", {}), resource.get("properties", {}))
+        classification, class_evidence = ProcessingLogic._classify_resource(
+            resource.get("tags", {}), resource.get("properties", {})
+        )
         evidence.extend(class_evidence)
 
         # FIXME: Example of scoring based on different criteria.
-        score_analysis = ProcessingLogic._score_resource_attributes(resource.get("attributes", {}))
+        score_analysis = ProcessingLogic._score_resource_attributes(
+            resource.get("attributes", {})
+        )
         evidence.extend(score_analysis["evidence"])
         confidence_factors.extend(score_analysis["confidence_factors"])
 
@@ -50,7 +54,9 @@ class ProcessingLogic:
             final_score = 0.0
         else:
             # Example: Weighted average
-            final_score = sum(factor for factor, _ in confidence_factors) / sum(weight for _, weight in confidence_factors)
+            final_score = sum(factor for factor, _ in confidence_factors) / sum(
+                weight for _, weight in confidence_factors
+            )
 
         # FIXME: Determine a final status based on the score and your thresholds.
         status = "compliant" if final_score > 0.75 else "non_compliant"
@@ -149,16 +155,24 @@ class ProcessingLogic:
         recommendations = []
 
         if analysis_result["status"] != "compliant":
-            recommendations.append("Resource does not meet compliance standards. Review findings.")
+            recommendations.append(
+                "Resource does not meet compliance standards. Review findings."
+            )
 
             # Example: Find the evidence for low-scoring factors.
             if "Encryption is disabled." in analysis_result["evidence"]:
-                recommendations.append("Enable encryption on the resource to protect data at rest.")
+                recommendations.append(
+                    "Enable encryption on the resource to protect data at rest."
+                )
             if "Resource is publicly accessible." in analysis_result["evidence"]:
-                recommendations.append("Review public access settings and restrict access if possible.")
+                recommendations.append(
+                    "Review public access settings and restrict access if possible."
+                )
 
         if analysis_result["confidence"] < 0.9:
-            recommendations.append("Analysis confidence is low. Consider adding more metadata or improving detection logic.")
+            recommendations.append(
+                "Analysis confidence is low. Consider adding more metadata or improving detection logic."
+            )
 
         return recommendations
 

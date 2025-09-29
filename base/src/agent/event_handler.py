@@ -20,7 +20,8 @@ from typing import Any, Dict, Optional
 
 from opentelemetry import trace
 
-from ....models.events import CloudEvent
+from ..registry.service_registry import ServiceRegistry
+from ..models import CloudEvent
 
 tracer = trace.get_tracer(__name__)
 
@@ -54,6 +55,10 @@ class EventHandler(ABC):
         """
         self.name = name
         self.priority = priority
+
+    def link_service_registry(self, registry: ServiceRegistry) -> None:
+        """Link the service registry to the handler."""
+        self._registry = registry
 
     async def can_handle(self, event: CloudEvent, context: Dict[str, Any]) -> bool:
         """Wrapper that adds tracing around capability checks."""

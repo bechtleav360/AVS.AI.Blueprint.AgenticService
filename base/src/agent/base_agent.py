@@ -4,23 +4,24 @@ from abc import ABC, abstractmethod
 import logging
 import time
 from typing import Any, Dict, List, Optional, Type, TypeVar
+import inspect
+from pathlib import Path
 
 from openai import AsyncOpenAI
 from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
-T = TypeVar("T")
-
 from pydantic_ai import Agent
 
 from opentelemetry import trace
 
-import inspect
-from pathlib import Path
+from ..registry.service_registry import ServiceRegistry
 
-from base.src.config import Config
-from base.src.models.result import AgentOutput
+from ..config import Config
+from ..models import AgentOutput
+
+T = TypeVar("T")
 
 # Initialize the tracer
 tracer = trace.get_tracer(__name__)
@@ -35,10 +36,14 @@ class BaseAgent(ABC):
         self.agent = Agent(
             model=self._get_model(),
             deps_type=self._get_processing_context_type(),
-            result_type=self._get_result_type(),
+            output_type=self._get_result_type(),
             system_prompt=self._get_system_prompt(),
         )
         self._register_tools()
+
+    def link_service_registry(self, service_registry: ServiceRegistry) -> None:
+        """Link the service registry to the agent."""
+        self._service_registry = service_registry
 
     def _get_model(self) -> Model:
         """Return the AI model configuration string (e.g., 'openai:gpt-4')."""

@@ -49,15 +49,12 @@ Best practices:
 import logging
 from typing import Any
 
-from base.src.agent.base.decisions import EventHandler
+from base.src.agent import EventHandler
 from base.src.models.events import CloudEvent
 
-# FIXME: Import your domain-specific models.
 # from ..models.domain import AgentOutput
 
 logger = logging.getLogger(__name__)
-
-# FIXME: Event type muss konfigurierbar
 
 
 class CustomHandler(EventHandler):
@@ -94,7 +91,7 @@ class ProcessingHandler(EventHandler):
 
     async def _handle(self, event: CloudEvent, context: dict[str, Any]) -> Any | None:
         """Execute the core business logic for the event."""
-        logger.info(f"Executing main processing logic for event type '{event.type}'.")
+        logger.info("Executing main processing logic for event type '%s'", event.type)
         # FIXME: Replace with your core business logic.
         # result = await agent.process(event.data, context.get("external_data"))
         return None

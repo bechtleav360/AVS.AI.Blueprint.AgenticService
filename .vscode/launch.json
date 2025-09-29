@@ -21,8 +21,9 @@
                 "APP_NAME": "agent-service",
                 "LOG_LEVEL": "INFO",
                 "LOG_FORMAT": "json",
-                "AI_PROVIDER": "openai",
-                "AI_MODEL_NAME": "gpt-4"
+                "DYNACONF_AI_PROVIDER": "openai",
+                "DYNACONF_AI_MODEL_NAME": "gpt-4",
+                "DYNACONF_ENV_FOR_DYNACONF": "development"
             }
         },
         {

@@ -41,16 +41,22 @@ class TestProcessingLogic:
         assert "classification" in result
         assert result["classification"] == "database"
 
-    def test_generate_recommendations_produces_output(self, sample_analysis_result, sample_resource):
+    def test_generate_recommendations_produces_output(
+        self, sample_analysis_result, sample_resource
+    ):
         """Ensures generate_recommendations runs and returns a list of strings."""
-        recommendations = ProcessingLogic.generate_recommendations(sample_analysis_result, sample_resource)
+        recommendations = ProcessingLogic.generate_recommendations(
+            sample_analysis_result, sample_resource
+        )
 
         assert isinstance(recommendations, list)
         assert len(recommendations) > 0
         assert all(isinstance(rec, str) for rec in recommendations)
         assert "Enable encryption" in recommendations[1]
 
-    def test_assess_risk_returns_a_risk_level(self, sample_analysis_result, sample_resource):
+    def test_assess_risk_returns_a_risk_level(
+        self, sample_analysis_result, sample_resource
+    ):
         """Ensures assess_risk runs and returns a risk string."""
         risk = ProcessingLogic.assess_risk(sample_analysis_result, sample_resource)
 
