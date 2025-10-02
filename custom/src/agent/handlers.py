@@ -70,44 +70,63 @@ from base.src.models.events import CloudEvent
 logger = logging.getLogger(__name__)
 
 
-class CustomHandler(EventHandler):
-    """Example handler that validates input and prepares the agent request."""
+class AgentInvokerHandler(EventHandler):
+    """Handler that validates input and invokes the Pydantic AI agent."""
 
     def __init__(self) -> None:
-        super().__init__("CustomHandler", priority=10)
+        super().__init__("AgentInvokerHandler", priority=10)
 
     async def _can_handle(self, event: CloudEvent, context: dict[str, Any]) -> bool:
-        """Always run first to validate and shape the request."""
-        return True
+        """Handle events with 'invoke_agent' action."""
+        if not event.data or not isinstance(event.data, CustomPayload):
+            return False
+        return event.data.details.get("action") == "invoke_agent"
 
     async def _handle(self, event: CloudEvent, context: dict[str, Any]) -> Any | None:
-        """Validate the payload, enrich context, and trigger the agent."""
-        if not event.data:
-            logger.warning("CustomHandler received invalid payload; cannot invoke agent.")
-            raise HandlerError(
-                status="validation_failed",
-                reason="Missing or invalid data",
-                code="missing_payload",
-            )
-
-        if not isinstance(event.data, CustomPayload):
-            logger.warning(
-                "CustomHandler received invalid payload; payload is of type %s.",
-                type(event.data),
-            )
-            raise HandlerError(
-                status="validation_failed",
-                reason="Invalid payload type",
-                code="invalid_payload_type",
-            )
-
-        logger.info("CustomHandler validated event '%s' and will request agent support", event.type)
+        """Validate the payload and trigger the agent."""
+        logger.info("AgentInvokerHandler validated event '%s' and will request agent support", event.type)
 
         context["validated_at"] = "timestamp_placeholder"
         context["use_agent"] = True
         context["agent_name"] = "AgentRuntime"
 
         return None
+
+
+class SimpleProcessorHandler(EventHandler):
+    """Handler that performs lightweight processing without invoking the agent."""
+
+    def __init__(self) -> None:
+        super().__init__("SimpleProcessorHandler", priority=15)
+
+    async def _can_handle(self, event: CloudEvent, context: dict[str, Any]) -> bool:
+        """Handle events with 'simple_process' action."""
+        if not event.data or not isinstance(event.data, CustomPayload):
+            return False
+        return event.data.details.get("action") == "simple_process"
+
+    async def _handle(self, event: CloudEvent, context: dict[str, Any]) -> Any | None:
+        """Process the payload without agent invocation."""
+        payload = event.data
+        logger.info("SimpleProcessorHandler processing event '%s' without agent", event.type)
+
+        result = {
+            "status": "processed",
+            "processed_by": [self.name],
+            "data": {
+                "tenant_id": payload.tenant_id,
+                "asset_id": payload.asset_id,
+                "resource_type": payload.resource_type,
+                "enriched_at": "timestamp_placeholder",
+                "details": payload.details,
+            },
+        }
+
+        # Mark that agent is NOT needed
+        context["use_agent"] = False
+        context["processed_without_agent"] = True
+
+        return result
 
 
 class ProcessingHandler(EventHandler):
@@ -154,4 +173,4 @@ class ProcessingHandler(EventHandler):
 
 
 # The list of all event handlers for the decision engine.
-all_handlers = [CustomHandler(), ProcessingHandler()]
+all_handlers = [AgentInvokerHandler(), SimpleProcessorHandler(), ProcessingHandler()]

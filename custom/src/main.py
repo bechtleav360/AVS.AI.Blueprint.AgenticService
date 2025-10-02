@@ -7,10 +7,11 @@ custom agent code, but most logic remains in `base`.
 """
 
 from pathlib import Path
+
 from base.src.app_builder import AppBuilder
 
 # Import custom components to be injected
-from .agent.handlers import CustomHandler, ProcessingHandler
+from .agent.handlers import AgentInvokerHandler, ProcessingHandler, SimpleProcessorHandler
 from .agent.runtime import AgentRuntime
 from .api.rest import CustomRestApi
 
@@ -24,8 +25,8 @@ settings_files = [
 # Uvicorn entrypoint: create the app with custom configuration and components
 app = (
     AppBuilder(settings_files=settings_files, root_path=project_root)
-    .with_handler(CustomHandler)
-    .with_handler(ProcessingHandler)
+    .with_handler(AgentInvokerHandler)
+    .with_handler(SimpleProcessorHandler)
     .with_agent_runtime(AgentRuntime, is_default=True)
     .with_rest_api(CustomRestApi)
     .build()

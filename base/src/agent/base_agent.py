@@ -1,8 +1,8 @@
 """Base class for the Pydantic AI agent runtime."""
 
+import asyncio
 import inspect
 import logging
-import asyncio
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -14,6 +14,7 @@ from pydantic_ai import Agent, Tool
 from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.usage import UsageLimits
 
 from ..config import Config
 from ..models import AgentOutput
@@ -35,7 +36,9 @@ class BaseAgent(ABC):
         ai_config = self.settings.get_ai_config()
         limit = ai_config.get("concurrency_limit")
         if isinstance(limit, int) and limit > 0:
-            self._concurrency_semaphore: Optional[asyncio.Semaphore] = asyncio.Semaphore(limit)
+            self._concurrency_semaphore: Optional[asyncio.Semaphore] = (
+                asyncio.Semaphore(limit)
+            )
             logger.info("Agent concurrency limit set to %s", limit)
         else:
             self._concurrency_semaphore = None
@@ -204,12 +207,35 @@ class BaseAgent(ABC):
         self, instruction: str, deps: Optional[Dict[str, Any]] = None
     ) -> Any:
         """Execute the underlying agent with the given instruction and context."""
+        # Build usage limits from config
+        usage_limits = self._build_usage_limits()
+
         semaphore = getattr(self, "_concurrency_semaphore", None)
         if semaphore is None:
-            return await self.agent.run(instruction, deps=deps)
+            return await self.agent.run(
+                instruction, deps=deps, usage_limits=usage_limits
+            )
 
         async with semaphore:
-            return await self.agent.run(instruction, deps=deps)
+            return await self.agent.run(
+                instruction, deps=deps, usage_limits=usage_limits
+            )
+
+    def _build_usage_limits(self) -> Optional[UsageLimits]:
+        """Build UsageLimits from AI config."""
+        ai_config = self.settings.get_ai_config()
+        limits = ai_config.get("usage_limits", {})
+
+        # Only create UsageLimits if at least one limit is set
+        if not any(limits.values()):
+            return None
+
+        return UsageLimits(
+            request_limit=limits.get("request_limit"),
+            input_tokens_limit=limits.get("input_tokens_limit"),
+            output_tokens_limit=limits.get("output_tokens_limit"),
+            total_tokens_limit=limits.get("total_tokens_limit"),
+        )
 
     @staticmethod
     def _serialize_context(context: Any) -> Optional[Dict[str, Any]]:

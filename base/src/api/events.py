@@ -41,9 +41,10 @@ class CloudEventProcessor:
 class EventApi:
     """OOP wrapper that exposes the event-related FastAPI router."""
 
-    def __init__(self) -> None:
+    def __init__(self, service_registry=None) -> None:
         self.router = APIRouter()
         self._processor = CloudEventProcessor()
+        self._service_registry = service_registry
         self._register_routes()
 
     def _register_routes(self) -> None:
@@ -128,5 +129,4 @@ class EventApi:
                 ) from exc
 
 
-event_api = EventApi()
-router = event_api.router
+# Removed singleton pattern - EventApi should be instantiated in app_builder

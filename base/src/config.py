@@ -63,6 +63,12 @@ class Config:
             "max_tokens": self.get("ai_model_max_tokens"),
             "temperature": self.get("ai_model_temperature"),
             "concurrency_limit": self.get("ai_concurrent_requests"),
+            "usage_limits": {
+                "request_limit": self.get("ai_usage_request_limit"),
+                "input_tokens_limit": self.get("ai_usage_input_tokens_limit"),
+                "output_tokens_limit": self.get("ai_usage_output_tokens_limit"),
+                "total_tokens_limit": self.get("ai_usage_total_tokens_limit"),
+            },
         }
         return config
 

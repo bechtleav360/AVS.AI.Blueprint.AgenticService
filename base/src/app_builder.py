@@ -10,7 +10,8 @@ from .registry.handler_registry import HandlerRegistry
 from .registry.runtime_registry import RuntimeRegistry
 from .registry.service_registry import ServiceRegistry
 
-from .api import actuators, events, root
+from .api import actuators, root
+from .api.events import EventApi
 
 # Telemetry utilities
 from .telemetry import TelemetryManager
@@ -167,7 +168,8 @@ class AppBuilder:
         app.include_router(actuator_api.router, tags=["actuators"])
 
         # Include other base routers
-        app.include_router(events.router, prefix="/events", tags=["events"])
+        event_api = EventApi(service_registry=self._service_registry)
+        app.include_router(event_api.router, prefix="/events", tags=["events"])
         app.include_router(root.router, tags=["root"])
         if dapr is not None:
             app.include_router(dapr.router, tags=["dapr"])
