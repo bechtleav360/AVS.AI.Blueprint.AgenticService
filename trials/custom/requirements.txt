@@ -1,0 +1,4 @@
+# Pydantic AI Trial Requirements
+pydantic>=2.0.0
+pydantic-ai>=0.0.14
+openai>=1.0.0

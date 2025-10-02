@@ -31,6 +31,8 @@ cache_max_size = 10000
 log_level = "DEBUG"
 data_gateway_base_url = "http://localhost:8001"
 
+## FIXME: support different ai configurations for different agents
+
 # AI Agent Configuration
 ai_model_provider = "vllm"
 ai_model_base_url = "https://avs-vllm.q14.net/v1"

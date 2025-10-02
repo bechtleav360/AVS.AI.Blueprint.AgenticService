@@ -1,0 +1,195 @@
+{
+    "model": "Qwen/Qwen2.5-32B-Instruct-AWQ",
+    "messages": [
+        {
+            "role": "system",
+            "content": "You are provided with function signatures within <tools></tools> XML tags. Here are the available tools: <tools> {\"type\": \"function\", \"function\": {\"name\": \"analyze_resource\", \"description\": \"analyze_resource.\\n\\nReturns a dictionary shaped to align with `CustomAgentOutput`  fields to make it easy for the model to adopt as the final output when appropriate.\\n\\n    Args:\\n        id(Union[]): Unique resource identifier (string)        tags(dict[str, str]): Flat key/value tags used for basic classification        properties(dict[str, Union[]]): Arbitrary properties describing the resource        attributes(dict[str, Union[]]): Attributes used for scoring and compliance checks\", \"parameters\": {\"description\": \"Generic resource description used by tools.\\n\\nExtend or replace this model in your domain as needed. Keeping a typed\\nschema improves tool discoverability and validation.\", \"properties\": {\"id\": {\"default\": null, \"description\": \"Unique resource identifier (string)\", \"examples\": [\"asset-123\", \"vm-42\"], \"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}]}, \"tags\": {\"additionalProperties\": {\"type\": \"string\"}, \"description\": \"Flat key/value tags used for basic classification\", \"examples\": [{\"environment\": \"production\", \"service-type\": \"web\"}], \"type\": \"object\"}, \"properties\": {\"type\": \"object\", \"additionalProperties\": true, \"description\": \"Arbitrary properties describing the resource\", \"examples\": [[\"is_serverless\", true], [\"owner\", \"team-a\"]]}, \"attributes\": {\"additionalProperties\": true, \"description\": \"Attributes used for scoring and compliance checks\", \"examples\": [[\"encryption_enabled\", true], [\"public_access\", false]], \"type\": \"object\"}}, \"type\": \"object\", \"additionalProperties\": false}} {\"type\": \"function\", \"function\": {\"name\": \"final_result\", \"description\": \"final_result(resource_id: str, status: str, summary: str, confidence: Union[], notes: Union[], metadata: Union[]) - Simplified agent output compatible with vLLM schema constraints.\\n\\nUses flat structure to avoid $defs references that vLLM doesn't support.\\n\\n    Args:\\n        resource_id(str): The unique identifier of the analyzed resource        status(str): The determined status (e.g., \"processed\", \"failed\")        summary(str): A brief summary of the analysis        confidence(Union[]): Confidence score (0.0-1.0)        notes(Union[]): Additional notes or details        metadata(Union[]): Additional metadata\", \"parameters\": {\"properties\": {\"resource_id\": {\"description\": \"The unique identifier of the analyzed resource\", \"type\": \"string\"}, \"status\": {\"description\": \"The determined status (e.g., \"processed\", \"failed\")\", \"type\": \"string\"}, \"summary\": {\"description\": \"A brief summary of the analysis\", \"type\": \"string\"}, \"confidence\": {\"default\": null, \"description\": \"Confidence score (0.0-1.0)\", \"anyOf\": [{\"maximum\": 1.0, \"minimum\": 0.0, \"type\": \"number\"}, {\"type\": \"null\"}]}, \"notes\": {\"default\": null, \"description\": \"Additional notes or details\", \"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}]}, \"metadata\": {\"default\": null, \"description\": \"Additional metadata\", \"anyOf\": [{\"additionalProperties\": true, \"type\": \"object\"}, {\"type\": \"null\"}]}}, \"required\": [\"resource_id\", \"status\", \"summary\"], \"type\": \"object\", \"additionalProperties\": false}} </tools>"
+        },
+        {
+            "role": "system",
+            "content": "Analyze the situation and provide a recommendation."
+        },
+        {
+            "role": "user",
+            "content": "Analyze the situation and provide a recommendation."
+        }
+    ],
+    "temperature": 0.7,
+    "top_p": 0.8,
+    "top_k": 20,
+    "presence_penalty": 0.0,
+    "frequency_penalty": 0.0,
+    "repetition_penalty": 1.05,
+    "n": 1,
+    "max_tokens": 31775,
+    "stop": [],
+    "skip_special_tokens": true,
+    "spaces_between_special_tokens": true,
+    "guided_decoding": {
+        "json": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+                "type": "object",
+                "anyOf": [
+                    {
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "enum": [
+                                    "analyze_resource"
+                                ]
+                            },
+                            "parameters": {
+                                "description": "Generic resource description used by tools.\n\nExtend or replace this model in your domain as needed. Keeping a typed\nschema improves tool discoverability and validation.",
+                                "properties": {
+                                    "id": {
+                                        "default": null,
+                                        "description": "Unique resource identifier (string)",
+                                        "examples": [
+                                            "asset-123",
+                                            "vm-42"
+                                        ],
+                                        "anyOf": [
+                                            {
+                                                "type": "string"
+                                            },
+                                            {
+                                                "type": "null"
+                                            }
+                                        ]
+                                    },
+                                    "tags": {
+                                        "additionalProperties": {
+                                            "type": "string"
+                                        },
+                                        "description": "Flat key/value tags used for basic classification",
+                                        "examples": [
+                                            {
+                                                "environment": "production",
+                                                "service-type": "web"
+                                            }
+                                        ],
+                                        "type": "object"
+                                    },
+                                    "properties": {
+                                        "type": "object",
+                                        "additionalProperties": true,
+                                        "description": "Arbitrary properties describing the resource",
+                                        "examples": [
+                                            [
+                                                "is_serverless",
+                                                true
+                                            ],
+                                            [
+                                                "owner",
+                                                "team-a"
+                                            ]
+                                        ]
+                                    },
+                                    "attributes": {
+                                        "additionalProperties": true,
+                                        "description": "Attributes used for scoring and compliance checks",
+                                        "examples": [
+                                            [
+                                                "encryption_enabled",
+                                                true
+                                            ],
+                                            [
+                                                "public_access",
+                                                false
+                                            ]
+                                        ],
+                                        "type": "object"
+                                    }
+                                },
+                                "type": "object",
+                                "additionalProperties": false
+                            }
+                        },
+                        "required": [
+                            "name",
+                            "parameters"
+                        ]
+                    },
+                    {
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "enum": [
+                                    "final_result"
+                                ]
+                            },
+                            "parameters": {
+                                "properties": {
+                                    "resource_id": {
+                                        "description": "The unique identifier of the analyzed resource",
+                                        "type": "string"
+                                    },
+                                    "status": {
+                                        "description": "The determined status (e.g., 'processed', 'failed')",
+                                        "type": "string"
+                                    },
+                                    "summary": {
+                                        "description": "A brief summary of the analysis",
+                                        "type": "string"
+                                    },
+                                    "confidence": {
+                                        "default": null,
+                                        "description": "Confidence score (0.0-1.0)",
+                                        "anyOf": [
+                                            {
+                                                "maximum": 1.0,
+                                                "minimum": 0.0,
+                                                "type": "number"
+                                            },
+                                            {
+                                                "type": "null"
+                                            }
+                                        ]
+                                    },
+                                    "notes": {
+                                        "default": null,
+                                        "description": "Additional notes or details",
+                                        "anyOf": [
+                                            {
+                                                "type": "string"
+                                            },
+                                            {
+                                                "type": "null"
+                                            }
+                                        ]
+                                    },
+                                    "metadata": {
+                                        "default": null,
+                                        "description": "Additional metadata",
+                                        "anyOf": [
+                                            {
+                                                "additionalProperties": true,
+                                                "type": "object"
+                                            },
+                                            {
+                                                "type": "null"
+                                            }
+                                        ]
+                                    }
+                                },
+                                "required": [
+                                    "resource_id",
+                                    "status",
+                                    "summary"
+                                ],
+                                "type": "object",
+                                "additionalProperties": false
+                            }
+                        },
+                        "required": [
+                            "name",
+                            "parameters"
+                        ]
+                    }
+                ]
+            }
+        }
+    }
+}
