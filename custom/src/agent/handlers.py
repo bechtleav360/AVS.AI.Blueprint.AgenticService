@@ -49,6 +49,19 @@ Best practices:
 import logging
 from typing import Any
 
+from ..api.rest import CustomPayload
+
+
+class HandlerError(Exception):
+    """Domain-specific exception raised by handlers."""
+
+    def __init__(self, *, status: str, reason: str, code: str | None = None):
+        super().__init__(reason)
+        self.status = status
+        self.reason = reason
+        self.code = code or "handler_error"
+
+
 from base.src.agent import EventHandler
 from base.src.models.events import CloudEvent
 
@@ -58,43 +71,86 @@ logger = logging.getLogger(__name__)
 
 
 class CustomHandler(EventHandler):
-    """Example handler for validating incoming events."""
+    """Example handler that validates input and prepares the agent request."""
 
     def __init__(self) -> None:
         super().__init__("CustomHandler", priority=10)
 
     async def _can_handle(self, event: CloudEvent, context: dict[str, Any]) -> bool:
-        """This handler runs for all events to perform initial validation."""
+        """Always run first to validate and shape the request."""
         return True
 
     async def _handle(self, event: CloudEvent, context: dict[str, Any]) -> Any | None:
-        """Perform validation checks on the event."""
+        """Validate the payload, enrich context, and trigger the agent."""
         if not event.data:
-            logger.warning("Event data is missing.")
-            # FIXME: Return a proper error response.
-            return {"status": "validation_failed", "reason": "Missing data"}
+            logger.warning("CustomHandler received invalid payload; cannot invoke agent.")
+            raise HandlerError(
+                status="validation_failed",
+                reason="Missing or invalid data",
+                code="missing_payload",
+            )
 
-        logger.info("Event passed validation.")
+        if not isinstance(event.data, CustomPayload):
+            logger.warning(
+                "CustomHandler received invalid payload; payload is of type %s.",
+                type(event.data),
+            )
+            raise HandlerError(
+                status="validation_failed",
+                reason="Invalid payload type",
+                code="invalid_payload_type",
+            )
+
+        logger.info("CustomHandler validated event '%s' and will request agent support", event.type)
+
         context["validated_at"] = "timestamp_placeholder"
-        return None  # Pass to the next handler
+        context["use_agent"] = True
+        context["agent_name"] = "AgentRuntime"
+
+        return None
 
 
 class ProcessingHandler(EventHandler):
-    """Example handler for the main business logic."""
+    """Example handler that performs a lightweight transformation without the agent."""
 
     def __init__(self) -> None:
         super().__init__("ProcessingHandler", priority=30)
 
     async def _can_handle(self, event: CloudEvent, context: dict[str, Any]) -> bool:
-        """This handler runs for all validated events."""
+        """This handler runs after validation to enrich payloads."""
         return "validated_at" in context
 
     async def _handle(self, event: CloudEvent, context: dict[str, Any]) -> Any | None:
-        """Execute the core business logic for the event."""
-        logger.info("Executing main processing logic for event type '%s'", event.type)
-        # FIXME: Replace with your core business logic.
-        # result = await agent.process(event.data, context.get("external_data"))
-        return None
+        """Transform the payload and keep processing within the handler chain."""
+        payload = event.data.dict() if hasattr(event.data, "dict") else event.data
+
+        if not isinstance(payload, dict):
+            logger.warning("ProcessingHandler received unsupported payload type %s", type(event.data))
+            raise HandlerError(
+                status="skipped",
+                reason="Unsupported payload",
+                code="unsupported_payload",
+            )
+
+        logger.info("ProcessingHandler enriching data for event '%s'", event.type)
+
+        transformed_payload = {
+            "original": payload,
+            "metadata": {
+                "resource_id": payload.get("resource_id") or payload.get("id"),
+                "resource_type": payload.get("resource_type", "unknown"),
+                "summary": (payload.get("description") or "").strip()[:140],
+            },
+        }
+
+        context["transformed_payload"] = transformed_payload
+        context.setdefault("use_agent", False)
+
+        return {
+            "status": "processed",
+            "processed_by": [self.name],
+            "data": transformed_payload,
+        }
 
 
 # The list of all event handlers for the decision engine.

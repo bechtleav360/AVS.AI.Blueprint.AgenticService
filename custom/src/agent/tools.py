@@ -3,26 +3,12 @@
 import logging
 from uuid import UUID
 
-from pydantic_ai import RunContext
+from pydantic_ai import RunContext, Tool
 
 from ..models import CustomAgentOutput, ProcessingContext, ResourceInput
 from .logic import ProcessingLogic
 
 logger = logging.getLogger(__name__)
-
-
-class MyTool(Tool):
-    """My tool."""
-
-    async def run(self, ctx: RunContext[ProcessingContext], resource: ResourceInput) -> CustomAgentOutput:
-        """
-        Analyze a resource deterministically and return a structured result the
-        agent can use directly or map into its final output.
-
-        Returns a dictionary shaped to align with `CustomAgentOutput` fields to
-        make it easy for the model to adopt as the final output when appropriate.
-        """
-        logger.info("Executing analyze_resource tool.")
 
 
 class Tools:

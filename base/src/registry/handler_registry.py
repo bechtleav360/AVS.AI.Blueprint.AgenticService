@@ -126,9 +126,9 @@ class HandlerRegistry:
                         },
                         exc_info=True,
                     )
+                    span.record_exception(e)
                     span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
-                    # Continue to next handler instead of failing completely
-                    continue
+                    raise
 
             logger.warning(
                 "No handler processed event %s",

@@ -1,237 +1,147 @@
 # Development Guide
 
-This guide provides everything you need to set up your development environment, understand coding standards, and follow best practices for contributing to the Agents Blueprint.
+Use this guide to bootstrap a development workstation for the **Agents Blueprint** with the `uv` Python toolchain, a project-local virtual environment, and the VS Code workflow required to run and test agents.
 
-## 🚀 Quick Start
+## Quick reference
+- **Create environment:** `uv venv .venv --python 3.13`
+- **Activate environment:** `source .venv/bin/activate`
+- **Install deps:** `uv pip install -e ".[dev]"`
+- **Run agent:** `uv run uvicorn custom.src.main:app --reload --port 8001`
+- **Run tests:** `uv run pytest`
 
-### Prerequisites
-- Python 3.11+
-- Docker & Docker Compose
+## Prerequisites
+- Python **3.13** (see `custom/pyproject.toml`)
+- [`uv`](https://docs.astral.sh/uv/) 0.4+ for environment and dependency management
 - Git
-- Make (optional, for convenience commands)
+- Docker & Docker Compose (required for local services)
+- VS Code with the **Python** and **Docker** extensions
 
-### Environment Setup
+### Install uv (one time)
+- **macOS / Linux:**
+  ```bash
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  exec $SHELL
+  ```
+- **Windows (PowerShell):**
+  ```powershell
+  irm https://astral.sh/uv/install.ps1 | iex
+  ```
+Verify the installation:
+```bash
+uv --version
+```
 
-0. **Import the blueprint**
-   Since you are already in the repository, you can skip this step.
-
-   If not (you are checking another repository): 
-    ...
-    
+## Environment setup with uv
 1. **Clone the repository**
    ```bash
    git clone https://github.com/your-org/Agents_Blueprint.git
    cd Agents_Blueprint
    ```
 
-2. **Create virtual environment**
+2. **Create a project virtual environment** (stored at `./.venv`)
    ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   uv venv .venv --python 3.13
+   ```
+   `uv` downloads the requested interpreter if it is missing.
+
+3. **Activate the environment**
+   ```bash
+   source .venv/bin/activate          # macOS/Linux
+   .\.venv\Scripts\activate          # Windows PowerShell
+   ```
+   The shell prompt will show `(.venv)` while active. Use `deactivate` to leave the environment.
+
+4. **Install project dependencies** (based on `custom/pyproject.toml`)
+   ```bash
+   uv pip install -e "custom/.[dev]"
+   ```
+   - Run from the repository root so the path resolves to `custom/pyproject.toml`.
+   - The editable install exposes both the shared `base/` package and the `custom/` implementation.
+   - The `dev` extra pulls in tooling such as Ruff, Black, MyPy, pytest, and pre-commit.
+
+5. **Set up pre-commit hooks**
+   ```bash
+   uv run pre-commit install
    ```
 
-3. **Install dependencies**
+6. **Configure environment variables**
    ```bash
-   pip install -e ".[dev]"
+   cp custom/secrets.toml.example custom/secrets.toml
+        # Edit the copied file with local secrets and runtime overrides
    ```
 
-4. **Set up pre-commit hooks**
+7. **Launch Docker dependencies (optional)**
+   If your agent requires backing services:
    ```bash
-   pre-commit install
+   docker compose up -d
    ```
 
-5. **Configure environment**
-   ```bash
-   cp .env.example .env
-   # Edit .env with your configuration
-   ```
+## Working with the virtual environment
+- Re-activate the env in new shells with `source .venv/bin/activate` (or `./.venv/Scripts/activate` on Windows).
+- Use `uv pip list` to inspect installed packages and `uv pip install PACKAGE` for ad-hoc additions.
+- Update dependencies by re-running `uv pip install -e ".[dev]"` after `pyproject.toml` changes.
 
-## 🛠️ Development Tools
-
-### Code Quality
-- **Black**: Code formatting (140 character line length)
-- **Ruff**: Fast Python linter
-- **isort**: Import sorting
-- **MyPy**: Static type checking
-- **Bandit**: Security scanning
-
-### Testing
-- **pytest**: Testing framework
-- **pytest-asyncio**: Async testing support
-- **pytest-mock**: Mocking utilities
-- **pytest-cov**: Coverage reporting
-
-### Development Commands
+## Running the agent
+### Command line
 ```bash
-# Run all tests
-make test
-
-# Run specific test types
-make test-unit
-make test-integration
-
-# Code quality checks
-make lint
-make format
-
-# Security scanning
-make security-scan
-
-# Development server
-make run
+uv run uvicorn custom.src.main:app --host 0.0.0.0 --port 8001 --reload
 ```
+- Uses the editable package defined in `custom/pyproject.toml`.
+- Pick a different port if `8001` is busy.
+- Add environment overrides inline, for example:
+  ```bash
+  LOG_LEVEL=DEBUG uv run uvicorn custom.src.main:app --reload
+  ```
 
-## 📝 Coding Standards
+### Visual Studio Code workflow
+1. **Select the interpreter**
+   - Open the Command Palette → *Python: Select Interpreter*.
+   - Choose `./.venv/bin/python` (`.venv\Scripts\python.exe` on Windows).
 
-### Python Style
-- Follow **PEP 8** with Black formatting
-- Use **type hints** for all public functions
-- Maximum line length: **140 characters**
-- Use **Google-style docstrings**
+2. **Use the provided launch configuration**
+   - Open the *Run and Debug* pane.
+   - Choose **FastAPI: custom-service** (from `.vscode/launch.json`).
+   - Press *Start Debugging* to run the agent with auto-reload and the env vars defined in the launch config.
 
-### Example Function
-```python
-async def process_backup_check(
-    asset: AssetMetadata,
-    correlation_id: Optional[UUID] = None,
-) -> AgentOutput:
-    """
-    Process backup check for an asset.
+3. **Optional tasks**
+   - The `.vscode/tasks.json` file defines formatting and linting commands that rely on the `.venv` interpreter.
 
-    Args:
-        asset: Asset metadata to analyze
-        correlation_id: Optional correlation ID for tracing
-
-    Returns:
-        Agent output with backup analysis results
-
-    Raises:
-        BackupCheckError: If the backup check fails
-    """
-    with tracer.start_as_current_span("process_backup_check") as span:
-        span.set_attribute("asset_id", asset.id)
-
-        try:
-            # Implementation here
-            pass
-        except Exception as e:
-            span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
-            logger.error(f"Backup check failed for {asset.id}: {e}")
-            raise
-```
-
-## 🧪 Testing Guidelines
-
-### Test Structure
-- **Unit Tests**: Test individual components in isolation
-- **Integration Tests**: Test component interactions
-- **Mock External Dependencies**: Use mocks for external services
-
-### Test Requirements
-- **Coverage**: Maintain > 80% code coverage
-- **Deterministic**: Tests must be repeatable
-- **Fast**: Unit tests should run in < 30 seconds
-- **Clear Names**: Test names should describe scenarios
-
-### Example Test
-```python
-@pytest.mark.asyncio
-async def test_backup_check_with_enabled_tags():
-    """Test backup checking when asset has explicit backup tags."""
-    # Arrange
-    asset = AssetMetadata(
-        id="test-asset",
-        name="Test DB",
-        type=AssetType.DATABASE,
-        provider=CloudProvider.AWS,
-        tags={"backup": "enabled"}
-    )
-
-    # Act
-    result = await backup_agent.run_check(asset)
-
-    # Assert
-    assert result.backup_status == BackupStatus.ENABLED
-    assert result.confidence > 0.7
-```
-
-## 🔒 Security Practices
-
-### Code Security
-- **No secrets in code**: Use environment variables or secret management
-- **Input validation**: Validate all external inputs
-- **SQL injection prevention**: Use parameterized queries
-- **XSS protection**: Sanitize output data
-
-### Dependency Security
+## Testing
+### Command line
 ```bash
-# Check for vulnerabilities
-pip install safety
-safety check
-
-# Update dependencies regularly
-pip list --outdated
-pip install --upgrade <package>
+uv run pytest
 ```
+- Runs the default suite located in `custom/tests/`.
+- Add options such as coverage or markers: `uv run pytest --cov=custom --maxfail=1`.
 
-## 🐛 Debugging
-
-### Common Development Issues
-1. **Port conflicts**: Check if ports 8000, 5672, 15672 are available
-2. **Environment variables**: Ensure `.env` file is properly configured
-3. **Dependencies**: Run `pip install -e ".[dev]"` to install all dependencies
-4. **Pre-commit hooks**: Run `pre-commit run --all-files` to fix formatting issues
-
-### Debug Commands
+Alternative make targets (if you prefer existing recipes):
 ```bash
-# Run with debug logging
-ENV_FOR_DYNACONF=development LOG_LEVEL=DEBUG make run
-
-# Run tests with verbose output
-pytest -v -s tests/
-
-# Check environment configuration
-python -c "from src.config import validate_configuration; validate_configuration()"
+uv run make test
+uv run make lint
+uv run make format
 ```
 
-## 🤝 Contributing Workflow
+### VS Code
+- Use the **Pytest: custom/tests** configuration in `.vscode/launch.json` to debug tests.
+- Enable the built-in VS Code testing UI: Command Palette → *Python: Configure Tests* → *pytest* → `custom/tests`.
 
-### Before Starting Work
-1. **Create an issue** or get assigned to an existing one
-2. **Check out a feature branch**: `git checkout -b feature/your-feature`
-3. **Set up your environment** following the steps above
+### Pre-commit checks
+Run all hooks locally before opening a PR:
+```bash
+uv run pre-commit run --all-files
+```
 
-### Development Process
-1. **Make changes** following coding standards
-2. **Write tests** for new functionality
-3. **Run tests** to ensure nothing is broken
-4. **Update documentation** if needed
-5. **Commit changes** with clear messages
+## Troubleshooting tips
+- **Interpreter missing in VS Code:** Ensure `uv venv .venv` was executed and the interpreter is selected.
+- **Dependencies out of date:** Re-run `uv pip install -e ".[dev]"` after pulling main.
+- **Docker services unavailable:** Run `docker compose ps` to confirm containers are up.
+- **Port already in use:** Supply `--port 8002` (or another free port) to `uvicorn`.
 
-### Before Submitting PR
-1. **Run all tests**: `make test`
-2. **Check code quality**: `make lint`
-3. **Fix any issues**: `make format`
-4. **Update documentation** if changes affect user-facing features
-5. **Test manually** if needed
-
-## 📚 Additional Resources
-
-### Architecture Documentation
-- **[Design Decisions](../docs/design-decisions.md)** - Why we made specific choices
-- **[Requirements](../docs/requirements.md)** - Functional and non-functional requirements
-- **[Architecture](../docs/architecture.md)** - System design and components
-
-### Best Practices
-- **[Chain of Responsibility Pattern](../CONTRIBUTING.md#chain-of-responsibility-contract)** - Event handling patterns
-- **[Event Design](../CONTRIBUTING.md#event-handling-patterns)** - Thin vs fat events
-- **[Observability](../CONTRIBUTING.md#security-and-observability)** - Logging and tracing
-
-### External References
-- **[FastAPI Documentation](https://fastapi.tiangolo.com/)** - Web framework documentation
-- **[Pydantic AI](https://ai.pydantic.dev/)** - AI agent framework
-- **[Dapr Documentation](https://docs.dapr.io/)** - Distributed systems framework
+## Additional references
+- Documentation index: `docs/README.md`
+- Contribution guidelines: `CONTRIBUTING.md`
+- Troubleshooting playbook: `docs/troubleshooting.md`
 
 ---
 
-*This development guide is maintained by the development team. For questions or suggestions, please refer to the [Contributing Guide](../CONTRIBUTING.md).*
+*Maintained by the Agents Blueprint team. Report issues or improvements via the standard contribution process.*

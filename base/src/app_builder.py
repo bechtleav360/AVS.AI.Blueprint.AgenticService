@@ -34,6 +34,14 @@ class AppBuilder:
     """Builds the FastAPI application with a fluent interface."""
 
     def __init__(self, settings_files: list[str] = None, root_path: str = None):
+        # Setup basic logging before config initialization
+        root_logger = logging.getLogger()
+        if not root_logger.handlers:
+            logging.basicConfig(
+                level=logging.INFO,
+                format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+            )
+        
         self.config = Config(settings_files=settings_files, root_path=root_path)
         self._custom_routers = []
         self._rest_api_class = None
@@ -85,9 +93,6 @@ class AppBuilder:
         async def lifespan(_app: FastAPI):
             """Application lifespan manager for startup and shutdown events."""
 
-            root_logger = logging.getLogger()
-            if not root_logger.handlers:
-                TelemetryManager().setup_logging(log_level="INFO", log_format="text")
             logger.info("Starting agent service")
 
             self._initialize_components()

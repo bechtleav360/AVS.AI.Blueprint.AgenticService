@@ -91,6 +91,7 @@ class ProcessingService:
                 agent_result = None
 
                 if should_use_agent or handler_result is None:
+                    requested_agent_name = context.get("agent_name") or runtime_name
                     logger.info(
                         "Processing with agent runtime for request %s",
                         request_id,
@@ -101,7 +102,7 @@ class ProcessingService:
                                 if should_use_agent
                                 else "no_handler_result"
                             ),
-                            "runtime_name": runtime_name,
+                            "runtime_name": requested_agent_name,
                         },
                     )
 
@@ -115,10 +116,11 @@ class ProcessingService:
                     try:
                         agent_result = (
                             await self._runtime_registry.process_with_runtime(
-                                runtime_name=runtime_name, **agent_context
+                                runtime_name=requested_agent_name, **agent_context
                             )
                         )
                         span.set_attribute("agent.processed", True)
+                        span.set_attribute("agent.name", requested_agent_name)
 
                     except Exception as e:
                         logger.error(
@@ -132,9 +134,9 @@ class ProcessingService:
                             },
                             exc_info=True,
                         )
+                        span.record_exception(e)
                         span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
-                        # Continue with handler result if agent fails
-                        agent_result = None
+                        raise
 
                 # Step 3: Prepare final result
                 final_result = {

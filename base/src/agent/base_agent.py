@@ -1,25 +1,23 @@
 """Base class for the Pydantic AI agent runtime."""
 
-from abc import ABC, abstractmethod
-import logging
-import time
-from typing import Any, Dict, List, Optional, Type, TypeVar
 import inspect
+import logging
+import asyncio
+import time
+from abc import ABC, abstractmethod
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Type, TypeVar
 
 from openai import AsyncOpenAI
+from opentelemetry import trace
+from pydantic_ai import Agent, Tool
 from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
-from pydantic_ai import Agent
-
-from opentelemetry import trace
-
-from ..registry.service_registry import ServiceRegistry
-
 from ..config import Config
 from ..models import AgentOutput
+from ..registry.service_registry import ServiceRegistry
 
 T = TypeVar("T")
 
@@ -34,6 +32,13 @@ class BaseAgent(ABC):
     def __init__(self, settings: Config):
         self.settings = settings
         self._agent: Optional[Agent] = None
+        ai_config = self.settings.get_ai_config()
+        limit = ai_config.get("concurrency_limit")
+        if isinstance(limit, int) and limit > 0:
+            self._concurrency_semaphore: Optional[asyncio.Semaphore] = asyncio.Semaphore(limit)
+            logger.info("Agent concurrency limit set to %s", limit)
+        else:
+            self._concurrency_semaphore = None
 
     def link_service_registry(self, service_registry: ServiceRegistry) -> None:
         """Link the service registry to the agent."""
@@ -109,7 +114,7 @@ class BaseAgent(ABC):
         return module_dir.parent / "prompts"  # e.g., .../custom/prompts
 
     @abstractmethod
-    def _get_tools(self) -> List[Any]:
+    def _get_tools(self) -> List[Tool]:
         """Return a list of tools for the AI agent."""
         pass
 
@@ -119,42 +124,26 @@ class BaseAgent(ABC):
         pass
 
     async def process_request(self, **context_kwargs) -> Any:
-        """
-        Generic request processing wrapper with tracing and timing.
+        """Prepare prompt and context, then run the agent."""
 
-        This method prepares the system prompt and a processing context built
-        from keyword arguments, then delegates the actual processing to the
-        implementation hook `_process_request`.
-
-        Subclasses should implement `_process_request(prompt, context)` and
-        return their domain-specific result model as specified by
-        `_get_result_type()`.
-        """
         start_time = time.time()
         with tracer.start_as_current_span("agent.process_request") as span:
+            prompt = self._get_system_prompt()
+            context_model = self._build_context(**context_kwargs)
+            context = self._serialize_context(context_model)
+
             try:
-                # Normalize context to a plain dict for the agent deps
-                prompt = self._get_system_prompt()
-                context = self._build_context(**context_kwargs)
-
-                if context is None:
-                    context: Optional[Dict[str, Any]] = None
-                else:
-                    context = (
-                        context.dict() if hasattr(context, "dict") else dict(context)
-                    )  # type: ignore[arg-type]
-
                 result = await self._process_request(prompt, context)
-                span.set_attribute("agent.model", self._get_model_configuration())
-                span.set_attribute(
-                    "processing.time_ms", int((time.time() - start_time) * 1000)
-                )
-                duration = time.time() - start_time
-                logger.info("Agent process_request completed in %.2fs", duration)
-                return result
             except Exception:
                 logger.exception("Agent process_request failed")
+                span.set_status(trace.Status(trace.StatusCode.ERROR, "agent_failure"))
                 raise
+
+            duration_ms = int((time.time() - start_time) * 1000)
+            span.set_attribute("agent.model", self._get_model_configuration())
+            span.set_attribute("processing.time_ms", duration_ms)
+            logger.info("Agent process_request completed in %.2fms", duration_ms)
+            return result
 
     def _build_context(self, **kwargs):
         """Build a processing context instance from kwargs, if a type is defined."""
@@ -167,17 +156,18 @@ class BaseAgent(ABC):
         except Exception:
             return kwargs or None
 
-    @abstractmethod
     async def _process_request(
         self, prompt: str, context: Optional[Dict[str, Any]] | Any
     ) -> Any:
-        """
-        Implementation hook that performs the actual processing.
+        """Run the agent with the prepared prompt and context."""
 
-        Typically this should call `await self.process(prompt, context_dict)`
-        and adapt the result to the custom model specified by `_get_result_type()`.
-        """
-        pass
+        response = await self.run_with_agent(prompt, deps=context)
+        return self._handle_agent_response(response)
+
+    def _handle_agent_response(self, agent_response: Any) -> Any:
+        """Adapt the agent response to the desired return type."""
+
+        return agent_response
 
     def _get_processing_context_type(self) -> Type[T]:
         """Return the type for the processing context dependencies."""
@@ -194,6 +184,7 @@ class BaseAgent(ABC):
         if self._agent is None:
             self._agent = Agent(
                 model=self._get_model_configuration(),
+                tools=self._get_tools(),
                 deps_type=self._get_processing_context_type(),
                 output_type=self._get_result_type(),
                 system_prompt=self._get_system_prompt(),
@@ -212,15 +203,30 @@ class BaseAgent(ABC):
     async def run_with_agent(
         self, instruction: str, deps: Optional[Dict[str, Any]] = None
     ) -> Any:
-        """
-        Convenience wrapper to run the underlying Pydantic AI Agent.
+        """Execute the underlying agent with the given instruction and context."""
+        semaphore = getattr(self, "_concurrency_semaphore", None)
+        if semaphore is None:
+            return await self.agent.run(instruction, deps=deps)
 
-        Implementations can use this to invoke the model without the base
-        layering any opinionated logic. Tracing for the overall request is
-        handled in `process_request`; individual handler logic should add
-        spans as needed.
-        """
-        return await self.get_agent().run(instruction, deps=deps)
+        async with semaphore:
+            return await self.agent.run(instruction, deps=deps)
+
+    @staticmethod
+    def _serialize_context(context: Any) -> Optional[Dict[str, Any]]:
+        if context is None:
+            return None
+
+        if isinstance(context, dict):
+            return context
+
+        if hasattr(context, "dict") and callable(context.dict):
+            return context.dict()
+
+        try:
+            return dict(context)
+        except TypeError:
+            logger.debug("Unable to serialize context %s; using None", context)
+            return None
 
     async def close(self):
         """Perform any cleanup required by the agent."""

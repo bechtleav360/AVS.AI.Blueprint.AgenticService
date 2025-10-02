@@ -3,6 +3,8 @@
 import logging
 from typing import Any
 
+from pydantic_ai import Tool
+
 from base.src.agent import BaseAgent
 from base.src.config import Config
 
@@ -30,7 +32,7 @@ class AgentRuntime(BaseAgent):
         """Return the name of the prompt file to use."""
         return "system"
 
-    def _get_tools(self) -> list[Any]:
+    def _get_tools(self) -> list[Tool]:
         """
         Return a list of tools for the AI agent.
 
@@ -38,7 +40,7 @@ class AgentRuntime(BaseAgent):
         methods, which will be registered with the agent.
         """
         tools = Tools()
-        return [tools.analyze_resource]
+        return [Tool(name="analyze_resource", function=tools.analyze_resource)]
 
     def _get_processing_context_type(self) -> type[ProcessingContext]:
         """Return the type for the processing context dependencies."""
@@ -48,13 +50,10 @@ class AgentRuntime(BaseAgent):
         """Return the custom result model type for typed outputs."""
         return CustomAgentOutput
 
-    async def _process_request(self, prompt: str, context: dict[str, Any] | None) -> CustomAgentOutput:
-        # Run the agent via base helper; returns a response with typed .output
-        resp = await self.run_with_agent(prompt, deps=context)
-        output: CustomAgentOutput = resp.output  # parsed/validated as CustomAgentOutput
-        # Optionally post-process:
-        # output.confidence = output.confidence or 0.9
-        # output.metadata = {**(output.metadata or {}), "source": "agent-v1"}
+    def _handle_agent_response(self, agent_response: Any) -> CustomAgentOutput:
+        """Extract the typed output from the agent response."""
+
+        output: CustomAgentOutput = agent_response.output
         return output
 
     async def custom_health_check(self) -> bool:

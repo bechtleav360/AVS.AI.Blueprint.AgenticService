@@ -1,6 +1,8 @@
 [default]
 app_name = "asset-backup-checker"
 app_port = 8000
+app_environment = "development"
+
 log_level = "INFO"
 log_format = "json"
 
@@ -34,8 +36,8 @@ ai_model_provider = "vllm"
 ai_model_base_url = "https://avs-vllm.q14.net/v1"
 ai_model_name = "Qwen/Qwen2.5-32B-Instruct-AWQ"
 # ai_model_api_key = "" # set in environment variable
-ai_max_tokens = 1000
-ai_temperature = 0.1
+ai_model_max_tokens = 1000
+ai_model_temperature = 0.1
 
 [testing]
 log_level = "DEBUG"
