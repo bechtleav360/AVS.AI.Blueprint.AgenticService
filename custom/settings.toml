@@ -10,7 +10,7 @@ data_gateway_timeout_s = 30
 retry_max_attempts = 3
 retry_backoff_factor = 2
 
-# Dapr Configuration
+# Dapr Configurationw
 dapr_pubsub_name = "rabbitmq-pubsub"
 dapr_http_port = 3500
 dapr_grpc_port = 50001
