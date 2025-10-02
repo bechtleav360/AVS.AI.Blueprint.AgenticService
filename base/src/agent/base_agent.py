@@ -33,19 +33,13 @@ class BaseAgent(ABC):
 
     def __init__(self, settings: Config):
         self.settings = settings
-        self.agent = Agent(
-            model=self._get_model(),
-            deps_type=self._get_processing_context_type(),
-            output_type=self._get_result_type(),
-            system_prompt=self._get_system_prompt(),
-        )
-        self._register_tools()
+        self._agent: Optional[Agent] = None
 
     def link_service_registry(self, service_registry: ServiceRegistry) -> None:
         """Link the service registry to the agent."""
         self._service_registry = service_registry
 
-    def _get_model(self) -> Model:
+    def _get_model_configuration(self) -> Model:
         """Return the AI model configuration string (e.g., 'openai:gpt-4')."""
         ai_config = self.settings.get_ai_config()
 
@@ -151,14 +145,12 @@ class BaseAgent(ABC):
                     )  # type: ignore[arg-type]
 
                 result = await self._process_request(prompt, context)
-                span.set_attribute("agent.model", self._get_model())
+                span.set_attribute("agent.model", self._get_model_configuration())
                 span.set_attribute(
                     "processing.time_ms", int((time.time() - start_time) * 1000)
                 )
-                logger.info(
-                    f"Agent process_request completed in "
-                    f"{time.time() - start_time:.2f}s"
-                )
+                duration = time.time() - start_time
+                logger.info("Agent process_request completed in %.2fs", duration)
                 return result
             except Exception:
                 logger.exception("Agent process_request failed")
@@ -197,12 +189,21 @@ class BaseAgent(ABC):
         # By default, the result type is the generic AgentOutput.
         return AgentOutput
 
-    def _register_tools(self):
-        """Register the tools with the Pydantic AI agent."""
-        # TODO: Implement tool registration when pydantic_ai API is clarified
-        # for tool in self._get_tools():
-        #     self.agent.register(tool)
-        pass
+    def _ensure_agent(self) -> Agent:
+
+        if self._agent is None:
+            self._agent = Agent(
+                model=self._get_model_configuration(),
+                deps_type=self._get_processing_context_type(),
+                output_type=self._get_result_type(),
+                system_prompt=self._get_system_prompt(),
+            )
+
+        return self._agent
+
+    @property
+    def agent(self) -> Agent:
+        return self._ensure_agent()
 
     def get_agent(self) -> Agent:
         """Accessor for the underlying Pydantic AI Agent instance."""
@@ -242,7 +243,7 @@ class BaseAgent(ABC):
                 model_check_passed = True
                 model_check_duration_ms = int(processing_time * 1000)
             except Exception as e:
-                logger.error(f"AI model health check failed: {e}", exc_info=True)
+                logger.error("AI model health check failed: %s", e, exc_info=True)
                 span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
                 model_check_passed = False
                 model_check_duration_ms = int((time.time() - start_time) * 1000)
@@ -261,7 +262,7 @@ class BaseAgent(ABC):
                 "dependencies": {
                     "ai_model": {
                         "status": "healthy" if model_check_passed else "unhealthy",
-                        "model": self._get_model(),
+                        "model": self._get_model_configuration(),
                         "response_time_ms": model_check_duration_ms,
                     },
                     "custom_check": {

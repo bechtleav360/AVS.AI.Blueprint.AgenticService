@@ -106,6 +106,7 @@ class ActuatorApi:
             summary="Performs a liveness probe of the service.",
             tags=["Health"],
             response_model=LivenessResponse,
+            include_in_schema=False,
         )
         self.router.add_api_route(
             "/health/ready",
@@ -114,6 +115,7 @@ class ActuatorApi:
             summary="Performs a readiness probe of the service.",
             tags=["Health"],
             response_model=ReadinessResponse,
+            include_in_schema=False,
         )
         self.router.add_api_route(
             "/status/env",
@@ -121,6 +123,7 @@ class ActuatorApi:
             methods=["GET"],
             summary="Returns a snapshot of the current configuration.",
             tags=["Status"],
+            include_in_schema=False,
         )
         self.router.add_api_route(
             "/status/llm",
@@ -128,6 +131,7 @@ class ActuatorApi:
             methods=["GET"],
             summary="Returns AI provider configuration and diagnostics.",
             tags=["Status"],
+            include_in_schema=False,
         )
         self.router.add_api_route(
             "/status/build",
@@ -135,6 +139,7 @@ class ActuatorApi:
             methods=["GET"],
             summary="Returns build and runtime information.",
             tags=["Status"],
+            include_in_schema=False,
         )
 
     async def readiness_probe(self) -> ReadinessResponse:
