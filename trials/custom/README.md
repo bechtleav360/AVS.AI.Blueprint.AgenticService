@@ -1,6 +1,6 @@
 # Pydantic AI Trial
 
-Simple example showing how to create a Pydantic AI agent with tools.
+Simple examples showing how to create a Pydantic AI agent with tools.
 
 ## What's Here
 
@@ -9,6 +9,12 @@ Simple example showing how to create a Pydantic AI agent with tools.
 - One tool (check_resource)
 - Agent that uses the tool
 - Two test cases
+
+**`event_handler_trial.py`** - Event handler example
+- Event models (Event, EventMetadata, EventPayload)
+- Handler class that consumes events
+- Prints event content to console
+- Processes events with the agent
 
 ## Quick Start
 
@@ -22,8 +28,11 @@ export OPENAI_API_KEY="your-key"
 # Optional: Use custom endpoint (e.g., vLLM)
 export OPENAI_BASE_URL="https://your-endpoint/v1"
 
-# Run the trial
+# Run the basic trial
 python pydantic_ai_trial.py
+
+# Run the event handler trial
+python event_handler_trial.py
 ```
 
 ## How It Works
