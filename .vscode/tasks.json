@@ -73,6 +73,20 @@
                 "kind": "test",
                 "isDefault": true
             }
+        },
+        {
+            "label": "dapr:check-running",
+            "type": "shell",
+            "command": "echo",
+            "args": [
+                "⚠️  Make sure Dapr sidecar is running externally (e.g., via start_with_dapr.sh or 'dapr run' command)"
+            ],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "focus": false
+            },
+            "problemMatcher": []
         }
     ]
 }

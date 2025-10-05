@@ -1,12 +1,13 @@
-"""Custom tools for the Pydantic AI agent (generic example)."""
+"""Custom tools for the Pydantic AI agent (invoice processing)."""
 
 import logging
+from decimal import Decimal
 from uuid import UUID
 
-from pydantic_ai import RunContext, Tool
+from pydantic_ai import RunContext
 
-from ..models import CustomAgentOutput, ProcessingContext, ResourceInput
-from .logic import ProcessingLogic
+from ..models import InvoiceAnalysisOutput, InvoiceInput, ProcessingContext
+from .logic import InvoiceProcessingLogic
 
 logger = logging.getLogger(__name__)
 
@@ -19,35 +20,58 @@ class Tools:
     orchestrate and explain results.
     """
 
-    async def analyze_resource(self, ctx: RunContext[ProcessingContext], resource: ResourceInput) -> CustomAgentOutput:
+    async def calculate_invoice(
+        self, ctx: RunContext[ProcessingContext], invoice: InvoiceInput
+    ) -> InvoiceAnalysisOutput:
         """
-        Analyze a resource deterministically and return a structured result the
-        agent can use directly or map into its final output.
+        Calculate invoice totals and infer taxes deterministically.
 
-        Returns a dictionary shaped to align with `CustomAgentOutput` fields to
-        make it easy for the model to adopt as the final output when appropriate.
+        Returns an InvoiceAnalysisOutput with computed totals and tax amounts.
         """
-        logger.info("Executing analyze_resource tool.")
+        logger.info("Executing calculate_invoice tool for invoice %s", invoice.invoice_id)
 
-        resource_dict = resource.model_dump()
-        analysis = ProcessingLogic.analyze_resource(resource_dict)
-        recommendations = ProcessingLogic.generate_recommendations(analysis, resource_dict)
+        invoice_dict = invoice.model_dump()
+        calculation = InvoiceProcessingLogic.calculate_invoice(invoice_dict)
+        recommendations = InvoiceProcessingLogic.generate_recommendations(
+            calculation, invoice_dict
+        )
 
-        return CustomAgentOutput(
-            resource_id=resource.id or "unknown",
-            status=analysis.get("status"),
-            confidence=analysis.get("confidence"),
-            evidence=[],  # TODO: Convert analysis evidence to Evidence objects
-            recommendations=recommendations,
-            reasoning="Analysis performed by ProcessingLogic",
-            correlation_id=(UUID(ctx.deps.correlation_id) if ctx.deps and ctx.deps.correlation_id else None),
-            event_id=(UUID(ctx.deps.event_id) if ctx.deps and ctx.deps.event_id else None),
+        status = calculation.get("status", "unknown")
+        total_amount = calculation.get("total_amount", Decimal("0.00"))
+        inferred_tax = calculation.get("inferred_tax_amount", Decimal("0.00"))
+        confidence = calculation.get("confidence", 0.0)
+
+        summary = (
+            f"Invoice {invoice.invoice_id} processed: total {total_amount} {invoice.currency}, "
+            f"inferred tax {inferred_tax} {invoice.currency}."
+        )
+
+        notes = None
+        if not calculation.get("evidence"):
+            notes = "No calculation evidence; review line items."
+
+        return InvoiceAnalysisOutput(
+            invoice_id=invoice.invoice_id,
+            status=status,
+            summary=summary,
+            total_amount=total_amount,
+            inferred_tax_amount=inferred_tax,
+            confidence=confidence,
+            notes=notes,
             metadata={
-                "classification": analysis.get("classification"),
-                "evidence": analysis.get("evidence", []),
+                "currency": invoice.currency,
+                "line_item_count": len(invoice.line_items),
+                "evidence": calculation.get("evidence", []),
+                "recommendations": recommendations,
                 "context": {
-                    "correlation_id": (str(ctx.deps.correlation_id) if ctx.deps and ctx.deps.correlation_id else None),
-                    "event_id": (str(ctx.deps.event_id) if ctx.deps and ctx.deps.event_id else None),
+                    "correlation_id": (
+                        str(ctx.deps.correlation_id)
+                        if ctx.deps and ctx.deps.correlation_id
+                        else None
+                    ),
+                    "event_id": (
+                        str(ctx.deps.event_id) if ctx.deps and ctx.deps.event_id else None
+                    ),
                 },
             },
         )

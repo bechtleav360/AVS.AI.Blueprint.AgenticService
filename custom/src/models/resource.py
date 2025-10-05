@@ -1,34 +1,45 @@
-"""Typed resource input model for the analyze_resource tool."""
+"""Typed invoice input model for the calculate_invoice tool."""
 
+from decimal import Decimal
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 
-class ResourceInput(BaseModel):
-    """Generic resource description used by tools.
+class InvoiceLineItem(BaseModel):
+    """A single line item on an invoice."""
 
-    Extend or replace this model in your domain as needed. Keeping a typed
-    schema improves tool discoverability and validation.
+    description: str = Field(..., description="Description of the item or service")
+    quantity: Decimal = Field(..., gt=0, description="Quantity of items")
+    unit_price: Decimal = Field(..., ge=0, description="Price per unit")
+    tax_rate: Decimal | None = Field(
+        None, ge=0, le=1, description="Tax rate as decimal (e.g., 0.19 for 19%)"
+    )
+
+
+class InvoiceInput(BaseModel):
+    """Invoice data used by the calculate_invoice tool.
+
+    This model represents an invoice with line items, allowing the agent to
+    compute totals and infer taxes.
     """
 
-    id: str | None = Field(
-        default=None,
-        description="Unique resource identifier (string)",
-        examples=["asset-123", "vm-42"],
+    invoice_id: str = Field(
+        ...,
+        description="Unique invoice identifier",
+        examples=["INV-2025-001", "BILL-12345"],
     )
-    tags: dict[str, str] = Field(
-        default_factory=dict,
-        description="Flat key/value tags used for basic classification",
-        examples=[{"service-type": "web", "environment": "production"}],
+    line_items: list[InvoiceLineItem] = Field(
+        ...,
+        min_length=1,
+        description="List of line items on the invoice",
     )
-    properties: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Arbitrary properties describing the resource",
-        examples=[["is_serverless", True], ["owner", "team-a"]],
+    currency: str = Field(
+        default="EUR",
+        description="Currency code (ISO 4217)",
+        examples=["EUR", "USD", "GBP"],
     )
-    attributes: dict[str, Any] = Field(
+    metadata: dict[str, Any] = Field(
         default_factory=dict,
-        description="Attributes used for scoring and compliance checks",
-        examples=[["encryption_enabled", True], ["public_access", False]],
+        description="Additional metadata (customer info, dates, etc.)",
     )

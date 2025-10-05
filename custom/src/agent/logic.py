@@ -1,214 +1,121 @@
-"""Pure logic functions for generic resource analysis and processing."""
+"""Pure logic functions for invoice processing and tax calculation."""
 
+from decimal import Decimal
 from typing import Any
 
-# FIXME: Replace with your domain-specific models.
-# from ..models.resource import ResourceMetadata, ResourceType
-# from ..models.analysis import AnalysisResult, Finding
 
-
-class ProcessingLogic:
+class InvoiceProcessingLogic:
     """
-    Pure functions for generic resource processing logic.
+    Pure functions for invoice processing and tax calculation.
 
-    FIXME: Rename this class and its methods to match your domain (e.g., `ComplianceLogic`,
-    `SecurityLogic`, `DataQualityLogic`).
-    FIXME: This class should contain stateless, pure functions that encapsulate your
-    core business logic. They can be tested independently of the agent/API.
+    This class contains stateless, pure functions that encapsulate invoice
+    business logic. They can be tested independently of the agent/API.
     """
 
     @staticmethod
-    def analyze_resource(
-        resource: dict[str, Any],  # FIXME: Replace with your `ResourceMetadata` model.
-    ) -> dict[str, Any]:  # FIXME: Replace with your `AnalysisResult` model.
+    def calculate_invoice(invoice: dict[str, Any]) -> dict[str, Any]:
         """
-        Analyze a resource and produce a structured analysis result.
-
-        FIXME: This is the main entry point for your business logic. Implement your
-        analysis workflow here by composing other pure functions from this class.
+        Calculate invoice totals and infer taxes.
 
         Args:
-            resource: The resource to analyze, as a dictionary or a Pydantic model.
+            invoice: The invoice data as a dictionary with line_items.
 
         Returns:
-            A dictionary or Pydantic model representing the analysis result.
+            A dictionary with total_amount, inferred_tax_amount, status, and evidence.
         """
+        line_items = invoice.get("line_items", [])
+        if not line_items:
+            return {
+                "total_amount": Decimal("0.00"),
+                "inferred_tax_amount": Decimal("0.00"),
+                "status": "incomplete",
+                "evidence": ["No line items provided"],
+                "confidence": 0.0,
+            }
+
+        total_net = Decimal("0.00")
+        total_tax = Decimal("0.00")
         evidence = []
-        confidence_factors = []
+        tax_rates_found = []
 
-        # FIXME: Example of calling a sub-analysis function. Replace with your own logic.
-        classification, class_evidence = ProcessingLogic._classify_resource(
-            resource.get("tags", {}), resource.get("properties", {})
-        )
-        evidence.extend(class_evidence)
+        for idx, item in enumerate(line_items):
+            quantity = Decimal(str(item.get("quantity", 0)))
+            unit_price = Decimal(str(item.get("unit_price", 0)))
+            tax_rate = item.get("tax_rate")
 
-        # FIXME: Example of scoring based on different criteria.
-        score_analysis = ProcessingLogic._score_resource_attributes(
-            resource.get("attributes", {})
-        )
-        evidence.extend(score_analysis["evidence"])
-        confidence_factors.extend(score_analysis["confidence_factors"])
+            line_net = quantity * unit_price
+            total_net += line_net
 
-        # FIXME: Calculate a final score or decision based on your business rules.
-        if not confidence_factors:
-            final_score = 0.0
-        else:
-            # Example: Weighted average
-            final_score = sum(factor for factor, _ in confidence_factors) / sum(
-                weight for _, weight in confidence_factors
+            if tax_rate is not None:
+                tax_rate_decimal = Decimal(str(tax_rate))
+                line_tax = line_net * tax_rate_decimal
+                total_tax += line_tax
+                tax_rates_found.append(tax_rate_decimal)
+                evidence.append(
+                    f"Line {idx + 1}: net={line_net}, tax_rate={tax_rate_decimal}, tax={line_tax}"
+                )
+            else:
+                evidence.append(f"Line {idx + 1}: net={line_net}, tax_rate=missing")
+
+        total_amount = total_net + total_tax
+
+        # Infer tax if not all items have explicit rates
+        if not tax_rates_found:
+            # Default inference: assume 19% VAT if no rates provided
+            inferred_tax = total_net * Decimal("0.19")
+            evidence.append("No tax rates provided; inferred 19% VAT on net total.")
+            confidence = 0.5
+        elif len(tax_rates_found) < len(line_items):
+            # Partial tax info: use average of known rates
+            avg_rate = sum(tax_rates_found) / len(tax_rates_found)
+            inferred_tax = total_tax + (
+                (total_net - sum(
+                    Decimal(str(item.get("quantity", 0))) * Decimal(str(item.get("unit_price", 0)))
+                    for item in line_items if item.get("tax_rate") is not None
+                )) * avg_rate
             )
+            evidence.append(f"Partial tax info; inferred average rate {avg_rate}.")
+            confidence = 0.7
+        else:
+            # All items have tax rates
+            inferred_tax = total_tax
+            confidence = 1.0
 
-        # FIXME: Determine a final status based on the score and your thresholds.
-        status = "compliant" if final_score > 0.75 else "non_compliant"
+        status = "valid" if len(line_items) > 0 and confidence > 0.6 else "incomplete"
 
-        # FIXME: Return your domain-specific result object.
-        # return AnalysisResult(
-        #     status=status,
-        #     confidence=final_score,
-        #     evidence=evidence,
-        #     classification=classification,
-        # )
-
-        # Placeholder return for demonstration.
         return {
+            "total_amount": total_amount,
+            "inferred_tax_amount": inferred_tax,
             "status": status,
-            "confidence": final_score,
             "evidence": evidence,
-            "classification": classification,
+            "confidence": confidence,
         }
 
     @staticmethod
-    def _classify_resource(
-        tags: dict[str, str],
-        properties: dict[str, Any],
-    ) -> tuple[str | None, list[str]]:
-        """
-        Example function to classify a resource based on its metadata.
-
-        FIXME: Implement your own classification logic based on tags, properties, or
-        other metadata. For example, classify servers by OS, databases by type, etc.
-
-        Returns:
-            A tuple containing the detected classification and a list of evidence.
-        """
-        evidence = []
-        detected_classification = None
-
-        # Example: Classify based on a 'service-type' tag.
-        if "service-type" in tags:
-            detected_classification = tags["service-type"]
-            evidence.append(f"Classified as '{detected_classification}' from tags.")
-            return detected_classification, evidence
-
-        # Example: Classify based on a property.
-        if properties.get("is_serverless", False):
-            detected_classification = "Serverless Compute"
-            evidence.append("Classified as Serverless from properties.")
-
-        return detected_classification, evidence
-
-    @staticmethod
-    def _score_resource_attributes(attributes: dict[str, Any]) -> dict[str, list[Any]]:
-        """
-        Example function to score a resource based on its attributes.
-
-        FIXME: Implement your own scoring logic. This function should return a
-        dictionary containing lists of `evidence` strings and `confidence_factors`.
-        Confidence factors can be simple floats or tuples of (score, weight).
-        """
-        evidence = []
-        confidence_factors = []  # Using (score, weight) tuples
-
-        # Example: Check for encryption.
-        if attributes.get("encryption_enabled"):
-            evidence.append("Encryption is enabled.")
-            confidence_factors.append((1.0, 2.0))  # High score, high weight
-        else:
-            evidence.append("Encryption is disabled.")
-            confidence_factors.append((0.0, 2.0))  # Low score, high weight
-
-        # Example: Check for public access.
-        if attributes.get("public_access", False):
-            evidence.append("Resource is publicly accessible.")
-            confidence_factors.append((0.1, 1.5))  # Low score, medium weight
-
-        return {"evidence": evidence, "confidence_factors": confidence_factors}
-
-    @staticmethod
     def generate_recommendations(
-        analysis_result: dict[str, Any],  # FIXME: Use your `AnalysisResult` model.
-        resource: dict[str, Any],  # FIXME: Use your `ResourceMetadata` model.
+        calculation_result: dict[str, Any], invoice: dict[str, Any]
     ) -> list[str]:
         """
-        Generate recommendations based on the analysis result.
-
-        FIXME: Implement your own recommendation engine. Recommendations should be
-        actionable and specific to the findings in the analysis.
+        Generate recommendations based on the invoice calculation.
 
         Args:
-            analysis_result: The result from the `analyze_resource` method.
-            resource: The original resource that was analyzed.
+            calculation_result: The result from calculate_invoice.
+            invoice: The original invoice data.
 
         Returns:
             A list of recommendation strings.
         """
         recommendations = []
 
-        if analysis_result["status"] != "compliant":
+        if calculation_result["status"] == "incomplete":
+            recommendations.append("Invoice is incomplete. Verify all line items are present.")
+
+        if calculation_result["confidence"] < 0.7:
             recommendations.append(
-                "Resource does not meet compliance standards. Review findings."
+                "Tax calculation confidence is low. Ensure all line items include tax_rate."
             )
 
-            # Example: Find the evidence for low-scoring factors.
-            if "Encryption is disabled." in analysis_result["evidence"]:
-                recommendations.append(
-                    "Enable encryption on the resource to protect data at rest."
-                )
-            if "Resource is publicly accessible." in analysis_result["evidence"]:
-                recommendations.append(
-                    "Review public access settings and restrict access if possible."
-                )
-
-        if analysis_result["confidence"] < 0.9:
-            recommendations.append(
-                "Analysis confidence is low. Consider adding more metadata or improving detection logic."
-            )
+        if calculation_result["inferred_tax_amount"] == Decimal("0.00"):
+            recommendations.append("No tax detected. Confirm if this invoice is tax-exempt.")
 
         return recommendations
-
-    @staticmethod
-    def assess_risk(
-        analysis_result: dict[str, Any],  # FIXME: Use your `AnalysisResult` model.
-        resource: dict[str, Any],  # FIXME: Use your `ResourceMetadata` model.
-    ) -> str:
-        """
-        Assess the risk level based on the analysis and resource context.
-
-        FIXME: Implement your own risk assessment logic. Risk can be determined by
-        the analysis status, resource environment (e.g., prod vs. dev), data
-        sensitivity, etc.
-
-        Returns:
-            A risk level string (e.g., 'Low', 'Medium', 'High', 'Critical').
-        """
-        risk_level = "Low"
-
-        # Increase risk if not compliant.
-        if analysis_result["status"] != "compliant":
-            risk_level = "Medium"
-
-        # Increase risk for production environments.
-        if resource.get("tags", {}).get("environment") == "production":
-            if risk_level == "Medium":
-                risk_level = "High"
-            elif risk_level == "Low":
-                risk_level = "Medium"
-
-        # Increase risk for sensitive data.
-        if resource.get("tags", {}).get("data_sensitivity") == "high":
-            if risk_level == "High":
-                risk_level = "Critical"
-            else:
-                risk_level = "High"
-
-        return risk_level

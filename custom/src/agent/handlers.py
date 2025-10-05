@@ -86,9 +86,13 @@ class AgentInvokerHandler(EventHandler):
         """Validate the payload and trigger the agent."""
         logger.info("AgentInvokerHandler validated event '%s' and will request agent support", event.type)
 
+        # Pass unstructured invoice text to context for agent processing
+        payload = event.data
         context["validated_at"] = "timestamp_placeholder"
         context["use_agent"] = True
         context["agent_name"] = "AgentRuntime"
+        context["invoice_text"] = payload.invoice_text
+        context["metadata"] = payload.details
 
         return None
 
@@ -114,9 +118,9 @@ class SimpleProcessorHandler(EventHandler):
             "status": "processed",
             "processed_by": [self.name],
             "data": {
-                "tenant_id": payload.tenant_id,
-                "asset_id": payload.asset_id,
-                "resource_type": payload.resource_type,
+                "invoice_id": payload.invoice_id,
+                "line_item_count": len(payload.line_items),
+                "currency": payload.currency,
                 "enriched_at": "timestamp_placeholder",
                 "details": payload.details,
             },
@@ -156,9 +160,9 @@ class ProcessingHandler(EventHandler):
         transformed_payload = {
             "original": payload,
             "metadata": {
-                "resource_id": payload.get("resource_id") or payload.get("id"),
-                "resource_type": payload.get("resource_type", "unknown"),
-                "summary": (payload.get("description") or "").strip()[:140],
+                "invoice_id": payload.get("invoice_id") or payload.get("id"),
+                "line_item_count": len(payload.get("line_items", [])),
+                "currency": payload.get("currency", "EUR"),
             },
         }
 

@@ -7,24 +7,28 @@ from pydantic.config import ConfigDict
 
 
 class CloudEventDataPayload(BaseModel):
-    """Represents the `data` section of a CloudEvent."""
+    """Represents the `data` section of a CloudEvent.
+    
+    This is a generic base model with common fields. Custom implementations
+    should extend or replace this model with domain-specific fields.
+    """
 
     tenant_id: Optional[str] = Field(
         default=None,
         alias="tenantId",
-        description="Tenant identifier embedded in the event data.",
+        description="Tenant identifier (example field - customize as needed)",
         examples=["tenant-42"],
     )
     asset_id: Optional[str] = Field(
         default=None,
         alias="assetId",
-        description="Asset identifier referenced by the event data.",
+        description="Asset identifier (example field - customize as needed)",
         examples=["asset-12345"],
     )
     resource_type: Optional[str] = Field(
         default=None,
         alias="resourceType",
-        description="Type of resource described in the payload.",
+        description="Resource type (example field - customize as needed)",
         examples=["database"],
     )
     correlation_id: Optional[str] = Field(
@@ -89,6 +93,10 @@ class ProcessResourceResponse(BaseModel):
     message: str = Field(
         ...,
         examples=["Processing completed successfully"],
+    )
+    data: Any | None = Field(
+        None,
+        description="Processing results from handlers or agent",
     )
 
 

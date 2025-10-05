@@ -25,6 +25,39 @@
             }
         },
         {
+            "name": "FastAPI: custom-service (with external Dapr)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "uvicorn",
+            "args": [
+                "custom.src.main:app",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "8001",
+                "--reload"
+            ],
+            "jinja": true,
+            "justMyCode": false,
+            "console": "integratedTerminal",
+            "env": {
+                "APP_NAME": "agent-service",
+                "LOG_LEVEL": "INFO",
+                "LOG_FORMAT": "json",
+                "DYNACONF_APP_ENVIRONMENT": "development",
+                "DAPR_HTTP_PORT": "3500",
+                "DAPR_GRPC_PORT": "50001"
+            },
+            "preLaunchTask": "dapr:check-running"
+        },
+        {
+            "name": "Dapr: sidecar",
+            "type": "node-terminal",
+            "request": "launch",
+            "command": "bash -c 'source \"${workspaceFolder}/custom/export_rabbitmq_env.sh\" && envsubst < \"${workspaceFolder}/custom/dapr/components/rabbitmq-pubsub.yaml.template\" > \"${workspaceFolder}/custom/dapr/components/rabbitmq-pubsub.yaml\" && dapr run --app-id agent_blueprint --app-port 8001 --dapr-http-port 3500 --dapr-grpc-port 50001 --resources-path \"${workspaceFolder}/custom/dapr/components\" --log-level info'",
+            "cwd": "${workspaceFolder}/custom"
+        },
+        {
             "name": "Pytest: custom/tests",
             "type": "debugpy",
             "request": "launch",
@@ -35,6 +68,16 @@
             "jinja": true,
             "justMyCode": false,
             "console": "integratedTerminal"
+        }
+    ],
+    "compounds": [
+        {
+            "name": "FastAPI: custom-service with Dapr",
+            "configurations": [
+                "Dapr: sidecar",
+                "FastAPI: custom-service"
+            ],
+            "stopAll": true
         }
     ]
 }

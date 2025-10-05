@@ -62,6 +62,11 @@ class BaseAgent(ABC):
                 model_name=ai_config["model_name"],
             )
         elif ai_config["provider"] == "vllm":
+            # Enable debug logging for OpenAI client
+            import logging
+            logging.getLogger("openai").setLevel(logging.DEBUG)
+            logging.getLogger("httpx").setLevel(logging.DEBUG)
+            
             client = AsyncOpenAI(
                 max_retries=3,
                 base_url=ai_config["base_url"],

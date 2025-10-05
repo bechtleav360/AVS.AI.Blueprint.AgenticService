@@ -85,17 +85,12 @@ class EventApi:
             if event.subject:
                 span.set_attribute("cloudevents.subject", event.subject)
 
-            tenant_id = getattr(event, "tenant_id", None) or getattr(
-                event, "tenantId", None
-            )
-
             logger.info(
                 "CloudEvent received",
                 extra={
                     "cloudevents.id": event.id,
                     "cloudevents.type": event.type,
                     "cloudevents.source": event.source,
-                    "tenant_id": tenant_id,
                     "path": request.url.path,
                     "method": request.method,
                 },
@@ -104,23 +99,20 @@ class EventApi:
             try:
                 response = await self._processor.process(event)
                 logger.info(
-                    "CloudEvent processed",
+                    "CloudEvent processed successfully",
                     extra={
                         "cloudevents.id": event.id,
                         "cloudevents.type": event.type,
-                        "tenant_id": tenant_id,
                         "response_message": response.message,
                     },
                 )
                 return response
             except Exception as exc:
-                span.set_status(trace.Status(trace.StatusCode.ERROR, str(exc)))
                 logger.exception(
                     "CloudEvent processing failed",
                     extra={
                         "cloudevents.id": event.id,
                         "cloudevents.type": event.type,
-                        "tenant_id": tenant_id,
                     },
                 )
                 raise HTTPException(

@@ -65,10 +65,10 @@ class RestApi(Generic[PayloadT]):
             request_id = str(uuid4())
             request.state.trace_id = request_id
             span.set_attribute("request_id", request_id)
-            if hasattr(payload, "asset_id"):
-                span.set_attribute("asset_id", getattr(payload, "asset_id"))
-            if hasattr(payload, "tenant_id"):
-                span.set_attribute("tenant_id", getattr(payload, "tenant_id"))
+            # Add payload attributes to span if available
+            for attr in ["id", "tenant_id", "asset_id", "invoice_id", "resource_id"]:
+                if hasattr(payload, attr):
+                    span.set_attribute(f"payload.{attr}", getattr(payload, attr))
 
             timer_start = perf_counter()
             logger.info(
@@ -103,10 +103,23 @@ class RestApi(Generic[PayloadT]):
                 elif not success:
                     success_message = "No processor handled this request"
 
+                # Extract agent result if available
+                agent_result = result.get("agent_result")
+                response_data = None
+                if agent_result:
+                    # Convert Pydantic model to dict if needed
+                    if hasattr(agent_result, "model_dump"):
+                        response_data = agent_result.model_dump()
+                    elif hasattr(agent_result, "dict"):
+                        response_data = agent_result.dict()
+                    else:
+                        response_data = agent_result
+
                 response = ProcessResourceResponse(
                     success=success,
                     request_id=request_id,
                     message=success_message,
+                    data=response_data,
                 )
 
                 duration_ms = (perf_counter() - timer_start) * 1000
@@ -115,9 +128,6 @@ class RestApi(Generic[PayloadT]):
                     extra={
                         "request_id": request_id,
                         "duration_ms": round(duration_ms, 2),
-                        "tenant_id": getattr(payload, "tenant_id", None),
-                        "asset_id": getattr(payload, "asset_id", None),
-                        "resource_type": getattr(payload, "resource_type", None),
                         "response_message": response.message,
                         "success": success,
                     },
@@ -132,9 +142,6 @@ class RestApi(Generic[PayloadT]):
                     extra={
                         "request_id": request_id,
                         "duration_ms": round(duration_ms, 2),
-                        "tenant_id": getattr(payload, "tenant_id", None),
-                        "asset_id": getattr(payload, "asset_id", None),
-                        "resource_type": getattr(payload, "resource_type", None),
                         "status_code": exc.status_code,
                     },
                     exc_info=True,
@@ -162,9 +169,6 @@ class RestApi(Generic[PayloadT]):
                     extra={
                         "request_id": request_id,
                         "duration_ms": round(duration_ms, 2),
-                        "tenant_id": getattr(payload, "tenant_id", None),
-                        "asset_id": getattr(payload, "asset_id", None),
-                        "resource_type": getattr(payload, "resource_type", None),
                     },
                 )
 

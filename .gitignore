@@ -136,3 +136,10 @@ dmypy.json
 
 # Cython debug symbols
 cython_debug/
+
+# Generated Dapr components (from templates)
+custom/dapr/components/rabbitmq-pubsub.yaml
+
+# Secrets
+custom/secrets.toml
+.env.rabbitmq

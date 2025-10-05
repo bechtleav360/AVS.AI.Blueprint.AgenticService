@@ -13,11 +13,12 @@ class MyOutput(AgentOutput):
 """
 
 from .processing import ProcessingContext
-from .resource import ResourceInput
-from .results import CustomAgentOutput
+from .resource import InvoiceInput, InvoiceLineItem
+from .results import InvoiceAnalysisOutput
 
 __all__ = [
     "ProcessingContext",
-    "CustomAgentOutput",
-    "ResourceInput",
+    "InvoiceAnalysisOutput",
+    "InvoiceInput",
+    "InvoiceLineItem",
 ]

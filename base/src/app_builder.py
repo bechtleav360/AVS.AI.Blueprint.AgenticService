@@ -42,7 +42,7 @@ class AppBuilder:
                 level=logging.INFO,
                 format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
             )
-        
+
         self.config = Config(settings_files=settings_files, root_path=root_path)
         self._custom_routers = []
         self._rest_api_class = None

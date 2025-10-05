@@ -1,5 +1,5 @@
 [default]
-app_name = "asset-backup-checker"
+app_name = "agent_blueprint"
 app_port = 8000
 app_environment = "development"
 
@@ -12,10 +12,14 @@ data_gateway_timeout_s = 30
 retry_max_attempts = 3
 retry_backoff_factor = 2
 
-# Dapr Configurationw
+# Dapr Configuration
 dapr_pubsub_name = "rabbitmq-pubsub"
 dapr_http_port = 3500
 dapr_grpc_port = 50001
+
+# RabbitMQ Configuration
+rabbitmq_host = "localhost:5672"
+rabbitmq_vhost = "bios"
 
 # Circuit Breaker Configuration
 circuit_breaker_failure_threshold = 5
@@ -36,7 +40,7 @@ data_gateway_base_url = "http://localhost:8001"
 # AI Agent Configuration
 ai_model_provider = "vllm"
 ai_model_base_url = "https://avs-vllm.q14.net/v1"
-ai_model_name = "Qwen/Qwen2.5-32B-Instruct-AWQ"
+ai_model_name = "default"
 # ai_model_api_key = "" # set in environment variable
 ai_model_max_tokens = 1000
 ai_model_temperature = 0.1

@@ -1,4 +1,4 @@
-"""Data models for the asset backup checker service."""
+"""Data models for the agent service."""
 
 from .api import (
     CloudEventDataPayload,
