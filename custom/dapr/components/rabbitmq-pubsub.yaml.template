@@ -6,8 +6,10 @@ spec:
   type: pubsub.rabbitmq
   version: v1
   metadata:
-    - name: connectionString
-      value: "amqp://$RABBITMQ_HOST/$RABBITMQ_VHOST"
+    - name: host
+      value: "$RABBITMQ_HOST"
+    - name: vHost
+      value: "$RABBITMQ_VHOST"
     - name: username
       value: "$RABBITMQ_USERNAME"
     - name: password

@@ -2,11 +2,58 @@
 
 ## Problem
 - Your curl test with vLLM works perfectly and returns proper OpenAI `tool_calls`
-- Pydantic AI requests to the same vLLM instance return `<tool_call>` XML tags
-- This causes a parsing error in Pydantic AI
+- Pydantic AI requests to the same vLLM instance return `<think>` XML tags before tool calls
+- This causes a parsing error: `Invalid JSON: expected value at line 1 column 1`
 
-## Root Cause
-Pydantic AI's OpenAI client might be sending requests in a slightly different format that causes vLLM's Hermes parser to return XML-style tool calls instead of OpenAI JSON format.
+## Root Cause (RESOLVED)
+**Issue 1**: vLLM's Hermes parser emits `<think>...</think>` reasoning blocks before tool call JSON when `tool_choice="required"`. Pydantic AI's `OpenAIChatModel._process_response()` expects pure JSON and fails when it encounters the leading `<think>` tag.
+
+**Issue 2**: vLLM doesn't support `$defs` in JSON schemas. Pydantic generates schemas with `$defs` for nested models, causing 400 Bad Request errors.
+
+## Solutions Implemented
+
+### Solution 1: Disable Thinking Tags (Option A)
+Created a custom `ModelProfile` in `base/src/agent/base_agent.py` that disables thinking tag processing for vLLM:
+
+```python
+vllm_profile = ModelProfile(
+    thinking_tags=('', ''),  # Empty tags disable thinking block processing
+    ignore_streamed_leading_whitespace=True,
+)
+
+model = OpenAIChatModel(
+    provider=provider,
+    model_name=ai_config["model_name"],
+    profile=vllm_profile,
+)
+```
+
+### Solution 2: Flatten JSON Schema
+Overrode `model_json_schema()` in `InvoiceInput` (`custom/src/models/resource.py`) to generate a flattened schema without `$defs`:
+
+```python
+@classmethod
+def model_json_schema(cls, **kwargs):
+    """Generate vLLM-compatible JSON schema without $defs."""
+    return {
+        "type": "object",
+        "properties": {
+            "line_items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "description": {"type": "string", ...},
+                        "quantity": {"anyOf": [...]},
+                        # ... inline properties instead of $ref
+                    }
+                }
+            }
+        }
+    }
+```
+
+This inlines the `InvoiceLineItem` structure directly into the `line_items` array definition, avoiding `$defs` references.
 
 ## Possible Differences
 
@@ -68,5 +115,20 @@ class VLLMCompatibleModel(OpenAIChatModel):
 ### Option 4: Wait for vLLM Update
 The vLLM Hermes parser might need updates to handle all variations of OpenAI tool calling format.
 
-## Recommended Next Step
-Enable debug logging to see the exact request Pydantic AI sends, then compare with your working curl request.
+## Validation Steps
+1. **Test the fix**: Run your invoice processing request again to verify tool calls work correctly
+2. **Monitor logs**: Check that no `<think>` tags or `$defs` errors appear in the model responses
+3. **Verify tool execution**: Confirm `calculate_invoice` tool is called and returns proper `InvoiceAnalysisOutput`
+4. **Check schema**: Inspect the generated tool schema in debug logs to confirm no `$defs` present
+
+## Rollback Instructions
+If these fixes cause issues:
+
+**For Solution 1** (thinking tags):
+- Revert changes in `base/src/agent/base_agent.py`
+- Remove the `vllm_profile` creation
+- Remove the `profile=vllm_profile` parameter from `OpenAIChatModel`
+
+**For Solution 2** (schema flattening):
+- Remove the `model_json_schema()` method from `InvoiceInput` in `custom/src/models/resource.py`
+- This will revert to Pydantic's default schema generation (with `$defs`)

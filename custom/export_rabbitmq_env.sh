@@ -6,7 +6,7 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 export DYNACONF_APP_ENVIRONMENT="${DYNACONF_APP_ENVIRONMENT:-development}"
 
 # Load settings using Python
-RABBITMQ_HOST=$(python3 -c 'from dynaconf import Dynaconf; settings = Dynaconf(settings_files=["settings.toml", "secrets.toml"], environments=True); print(settings.RABBITMQ_HOST)')
+RABBITMQ_HOST="amqp://$(python3 -c 'from dynaconf import Dynaconf; settings = Dynaconf(settings_files=["settings.toml", "secrets.toml"], environments=True); print(settings.RABBITMQ_HOST)')"
 RABBITMQ_VHOST=$(python3 -c 'from dynaconf import Dynaconf; settings = Dynaconf(settings_files=["settings.toml", "secrets.toml"], environments=True); print(settings.RABBITMQ_VHOST)')
 RABBITMQ_USERNAME=$(python3 -c 'from dynaconf import Dynaconf; settings = Dynaconf(settings_files=["settings.toml", "secrets.toml"], environments=True); print(settings.RABBITMQ_USERNAME)')
 RABBITMQ_PASSWORD=$(python3 -c 'from dynaconf import Dynaconf; settings = Dynaconf(settings_files=["settings.toml", "secrets.toml"], environments=True); print(settings.RABBITMQ_PASSWORD)')

@@ -13,6 +13,7 @@ from opentelemetry import trace
 from pydantic_ai import Agent, Tool
 from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.profiles import ModelProfile
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.usage import UsageLimits
 
@@ -77,9 +78,17 @@ class BaseAgent(ABC):
                 openai_client=client,
             )
 
+            # Create a custom profile that disables thinking tags to prevent
+            # vLLM from emitting <think>...</think> blocks that break JSON parsing
+            vllm_profile = ModelProfile(
+                thinking_tags=('', ''),  # Empty tags disable thinking block processing
+                ignore_streamed_leading_whitespace=True,
+            )
+
             model = OpenAIChatModel(
                 provider=provider,
                 model_name=ai_config["model_name"],
+                profile=vllm_profile,
             )
 
             return model
