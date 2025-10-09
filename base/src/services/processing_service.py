@@ -11,8 +11,7 @@ from base.src.config import Config
 from ..models.events import CloudEvent
 
 if TYPE_CHECKING:  # pragma: no cover
-    from ..registry.handler_registry import HandlerRegistry
-    from ..registry.runtime_registry import RuntimeRegistry
+    from ..registry.component_registry import ComponentRegistry
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -30,12 +29,10 @@ class ProcessingService:
     def __init__(
         self,
         settings: Config,
-        handler_registry: "HandlerRegistry",
-        runtime_registry: "RuntimeRegistry",
+        component_registry: "ComponentRegistry",
     ) -> None:
         self._settings = settings
-        self._handler_registry = handler_registry
-        self._runtime_registry = runtime_registry
+        self._component_registry = component_registry
 
     async def process_event(
         self,
@@ -82,9 +79,7 @@ class ProcessingService:
 
             try:
                 # Step 1: Process through handler chain
-                handler_result = await self._handler_registry.process_event(
-                    event, context
-                )
+                handler_result = await self._process_through_handlers(event, context)
 
                 # Step 2: If handlers indicate agent processing is needed, use runtime
                 should_use_agent = context.get("use_agent", False)
@@ -114,10 +109,8 @@ class ProcessingService:
                     }
 
                     try:
-                        agent_result = (
-                            await self._runtime_registry.process_with_runtime(
-                                runtime_name=requested_agent_name, **agent_context
-                            )
+                        agent_result = await self._process_with_runtime(
+                            runtime_name=requested_agent_name, **agent_context
                         )
                         span.set_attribute("agent.processed", True)
                         span.set_attribute("agent.name", requested_agent_name)
@@ -219,10 +212,10 @@ class ProcessingService:
         with tracer.start_as_current_span("processing_service.health_check") as span:
             try:
                 # Check runtimes
-                runtime_health = await self._runtime_registry.health_check_all()
+                runtime_health = await self._health_check_runtimes()
 
                 # Check handlers (basic check - they're registered)
-                handlers = self._handler_registry.get_handlers()
+                handlers = self._component_registry.get_handlers()
                 handler_health = {
                     "status": "healthy" if handlers else "unhealthy",
                     "count": len(handlers),
@@ -251,3 +244,192 @@ class ProcessingService:
                 logger.error("Health check failed: %s", str(e), exc_info=True)
                 span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
                 return {"status": "unhealthy", "error": str(e)}
+
+    # ========================================================================
+    # Private Helper Methods (Business Logic)
+    # ========================================================================
+
+    async def _process_through_handlers(
+        self, event: CloudEvent, context: Dict[str, Any]
+    ) -> Optional[Any]:
+        """
+        Process an event through all registered handlers.
+
+        Returns the result from the first handler that processes the event,
+        or None if no handler processes it.
+        """
+        handlers = self._component_registry.get_handlers()
+
+        with tracer.start_as_current_span("processing_service.handler_chain") as span:
+            span.set_attribute("event.type", event.type)
+            span.set_attribute("handlers.count", len(handlers))
+
+            logger.info(
+                "Processing event through %d handlers",
+                len(handlers),
+                extra={
+                    "event_type": event.type,
+                    "event_id": getattr(event, "id", None),
+                    "handlers_count": len(handlers),
+                },
+            )
+
+            for handler in handlers:
+                try:
+                    if await handler.can_handle(event, context):
+                        logger.info(
+                            "Handler %s can handle event %s",
+                            handler.name,
+                            event.type,
+                            extra={
+                                "handler_name": handler.name,
+                                "event_type": event.type,
+                                "event_id": getattr(event, "id", None),
+                            },
+                        )
+
+                        result = await handler.handle(event, context)
+
+                        if result is not None:
+                            logger.info(
+                                "Handler %s processed event %s and returned result",
+                                handler.name,
+                                event.type,
+                                extra={
+                                    "handler_name": handler.name,
+                                    "event_type": event.type,
+                                    "event_id": getattr(event, "id", None),
+                                    "has_result": True,
+                                },
+                            )
+                            span.set_attribute("handler.processed_by", handler.name)
+                            return result
+                        else:
+                            logger.info(
+                                "Handler %s processed event %s but passed to next handler",
+                                handler.name,
+                                event.type,
+                                extra={
+                                    "handler_name": handler.name,
+                                    "event_type": event.type,
+                                    "event_id": getattr(event, "id", None),
+                                    "has_result": False,
+                                },
+                            )
+                            # Continue to next handler
+
+                except Exception as e:
+                    logger.error(
+                        "Handler %s failed to process event %s: %s",
+                        handler.name,
+                        event.type,
+                        str(e),
+                        extra={
+                            "handler_name": handler.name,
+                            "event_type": event.type,
+                            "event_id": getattr(event, "id", None),
+                            "error": str(e),
+                        },
+                        exc_info=True,
+                    )
+                    span.record_exception(e)
+                    span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
+                    raise
+
+            logger.warning(
+                "No handler processed event %s",
+                event.type,
+                extra={
+                    "event_type": event.type,
+                    "event_id": getattr(event, "id", None),
+                    "handlers_count": len(handlers),
+                },
+            )
+            return None
+
+    async def _process_with_runtime(
+        self, runtime_name: Optional[str] = None, **context_kwargs
+    ) -> Any:
+        """
+        Process a request using the specified runtime or default runtime.
+
+        Args:
+            runtime_name: Name of the runtime to use, or None for default
+            **context_kwargs: Context arguments to pass to the runtime
+
+        Returns:
+            The result from the runtime's process_request method
+
+        Raises:
+            ValueError: If no runtime is available or runtime not found
+        """
+        with tracer.start_as_current_span(
+            "processing_service.runtime_execution"
+        ) as span:
+            runtime = self._component_registry.get_runtime(runtime_name)
+
+            if runtime is None:
+                error_msg = "No runtime available (requested: %s)" % runtime_name
+                logger.error(error_msg)
+                span.set_status(trace.Status(trace.StatusCode.ERROR, error_msg))
+                raise ValueError(error_msg)
+
+            actual_name = runtime_name or self._component_registry.get_default_runtime_name()
+            span.set_attribute("runtime.name", actual_name)
+
+            logger.info(
+                "Processing request with runtime %s",
+                actual_name,
+                extra={
+                    "runtime_name": actual_name,
+                    "context_keys": (
+                        list(context_kwargs.keys()) if context_kwargs else []
+                    ),
+                },
+            )
+
+            try:
+                result = await runtime.process_request(**context_kwargs)
+                logger.info(
+                    "Runtime %s processed request successfully",
+                    actual_name,
+                    extra={
+                        "runtime_name": actual_name,
+                        "has_result": result is not None,
+                    },
+                )
+                return result
+
+            except Exception as e:
+                logger.error(
+                    "Runtime %s failed to process request: %s",
+                    actual_name,
+                    str(e),
+                    extra={"runtime_name": actual_name, "error": str(e)},
+                    exc_info=True,
+                )
+                span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
+                raise
+
+    async def _health_check_runtimes(self) -> Dict[str, Dict[str, Any]]:
+        """Perform health checks on all registered runtimes."""
+        with tracer.start_as_current_span("processing_service.runtime_health") as span:
+            results = {}
+            runtimes = self._component_registry.get_all_runtimes()
+
+            for name, runtime in runtimes.items():
+                try:
+                    health_result = await runtime.health_check()
+                    results[name] = health_result
+                    logger.info("Health check passed for runtime %s", name)
+                except Exception as e:
+                    logger.error("Health check failed for runtime %s: %s", name, str(e))
+                    results[name] = {"status": "unhealthy", "error": str(e)}
+
+            span.set_attribute("runtimes.count", len(runtimes))
+            span.set_attribute(
+                "runtimes.healthy_count",
+                sum(1 for r in results.values() if r.get("status") == "healthy"),
+            )
+
+            return results

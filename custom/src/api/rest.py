@@ -4,7 +4,8 @@ from fastapi import Body
 from pydantic import BaseModel, Field
 
 from base.src.api.rest import RestApi
-from base.src.registry.service_registry import ServiceRegistry
+from base.src.registry.component_registry import ComponentRegistry
+from base.src.services.processing_service import ProcessingService
 
 
 class CustomPayload(BaseModel):
@@ -60,5 +61,5 @@ Total: 2380.00 EUR""",
 class CustomRestApi(RestApi[CustomPayload]):
     """Custom REST API definition."""
 
-    def __init__(self, registry: ServiceRegistry):
+    def __init__(self, registry: ComponentRegistry):
         super().__init__(payload_type=CustomPayload, registry=registry)

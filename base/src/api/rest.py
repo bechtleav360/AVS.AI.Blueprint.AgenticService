@@ -12,7 +12,8 @@ from opentelemetry import trace
 from pydantic import BaseModel
 
 from ..models import ProcessResourceResponse
-from ..registry.service_registry import ServiceRegistry
+from ..registry.component_registry import ComponentRegistry
+from ..services.processing_service import ProcessingService
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -25,10 +26,15 @@ PayloadT = TypeVar("PayloadT", bound=BaseModel)
 class RestApi(Generic[PayloadT]):
     """Generic OOP wrapper for the REST API router."""
 
-    def __init__(self, payload_type: Type[PayloadT], registry: ServiceRegistry) -> None:
+    def __init__(self, payload_type: Type[PayloadT], registry: ComponentRegistry) -> None:
         self.router = APIRouter()
         self.payload_type = payload_type
-        self._service_registry = registry
+        self._component_registry = registry
+        # Create processing service with the component registry
+        self._processing_service = ProcessingService(
+            settings=registry.get_settings(),
+            component_registry=registry
+        )
         self._register_routes()
 
     def _register_routes(self) -> None:
@@ -89,7 +95,7 @@ class RestApi(Generic[PayloadT]):
                     "client_ip": request.client.host if request.client else None,
                 }
 
-                result = await self._service_registry.get_processing_service().process_rest_request(
+                result = await self._processing_service.process_rest_request(
                     payload, context
                 )
 

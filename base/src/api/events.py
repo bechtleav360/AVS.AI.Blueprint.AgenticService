@@ -8,43 +8,24 @@ from opentelemetry import trace
 
 from ..models import CloudEventResponse
 from ..models.events import GenericCloudEvent
-from ..services import processing_service
+from ..registry.component_registry import ComponentRegistry
+from ..services.processing_service import ProcessingService
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
 
 
-class CloudEventProcessor:
-    """Encapsulates business logic executed for each CloudEvent."""
-
-    async def process(self, event: GenericCloudEvent) -> CloudEventResponse:
-        """Process a CloudEvent through the unified processing service."""
-        try:
-            result = await processing_service.process_event(event)
-
-            if result["status"] == "processed":
-                return CloudEventResponse(
-                    status="processed",
-                    message="Event processed successfully",
-                )
-            else:
-                return CloudEventResponse(
-                    status="no_processor",
-                    message="No handler or agent processed this event",
-                )
-
-        except Exception as e:
-            logger.error("CloudEvent processing failed: %s", str(e), exc_info=True)
-            raise
-
-
 class EventApi:
     """OOP wrapper that exposes the event-related FastAPI router."""
 
-    def __init__(self, service_registry=None) -> None:
+    def __init__(self, component_registry: ComponentRegistry) -> None:
         self.router = APIRouter()
-        self._processor = CloudEventProcessor()
-        self._service_registry = service_registry
+        self._component_registry = component_registry
+        # Create processing service with the component registry
+        self._processing_service = ProcessingService(
+            settings=component_registry.get_settings(),
+            component_registry=component_registry,
+        )
         self._register_routes()
 
     def _register_routes(self) -> None:
@@ -97,7 +78,19 @@ class EventApi:
             )
 
             try:
-                response = await self._processor.process(event)
+                result = await self._processing_service.process_event(event)
+
+                if result["status"] == "processed":
+                    response = CloudEventResponse(
+                        status="processed",
+                        message="Event processed successfully",
+                    )
+                else:
+                    response = CloudEventResponse(
+                        status="no_processor",
+                        message="No handler or agent processed this event",
+                    )
+
                 logger.info(
                     "CloudEvent processed successfully",
                     extra={

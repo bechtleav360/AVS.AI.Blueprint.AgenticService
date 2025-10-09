@@ -6,9 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from typing import Type
 
-from .registry.handler_registry import HandlerRegistry
-from .registry.runtime_registry import RuntimeRegistry
-from .registry.service_registry import ServiceRegistry
+from .registry.component_registry import ComponentRegistry
 
 from .api import actuators, root
 from .api.events import EventApi
@@ -49,17 +47,8 @@ class AppBuilder:
         self._handler_classes: list[Type[EventHandler]] = []
         self._runtime_classes: list[dict] = []
 
-        self._service_registry = ServiceRegistry(settings=self.config)
-        self._handler_registry = HandlerRegistry(
-            settings=self.config, service_registry=self._service_registry
-        )
-        self._runtime_registry = RuntimeRegistry(
-            settings=self.config, service_registry=self._service_registry
-        )
-        self._service_registry.configure(
-            handler_registry=self._handler_registry,
-            runtime_registry=self._runtime_registry,
-        )
+        # Single unified registry for all components
+        self._component_registry = ComponentRegistry(settings=self.config)
 
     def with_handler(self, handler_class: Type[EventHandler]) -> "AppBuilder":
         """Register a handler class with the startup manager."""
@@ -114,7 +103,7 @@ class AppBuilder:
         # Initialize and register handlers
         try:
             handlers = [handler_class() for handler_class in self._handler_classes]
-            self._handler_registry.register_handlers(handlers)
+            self._component_registry.register_handlers(handlers)
             logger.info("Successfully registered %d handlers", len(handlers))
         except Exception as e:
             logger.error("Failed to register handlers: %s", e, exc_info=True)
@@ -125,7 +114,7 @@ class AppBuilder:
                 runtime_class = runtime_info["runtime_class"]
                 is_default = runtime_info["is_default"]
                 runtime_instance = runtime_class(self.config)
-                self._runtime_registry.register_runtime(
+                self._component_registry.register_runtime(
                     runtime_class.__name__, runtime_instance, is_default=is_default
                 )
             logger.info(
@@ -168,7 +157,7 @@ class AppBuilder:
         app.include_router(actuator_api.router, tags=["actuators"])
 
         # Include other base routers
-        event_api = EventApi(service_registry=self._service_registry)
+        event_api = EventApi(component_registry=self._component_registry)
         app.include_router(event_api.router, prefix="/events", tags=["events"])
         app.include_router(root.router, tags=["root"])
         if dapr is not None:
@@ -184,7 +173,7 @@ class AppBuilder:
 
         # Include custom REST API
         if self._rest_api_class:
-            rest_api = self._rest_api_class(registry=self._service_registry)
+            rest_api = self._rest_api_class(registry=self._component_registry)
             app.include_router(rest_api.router, prefix="/api", tags=["rest"])
 
         return app
