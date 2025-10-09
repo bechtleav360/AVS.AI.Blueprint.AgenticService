@@ -53,7 +53,7 @@ class MockRuntime(BaseAgent):
     async def custom_health_check(self) -> bool:
         return True
 
-    async def process_request(self, **kwargs):
+    async def process_request(self, context=None, **kwargs):
         return {"result": "processed"}
 
 

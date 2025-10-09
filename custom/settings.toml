@@ -45,12 +45,17 @@ ai_model_name = "default"
 ai_model_max_tokens = 1000
 ai_model_temperature = 0.1
 
+# vLLM-specific: Use tool_choice="auto" instead of "required"
+# Some vLLM models (e.g., Qwen3-32B-AWQ) don't support tool_choice="required"
+# Set to true to use flexible tool calling (recommended for compatibility)
+ai_model_use_flexible_tool_choice = true
+
 # AI Usage Limits (per agent run)
 ai_concurrent_requests = 1
 ai_usage_request_limit = 10
-ai_usage_input_tokens_limit = 3000
-ai_usage_output_tokens_limit = 2000
-ai_usage_total_tokens_limit = 5000
+ai_usage_input_tokens_limit = 6000
+ai_usage_output_tokens_limit = 4000
+ai_usage_total_tokens_limit = 10000
 
 [testing]
 log_level = "DEBUG"

@@ -3,7 +3,7 @@
 import logging
 import os
 import platform
-from typing import Any, Dict, Optional, Protocol
+from typing import Any, Dict, List, Optional, Protocol
 
 import httpx
 from fastapi import APIRouter, HTTPException, status
@@ -13,6 +13,7 @@ from opentelemetry import trace
 
 from ..config import Config
 from ..models.api import ComponentHealth, LivenessResponse, ReadinessResponse
+from ..models.status import BuildStatus, EnvironmentStatus, LLMStatus, VLLMInfo
 
 # FIXME: Import your dependencies here.
 # from ..dependencies import get_your_agent, get_data_gateway
@@ -123,6 +124,7 @@ class ActuatorApi:
             methods=["GET"],
             summary="Returns a snapshot of the current configuration.",
             tags=["Status"],
+            response_model=EnvironmentStatus,
             include_in_schema=False,
         )
         self.router.add_api_route(
@@ -131,6 +133,7 @@ class ActuatorApi:
             methods=["GET"],
             summary="Returns AI provider configuration and diagnostics.",
             tags=["Status"],
+            response_model=LLMStatus,
             include_in_schema=False,
         )
         self.router.add_api_route(
@@ -139,6 +142,7 @@ class ActuatorApi:
             methods=["GET"],
             summary="Returns build and runtime information.",
             tags=["Status"],
+            response_model=BuildStatus,
             include_in_schema=False,
         )
 
@@ -185,7 +189,7 @@ class ActuatorApi:
 
         return LivenessResponse(status="UP")
 
-    async def env_status(self) -> Dict[str, Any]:
+    async def env_status(self) -> EnvironmentStatus:
         """Expose the current configuration state (with secrets masked)."""
 
         config = self._ensure_config()
@@ -198,26 +202,29 @@ class ActuatorApi:
             "Returning environment status for env %s", config.settings.current_env
         )
 
-        return {
-            "environment": config.settings.current_env,
-            "settings": self._sanitize_config(raw_config),
-        }
+        return EnvironmentStatus(
+            environment=config.settings.current_env,
+            settings=self._sanitize_config(raw_config),
+        )
 
-    async def llm_status(self) -> Dict[str, Any]:
+    async def llm_status(self) -> LLMStatus:
         """Expose AI configuration and provider diagnostics."""
 
         config = self._ensure_config()
         ai_config = self._sanitize_config(config.get_ai_config())
-        status_payload: Dict[str, Any] = {"config": ai_config}
 
         provider = ai_config.get("provider")
+        vllm_info_data: Optional[VLLMInfo] = None
 
         if provider == "vllm":
-            vllm_info: Dict[str, Any] = {}
+            version = "unknown"
             try:
-                vllm_info["version"] = metadata.version("vllm")
+                version = metadata.version("vllm")
             except PackageNotFoundError:
-                vllm_info["version"] = "unknown"
+                pass
+
+            models: Optional[List[str]] = None
+            models_error: Optional[str] = None
 
             base_url = config.get_ai_config().get("base_url")
             api_key = config.get_ai_config().get("api_key")
@@ -232,37 +239,41 @@ class ActuatorApi:
                         )
                         response.raise_for_status()
                         payload = response.json()
-                        vllm_info["models"] = [
+                        models = [
                             item.get("id") for item in payload.get("data", [])
                         ]
                 except httpx.RequestError as exc:
                     logger.warning("Failed to query vLLM models: %s", exc)
-                    vllm_info["models_error"] = str(exc)
+                    models_error = str(exc)
                 except Exception as exc:  # pragma: no cover - defensive
                     logger.warning("Unexpected vLLM models error: %s", exc)
-                    vllm_info["models_error"] = str(exc)
+                    models_error = str(exc)
 
-            status_payload["vllm"] = vllm_info
+            vllm_info_data = VLLMInfo(
+                version=version,
+                models=models,
+                models_error=models_error,
+            )
 
-        return status_payload
+        return LLMStatus(config=ai_config, vllm=vllm_info_data)
 
-    async def build_status(self) -> Dict[str, Any]:
+    async def build_status(self) -> BuildStatus:
         """Expose build and runtime metadata."""
 
         config = self._ensure_config()
 
         logger.info("Returning build status for service %s", config.get("app_name"))
 
-        return {
-            "app_name": config.get("app_name"),
-            "app_version": config.get("app_version", "unknown"),
-            "environment": config.settings.current_env,
-            "python_version": platform.python_version(),
-            "platform": platform.platform(),
-            "settings_files": list(config.settings.settings_files or []),
-            "build_commit": os.getenv("BUILD_COMMIT", "unknown"),
-            "build_timestamp": os.getenv("BUILD_TIMESTAMP", "unknown"),
-        }
+        return BuildStatus(
+            app_name=config.get("app_name"),
+            app_version=config.get("app_version", "unknown"),
+            environment=config.settings.current_env,
+            python_version=platform.python_version(),
+            platform=platform.platform(),
+            settings_files=list(config.settings.settings_files or []),
+            build_commit=os.getenv("BUILD_COMMIT", "unknown"),
+            build_timestamp=os.getenv("BUILD_TIMESTAMP", "unknown"),
+        )
 
     def _sanitize_config(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Mask sensitive keys in configuration dictionaries."""

@@ -8,7 +8,7 @@ from pydantic.config import ConfigDict
 
 class CloudEventDataPayload(BaseModel):
     """Represents the `data` section of a CloudEvent.
-    
+
     This is a generic base model with common fields. Custom implementations
     should extend or replace this model with domain-specific fields.
     """
@@ -159,6 +159,81 @@ class ReadinessResponse(BaseModel):
                     "redis": {
                         "status": "unhealthy",
                         "message": "Failed to connect to endpoint.",
+                    },
+                },
+            }
+        }
+    )
+
+
+class AIModelHealth(BaseModel):
+    """Health status of the AI model."""
+
+    status: str = Field(
+        ...,
+        description="Health status of the AI model.",
+        examples=["healthy", "unhealthy"],
+    )
+    model: str = Field(
+        ...,
+        description="The AI model identifier.",
+        examples=["openai:gpt-4", "vllm:qwen2.5-7b-instruct"],
+    )
+    response_time_ms: int = Field(
+        ...,
+        description="Response time in milliseconds for the health check.",
+        examples=[250],
+    )
+
+
+class CustomCheckHealth(BaseModel):
+    """Health status of custom domain-specific checks."""
+
+    status: str = Field(
+        ...,
+        description="Health status of the custom check.",
+        examples=["healthy", "unhealthy"],
+    )
+
+
+class AgentHealthDependencies(BaseModel):
+    """Dependencies checked during agent health check."""
+
+    ai_model: AIModelHealth = Field(
+        ...,
+        description="Health status of the AI model.",
+    )
+    custom_check: CustomCheckHealth = Field(
+        ...,
+        description="Health status of custom domain-specific checks.",
+    )
+
+
+class AgentHealthResponse(BaseModel):
+    """Response for agent health check."""
+
+    status: str = Field(
+        ...,
+        description="Overall health status of the agent.",
+        examples=["healthy", "unhealthy"],
+    )
+    dependencies: AgentHealthDependencies = Field(
+        ...,
+        description="Health status of agent dependencies.",
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "status": "healthy",
+                "dependencies": {
+                    "ai_model": {
+                        "status": "healthy",
+                        "model": "openai:gpt-4",
+                        "response_time_ms": 250,
+                    },
+                    "custom_check": {
+                        "status": "healthy",
                     },
                 },
             }

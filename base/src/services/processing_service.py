@@ -348,14 +348,15 @@ class ProcessingService:
             return None
 
     async def _process_with_runtime(
-        self, runtime_name: Optional[str] = None, **context_kwargs
+        self, runtime_name: Optional[str] = None, context: Any = None, **kwargs
     ) -> Any:
         """
         Process a request using the specified runtime or default runtime.
 
         Args:
             runtime_name: Name of the runtime to use, or None for default
-            **context_kwargs: Context arguments to pass to the runtime
+            context: Processing context to pass to the runtime
+            **kwargs: Additional keyword arguments to pass to the runtime's process_request
 
         Returns:
             The result from the runtime's process_request method
@@ -382,14 +383,13 @@ class ProcessingService:
                 actual_name,
                 extra={
                     "runtime_name": actual_name,
-                    "context_keys": (
-                        list(context_kwargs.keys()) if context_kwargs else []
-                    ),
+                    "has_context": context is not None,
+                    "additional_kwargs": list(kwargs.keys()) if kwargs else [],
                 },
             )
 
             try:
-                result = await runtime.process_request(**context_kwargs)
+                result = await runtime.process_request(context=context, **kwargs)
                 logger.info(
                     "Runtime %s processed request successfully",
                     actual_name,
