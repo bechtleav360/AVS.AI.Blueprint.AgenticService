@@ -1,65 +1,95 @@
-# Documentation
+# Agent Blueprint Documentation
 
-This directory contains the comprehensive documentation for the **Agents Blueprint** project, including design decisions, requirements, architecture specifications, and technical guides.
+**Welcome!** This documentation helps you build intelligent agents using the Agent Blueprint framework.
+
+> **For Junior Developers:** This documentation is written with you in mind. We explain concepts clearly, provide examples, and guide you step-by-step.
 
 ## 📚 Documentation Structure
 
-### Core Documentation
-- **[Design Decisions](design-decisions.md)** - Rationale behind architectural and technical choices
-- **[Requirements](requirements.md)** - Functional and non-functional requirements
-- **[Architecture](architecture.md)** - System architecture and component design
-- **[API Reference](api-reference.md)** - REST API and event schema documentation
+### 🚀 Start Here
 
-### Technical Guides
-- **[Development Guide](development-guide.md)** - Setup, coding standards, and best practices
-- **[Deployment Guide](deployment-guide.md)** - Production deployment instructions
-- **[Testing Guide](testing-guide.md)** - Testing strategies and methodologies
-- **[Troubleshooting](troubleshooting.md)** - Common issues and solutions
+**New to the Agent Blueprint?** Follow this path:
 
-### Project Management
-- **[Changelog](changelog.md)** - Version history and release notes
-- **[Roadmap](roadmap.md)** - Future development plans
-- **[Contributing](contributing.md)** - Guidelines for contributors
+1. **[Getting Started](guides/getting-started.md)** ⭐ - Set up your environment in 15 minutes
+2. **[Architecture Overview](guides/architecture.md)** - Understand how everything fits together
+3. **[Core Concepts](guides/core-concepts.md)** - Learn the key patterns
 
-## 🎯 Purpose
+### 🔨 Building Your Agent
 
-This documentation serves multiple audiences:
-- **Developers** implementing new blueprints or modifying existing ones
-- **DevOps Engineers** deploying and maintaining the services
-- **Product Managers** understanding capabilities and planning features
-- **Technical Leaders** evaluating the architecture and design decisions
+Follow these guides to build a complete agent:
 
-## 📖 Reading Guide
+1. **[Setting Up Events](guides/events-setup.md)** - Configure Dapr, RabbitMQ, and subscriptions
+2. **[Using the App Builder](guides/app-builder.md)** - Initialize your application
+3. **[Creating Handlers](guides/handlers.md)** - Process events with Chain of Responsibility
+4. **[Building LLM Agents](guides/llm-agents.md)** - Integrate AI models with Pydantic AI
 
-### For New Developers
-1. Start with **[Design Decisions](design-decisions.md)** to understand the "why"
-2. Read **[Requirements](requirements.md)** for functional scope
-3. Review **[Architecture](architecture.md)** for system overview
-4. Check **[Development Guide](development-guide.md)** for setup instructions
+### ⚙️ Configuration
 
-### For DevOps Engineers
-1. **[Deployment Guide](deployment-guide.md)** - Primary reference
-2. **[API Reference](api-reference.md)** - Interface specifications
-3. **[Troubleshooting](troubleshooting.md)** - Operational issues
+In-depth configuration guides:
 
-## 🔄 Maintenance
+- **[Configuration Overview](guides/configuration/README.md)** - Configuration guide index
+- **[Agent Configuration](guides/configuration/agent-configuration.md)** - AI models, application settings
+- **[Dynaconf](guides/configuration/dynaconf.md)** - Configuration management system
+- **[OpenTelemetry](guides/configuration/opentelemetry.md)** - Distributed tracing and observability
+- **[Dapr Configuration](guides/configuration/dapr-configuration.md)** - Pub/Sub, subscriptions, secrets
 
-Documentation should be updated when:
-- New features are added
-- Architecture changes are made
-- Requirements evolve
-- New patterns or best practices are adopted
+### 🚢 Deployment & Testing
 
-All documentation is version-controlled and follows the same review process as code changes.
+5. **[Testing Your Agent](guides/testing.md)** - Write unit and integration tests
+6. **[Deployment Guide](guides/deployment.md)** - Deploy with Docker and Kubernetes
+7. **[Troubleshooting](guides/troubleshooting.md)** - Fix common issues
 
-## 🤝 Contributing
+### 📖 Reference
 
-To contribute to the documentation:
-1. Follow the guidelines in **[Contributing](contributing.md)**
-2. Ensure changes are consistent with existing style and structure
-3. Update related documents when making changes
-4. Include examples and code snippets where appropriate
+- **[API Reference](reference/api.md)** - Complete API documentation
+- **[Configuration](reference/configuration.md)** - All settings explained
+- **[Design Patterns](reference/design-patterns.md)** - Patterns used in the framework
+
+### 📋 Project Info
+
+- **[Changelog](changelog.md)** - Version history
+- **[Roadmap](roadmap.md)** - Future plans
+- **[Requirements](requirements.md)** - System requirements
+
+## 🎯 Quick Navigation
+
+**I want to...**
+- **Get started quickly** → [Getting Started Guide](guides/getting-started.md)
+- **Understand the architecture** → [Architecture Overview](guides/architecture.md)
+- **Set up event processing** → [Events Setup](guides/events-setup.md)
+- **Create a handler** → [Handlers Guide](guides/handlers.md)
+- **Add an AI agent** → [LLM Agents Guide](guides/llm-agents.md)
+- **Deploy my agent** → [Deployment Guide](guides/deployment.md)
+- **Fix an issue** → [Troubleshooting](guides/troubleshooting.md)
+
+## 📖 How to Read This Documentation
+
+**If you're new to development:**
+- Read guides in order, starting with Getting Started
+- Don't skip the "Why?" sections - they explain the reasoning
+- Try the examples as you go
+- Ask questions if something isn't clear
+
+**If you're experienced:**
+- Skim [Architecture Overview](guides/architecture.md) for the mental model
+- Jump to specific guides as needed
+- Use [API Reference](reference/api.md) for details
+
+## 💡 Key Concepts
+
+The Agent Blueprint is built on these principles:
+
+- **Separation of Concerns** - Base framework handles infrastructure, you write business logic
+- **Chain of Responsibility** - Handlers process events in priority order
+- **Template Method Pattern** - Override specific methods, framework handles the rest
+- **Observability First** - Tracing, logging, and metrics built-in
+
+## 🤝 Getting Help
+
+- **Documentation unclear?** Open an issue to improve it
+- **Found a bug?** Check [Troubleshooting](guides/troubleshooting.md) first
+- **Want to contribute?** See [CONTRIBUTING.md](../CONTRIBUTING.md)
 
 ---
 
-*This documentation is maintained by the Agents Blueprint team. For questions or suggestions, please refer to the [Contributing Guide](../CONTRIBUTING.md).*
+*Last updated: 2025-10-10 | Maintained by the Agents Blueprint team*
