@@ -81,7 +81,3 @@ class DaprApi:
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail="Dapr event handling failed",
                 )
-
-
-dapr_api = DaprApi()
-router = dapr_api.router

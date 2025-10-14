@@ -2,21 +2,20 @@
 
 import logging
 from contextlib import asynccontextmanager
-
-from fastapi import FastAPI
 from typing import Type
 
-from .registry.component_registry import ComponentRegistry
+from fastapi import FastAPI
 
+from .agent import BaseAgent
 from .api import actuators, root
 from .api.events import EventApi
+from .config import Config
+from .handler import EventHandler
+from .registry.component_registry import ComponentRegistry
+from .services import AIProviderHealthChecker
 
 # Telemetry utilities
 from .telemetry import TelemetryManager
-
-
-from .agent import EventHandler, BaseAgent
-from .config import Config
 
 # Dapr generic endpoints
 try:
@@ -56,11 +55,29 @@ class AppBuilder:
         return self
 
     def with_agent_runtime(
-        self, runtime_class: Type[BaseAgent], is_default: bool = False
+        self,
+        runtime_class: Type[BaseAgent],
+        name: str | None = None,
+        is_default: bool = False
     ) -> "AppBuilder":
-        """Register an agent runtime class with the startup manager."""
+        """Register an agent runtime class with the startup manager.
+
+        Args:
+            runtime_class: The agent runtime class to register.
+            name: Optional runtime name for runtime-specific config.
+                 If None, uses the class name. Maps to [runtime.{name}] in settings.toml.
+            is_default: Whether this should be the default runtime.
+
+        Returns:
+            Self for method chaining.
+        """
+        runtime_name = name if name is not None else runtime_class.__name__
         self._runtime_classes.append(
-            {"runtime_class": runtime_class, "is_default": is_default}
+            {
+                "runtime_class": runtime_class,
+                "runtime_name": runtime_name,
+                "is_default": is_default
+            }
         )
         return self
 
@@ -112,10 +129,22 @@ class AppBuilder:
         try:
             for runtime_info in self._runtime_classes:
                 runtime_class = runtime_info["runtime_class"]
+                runtime_name = runtime_info["runtime_name"]
                 is_default = runtime_info["is_default"]
-                runtime_instance = runtime_class(self.config)
+                
+                # Instantiate runtime with runtime_name for config lookup
+                runtime_instance = runtime_class(self.config, runtime_name)
+                
+                # Register with the registry using the runtime_name
                 self._component_registry.register_runtime(
-                    runtime_class.__name__, runtime_instance, is_default=is_default
+                    runtime_name, runtime_instance, is_default=is_default
+                )
+                
+                logger.info(
+                    "Registered runtime '%s' (class: %s, default: %s)",
+                    runtime_name,
+                    runtime_class.__name__,
+                    is_default
                 )
             logger.info(
                 "Successfully registered %d runtimes", len(self._runtime_classes)
@@ -150,9 +179,7 @@ class AppBuilder:
         # )
 
         # Instantiate and include actuator routes with dependencies
-        health_dependencies = {
-            "ai_provider": actuators.AIProviderHealthChecker(self.config)
-        }
+        health_dependencies = {"ai_provider": AIProviderHealthChecker(self.config)}
         actuator_api = actuators.ActuatorApi(config=self.config, **health_dependencies)
         app.include_router(actuator_api.router, tags=["actuators"])
 
@@ -161,7 +188,8 @@ class AppBuilder:
         app.include_router(event_api.router, prefix="/events", tags=["events"])
         app.include_router(root.router, tags=["root"])
         if dapr is not None:
-            app.include_router(dapr.router, tags=["dapr"])
+            dapr_api = dapr.DaprApi()
+            app.include_router(dapr_api.router, tags=["dapr"])
 
         # Include custom routers
         for custom_router in self._custom_routers:

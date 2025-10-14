@@ -8,8 +8,8 @@ import json
 import logging
 from typing import Any, Dict, Optional
 
-from .event_handler import EventHandler
 from ..models import CloudEvent
+from .event_handler import EventHandler
 
 logger = logging.getLogger(__name__)
 

@@ -82,6 +82,51 @@ class CloudEventResponse(BaseModel):
     message: str = Field(..., examples=["Event processed successfully"])
 
 
+class ProcessResourceRequest(BaseModel):
+    """Standard request model for resource processing endpoints.
+
+    This is a base model that can be extended for domain-specific use cases.
+    Agents can either use this model directly or create custom models that
+    extend it with additional fields.
+    """
+
+    resource_id: str = Field(
+        ...,
+        description="Unique identifier for the resource to process",
+        examples=["res-12345", "invoice-789", "asset-456"],
+    )
+    tenant_id: Optional[str] = Field(
+        None,
+        description="Tenant identifier for multi-tenant scenarios",
+        examples=["tenant-42"],
+    )
+    operation: Optional[str] = Field(
+        None,
+        description="Operation to perform on the resource",
+        examples=["analyze", "validate", "transform", "process"],
+    )
+    parameters: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Additional parameters for the operation",
+        examples=[{"include_details": True, "language": "en"}],
+    )
+
+    model_config = ConfigDict(
+        extra="allow",  # Allow additional fields for extensibility
+        json_schema_extra={
+            "example": {
+                "resource_id": "invoice-789",
+                "tenant_id": "tenant-42",
+                "operation": "analyze",
+                "parameters": {
+                    "include_details": True,
+                    "language": "en",
+                },
+            }
+        },
+    )
+
+
 class ProcessResourceResponse(BaseModel):
     """Illustrative response for resource processing."""
 

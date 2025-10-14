@@ -82,24 +82,30 @@ class MyHandler(EventHandler):
             priority=20            # Execution order
         )
     
-    async def _can_handle(self, event: CloudEvent, context: dict) -> bool:
+    async def can_handle_event(self, event: CloudEvent, context: dict) -> bool:
         """Should this handler process this event?"""
         # Return True if you want to handle it
         pass
     
-    async def _handle(self, event: CloudEvent, context: dict):
+    async def handle_event(self, event: CloudEvent, context: dict):
         """Process the event."""
         # Your logic here
         # Return result or None to continue chain
         pass
+    
+    def get_runtime_name(self, event: CloudEvent, context: dict) -> str | None:
+        """Return the agent runtime to use (optional)."""
+        # Return runtime name, "" for default, or None to skip agent
+        return None
 ```
 
 **Key Methods:**
 
 | Method | Purpose | Return |
 |--------|---------|--------|
-| `_can_handle()` | Check if handler should process | `True` or `False` |
-| `_handle()` | Process the event | Result or `None` |
+| `can_handle_event()` | Check if handler should process | `True` or `False` |
+| `handle_event()` | Process the event | Result or `None` |
+| `get_runtime_name()` | Specify agent runtime (optional) | Runtime name, `""`, or `None` |
 
 ### Step 2: Implement _can_handle()
 
@@ -107,14 +113,14 @@ This method decides if your handler should process the event.
 
 **Example 1: Check event type**
 ```python
-async def _can_handle(self, event: CloudEvent, context: dict) -> bool:
+async def can_handle_event(self, event: CloudEvent, context: dict) -> bool:
     """Handle invoice events only."""
     return event.type == "invoice.created"
 ```
 
 **Example 2: Check payload data**
 ```python
-async def _can_handle(self, event: CloudEvent, context: dict) -> bool:
+async def can_handle_event(self, event: CloudEvent, context: dict) -> bool:
     """Handle events with 'urgent' flag."""
     if not event.data:
         return False
@@ -123,14 +129,14 @@ async def _can_handle(self, event: CloudEvent, context: dict) -> bool:
 
 **Example 3: Check context**
 ```python
-async def _can_handle(self, event: CloudEvent, context: dict) -> bool:
+async def can_handle_event(self, event: CloudEvent, context: dict) -> bool:
     """Handle if previous handler validated the event."""
     return context.get("validated") is True
 ```
 
 **Example 4: Complex logic**
 ```python
-async def _can_handle(self, event: CloudEvent, context: dict) -> bool:
+async def can_handle_event(self, event: CloudEvent, context: dict) -> bool:
     """Handle invoice events with amount > 1000."""
     if event.type != "invoice.created":
         return False
@@ -145,7 +151,7 @@ This method processes the event.
 
 **Example 1: Simple processing**
 ```python
-async def _handle(self, event: CloudEvent, context: dict):
+async def handle_event(self, event: CloudEvent, context: dict):
     """Log and enrich the event."""
     logger.info("Processing event: %s", event.id)
     
@@ -159,7 +165,7 @@ async def _handle(self, event: CloudEvent, context: dict):
 
 **Example 2: Return result (stops chain)**
 ```python
-async def _handle(self, event: CloudEvent, context: dict):
+async def handle_event(self, event: CloudEvent, context: dict):
     """Validate invoice and return result."""
     invoice = event.data
     
@@ -176,7 +182,7 @@ async def _handle(self, event: CloudEvent, context: dict):
 
 **Example 3: Invoke agent**
 ```python
-async def _handle(self, event: CloudEvent, context: dict):
+async def handle_event(self, event: CloudEvent, context: dict):
     """Trigger AI agent processing."""
     logger.info("Invoking agent for event: %s", event.id)
     
@@ -199,11 +205,11 @@ class InvoiceValidationHandler(EventHandler):
     def __init__(self):
         super().__init__("InvoiceValidationHandler", priority=10)
     
-    async def _can_handle(self, event: CloudEvent, context: dict) -> bool:
+    async def can_handle_event(self, event: CloudEvent, context: dict) -> bool:
         """Handle invoice events."""
         return event.type == "invoice.created"
     
-    async def _handle(self, event: CloudEvent, context: dict):
+    async def handle_event(self, event: CloudEvent, context: dict):
         """Validate invoice data."""
         invoice = event.data
         
@@ -242,11 +248,11 @@ class CustomerEnrichmentHandler(EventHandler):
     def __init__(self):
         super().__init__("CustomerEnrichmentHandler", priority=20)
     
-    async def _can_handle(self, event: CloudEvent, context: dict) -> bool:
+    async def can_handle_event(self, event: CloudEvent, context: dict) -> bool:
         """Handle validated invoices."""
         return context.get("validated") is True
     
-    async def _handle(self, event: CloudEvent, context: dict):
+    async def handle_event(self, event: CloudEvent, context: dict):
         """Add customer information."""
         invoice = context["invoice"]
         customer_id = invoice.get("customer_id")
@@ -275,11 +281,11 @@ class AgentInvokerHandler(EventHandler):
     def __init__(self):
         super().__init__("AgentInvokerHandler", priority=30)
     
-    async def _can_handle(self, event: CloudEvent, context: dict) -> bool:
+    async def can_handle_event(self, event: CloudEvent, context: dict) -> bool:
         """Handle enriched invoices."""
         return context.get("enriched") is True
     
-    async def _handle(self, event: CloudEvent, context: dict):
+    async def handle_event(self, event: CloudEvent, context: dict):
         """Invoke AI agent."""
         invoice = context["invoice"]
         customer = context.get("customer", {})
@@ -308,7 +314,7 @@ The `context` dictionary is shared between handlers. Use it to pass data:
 ### Writing to Context
 
 ```python
-async def _handle(self, event: CloudEvent, context: dict):
+async def handle_event(self, event: CloudEvent, context: dict):
     # Add simple values
     context["validated"] = True
     context["timestamp"] = datetime.now()
@@ -329,7 +335,7 @@ async def _handle(self, event: CloudEvent, context: dict):
 ### Reading from Context
 
 ```python
-async def _can_handle(self, event: CloudEvent, context: dict) -> bool:
+async def can_handle_event(self, event: CloudEvent, context: dict) -> bool:
     # Check if key exists
     if "validated" not in context:
         return False
@@ -394,7 +400,7 @@ app = (
 Stop the chain if processing is complete:
 
 ```python
-async def _handle(self, event: CloudEvent, context: dict):
+async def handle_event(self, event: CloudEvent, context: dict):
     # Process simple cases immediately
     if event.data.get("type") == "simple":
         return {
@@ -412,7 +418,7 @@ async def _handle(self, event: CloudEvent, context: dict):
 Only process if conditions are met:
 
 ```python
-async def _can_handle(self, event: CloudEvent, context: dict) -> bool:
+async def can_handle_event(self, event: CloudEvent, context: dict) -> bool:
     # Multiple conditions
     return (
         event.type == "invoice.created" and
@@ -426,7 +432,7 @@ async def _can_handle(self, event: CloudEvent, context: dict) -> bool:
 Handle errors gracefully:
 
 ```python
-async def _handle(self, event: CloudEvent, context: dict):
+async def handle_event(self, event: CloudEvent, context: dict):
     try:
         result = await self.process_invoice(event.data)
         context["result"] = result
@@ -450,7 +456,7 @@ async def _handle(self, event: CloudEvent, context: dict):
 Perform async operations:
 
 ```python
-async def _handle(self, event: CloudEvent, context: dict):
+async def handle_event(self, event: CloudEvent, context: dict):
     # Parallel operations
     customer, products = await asyncio.gather(
         self._fetch_customer(event.data["customer_id"]),
@@ -488,10 +494,10 @@ async def test_validation_handler_success():
     context = {}
     
     # Check if handler can handle
-    assert await handler._can_handle(event, context) is True
+    assert await handler.can_handle_event(event, context) is True
     
     # Process event
-    result = await handler._handle(event, context)
+    result = await handler.handle_event(event, context)
     
     # Should continue chain (return None)
     assert result is None
@@ -514,7 +520,7 @@ async def test_validation_handler_missing_field():
     context = {}
     
     # Process event
-    result = await handler._handle(event, context)
+    result = await handler.handle_event(event, context)
     
     # Should return error
     assert result["status"] == "error"
@@ -562,7 +568,7 @@ MyHandler
 ### 3. Log Important Actions
 
 ```python
-async def _handle(self, event: CloudEvent, context: dict):
+async def handle_event(self, event: CloudEvent, context: dict):
     logger.info("Processing invoice: %s", event.data["invoice_id"])
     
     result = await self.process(event.data)
@@ -576,7 +582,7 @@ async def _handle(self, event: CloudEvent, context: dict):
 ```python
 from typing import Any, Optional
 
-async def _handle(
+async def handle_event(
     self, 
     event: CloudEvent, 
     context: dict[str, Any]
@@ -588,7 +594,7 @@ async def _handle(
 ### 5. Handle Edge Cases
 
 ```python
-async def _handle(self, event: CloudEvent, context: dict):
+async def handle_event(self, event: CloudEvent, context: dict):
     # Check for None
     if not event.data:
         logger.warning("Empty event data")
@@ -607,7 +613,7 @@ async def _handle(self, event: CloudEvent, context: dict):
 ### Pattern: Feature Flags
 
 ```python
-async def _can_handle(self, event: CloudEvent, context: dict) -> bool:
+async def can_handle_event(self, event: CloudEvent, context: dict) -> bool:
     """Only handle if feature is enabled."""
     if not self.config.get("enable_ai_processing"):
         return False
@@ -618,7 +624,7 @@ async def _can_handle(self, event: CloudEvent, context: dict) -> bool:
 ### Pattern: Rate Limiting
 
 ```python
-async def _handle(self, event: CloudEvent, context: dict):
+async def handle_event(self, event: CloudEvent, context: dict):
     """Process with rate limiting."""
     if not await self.rate_limiter.acquire():
         logger.warning("Rate limit exceeded, requeueing")
@@ -630,7 +636,7 @@ async def _handle(self, event: CloudEvent, context: dict):
 ### Pattern: Caching
 
 ```python
-async def _handle(self, event: CloudEvent, context: dict):
+async def handle_event(self, event: CloudEvent, context: dict):
     """Enrich with cached customer data."""
     customer_id = event.data["customer_id"]
     
@@ -657,7 +663,7 @@ async def _handle(self, event: CloudEvent, context: dict):
 
 **Debug:**
 ```python
-async def _can_handle(self, event: CloudEvent, context: dict) -> bool:
+async def can_handle_event(self, event: CloudEvent, context: dict) -> bool:
     result = event.type == "invoice.created"
     logger.debug("Can handle? %s (event.type=%s)", result, event.type)
     return result
@@ -669,7 +675,7 @@ async def _can_handle(self, event: CloudEvent, context: dict) -> bool:
 
 **Solution:** Return `None` to continue:
 ```python
-async def _handle(self, event: CloudEvent, context: dict):
+async def handle_event(self, event: CloudEvent, context: dict):
     # Process
     context["processed"] = True
     
@@ -706,10 +712,10 @@ class MyHandler(EventHandler):
     def __init__(self):
         super().__init__("MyHandler", priority=20)
     
-    async def _can_handle(self, event, context):
+    async def can_handle_event(self, event, context):
         return True  # Your condition
     
-    async def _handle(self, event, context):
+    async def handle_event(self, event, context):
         # Your logic
         return None  # Continue chain
 
@@ -718,8 +724,125 @@ app = AppBuilder().with_handler(MyHandler).build()
 
 # Test handler
 handler = MyHandler()
-can_handle = await handler._can_handle(event, context)
-result = await handler._handle(event, context)
+can_handle = await handler.can_handle_event(event, context)
+result = await handler.handle_event(event, context)
+```
+
+## Selecting Agent Runtimes
+
+Handlers can specify which agent runtime should process an event using the `get_runtime_name()` method.
+
+### Runtime Selection Method
+
+```python
+def get_runtime_name(self, event: CloudEvent, context: dict) -> str | None:
+    """Return the name of the agent runtime to use.
+    
+    Returns:
+        - Runtime name (e.g., "invoice_analyzer") for specific runtime
+        - Empty string ("") to use default runtime
+        - None to skip agent processing entirely
+    """
+```
+
+### Return Values
+
+| Return Value | Behavior | Use Case |
+|--------------|----------|----------|
+| `"invoice_analyzer"` | Use named runtime | Route to specialized runtime |
+| `"document_classifier"` | Use named runtime | Different specialized runtime |
+| `""` (empty string) | Use default runtime | No specific runtime needed |
+| `None` | Skip agent processing | Handler fully processes event |
+
+### Example: Route to Specific Runtime
+
+```python
+class InvoiceHandler(EventHandler):
+    """Routes invoices to the invoice analyzer runtime."""
+    
+    def __init__(self):
+        super().__init__("InvoiceHandler", priority=10)
+    
+    async def can_handle_event(self, event, context) -> bool:
+        return event.data.details.get("action") == "process_invoice"
+    
+    async def handle_event(self, event, context):
+        # Prepare context for agent
+        context["invoice_text"] = event.data.invoice_text
+        return None  # Let agent process
+    
+    def get_runtime_name(self, event, context) -> str:
+        """Route to invoice analyzer runtime."""
+        return "invoice_analyzer"
+```
+
+### Example: Skip Agent Processing
+
+```python
+class SimpleProcessorHandler(EventHandler):
+    """Processes simple events without an agent."""
+    
+    async def can_handle_event(self, event, context) -> bool:
+        return event.data.details.get("action") == "simple_process"
+    
+    async def handle_event(self, event, context):
+        # Fully process the event
+        return {
+            "status": "processed",
+            "data": self._process_data(event.data)
+        }
+    
+    def get_runtime_name(self, event, context) -> None:
+        """No agent needed."""
+        return None
+```
+
+### Example: Dynamic Runtime Selection
+
+```python
+class SmartRoutingHandler(EventHandler):
+    """Routes to different runtimes based on document type."""
+    
+    async def can_handle_event(self, event, context) -> bool:
+        return event.data.details.get("action") == "analyze_document"
+    
+    async def handle_event(self, event, context):
+        context["document_text"] = event.data.text
+        return None
+    
+    def get_runtime_name(self, event, context) -> str:
+        """Route based on document type."""
+        doc_type = event.data.details.get("document_type")
+        
+        if doc_type == "invoice":
+            return "invoice_analyzer"
+        elif doc_type == "contract":
+            return "contract_analyzer"
+        elif doc_type == "email":
+            return "email_classifier"
+        else:
+            return ""  # Use default runtime
+```
+
+### Processing Flow
+
+```
+1. Event arrives
+   ↓
+2. Handler chain processes event
+   ↓
+3. Handler calls handle_event()
+   ↓
+4. Framework calls get_runtime_name()
+   ↓
+5. Based on return value:
+   - None → Skip agent, use handler result
+   - "" → Use default runtime
+   - "name" → Use named runtime
+   ↓
+6. Agent processes (if runtime specified)
+   ↓
+7. Return final result
 ```
 
 ---

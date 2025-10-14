@@ -1,0 +1,117 @@
+apiVersion: dapr.io/v2alpha1
+kind: Subscription
+metadata:
+  name: invoice-processing-subscription
+spec:
+  # Topic to subscribe to
+  topic: invoice.created
+  
+  # Route to send events to (your FastAPI endpoint)
+  route: /events/invoice
+  
+  # Pub/Sub component name (must match your pubsub.yaml)
+  pubsubname: rabbitmq-pubsub
+  
+  # Metadata for the subscription
+  metadata:
+    # RabbitMQ-specific: Queue name
+    - name: queueName
+      value: invoice-processing-queue
+    
+    # RabbitMQ-specific: Durable queue
+    - name: durable
+      value: "true"
+    
+    # RabbitMQ-specific: Auto-delete queue when no consumers
+    - name: autoDelete
+      value: "false"
+    
+    # RabbitMQ-specific: Exclusive queue
+    - name: exclusive
+      value: "false"
+    
+    # Prefetch count (number of messages to prefetch)
+    - name: prefetchCount
+      value: "10"
+    
+    # Consumer tag
+    - name: consumerTag
+      value: "invoice-processor"
+  
+  # Scopes - which app IDs can use this subscription
+  scopes:
+    - agent-blueprint
+
+---
+apiVersion: dapr.io/v2alpha1
+kind: Subscription
+metadata:
+  name: document-classification-subscription
+spec:
+  topic: document.uploaded
+  route: /events/document
+  pubsubname: rabbitmq-pubsub
+  
+  metadata:
+    - name: queueName
+      value: document-classification-queue
+    - name: durable
+      value: "true"
+    - name: autoDelete
+      value: "false"
+    - name: prefetchCount
+      value: "5"
+  
+  scopes:
+    - agent-blueprint
+
+---
+apiVersion: dapr.io/v2alpha1
+kind: Subscription
+metadata:
+  name: invoice-validation-subscription
+spec:
+  topic: invoice.validate
+  route: /events/validate
+  pubsubname: rabbitmq-pubsub
+  
+  metadata:
+    - name: queueName
+      value: invoice-validation-queue
+    - name: durable
+      value: "true"
+    - name: prefetchCount
+      value: "20"  # Higher throughput for validation
+  
+  # Dead letter configuration
+  deadLetterTopic: invoice.validate.deadletter
+  
+  scopes:
+    - agent-blueprint
+
+---
+# Bulk subscription for multiple topics
+apiVersion: dapr.io/v2alpha1
+kind: Subscription
+metadata:
+  name: all-invoice-events-subscription
+spec:
+  # Use topic pattern for multiple topics
+  topic: invoice.*
+  route: /events/invoice-all
+  pubsubname: rabbitmq-pubsub
+  
+  metadata:
+    - name: queueName
+      value: all-invoice-events-queue
+    - name: durable
+      value: "true"
+  
+  # Bulk subscribe settings
+  bulkSubscribe:
+    enabled: true
+    maxMessagesCount: 100
+    maxAwaitDurationMs: 1000
+  
+  scopes:
+    - agent-blueprint

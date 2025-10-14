@@ -78,26 +78,23 @@ class ProcessingService:
             )
 
             try:
-                # Step 1: Process through handler chain
-                handler_result = await self._process_through_handlers(event, context)
+                # Step 1: Process through handler chain and get runtime name
+                handler_result, requested_runtime = await self._process_through_handlers(event, context)
 
-                # Step 2: If handlers indicate agent processing is needed, use runtime
-                should_use_agent = context.get("use_agent", False)
+                # Step 2: Use agent if handler returned a runtime name
                 agent_result = None
 
-                if should_use_agent or handler_result is None:
-                    requested_agent_name = context.get("agent_name") or runtime_name
+                if requested_runtime is not None:
+                    # Empty string means use default runtime
+                    actual_runtime = requested_runtime if requested_runtime else runtime_name
+                    
                     logger.info(
                         "Processing with agent runtime for request %s",
                         request_id,
                         extra={
                             "request_id": request_id,
-                            "reason": (
-                                "handler_requested"
-                                if should_use_agent
-                                else "no_handler_result"
-                            ),
-                            "runtime_name": requested_agent_name,
+                            "runtime_name": actual_runtime,
+                            "handler_specified": bool(requested_runtime),
                         },
                     )
 
@@ -110,10 +107,10 @@ class ProcessingService:
 
                     try:
                         agent_result = await self._process_with_runtime(
-                            runtime_name=requested_agent_name, **agent_context
+                            runtime_name=actual_runtime, **agent_context
                         )
                         span.set_attribute("agent.processed", True)
-                        span.set_attribute("agent.name", requested_agent_name)
+                        span.set_attribute("agent.name", actual_runtime)
 
                     except Exception as e:
                         logger.error(
@@ -251,14 +248,17 @@ class ProcessingService:
 
     async def _process_through_handlers(
         self, event: CloudEvent, context: Dict[str, Any]
-    ) -> Optional[Any]:
+    ) -> tuple[Optional[Any], Optional[str]]:
         """
         Process an event through all registered handlers.
 
-        Returns the result from the first handler that processes the event,
-        or None if no handler processes it.
+        Returns:
+            Tuple of (handler_result, runtime_name) where:
+            - handler_result: Result from the first handler that processes the event, or None
+            - runtime_name: Runtime name from handler's get_runtime_name(), or None to skip agent
         """
         handlers = self._component_registry.get_handlers()
+        runtime_name = None
 
         with tracer.start_as_current_span("processing_service.handler_chain") as span:
             span.set_attribute("event.type", event.type)
@@ -289,6 +289,15 @@ class ProcessingService:
                         )
 
                         result = await handler.handle(event, context)
+                        
+                        # Get runtime name from handler
+                        runtime_name = handler.get_runtime_name(event, context)
+                        
+                        logger.debug(
+                            "Handler %s specified runtime: %s",
+                            handler.name,
+                            runtime_name if runtime_name else "None (no agent)"
+                        )
 
                         if result is not None:
                             logger.info(
@@ -300,10 +309,13 @@ class ProcessingService:
                                     "event_type": event.type,
                                     "event_id": getattr(event, "id", None),
                                     "has_result": True,
+                                    "runtime_name": runtime_name,
                                 },
                             )
                             span.set_attribute("handler.processed_by", handler.name)
-                            return result
+                            if runtime_name is not None:
+                                span.set_attribute("handler.runtime_name", runtime_name)
+                            return result, runtime_name
                         else:
                             logger.info(
                                 "Handler %s processed event %s but passed to next handler",
@@ -314,9 +326,10 @@ class ProcessingService:
                                     "event_type": event.type,
                                     "event_id": getattr(event, "id", None),
                                     "has_result": False,
+                                    "runtime_name": runtime_name,
                                 },
                             )
-                            # Continue to next handler
+                            # Continue to next handler but keep the runtime_name
 
                 except Exception as e:
                     logger.error(
@@ -345,7 +358,7 @@ class ProcessingService:
                     "handlers_count": len(handlers),
                 },
             )
-            return None
+            return None, runtime_name
 
     async def _process_with_runtime(
         self, runtime_name: Optional[str] = None, context: Any = None, **kwargs

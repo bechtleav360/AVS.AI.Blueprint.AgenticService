@@ -1,0 +1,358 @@
+# Default values for agent-blueprint
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+replicaCount: 2
+
+image:
+  repository: your-registry/agent-blueprint
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Dapr configuration
+dapr:
+  enabled: true
+  appId: agent-blueprint
+  appPort: 8000
+  httpPort: 3500
+  grpcPort: 50001
+  metricsPort: 9090
+  logLevel: info
+  enableProfiling: false
+  enableApiLogging: true
+  httpMaxRequestSize: 4
+  httpReadBufferSize: 4
+  enableMetrics: true
+  sidecar:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 1000m
+        memory: 512Mi
+
+# Application configuration
+app:
+  environment: production
+  port: 8000
+  logLevel: INFO
+  
+  # AI Model configuration
+  aiModel:
+    provider: openai
+    name: gpt-4
+    maxTokens: 2000
+    temperature: 0.1
+    timeout: 60
+    maxRetries: 3
+  
+  # Observability
+  observability:
+    otelEnabled: true
+    otelEndpoint: "http://otel-collector:4317"
+    otelServiceName: "agent-blueprint"
+  
+  # Data Gateway (optional)
+  dataGateway:
+    enabled: false
+    baseUrl: ""
+    timeout: 30
+    maxRetries: 3
+
+# Multi-runtime configuration
+runtimes:
+  # Invoice analyzer runtime
+  invoiceAnalyzer:
+    enabled: true
+    systemPromptName: invoice_system
+    instructionPromptName: invoice_instruction
+    aiModelName: gpt-4
+    aiModelTemperature: 0.1
+    aiModelMaxTokens: 2000
+  
+  # Document classifier runtime
+  documentClassifier:
+    enabled: true
+    systemPromptName: classifier_system
+    instructionPromptName: classifier_instruction
+    aiModelName: gpt-4
+    aiModelTemperature: 0.0
+    aiModelMaxTokens: 500
+  
+  # Summarizer runtime
+  summarizer:
+    enabled: false
+    systemPromptName: summarizer_system
+    instructionPromptName: summarizer_instruction
+    aiModelName: gpt-4
+    aiModelTemperature: 0.7
+    aiModelMaxTokens: 1500
+
+# Prompts configuration
+prompts:
+  # System prompts
+  invoiceSystem: |
+    You are an AI assistant specialized in invoice processing.
+    Your task is to extract structured information from unstructured invoice text.
+    
+    Key responsibilities:
+    - Extract invoice numbers, dates, and amounts accurately
+    - Identify customer and vendor information
+    - Parse line items with quantities and prices
+    - Calculate totals and verify tax amounts
+    - Flag any inconsistencies or missing information
+    
+    Be precise with numbers and dates. If information is unclear, indicate uncertainty.
+  
+  classifierSystem: |
+    You are a document classifier specialized in categorizing business documents.
+    
+    Your task is to:
+    - Identify document type (invoice, contract, email, report, etc.)
+    - Determine document priority (urgent, normal, low)
+    - Extract key metadata (date, parties involved, subject)
+    - Flag documents requiring immediate attention
+    
+    Be quick and accurate. Provide confidence scores for your classifications.
+  
+  summarizerSystem: |
+    You are a document summarizer that creates concise, accurate summaries.
+    
+    Your task is to:
+    - Extract key points and main ideas
+    - Preserve critical information (dates, amounts, names)
+    - Create summaries appropriate for the audience
+    - Maintain objectivity and accuracy
+    
+    Keep summaries brief but comprehensive.
+  
+  # Instruction prompts
+  invoiceInstruction: |
+    Analyze this invoice and extract the information:
+    
+    {invoice_text}
+    
+    Please extract all relevant invoice details including:
+    - Invoice number and date
+    - Customer information (name, address, contact)
+    - Vendor information
+    - Line items with:
+      * Description
+      * Quantity
+      * Unit price
+      * Total price
+    - Subtotal, tax amount, and total
+    - Payment terms and due date
+    - Any special notes or conditions
+    
+    Use the calculate_invoice tool to verify the calculations.
+  
+  classifierInstruction: |
+    Classify this document:
+    
+    {document_text}
+    
+    Provide:
+    - Document type
+    - Priority level
+    - Key metadata
+    - Confidence score
+    - Recommended action
+  
+  summarizerInstruction: |
+    Summarize this document:
+    
+    {document_text}
+    
+    Provide a concise summary highlighting:
+    - Main purpose
+    - Key points
+    - Important dates and amounts
+    - Action items
+
+# Dapr components
+daprComponents:
+  # RabbitMQ pub/sub
+  rabbitmq:
+    enabled: true
+    host: "amqp://rabbitmq:5672"
+    vhost: "bios"
+    consumerID: "agent-blueprint"
+    durable: true
+    autoAck: false
+    deliveryMode: 2
+    reconnectWait: 5
+    prefetchCount: 10
+    exchangeKind: "topic"
+    publisherConfirm: true
+    # Use existing secret for credentials
+    existingSecret: ""
+    secretKeys:
+      host: host
+      username: username
+      password: password
+
+# Dapr subscriptions
+subscriptions:
+  # Invoice processing subscription
+  invoiceCreated:
+    enabled: true
+    topic: invoice.created
+    route: /events/invoice
+    queueName: invoice-processing-queue
+    durable: true
+    autoDelete: false
+    prefetchCount: 10
+    consumerTag: invoice-processor
+  
+  # Document classification subscription
+  documentUploaded:
+    enabled: true
+    topic: document.uploaded
+    route: /events/document
+    queueName: document-classification-queue
+    durable: true
+    autoDelete: false
+    prefetchCount: 5
+    consumerTag: document-classifier
+  
+  # Invoice validation subscription
+  invoiceValidate:
+    enabled: false
+    topic: invoice.validate
+    route: /events/validate
+    queueName: invoice-validation-queue
+    durable: true
+    prefetchCount: 20
+    deadLetterTopic: invoice.validate.deadletter
+
+# Secrets
+secrets:
+  # AI Model API keys
+  aiModel:
+    # Create secret manually or use existing
+    create: false
+    existingSecret: "ai-model-secret"
+    keys:
+      openaiApiKey: openai_api_key
+      vllmApiKey: vllm_api_key
+      vllmBaseUrl: vllm_base_url
+  
+  # Data Gateway credentials
+  dataGateway:
+    create: false
+    existingSecret: "data-gateway-secret"
+    keys:
+      apiKey: api_key
+      baseUrl: base_url
+
+# Service configuration
+service:
+  type: ClusterIP
+  port: 8000
+  annotations: {}
+
+# Ingress configuration
+ingress:
+  enabled: false
+  className: "nginx"
+  annotations: {}
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+    # nginx.ingress.kubernetes.io/rewrite-target: /
+  hosts:
+    - host: agent-blueprint.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: agent-blueprint-tls
+  #    hosts:
+  #      - agent-blueprint.example.com
+
+# Resource limits
+resources:
+  requests:
+    cpu: 500m
+    memory: 512Mi
+  limits:
+    cpu: 2000m
+    memory: 2Gi
+
+# Autoscaling
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 50
+          periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 30
+        - type: Pods
+          value: 2
+          periodSeconds: 30
+
+# Health checks
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+# Pod annotations
+podAnnotations: {}
+
+# Pod security context
+podSecurityContext: {}
+  # fsGroup: 2000
+
+# Container security context
+securityContext: {}
+  # capabilities:
+  #   drop:
+  #   - ALL
+  # readOnlyRootFilesystem: true
+  # runAsNonRoot: true
+  # runAsUser: 1000
+
+# Node selector
+nodeSelector: {}
+
+# Tolerations
+tolerations: []
+
+# Affinity
+affinity: {}
+
+# Service account
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""

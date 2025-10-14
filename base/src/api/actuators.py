@@ -3,12 +3,11 @@
 import logging
 import os
 import platform
-from typing import Any, Dict, List, Optional, Protocol
-
-import httpx
-from fastapi import APIRouter, HTTPException, status
 from importlib import metadata
 from importlib.metadata import PackageNotFoundError
+from typing import Any, Dict, List, Optional, Protocol
+
+from fastapi import APIRouter, HTTPException, status
 from opentelemetry import trace
 
 from ..config import Config
@@ -28,64 +27,6 @@ class HealthCheckProvider(Protocol):
     """A protocol for components that can provide a health check."""
 
     async def health_check(self) -> ComponentHealth: ...
-
-
-class AIProviderHealthChecker:
-    """Health check provider for the configured AI model."""
-
-    def __init__(self, config: Config):
-        self.config = config
-
-    async def health_check(self) -> ComponentHealth:
-        ai_config = self.config.get_ai_config()
-        provider = ai_config.get("provider")
-
-        if provider == "vllm":
-            base_url = ai_config.get("base_url")
-            if not base_url:
-                return ComponentHealth(
-                    status="unhealthy",
-                    message="vLLM base_url not configured",
-                )
-
-            api_key = ai_config.get("api_key")
-            if not api_key:
-                return ComponentHealth(
-                    status="unhealthy",
-                    message="vLLM api_key not configured",
-                )
-
-            try:
-                headers = {"Authorization": f"Bearer {api_key}"}
-                async with httpx.AsyncClient() as client:
-                    # vLLM servers have a /health endpoint
-                    response = await client.get(
-                        f"{base_url.rstrip('/')}/health", headers=headers
-                    )
-                    response.raise_for_status()
-                    return ComponentHealth(
-                        status="healthy",
-                        message=f"vLLM reachable at {base_url}",
-                    )
-            except httpx.RequestError as e:
-                logger.warning("vLLM health check failed: %s", e)
-                return ComponentHealth(
-                    status="unhealthy",
-                    message=f"vLLM check failed: {e}",
-                )
-
-        elif provider == "openai":
-            # No external dependency to check, assume healthy if configured
-            logger.info("AI provider is 'openai', skipping health check.")
-            return ComponentHealth(
-                status="healthy",
-                message="openai provider selected; health assumed",
-            )
-
-        return ComponentHealth(
-            status="unknown",
-            message=f"Unsupported provider: {provider}",
-        )
 
 
 class ActuatorApi:
@@ -239,9 +180,7 @@ class ActuatorApi:
                         )
                         response.raise_for_status()
                         payload = response.json()
-                        models = [
-                            item.get("id") for item in payload.get("data", [])
-                        ]
+                        models = [item.get("id") for item in payload.get("data", [])]
                 except httpx.RequestError as exc:
                     logger.warning("Failed to query vLLM models: %s", exc)
                     models_error = str(exc)
@@ -307,5 +246,4 @@ class ActuatorApi:
 # actuator_api = ActuatorApi(**dependencies)
 # router = actuator_api.router
 
-# The router is now created and configured within the AppBuilder
-router = APIRouter()
+# The router is created and configured within the AppBuilder

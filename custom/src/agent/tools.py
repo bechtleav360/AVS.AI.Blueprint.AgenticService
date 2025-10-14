@@ -2,12 +2,11 @@
 
 import logging
 from decimal import Decimal
-from uuid import UUID
 
 from pydantic_ai import RunContext
 
 from ..models import InvoiceAnalysisOutput, InvoiceInput, ProcessingContext
-from .logic import InvoiceProcessingLogic
+from ..services import InvoiceProcessingLogic
 
 logger = logging.getLogger(__name__)
 
@@ -20,9 +19,7 @@ class Tools:
     orchestrate and explain results.
     """
 
-    async def calculate_invoice(
-        self, ctx: RunContext[ProcessingContext], invoice: InvoiceInput
-    ) -> InvoiceAnalysisOutput:
+    async def calculate_invoice(self, ctx: RunContext[ProcessingContext], invoice: InvoiceInput) -> InvoiceAnalysisOutput:
         """
         Calculate invoice totals and infer taxes deterministically.
 
@@ -32,9 +29,7 @@ class Tools:
 
         invoice_dict = invoice.model_dump()
         calculation = InvoiceProcessingLogic.calculate_invoice(invoice_dict)
-        recommendations = InvoiceProcessingLogic.generate_recommendations(
-            calculation, invoice_dict
-        )
+        recommendations = InvoiceProcessingLogic.generate_recommendations(calculation, invoice_dict)
 
         status = calculation.get("status", "unknown")
         total_amount = calculation.get("total_amount", Decimal("0.00"))
@@ -64,14 +59,8 @@ class Tools:
                 "evidence": calculation.get("evidence", []),
                 "recommendations": recommendations,
                 "context": {
-                    "correlation_id": (
-                        str(ctx.deps.correlation_id)
-                        if ctx.deps and ctx.deps.correlation_id
-                        else None
-                    ),
-                    "event_id": (
-                        str(ctx.deps.event_id) if ctx.deps and ctx.deps.event_id else None
-                    ),
+                    "correlation_id": (str(ctx.deps.correlation_id) if ctx.deps and ctx.deps.correlation_id else None),
+                    "event_id": (str(ctx.deps.event_id) if ctx.deps and ctx.deps.event_id else None),
                 },
             },
         )

@@ -1,0 +1,81 @@
+{{- if .Values.dapr.enabled }}
+{{- if .Values.subscriptions.invoiceCreated.enabled }}
+---
+apiVersion: dapr.io/v2alpha1
+kind: Subscription
+metadata:
+  name: {{ include "agent-blueprint.fullname" . }}-invoice-created
+  labels:
+    {{- include "agent-blueprint.labels" . | nindent 4 }}
+spec:
+  topic: {{ .Values.subscriptions.invoiceCreated.topic }}
+  route: {{ .Values.subscriptions.invoiceCreated.route }}
+  pubsubname: rabbitmq-pubsub
+  metadata:
+    - name: queueName
+      value: {{ .Values.subscriptions.invoiceCreated.queueName }}
+    - name: durable
+      value: {{ .Values.subscriptions.invoiceCreated.durable | quote }}
+    - name: autoDelete
+      value: {{ .Values.subscriptions.invoiceCreated.autoDelete | quote }}
+    - name: prefetchCount
+      value: {{ .Values.subscriptions.invoiceCreated.prefetchCount | quote }}
+    - name: consumerTag
+      value: {{ .Values.subscriptions.invoiceCreated.consumerTag }}
+  scopes:
+    - {{ .Values.dapr.appId }}
+{{- end }}
+
+{{- if .Values.subscriptions.documentUploaded.enabled }}
+---
+apiVersion: dapr.io/v2alpha1
+kind: Subscription
+metadata:
+  name: {{ include "agent-blueprint.fullname" . }}-document-uploaded
+  labels:
+    {{- include "agent-blueprint.labels" . | nindent 4 }}
+spec:
+  topic: {{ .Values.subscriptions.documentUploaded.topic }}
+  route: {{ .Values.subscriptions.documentUploaded.route }}
+  pubsubname: rabbitmq-pubsub
+  metadata:
+    - name: queueName
+      value: {{ .Values.subscriptions.documentUploaded.queueName }}
+    - name: durable
+      value: {{ .Values.subscriptions.documentUploaded.durable | quote }}
+    - name: autoDelete
+      value: {{ .Values.subscriptions.documentUploaded.autoDelete | quote }}
+    - name: prefetchCount
+      value: {{ .Values.subscriptions.documentUploaded.prefetchCount | quote }}
+    - name: consumerTag
+      value: {{ .Values.subscriptions.documentUploaded.consumerTag }}
+  scopes:
+    - {{ .Values.dapr.appId }}
+{{- end }}
+
+{{- if .Values.subscriptions.invoiceValidate.enabled }}
+---
+apiVersion: dapr.io/v2alpha1
+kind: Subscription
+metadata:
+  name: {{ include "agent-blueprint.fullname" . }}-invoice-validate
+  labels:
+    {{- include "agent-blueprint.labels" . | nindent 4 }}
+spec:
+  topic: {{ .Values.subscriptions.invoiceValidate.topic }}
+  route: {{ .Values.subscriptions.invoiceValidate.route }}
+  pubsubname: rabbitmq-pubsub
+  {{- if .Values.subscriptions.invoiceValidate.deadLetterTopic }}
+  deadLetterTopic: {{ .Values.subscriptions.invoiceValidate.deadLetterTopic }}
+  {{- end }}
+  metadata:
+    - name: queueName
+      value: {{ .Values.subscriptions.invoiceValidate.queueName }}
+    - name: durable
+      value: {{ .Values.subscriptions.invoiceValidate.durable | quote }}
+    - name: prefetchCount
+      value: {{ .Values.subscriptions.invoiceValidate.prefetchCount | quote }}
+  scopes:
+    - {{ .Values.dapr.appId }}
+{{- end }}
+{{- end }}

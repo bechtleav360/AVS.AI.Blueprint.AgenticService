@@ -51,9 +51,7 @@ class InvoiceProcessingLogic:
                 line_tax = line_net * tax_rate_decimal
                 total_tax += line_tax
                 tax_rates_found.append(tax_rate_decimal)
-                evidence.append(
-                    f"Line {idx + 1}: net={line_net}, tax_rate={tax_rate_decimal}, tax={line_tax}"
-                )
+                evidence.append(f"Line {idx + 1}: net={line_net}, tax_rate={tax_rate_decimal}, tax={line_tax}")
             else:
                 evidence.append(f"Line {idx + 1}: net={line_net}, tax_rate=missing")
 
@@ -69,10 +67,15 @@ class InvoiceProcessingLogic:
             # Partial tax info: use average of known rates
             avg_rate = sum(tax_rates_found) / len(tax_rates_found)
             inferred_tax = total_tax + (
-                (total_net - sum(
-                    Decimal(str(item.get("quantity", 0))) * Decimal(str(item.get("unit_price", 0)))
-                    for item in line_items if item.get("tax_rate") is not None
-                )) * avg_rate
+                (
+                    total_net
+                    - sum(
+                        Decimal(str(item.get("quantity", 0))) * Decimal(str(item.get("unit_price", 0)))
+                        for item in line_items
+                        if item.get("tax_rate") is not None
+                    )
+                )
+                * avg_rate
             )
             evidence.append(f"Partial tax info; inferred average rate {avg_rate}.")
             confidence = 0.7
@@ -92,9 +95,7 @@ class InvoiceProcessingLogic:
         }
 
     @staticmethod
-    def generate_recommendations(
-        calculation_result: dict[str, Any], invoice: dict[str, Any]
-    ) -> list[str]:
+    def generate_recommendations(calculation_result: dict[str, Any], invoice: dict[str, Any]) -> list[str]:
         """
         Generate recommendations based on the invoice calculation.
 
@@ -111,9 +112,7 @@ class InvoiceProcessingLogic:
             recommendations.append("Invoice is incomplete. Verify all line items are present.")
 
         if calculation_result["confidence"] < 0.7:
-            recommendations.append(
-                "Tax calculation confidence is low. Ensure all line items include tax_rate."
-            )
+            recommendations.append("Tax calculation confidence is low. Ensure all line items include tax_rate.")
 
         if calculation_result["inferred_tax_amount"] == Decimal("0.00"):
             recommendations.append("No tax detected. Confirm if this invoice is tax-exempt.")

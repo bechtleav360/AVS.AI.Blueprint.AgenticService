@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agent-blueprint.fullname" . }}
+  labels:
+    {{- include "agent-blueprint.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+    {{- if .Values.dapr.enabled }}
+    - port: {{ .Values.dapr.httpPort }}
+      targetPort: {{ .Values.dapr.httpPort }}
+      protocol: TCP
+      name: dapr-http
+    - port: {{ .Values.dapr.grpcPort }}
+      targetPort: {{ .Values.dapr.grpcPort }}
+      protocol: TCP
+      name: dapr-grpc
+    {{- end }}
+  selector:
+    {{- include "agent-blueprint.selectorLabels" . | nindent 4 }}

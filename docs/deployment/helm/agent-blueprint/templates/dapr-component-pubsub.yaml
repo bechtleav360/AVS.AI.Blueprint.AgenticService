@@ -1,0 +1,43 @@
+{{- if .Values.dapr.enabled }}
+{{- if .Values.daprComponents.rabbitmq.enabled }}
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: rabbitmq-pubsub
+  labels:
+    {{- include "agent-blueprint.labels" . | nindent 4 }}
+spec:
+  type: pubsub.rabbitmq
+  version: v1
+  metadata:
+    {{- if .Values.daprComponents.rabbitmq.existingSecret }}
+    - name: host
+      secretKeyRef:
+        name: {{ .Values.daprComponents.rabbitmq.existingSecret }}
+        key: {{ .Values.daprComponents.rabbitmq.secretKeys.host }}
+    {{- else }}
+    - name: host
+      value: {{ .Values.daprComponents.rabbitmq.host | quote }}
+    {{- end }}
+    - name: vhost
+      value: {{ .Values.daprComponents.rabbitmq.vhost | quote }}
+    - name: consumerID
+      value: {{ .Values.daprComponents.rabbitmq.consumerID | quote }}
+    - name: durable
+      value: {{ .Values.daprComponents.rabbitmq.durable | quote }}
+    - name: autoAck
+      value: {{ .Values.daprComponents.rabbitmq.autoAck | quote }}
+    - name: deliveryMode
+      value: {{ .Values.daprComponents.rabbitmq.deliveryMode | quote }}
+    - name: reconnectWait
+      value: {{ .Values.daprComponents.rabbitmq.reconnectWait | quote }}
+    - name: prefetchCount
+      value: {{ .Values.daprComponents.rabbitmq.prefetchCount | quote }}
+    - name: exchangeKind
+      value: {{ .Values.daprComponents.rabbitmq.exchangeKind | quote }}
+    - name: publisherConfirm
+      value: {{ .Values.daprComponents.rabbitmq.publisherConfirm | quote }}
+  scopes:
+    - {{ .Values.dapr.appId }}
+{{- end }}
+{{- end }}

@@ -412,3 +412,228 @@ kubectl apply -f k8s/
 - **[Dapr Configuration](dapr-configuration.md)** - Event processing setup
 - **[Getting Started](../getting-started.md)** - Initial setup
 - **[Deployment Guide](../deployment.md)** - Production deployment
+
+## Multi-Runtime Configuration
+
+The framework supports multiple agent runtime instances with different configurations, allowing specialized agents for different purposes.
+
+### Overview
+
+Each runtime can have its own:
+- System prompts
+- Instruction prompts  
+- AI models and parameters
+- Usage limits
+- Providers (mix OpenAI and vLLM)
+
+### Configuration Structure
+
+```toml
+[default]
+# Global defaults
+ai_model_provider = "vllm"
+ai_model_base_url = "https://avs-vllm.q14.net/v1"
+
+# Runtime-specific configurations
+[runtime.invoice_analyzer]
+system_prompt_name = "invoice_system"
+instruction_prompt_name = "invoice_instruction"
+ai_model_name = "invoice-specialized-model"
+ai_model_temperature = 0.1
+ai_model_max_tokens = 2000
+
+[runtime.document_classifier]
+system_prompt_name = "classifier_system"
+ai_model_provider = "openai"
+ai_model_name = "gpt-4"
+ai_model_temperature = 0.0
+```
+
+### Registering Multiple Runtimes
+
+```python
+# custom/src/main.py
+from base.src.app_builder import AppBuilder
+from .agent.runtime import AgentRuntime
+
+app = (
+    AppBuilder(settings_files=settings_files, root_path=project_root)
+    .with_agent_runtime(AgentRuntime, name="invoice_analyzer", is_default=True)
+    .with_agent_runtime(AgentRuntime, name="document_classifier")
+    .with_agent_runtime(AgentRuntime, name="summarizer")
+    .build()
+)
+```
+
+### Runtime-Specific Settings
+
+All these can be set in `[runtime.{name}]` sections:
+
+**AI Model:**
+- `ai_model_provider` - Provider name
+- `ai_model_name` - Model identifier
+- `ai_model_base_url` - API base URL
+- `ai_model_max_tokens` - Max tokens per request
+- `ai_model_temperature` - Temperature (0.0-1.0)
+
+**Prompts:**
+- `system_prompt_name` - System prompt file name
+- `instruction_prompt_name` - Instruction prompt file name
+- `prompt_directory` - Custom prompt directory
+- `prompt_search_paths` - Additional search paths
+
+**Usage Limits:**
+- `ai_usage_request_limit` - Max requests per run
+- `ai_usage_input_tokens_limit` - Max input tokens
+- `ai_usage_output_tokens_limit` - Max output tokens
+
+### Use Cases
+
+**Task-Specific Runtimes:**
+```toml
+[runtime.invoice_analyzer]
+ai_model_temperature = 0.1  # Precise
+ai_model_max_tokens = 2000
+
+[runtime.creative_writer]
+ai_model_temperature = 0.9  # Creative
+ai_model_max_tokens = 4000
+```
+
+**Multi-Language:**
+```toml
+[runtime.english_analyzer]
+system_prompt_name = "system_en"
+prompt_directory = "/etc/agent/prompts/en"
+
+[runtime.german_analyzer]
+system_prompt_name = "system_de"
+prompt_directory = "/etc/agent/prompts/de"
+```
+
+**Provider Mixing:**
+```toml
+[runtime.fast_classifier]
+ai_model_provider = "vllm"
+ai_model_name = "fast-local-model"
+
+[runtime.quality_analyzer]
+ai_model_provider = "openai"
+ai_model_name = "gpt-4"
+```
+
+## Prompt Configuration
+
+### Prompt File Locations
+
+Configure where prompts are loaded from:
+
+```toml
+[default]
+# Custom directory for prompt files
+prompt_directory = "/etc/agent/prompts"
+
+# Additional search paths
+prompt_search_paths = [
+    "/mnt/configmap/prompts",
+    "../shared/prompts"
+]
+
+# Prompt file names
+system_prompt_name = "system"
+instruction_prompt_name = "instruction"
+```
+
+### Search Order
+
+The framework searches for prompts in this order:
+1. Custom path from `prompt_directory`
+2. Additional paths from `prompt_search_paths`
+3. Default locations based on agent class location
+
+### Kubernetes ConfigMap Example
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-prompts
+data:
+  system.prompt: |
+    You are an AI assistant specialized in invoice processing...
+  
+  instruction.prompt: |
+    Analyze this invoice and extract the information:
+    
+    {invoice_text}
+---
+apiVersion: apps/v1
+kind: Deployment
+spec:
+  template:
+    spec:
+      containers:
+      - name: agent
+        volumeMounts:
+        - name: prompts
+          mountPath: /etc/agent/prompts
+      volumes:
+      - name: prompts
+        configMap:
+          name: agent-prompts
+```
+
+Then configure:
+```toml
+[production]
+prompt_directory = "/etc/agent/prompts"
+```
+
+### Instruction Prompt Templates
+
+Instruction prompts support template variables:
+
+```
+# custom/src/prompts/instruction.prompt
+Analyze this invoice and extract the information:
+
+{invoice_text}
+
+Please extract all relevant invoice details including:
+- Invoice number and date
+- Customer information
+- Line items with quantities and prices
+```
+
+Use in code:
+```python
+# Automatically loaded and formatted
+instruction = self._load_and_format_instruction(
+    fallback_template="Default template: {invoice_text}",
+    invoice_text=invoice_data
+)
+```
+
+### Runtime-Specific Prompts
+
+Each runtime can use different prompts:
+
+```toml
+[runtime.invoice_analyzer]
+system_prompt_name = "invoice_system"
+instruction_prompt_name = "invoice_instruction"
+
+[runtime.document_classifier]
+system_prompt_name = "classifier_system"
+instruction_prompt_name = "classifier_instruction"
+```
+
+Organize prompts:
+```
+custom/src/prompts/
+├── invoice_system.prompt
+├── invoice_instruction.prompt
+├── classifier_system.prompt
+└── classifier_instruction.prompt
+```
+

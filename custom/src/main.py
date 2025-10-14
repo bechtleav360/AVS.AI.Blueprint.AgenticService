@@ -10,10 +10,11 @@ from pathlib import Path
 
 from base.src.app_builder import AppBuilder
 
-# Import custom components to be injected
-from .agent.handlers import AgentInvokerHandler, ProcessingHandler, SimpleProcessorHandler
 from .agent.runtime import AgentRuntime
 from .api.rest import CustomRestApi
+
+# Import custom components to be injected
+from .handlers import AgentInvokerHandler, SimpleProcessorHandler
 
 # Define the project root and paths to your custom settings files
 project_root = Path(__file__).parent.parent

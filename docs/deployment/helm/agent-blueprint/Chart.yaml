@@ -1,0 +1,17 @@
+apiVersion: v2
+name: agent-blueprint
+description: A Helm chart for deploying Agent Blueprint with Dapr
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - agent
+  - ai
+  - dapr
+  - microservices
+maintainers:
+  - name: Agent Blueprint Team
+home: https://github.com/your-org/agent-blueprint
+sources:
+  - https://github.com/your-org/agent-blueprint
+dependencies: []
