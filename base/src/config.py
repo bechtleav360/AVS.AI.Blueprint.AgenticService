@@ -1,10 +1,10 @@
 """Object-oriented configuration management using Dynaconf."""
 
 import logging
-import os
 from typing import Any, Dict, List
 
 from dynaconf import Dynaconf, Validator
+from dynaconf.validator import ValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -41,9 +41,9 @@ class Config:
             merge_enabled=True,
             root_path=root_path,
             validators=[
-                Validator("app_name", must_exist=True),
-                Validator("app_port", must_exist=True, is_type_of=int),
-                Validator("app_environment", must_exist=True),
+                Validator("app_name", must_exist=True, default="agent_blueprint"),
+                Validator("app_port", must_exist=True, is_type_of=int, default=8000),
+                Validator("app_environment", must_exist=True, default="development"),
             ],
         )
 
@@ -90,12 +90,12 @@ class Config:
             logger.debug(
                 "Loaded runtime-specific config for '%s': %d settings",
                 runtime_name,
-                len(runtime_config)
+                len(runtime_config),
             )
         else:
             logger.debug(
                 "No runtime-specific config found for '%s', using global defaults",
-                runtime_name
+                runtime_name,
             )
 
         return config
@@ -112,18 +112,43 @@ class Config:
         runtime_config = self.get_runtime_config(runtime_name)
 
         config = {
-            "provider": runtime_config.get("ai_model_provider", self.get("ai_model_provider")),
-            "model_name": runtime_config.get("ai_model_name", self.get("ai_model_name")),
-            "api_key": runtime_config.get("ai_model_api_key", self.get("ai_model_api_key")),
-            "base_url": runtime_config.get("ai_model_base_url", self.get("ai_model_base_url")),
-            "max_tokens": runtime_config.get("ai_model_max_tokens", self.get("ai_model_max_tokens")),
-            "temperature": runtime_config.get("ai_model_temperature", self.get("ai_model_temperature")),
-            "concurrency_limit": runtime_config.get("ai_concurrent_requests", self.get("ai_concurrent_requests")),
+            "provider": runtime_config.get(
+                "ai_model_provider", self.get("ai_model_provider")
+            ),
+            "model_name": runtime_config.get(
+                "ai_model_name", self.get("ai_model_name")
+            ),
+            "api_key": runtime_config.get(
+                "ai_model_api_key", self.get("ai_model_api_key")
+            ),
+            "base_url": runtime_config.get(
+                "ai_model_base_url", self.get("ai_model_base_url")
+            ),
+            "max_tokens": runtime_config.get(
+                "ai_model_max_tokens", self.get("ai_model_max_tokens")
+            ),
+            "temperature": runtime_config.get(
+                "ai_model_temperature", self.get("ai_model_temperature")
+            ),
+            "concurrency_limit": runtime_config.get(
+                "ai_concurrent_requests", self.get("ai_concurrent_requests")
+            ),
             "usage_limits": {
-                "request_limit": runtime_config.get("ai_usage_request_limit", self.get("ai_usage_request_limit")),
-                "input_tokens_limit": runtime_config.get("ai_usage_input_tokens_limit", self.get("ai_usage_input_tokens_limit")),
-                "output_tokens_limit": runtime_config.get("ai_usage_output_tokens_limit", self.get("ai_usage_output_tokens_limit")),
-                "total_tokens_limit": runtime_config.get("ai_usage_total_tokens_limit", self.get("ai_usage_total_tokens_limit")),
+                "request_limit": runtime_config.get(
+                    "ai_usage_request_limit", self.get("ai_usage_request_limit")
+                ),
+                "input_tokens_limit": runtime_config.get(
+                    "ai_usage_input_tokens_limit",
+                    self.get("ai_usage_input_tokens_limit"),
+                ),
+                "output_tokens_limit": runtime_config.get(
+                    "ai_usage_output_tokens_limit",
+                    self.get("ai_usage_output_tokens_limit"),
+                ),
+                "total_tokens_limit": runtime_config.get(
+                    "ai_usage_total_tokens_limit",
+                    self.get("ai_usage_total_tokens_limit"),
+                ),
             },
         }
         return config
@@ -144,10 +169,19 @@ class Config:
         runtime_config = self.get_runtime_config(runtime_name)
 
         return {
-            "custom_path": runtime_config.get("prompt_directory", self.get("prompt_directory")),
-            "search_paths": runtime_config.get("prompt_search_paths", self.get("prompt_search_paths", [])),
-            "system_prompt_name": runtime_config.get("system_prompt_name", self.get("system_prompt_name", "system")),
-            "instruction_prompt_name": runtime_config.get("instruction_prompt_name", self.get("instruction_prompt_name", "instruction")),
+            "custom_path": runtime_config.get(
+                "prompt_directory", self.get("prompt_directory")
+            ),
+            "search_paths": runtime_config.get(
+                "prompt_search_paths", self.get("prompt_search_paths", [])
+            ),
+            "system_prompt_name": runtime_config.get(
+                "system_prompt_name", self.get("system_prompt_name", "system")
+            ),
+            "instruction_prompt_name": runtime_config.get(
+                "instruction_prompt_name",
+                self.get("instruction_prompt_name", "instruction"),
+            ),
         }
 
     def get_observability_config(self) -> Dict[str, Any]:
@@ -170,10 +204,22 @@ class Config:
                 raise ConfigError("Missing API key for vLLM provider")
 
             return True
-        except Exception as exc:
-            logger.error("Configuration validation failed: %s", exc, exc_info=True)
+        except ValidationError as exc:
+            # Handle Dynaconf validation errors without stack trace
+            error_msg = str(exc)
+            logger.error("Configuration validation failed: %s", error_msg)
+            self._validation_errors.append(error_msg)
+            raise ConfigError(error_msg) from None
+        except ConfigError as exc:
+            # Re-raise ConfigError without stack trace
+            logger.error("Configuration validation failed: %s", exc)
             self._validation_errors.append(str(exc))
-            return False
+            raise
+        except Exception as exc:
+            # Catch any other unexpected errors with stack trace for debugging
+            logger.error("Unexpected configuration error: %s", exc, exc_info=True)
+            self._validation_errors.append(str(exc))
+            raise ConfigError(str(exc)) from exc
 
     def has_validation_errors(self) -> bool:
         """Return True if configuration validation detected errors."""

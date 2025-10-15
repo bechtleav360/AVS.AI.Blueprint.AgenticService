@@ -1,6 +1,7 @@
 """Generic FastAPI application setup and configuration."""
 
 import logging
+import sys
 from contextlib import asynccontextmanager
 from typing import Type
 
@@ -9,7 +10,7 @@ from fastapi import FastAPI
 from .agent import BaseAgent
 from .api import actuators, root
 from .api.events import EventApi
-from .config import Config
+from .config import Config, ConfigError
 from .handler import EventHandler
 from .registry.component_registry import ComponentRegistry
 from .services import AIProviderHealthChecker
@@ -40,7 +41,12 @@ class AppBuilder:
                 format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
             )
 
-        self.config = Config(settings_files=settings_files, root_path=root_path)
+        try:
+            self.config = Config(settings_files=settings_files, root_path=root_path)
+        except ConfigError as exc:
+            logger.error("Configuration error: %s", exc)
+            sys.exit(1)
+
         self._custom_routers = []
         self._rest_api_class = None
         self._handler_classes: list[Type[EventHandler]] = []

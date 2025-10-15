@@ -42,24 +42,24 @@ stages:
       displayName: 'Install linting tools'
 
     - script: |
-        black --check --line-length 140 src/ tests/
+        black --check --line-length 140 custom/src/ custom/tests/
       displayName: 'Check code formatting with Black'
 
     - script: |
-        isort --check-only --profile black --line-length 140 src/ tests/
+        isort --check-only --profile black --line-length 140 custom/src/ custom/tests/
       displayName: 'Check import sorting with isort'
 
     - script: |
-        ruff check src/ tests/
+        ruff check custom/src/ custom/tests/
       displayName: 'Lint with Ruff'
 
     - script: |
-        mypy src/ --ignore-missing-imports --no-strict-optional
+        mypy custom/src/ --ignore-missing-imports --no-strict-optional
       displayName: 'Type check with MyPy'
       continueOnError: true
 
     - script: |
-        bandit -r src/ -f json -o bandit-report.json || true
+        bandit -r custom/src/ -f json -o bandit-report.json || true
         cat bandit-report.json
       displayName: 'Security scan with Bandit'
 
@@ -86,26 +86,28 @@ stages:
       displayName: 'Use Python $(pythonVersion)'
 
     - script: |
+        cd custom
         python -m pip install --upgrade pip
         pip install -e ".[dev]"
       displayName: 'Install dependencies'
 
     - script: |
+        cd custom
         pytest tests/unit/ -v --junitxml=junit/unit-test-results.xml --cov=src --cov-report=xml --cov-report=html
       displayName: 'Run unit tests'
 
     - task: PublishTestResults@2
       condition: succeededOrFailed()
       inputs:
-        testResultsFiles: 'junit/unit-test-results.xml'
+        testResultsFiles: 'custom/junit/unit-test-results.xml'
         testRunTitle: 'Unit Test Results'
       displayName: 'Publish unit test results'
 
     - task: PublishCodeCoverageResults@1
       inputs:
         codeCoverageTool: Cobertura
-        summaryFileLocation: 'coverage.xml'
-        reportDirectory: 'htmlcov'
+        summaryFileLocation: 'custom/coverage.xml'
+        reportDirectory: 'custom/htmlcov'
       displayName: 'Publish code coverage results'
 
   - job: IntegrationTests
@@ -120,18 +122,20 @@ stages:
       displayName: 'Use Python $(pythonVersion)'
 
     - script: |
+        cd custom
         python -m pip install --upgrade pip
         pip install -e ".[dev]"
       displayName: 'Install dependencies'
 
     - script: |
+        cd custom
         pytest tests/integration/ -v --junitxml=junit/integration-test-results.xml
       displayName: 'Run integration tests'
 
     - task: PublishTestResults@2
       condition: succeededOrFailed()
       inputs:
-        testResultsFiles: 'junit/integration-test-results.xml'
+        testResultsFiles: 'custom/junit/integration-test-results.xml'
         testRunTitle: 'Integration Test Results'
       displayName: 'Publish integration test results'
 

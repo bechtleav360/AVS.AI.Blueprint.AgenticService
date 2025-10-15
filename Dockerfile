@@ -7,7 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/home/app
 
 # Create a non-root user
-RUN addgroup --system app && adduser --system --group app
+RUN addgroup --system app && adduser --system --group --home /home/app app
 
 # Set the working directory
 WORKDIR /home/app
@@ -33,10 +33,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # Install build dependencies
-RUN pip install build
+RUN pip install --upgrade pip && pip install setuptools wheel build
 
 # Copy pyproject.toml and build the wheel
-COPY pyproject.toml /app/
+COPY custom/pyproject.toml /app/pyproject.toml
+COPY custom/src /app/src
 RUN python -m build --wheel --no-isolation
 
 # --- Production Stage (Agent-specific) ---
@@ -44,15 +45,17 @@ FROM base as production
 
 # Copy and install the wheel
 COPY --from=builder /app/dist/*.whl /tmp/
+USER root
 RUN pip install --no-cache /tmp/*.whl
+USER app
 
 # Copy the base framework (shared across all agents)
 COPY base /home/app/base
 
 # Copy agent-specific implementation
 # This should be overridden in agent-specific Dockerfiles
-COPY src /home/app/src
+COPY custom/src /home/app/src
 
 # Run the application
 # This should be overridden in agent-specific Dockerfiles
-CMD ["uvicorn", "src.app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]

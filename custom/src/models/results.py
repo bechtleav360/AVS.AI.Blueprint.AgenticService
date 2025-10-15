@@ -3,7 +3,7 @@
 from decimal import Decimal
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class InvoiceAnalysisOutput(BaseModel):
@@ -11,6 +11,8 @@ class InvoiceAnalysisOutput(BaseModel):
 
     Uses flat structure to avoid $defs references that vLLM doesn't support.
     """
+
+    model_config = ConfigDict(json_encoders={Decimal: lambda value: str(value)})
 
     invoice_id: str = Field(..., description="The unique identifier of the invoice")
     status: str = Field(

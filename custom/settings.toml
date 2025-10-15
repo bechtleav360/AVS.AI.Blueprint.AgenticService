@@ -1,5 +1,4 @@
 [default]
-app_name = "agent_blueprint"
 app_port = 8000
 app_environment = "development"
 
@@ -32,6 +31,9 @@ cache_max_size = 10000
 
 
 [development]
+app_name = "agent_blueprint"
+app_port = 8000
+app_environment = "development"
 log_level = "DEBUG"
 data_gateway_base_url = "http://localhost:8001"
 
@@ -58,10 +60,16 @@ ai_usage_output_tokens_limit = 4000
 ai_usage_total_tokens_limit = 10000
 
 [testing]
+app_name = "agent_blueprint"
+app_port = 8000
+app_environment = "testing"
 log_level = "DEBUG"
 data_gateway_base_url = "http://localhost:8001"
 cache_ttl_seconds = 60
 
 [production]
+app_name = "agent_blueprint"
+app_port = 8000
+app_environment = "production"
 log_level = "INFO"
 # Production values should come from environment variables or secret stores
