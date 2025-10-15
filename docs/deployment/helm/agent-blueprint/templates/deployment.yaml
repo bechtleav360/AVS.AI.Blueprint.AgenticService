@@ -14,25 +14,7 @@ spec:
   template:
     metadata:
       annotations:
-        {{- if .Values.dapr.enabled }}
-        dapr.io/enabled: "true"
-        dapr.io/app-id: {{ .Values.dapr.appId | quote }}
-        dapr.io/app-port: {{ .Values.dapr.appPort | quote }}
-        dapr.io/http-port: {{ .Values.dapr.httpPort | quote }}
-        dapr.io/grpc-port: {{ .Values.dapr.grpcPort | quote }}
-        dapr.io/metrics-port: {{ .Values.dapr.metricsPort | quote }}
-        dapr.io/log-level: {{ .Values.dapr.logLevel | quote }}
-        dapr.io/enable-profiling: {{ .Values.dapr.enableProfiling | quote }}
-        dapr.io/enable-api-logging: {{ .Values.dapr.enableApiLogging | quote }}
-        dapr.io/http-max-request-size: {{ .Values.dapr.httpMaxRequestSize | quote }}
-        dapr.io/http-read-buffer-size: {{ .Values.dapr.httpReadBufferSize | quote }}
-        dapr.io/enable-metrics: {{ .Values.dapr.enableMetrics | quote }}
-        dapr.io/sidecar-cpu-limit: {{ .Values.dapr.sidecar.resources.limits.cpu | quote }}
-        dapr.io/sidecar-memory-limit: {{ .Values.dapr.sidecar.resources.limits.memory | quote }}
-        dapr.io/sidecar-cpu-request: {{ .Values.dapr.sidecar.resources.requests.cpu | quote }}
-        dapr.io/sidecar-memory-request: {{ .Values.dapr.sidecar.resources.requests.memory | quote }}
-        {{- end }}
-        checksum/config: {{ include (print $.Template.BasePath "/configmap-settings.yaml") . | sha256sum }}
+        checksum/settings: {{ include (print $.Template.BasePath "/configmap-settings.yaml") . | sha256sum }}
         checksum/prompts: {{ include (print $.Template.BasePath "/configmap-prompts.yaml") . | sha256sum }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
@@ -55,62 +37,15 @@ spec:
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         ports:
         - name: http
-          containerPort: {{ .Values.app.port }}
+          containerPort: {{ .Values.appSettings.app_port }}
           protocol: TCP
+        envFrom:
+        - configMapRef:
+            name: {{ include "agent-blueprint.fullname" . }}-settings
         env:
-        - name: ENVIRONMENT
-          value: {{ .Values.app.environment | quote }}
-        - name: APP_PORT
-          value: {{ .Values.app.port | quote }}
-        - name: LOG_LEVEL
-          value: {{ .Values.app.logLevel | quote }}
-        
-        # AI Model configuration
-        - name: AI_MODEL_PROVIDER
-          value: {{ .Values.app.aiModel.provider | quote }}
-        - name: AI_MODEL_NAME
-          value: {{ .Values.app.aiModel.name | quote }}
-        - name: AI_MODEL_MAX_TOKENS
-          value: {{ .Values.app.aiModel.maxTokens | quote }}
-        - name: AI_MODEL_TEMPERATURE
-          value: {{ .Values.app.aiModel.temperature | quote }}
-        - name: AI_MODEL_TIMEOUT
-          value: {{ .Values.app.aiModel.timeout | quote }}
-        {{- if .Values.secrets.aiModel.existingSecret }}
-        - name: AI_MODEL_API_KEY
-          valueFrom:
-            secretKeyRef:
-              name: {{ .Values.secrets.aiModel.existingSecret }}
-              key: {{ .Values.secrets.aiModel.keys.openaiApiKey }}
-        {{- end }}
-        
-        # Observability
-        {{- if .Values.app.observability.otelEnabled }}
-        - name: OTEL_EXPORTER_OTLP_ENDPOINT
-          value: {{ .Values.app.observability.otelEndpoint | quote }}
-        - name: OTEL_SERVICE_NAME
-          value: {{ .Values.app.observability.otelServiceName | quote }}
-        {{- end }}
-        
-        # Data Gateway (optional)
-        {{- if .Values.app.dataGateway.enabled }}
-        {{- if .Values.secrets.dataGateway.existingSecret }}
-        - name: DATA_GATEWAY_API_KEY
-          valueFrom:
-            secretKeyRef:
-              name: {{ .Values.secrets.dataGateway.existingSecret }}
-              key: {{ .Values.secrets.dataGateway.keys.apiKey }}
-        - name: DATA_GATEWAY_BASE_URL
-          valueFrom:
-            secretKeyRef:
-              name: {{ .Values.secrets.dataGateway.existingSecret }}
-              key: {{ .Values.secrets.dataGateway.keys.baseUrl }}
-        {{- end }}
-        {{- end }}
-        
-        # Python settings
-        - name: PYTHONUNBUFFERED
-          value: "1"
+          # Python settings
+          - name: PYTHONUNBUFFERED
+            value: "1"
         
         livenessProbe:
           {{- toYaml .Values.livenessProbe | nindent 12 }}
@@ -122,17 +57,126 @@ spec:
         - name: prompts
           mountPath: /etc/agent/prompts
           readOnly: true
-        - name: settings
-          mountPath: /app/custom/settings.toml
-          subPath: settings.toml
+      {{- if .Values.dapr.enabled }}
+      # Dapr sidecar container (manual injection)
+      - name: daprd
+        image: "{{ .Values.dapr.image.repository }}:{{ .Values.dapr.image.tag }}"
+        imagePullPolicy: {{ .Values.dapr.image.pullPolicy }}
+        command:
+        - "/daprd"
+        args:
+        - --mode
+        - {{ .Values.dapr.mode | default "kubernetes" }}
+        - --dapr-http-port
+        - {{ .Values.dapr.httpPort | quote }}
+        - --dapr-grpc-port
+        - {{ .Values.dapr.grpcPort | quote }}
+        - --dapr-internal-grpc-port
+        - "50002"
+        - --app-port
+        - {{ .Values.dapr.appPort | quote }}
+        - --app-id
+        - {{ .Values.dapr.appId | quote }}
+        {{- if not .Values.dapr.useCRDs }}
+        - --resources-path
+        - /dapr/components
+        {{- end }}
+        {{- if .Values.dapr.controlPlaneAddress }}
+        - --control-plane-address
+        - {{ .Values.dapr.controlPlaneAddress | quote }}
+        {{- end }}
+        - --app-protocol
+        - http
+        {{- if .Values.dapr.config }}
+        - --config
+        - {{ .Values.dapr.config | quote }}
+        {{- end }}
+        - --log-level
+        - {{ .Values.dapr.logLevel | quote }}
+        - --app-max-concurrency
+        - "-1"
+        {{- if .Values.dapr.placementHostAddress }}
+        - --placement-host-address
+        - {{ .Values.dapr.placementHostAddress | quote }}
+        {{- end }}
+        {{- if .Values.dapr.sentryAddress }}
+        - --sentry-address
+        - {{ .Values.dapr.sentryAddress | quote }}
+        {{- end }}
+        - --enable-metrics
+        - {{ .Values.dapr.enableMetrics | quote }}
+        - --metrics-port
+        - {{ .Values.dapr.metricsPort | quote }}
+        - --dapr-http-max-request-size
+        - {{ .Values.dapr.httpMaxRequestSize | quote }}
+        - --dapr-http-read-buffer-size
+        - {{ .Values.dapr.httpReadBufferSize | quote }}
+        - --enable-api-logging
+        - {{ .Values.dapr.enableApiLogging | quote }}
+        {{- if .Values.dapr.enableProfiling }}
+        - --enable-profiling
+        {{- end }}
+        env:
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        {{- if .Values.daprComponents.rabbitmq.existingSecret }}
+        - name: RABBITMQ_CONNECTION_STRING
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.daprComponents.rabbitmq.existingSecret }}
+              key: {{ .Values.daprComponents.rabbitmq.secretKeys.host }}
+        {{- end }}
+        ports:
+        - name: dapr-http
+          containerPort: {{ .Values.dapr.httpPort }}
+          protocol: TCP
+        - name: dapr-grpc
+          containerPort: {{ .Values.dapr.grpcPort }}
+          protocol: TCP
+        - name: dapr-internal
+          containerPort: 50002
+          protocol: TCP
+        - name: dapr-metrics
+          containerPort: {{ .Values.dapr.metricsPort }}
+          protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /v1.0/healthz
+            port: {{ .Values.dapr.httpPort }}
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /v1.0/healthz
+            port: {{ .Values.dapr.httpPort }}
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        resources:
+          {{- toYaml .Values.dapr.sidecar.resources | nindent 12 }}
+        {{- if not .Values.dapr.useCRDs }}
+        volumeMounts:
+        - name: dapr-components
+          mountPath: /dapr/components
           readOnly: true
+        {{- end }}
+      {{- end }}
       volumes:
       - name: prompts
         configMap:
           name: {{ include "agent-blueprint.fullname" . }}-prompts
-      - name: settings
+      {{- if .Values.dapr.enabled }}
+      {{- if not .Values.dapr.useCRDs }}
+      - name: dapr-components
         configMap:
-          name: {{ include "agent-blueprint.fullname" . }}-settings
+          name: {{ include "agent-blueprint.fullname" . }}-dapr-components
+      {{- end }}
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

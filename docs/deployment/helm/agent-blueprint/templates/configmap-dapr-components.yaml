@@ -1,0 +1,64 @@
+{{- if .Values.dapr.enabled }}
+{{- if not .Values.dapr.useCRDs }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agent-blueprint.fullname" . }}-dapr-components
+  labels:
+    {{- include "agent-blueprint.labels" . | nindent 4 }}
+data:
+  {{- if .Values.daprComponents.rabbitmq.enabled }}
+  rabbitmq-pubsub.yaml: |
+    apiVersion: dapr.io/v1alpha1
+    kind: Component
+    metadata:
+      name: rabbitmq-pubsub
+    spec:
+      type: pubsub.rabbitmq
+      version: v1
+      metadata:
+        - name: host
+          value: {{ .Values.daprComponents.rabbitmq.host | quote }}
+        - name: consumerID
+          value: {{ .Values.daprComponents.rabbitmq.consumerID | quote }}
+        - name: durable
+          value: {{ .Values.daprComponents.rabbitmq.durable | quote }}
+        - name: autoAck
+          value: {{ .Values.daprComponents.rabbitmq.autoAck | quote }}
+        - name: deliveryMode
+          value: {{ .Values.daprComponents.rabbitmq.deliveryMode | quote }}
+        - name: reconnectWait
+          value: {{ .Values.daprComponents.rabbitmq.reconnectWait | quote }}
+        - name: prefetchCount
+          value: {{ .Values.daprComponents.rabbitmq.prefetchCount | quote }}
+        - name: exchangeKind
+          value: {{ .Values.daprComponents.rabbitmq.exchangeKind | quote }}
+        - name: publisherConfirm
+          value: {{ .Values.daprComponents.rabbitmq.publisherConfirm | quote }}
+  {{- end }}
+  
+  {{- range $name, $subscription := .Values.subscriptions }}
+  {{- if $subscription.enabled }}
+  subscription-{{ $name | kebabcase }}.yaml: |
+    apiVersion: dapr.io/v2alpha1
+    kind: Subscription
+    metadata:
+      name: {{ $name | kebabcase }}
+    spec:
+      topic: {{ $subscription.topic }}
+      route: {{ $subscription.route }}
+      pubsubname: {{ $subscription.pubsubname | default "rabbitmq-pubsub" }}
+      {{- if $subscription.deadLetterTopic }}
+      deadLetterTopic: {{ $subscription.deadLetterTopic }}
+      {{- end }}
+      {{- if $subscription.metadata }}
+      metadata:
+        {{- range $key, $value := $subscription.metadata }}
+        - name: {{ $key }}
+          value: {{ $value | quote }}
+        {{- end }}
+      {{- end }}
+  {{- end }}
+  {{- end }}
+{{- end }}
+{{- end }}

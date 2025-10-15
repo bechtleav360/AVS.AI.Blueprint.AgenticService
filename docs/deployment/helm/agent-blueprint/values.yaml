@@ -2,11 +2,11 @@
 # This is a YAML-formatted file.
 # Declare variables to be passed into your templates.
 
-replicaCount: 2
+replicaCount: 1
 
 image:
-  repository: your-registry/agent-blueprint
-  pullPolicy: IfNotPresent
+  repository: registry.harbor.av360.org/bechtle-ios/bios-invoiceprocessor-agent
+  pullPolicy: Always
   tag: "latest"
 
 imagePullSecrets: []
@@ -16,7 +16,7 @@ fullnameOverride: ""
 # Dapr configuration
 dapr:
   enabled: true
-  appId: agent-blueprint
+  appId: agent-invoiceprocessor
   appPort: 8000
   httpPort: 3500
   grpcPort: 50001
@@ -27,6 +27,27 @@ dapr:
   httpMaxRequestSize: 4
   httpReadBufferSize: 4
   enableMetrics: true
+
+  # Dapr mode: "standalone" or "kubernetes"
+  mode: standalone
+
+  # Use Dapr CRDs (requires Dapr operator and CRDs installed)
+  # Set to false to use local component files mounted via ConfigMap
+  useCRDs: false
+
+  # Dapr sidecar image (manual injection without operator)
+  image:
+    repository: daprio/daprd
+    tag: "latest"
+    pullPolicy: IfNotPresent
+
+  # Dapr control plane addresses (optional, only if you have Dapr control plane installed)
+  # Leave empty for standalone mode
+  controlPlaneAddress: "" # e.g., "dapr-api.dapr-system.svc.cluster.local:80"
+  placementHostAddress: "" # e.g., "dapr-placement-server.dapr-system.svc.cluster.local:50006"
+  sentryAddress: "" # e.g., "dapr-sentry.dapr-system.svc.cluster.local:80"
+  config: "" # Dapr configuration name
+
   sidecar:
     resources:
       requests:
@@ -36,33 +57,37 @@ dapr:
         cpu: 1000m
         memory: 512Mi
 
-# Application configuration
-app:
-  environment: production
-  port: 8000
-  logLevel: INFO
-  
-  # AI Model configuration
-  aiModel:
-    provider: openai
-    name: gpt-4
-    maxTokens: 2000
-    temperature: 0.1
-    timeout: 60
-    maxRetries: 3
-  
+# Application settings - will be converted to DYNACONF_ prefixed environment variables
+appSettings:
+  # Application
+  app_name: "agent-invoiceprocessor"
+  app_port: 8000
+  log_level: "DEBUG"
+  app_environment: "development"
+
+  # AI Model
+  ai_model_provider: "vllm"
+  ai_model_name: "default"
+  ai_model_base_url: "https://avs-vllm.q14.net/v1"
+  ai_model_api_key: "6FEDGzTQd8Oea8OO4onA" # Set this to your actual API key
+  ai_model_max_tokens: 3000
+  ai_model_temperature: 0.1
+  ai_model_timeout: 60
+  ai_model_max_retries: 3
+
   # Observability
-  observability:
-    otelEnabled: true
-    otelEndpoint: "http://otel-collector:4317"
-    otelServiceName: "agent-blueprint"
+  otel_enabled: true
+  otel_endpoint: "http://otel-collector:4317"
+  otel_service_name: "agent-invoiceprocessor"
+
+  # Data Gateway
+  data_gateway_enabled: false
+  data_gateway_base_url: ""
+  data_gateway_timeout: 30
+  data_gateway_max_retries: 3
   
-  # Data Gateway (optional)
-  dataGateway:
-    enabled: false
-    baseUrl: ""
-    timeout: 30
-    maxRetries: 3
+  # Health checks
+  health_check_ai_provider: false
 
 # Multi-runtime configuration
 runtimes:
@@ -71,72 +96,48 @@ runtimes:
     enabled: true
     systemPromptName: invoice_system
     instructionPromptName: invoice_instruction
-    aiModelName: gpt-4
+    aiModelName: default
     aiModelTemperature: 0.1
     aiModelMaxTokens: 2000
-  
+
   # Document classifier runtime
   documentClassifier:
-    enabled: true
-    systemPromptName: classifier_system
-    instructionPromptName: classifier_instruction
-    aiModelName: gpt-4
-    aiModelTemperature: 0.0
-    aiModelMaxTokens: 500
-  
+    enabled: false
+    systemPromptName: document_classifier_system
+    instructionPromptName: document_classifier_instruction
+    aiModelName: default
+    aiModelTemperature: 0.1
+    aiModelMaxTokens: 1000
+
   # Summarizer runtime
   summarizer:
     enabled: false
     systemPromptName: summarizer_system
     instructionPromptName: summarizer_instruction
-    aiModelName: gpt-4
-    aiModelTemperature: 0.7
+    aiModelName: default
+    aiModelTemperature: 0.3
     aiModelMaxTokens: 1500
 
-# Prompts configuration
+# Prompts configuration - each key becomes a .prompt file in the ConfigMap
 prompts:
-  # System prompts
-  invoiceSystem: |
+  invoice_system: |
     You are an AI assistant specialized in invoice processing.
     Your task is to extract structured information from unstructured invoice text.
-    
+
     Key responsibilities:
     - Extract invoice numbers, dates, and amounts accurately
     - Identify customer and vendor information
     - Parse line items with quantities and prices
     - Calculate totals and verify tax amounts
     - Flag any inconsistencies or missing information
-    
+
     Be precise with numbers and dates. If information is unclear, indicate uncertainty.
-  
-  classifierSystem: |
-    You are a document classifier specialized in categorizing business documents.
-    
-    Your task is to:
-    - Identify document type (invoice, contract, email, report, etc.)
-    - Determine document priority (urgent, normal, low)
-    - Extract key metadata (date, parties involved, subject)
-    - Flag documents requiring immediate attention
-    
-    Be quick and accurate. Provide confidence scores for your classifications.
-  
-  summarizerSystem: |
-    You are a document summarizer that creates concise, accurate summaries.
-    
-    Your task is to:
-    - Extract key points and main ideas
-    - Preserve critical information (dates, amounts, names)
-    - Create summaries appropriate for the audience
-    - Maintain objectivity and accuracy
-    
-    Keep summaries brief but comprehensive.
-  
-  # Instruction prompts
-  invoiceInstruction: |
+
+  invoice_instruction: |
     Analyze this invoice and extract the information:
-    
+
     {invoice_text}
-    
+
     Please extract all relevant invoice details including:
     - Invoice number and date
     - Customer information (name, address, contact)
@@ -149,40 +150,19 @@ prompts:
     - Subtotal, tax amount, and total
     - Payment terms and due date
     - Any special notes or conditions
-    
+
     Use the calculate_invoice tool to verify the calculations.
-  
-  classifierInstruction: |
-    Classify this document:
-    
-    {document_text}
-    
-    Provide:
-    - Document type
-    - Priority level
-    - Key metadata
-    - Confidence score
-    - Recommended action
-  
-  summarizerInstruction: |
-    Summarize this document:
-    
-    {document_text}
-    
-    Provide a concise summary highlighting:
-    - Main purpose
-    - Key points
-    - Important dates and amounts
-    - Action items
 
 # Dapr components
 daprComponents:
   # RabbitMQ pub/sub
   rabbitmq:
     enabled: true
-    host: "amqp://rabbitmq:5672"
+    # IMPORTANT: Override this with your actual RabbitMQ connection string
+    # Format: amqp://username:password@host:port/vhost
+    host: "amqp://default_user_gL_0b5UoGT7HlwnDWib:HJ7PBBqNljN4KWMsXOtQ97LPuqaX7pBb@rabbitmq.dev-bios-bechtle.svc:5672/bios"
     vhost: "bios"
-    consumerID: "agent-blueprint"
+    consumerID: "agent-invoiceprocessor"
     durable: true
     autoAck: false
     deliveryMode: 2
@@ -190,46 +170,50 @@ daprComponents:
     prefetchCount: 10
     exchangeKind: "topic"
     publisherConfirm: true
-    # Use existing secret for credentials
+    # Use existing secret for credentials (not currently used with local components)
     existingSecret: ""
     secretKeys:
-      host: host
-      username: username
-      password: password
+      host: connection_string
 
-# Dapr subscriptions
+# Dapr subscriptions - generic structure for any number of subscriptions
 subscriptions:
   # Invoice processing subscription
   invoiceCreated:
     enabled: true
     topic: invoice.created
     route: /events/invoice
-    queueName: invoice-processing-queue
-    durable: true
-    autoDelete: false
-    prefetchCount: 10
-    consumerTag: invoice-processor
-  
+    pubsubname: rabbitmq-pubsub
+    metadata:
+      queueName: invoice-processing-queue
+      durable: "true"
+      autoDelete: "false"
+      prefetchCount: "10"
+      consumerTag: invoice-processor
+
   # Document classification subscription
   documentUploaded:
     enabled: true
     topic: document.uploaded
     route: /events/document
-    queueName: document-classification-queue
-    durable: true
-    autoDelete: false
-    prefetchCount: 5
-    consumerTag: document-classifier
-  
+    pubsubname: rabbitmq-pubsub
+    metadata:
+      queueName: document-classification-queue
+      durable: "true"
+      autoDelete: "false"
+      prefetchCount: "5"
+      consumerTag: document-classifier
+
   # Invoice validation subscription
   invoiceValidate:
     enabled: false
     topic: invoice.validate
     route: /events/validate
-    queueName: invoice-validation-queue
-    durable: true
-    prefetchCount: 20
+    pubsubname: rabbitmq-pubsub
     deadLetterTopic: invoice.validate.deadletter
+    metadata:
+      queueName: invoice-validation-queue
+      durable: "true"
+      prefetchCount: "20"
 
 # Secrets
 secrets:
@@ -242,7 +226,7 @@ secrets:
       openaiApiKey: openai_api_key
       vllmApiKey: vllm_api_key
       vllmBaseUrl: vllm_base_url
-  
+
   # Data Gateway credentials
   dataGateway:
     create: false
@@ -285,8 +269,8 @@ resources:
 
 # Autoscaling
 autoscaling:
-  enabled: true
-  minReplicas: 2
+  enabled: false
+  minReplicas: 1
   maxReplicas: 10
   targetCPUUtilizationPercentage: 70
   targetMemoryUtilizationPercentage: 80
@@ -310,7 +294,7 @@ autoscaling:
 # Health checks
 livenessProbe:
   httpGet:
-    path: /health
+    path: /health/live
     port: http
   initialDelaySeconds: 30
   periodSeconds: 10
@@ -319,7 +303,7 @@ livenessProbe:
 
 readinessProbe:
   httpGet:
-    path: /health
+    path: /health/ready
     port: http
   initialDelaySeconds: 10
   periodSeconds: 5

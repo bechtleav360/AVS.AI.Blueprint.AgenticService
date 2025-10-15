@@ -1,7 +1,6 @@
 """Health-related service helpers for the agent application."""
 
 import logging
-from typing import Optional
 
 import httpx
 
@@ -39,10 +38,10 @@ class AIProviderHealthChecker:
             try:
                 headers = {"Authorization": f"Bearer {api_key}"}
                 async with httpx.AsyncClient() as client:
-                    # vLLM servers have a /health endpoint
-                    response = await client.get(
-                        f"{base_url.rstrip('/')}/health", headers=headers
-                    )
+                    # vLLM servers have a /health endpoint at the root, not under /v1
+                    # Remove /v1 suffix if present
+                    health_url = base_url.rstrip('/').removesuffix('/v1') + '/health'
+                    response = await client.get(health_url, headers=headers)
                     response.raise_for_status()
                     return ComponentHealth(
                         status="healthy",

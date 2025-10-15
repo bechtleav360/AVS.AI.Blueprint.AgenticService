@@ -1,4 +1,5 @@
 {{- if .Values.dapr.enabled }}
+{{- if .Values.dapr.useCRDs }}
 {{- if .Values.daprComponents.rabbitmq.enabled }}
 apiVersion: dapr.io/v1alpha1
 kind: Component
@@ -39,5 +40,6 @@ spec:
       value: {{ .Values.daprComponents.rabbitmq.publisherConfirm | quote }}
   scopes:
     - {{ .Values.dapr.appId }}
+{{- end }}
 {{- end }}
 {{- end }}

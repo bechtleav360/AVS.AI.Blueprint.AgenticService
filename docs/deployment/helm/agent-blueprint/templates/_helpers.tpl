@@ -58,3 +58,25 @@ Create the name of the service account to use
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}
 {{- end }}
+
+{{- define "agent-blueprint.runtimeSectionName" -}}
+{{- regexReplaceAll "([a-z0-9])([A-Z])" . "${1}_${2}" | lower -}}
+{{- end }}
+
+{{- define "agent-blueprint.toEnvKey" -}}
+{{- regexReplaceAll "([a-z0-9])([A-Z])" . "${1}_${2}" | upper -}}
+{{- end }}
+
+{{- define "agent-blueprint.toEnvValue" -}}
+{{- $value := . -}}
+{{- $kind := kindOf $value -}}
+{{- if eq $kind "bool" -}}
+{{- if $value }}true{{- else }}false{{- end -}}
+{{- else if or (eq $kind "int") (eq $kind "float64") (eq $kind "float32") (eq $kind "uint64") (eq $kind "uint32") (eq $kind "uint") -}}
+{{- printf "%v" $value -}}
+{{- else if eq $kind "string" -}}
+{{- $value -}}
+{{- else -}}
+{{- $value | toJson -}}
+{{- end -}}
+{{- end }}
