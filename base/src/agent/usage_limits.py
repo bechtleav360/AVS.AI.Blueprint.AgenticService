@@ -14,10 +14,10 @@ class UsageLimitsBuilder:
     @staticmethod
     def build_from_config(ai_config: Dict[str, Any]) -> Optional[UsageLimits]:
         """Build UsageLimits from AI configuration.
-        
+
         Args:
             ai_config: Configuration dictionary that may contain 'usage_limits'.
-            
+
         Returns:
             UsageLimits instance if any limits are configured, None otherwise.
         """

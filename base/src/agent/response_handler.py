@@ -6,8 +6,6 @@ from typing import Any, Type, TypeVar, Generic
 
 from pydantic import BaseModel
 
-from .providers import OpenAIResponseHandler, VLLMResponseHandler
-
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
@@ -19,14 +17,14 @@ class ResponseHandlerStrategy(ABC, Generic[T]):
     @abstractmethod
     def extract_result(self, agent_response: Any, result_type: Type[T]) -> T:
         """Extract the typed result from the agent response.
-        
+
         Args:
             agent_response: Raw response from the agent.run() call.
             result_type: Expected Pydantic model type for the result.
-            
+
         Returns:
             Typed result instance.
-            
+
         Raises:
             ValueError: If result cannot be extracted or parsed.
         """
@@ -36,24 +34,30 @@ class ResponseHandlerStrategy(ABC, Generic[T]):
 class ResponseHandlerFactory:
     """Factory for creating response handler strategies."""
 
-    _handlers: dict[str, ResponseHandlerStrategy] = {
-        "openai": OpenAIResponseHandler(),
-        "vllm": VLLMResponseHandler(),
-    }
+    _handlers: dict[str, ResponseHandlerStrategy] = {}
+
+    @classmethod
+    def _ensure_handlers_loaded(cls) -> None:
+        """Lazy load handler implementations to avoid circular imports."""
+        if not cls._handlers:
+            from .providers import OpenAIResponseHandler, VLLMResponseHandler
+            cls._handlers["openai"] = OpenAIResponseHandler()
+            cls._handlers["vllm"] = VLLMResponseHandler()
 
     @classmethod
     def get_handler(cls, provider_name: str) -> ResponseHandlerStrategy:
         """Get the appropriate response handler strategy.
-        
+
         Args:
             provider_name: Name of the provider ('openai', 'vllm', etc.).
-            
+
         Returns:
             ResponseHandlerStrategy instance.
-            
+
         Raises:
             ValueError: If provider is not supported.
         """
+        cls._ensure_handlers_loaded()
         handler = cls._handlers.get(provider_name)
         if handler is None:
             raise ValueError(
@@ -69,7 +73,7 @@ class ResponseHandlerFactory:
         handler: ResponseHandlerStrategy
     ) -> None:
         """Register a custom response handler strategy.
-        
+
         Args:
             provider_name: Unique identifier for the provider.
             handler: ResponseHandlerStrategy implementation.

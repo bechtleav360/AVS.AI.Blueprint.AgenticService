@@ -28,7 +28,7 @@ app = (
     AppBuilder(settings_files=settings_files, root_path=project_root)
     .with_handler(AgentInvokerHandler)
     .with_handler(SimpleProcessorHandler)
-    .with_agent_runtime(AgentRuntime, is_default=True)
+    .with_agent_runtime(AgentRuntime, name="invoice_analyzer", is_default=True)
     .with_rest_api(CustomRestApi)
     .build()
 )

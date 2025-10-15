@@ -1,13 +1,12 @@
 """Factory for creating and configuring Pydantic AI Agent instances."""
 
 import logging
+from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Type
 
 from pydantic import BaseModel
 from pydantic_ai import Agent, Tool
 from pydantic_ai.models import Model
-
-from .providers import AgentFactoryStrategy, OpenAIAgentFactory, VLLMAgentFactory
 
 logger = logging.getLogger(__name__)
 
@@ -42,10 +41,15 @@ class AgentFactoryStrategy(ABC):
 class AgentFactory:
     """Factory for creating configured Agent instances based on provider type."""
 
-    _factories: Dict[str, AgentFactoryStrategy] = {
-        "openai": OpenAIAgentFactory(),
-        "vllm": VLLMAgentFactory(),
-    }
+    _factories: Dict[str, AgentFactoryStrategy] = {}
+
+    @classmethod
+    def _ensure_factories_loaded(cls) -> None:
+        """Lazy load factory implementations to avoid circular imports."""
+        if not cls._factories:
+            from .providers import OpenAIAgentFactory, VLLMAgentFactory
+            cls._factories["openai"] = OpenAIAgentFactory()
+            cls._factories["vllm"] = VLLMAgentFactory()
 
     @classmethod
     def create_agent(
@@ -71,6 +75,7 @@ class AgentFactory:
         Returns:
             Configured Agent instance.
         """
+        cls._ensure_factories_loaded()
         factory = cls._factories.get(provider_name)
         if factory is None:
             logger.warning(

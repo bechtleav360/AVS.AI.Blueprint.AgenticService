@@ -22,11 +22,11 @@ class VLLMModelProvider(ModelProviderStrategy):
 
     def create_model(self, ai_config: Dict[str, Any]) -> Model:
         """Create vLLM model configuration.
-        
+
         Args:
             ai_config: Must contain 'base_url', 'api_key', 'model_name'.
                       Optional: 'timeout' (default: 60 seconds).
-            
+
         Returns:
             Configured OpenAIChatModel with vLLM-specific profile.
         """
@@ -68,5 +68,5 @@ class VLLMModelProvider(ModelProviderStrategy):
             ai_config["base_url"],
             timeout_seconds,
         )
-        
+
         return model

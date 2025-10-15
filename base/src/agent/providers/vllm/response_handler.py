@@ -11,14 +11,14 @@ logger = logging.getLogger(__name__)
 
 class VLLMResponseHandler(ResponseHandlerStrategy[T]):
     """Response handler for vLLM models without output_type.
-    
+
     vLLM responses typically have tool results in the message history
     rather than in a structured output field.
     """
 
     def extract_result(self, agent_response: Any, result_type: Type[T]) -> T:
         """Extract result from vLLM response by inspecting message history.
-        
+
         vLLM with tools (no output_type) stores results in ToolReturnPart
         within the message history.
         """
@@ -127,7 +127,7 @@ class VLLMResponseHandler(ResponseHandlerStrategy[T]):
 
     def _try_parse_json(self, content: str, result_type: Type[T]) -> T | None:
         """Try to parse JSON content into result_type.
-        
+
         Returns:
             Parsed result or None if parsing fails.
         """

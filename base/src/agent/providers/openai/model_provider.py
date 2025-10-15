@@ -21,10 +21,10 @@ class OpenAIModelProvider(ModelProviderStrategy):
 
     def create_model(self, ai_config: Dict[str, Any]) -> Model:
         """Create OpenAI model configuration.
-        
+
         Args:
             ai_config: Must contain 'api_key' and 'model_name'.
-            
+
         Returns:
             Configured OpenAIChatModel.
         """
@@ -33,12 +33,12 @@ class OpenAIModelProvider(ModelProviderStrategy):
             api_key=ai_config["api_key"],
         )
         provider = OpenAIProvider(openai_client=client)
-        
+
         logger.info(
             "OpenAI model configured: %s",
             ai_config["model_name"]
         )
-        
+
         return OpenAIChatModel(
             provider=provider,
             model_name=ai_config["model_name"],

@@ -1,12 +1,13 @@
 """Registry for agent runtimes following the memory guideline."""
 
 import logging
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 from opentelemetry import trace
 from ..config import Config
-
-from ..agent import BaseAgent
 from .service_registry import ServiceRegistry
+
+if TYPE_CHECKING:
+    from ..agent import BaseAgent
 
 
 logger = logging.getLogger(__name__)
@@ -16,13 +17,13 @@ tracer = trace.get_tracer(__name__)
 class RuntimeRegistry:
 
     def __init__(self, settings: Config, service_registry: ServiceRegistry):
-        self._runtimes: Dict[str, BaseAgent] = {}
+        self._runtimes: Dict[str, "BaseAgent"] = {}
         self._default_runtime: Optional[str] = None
         self._settings = settings
         self._service_registry = service_registry
 
     def register_runtime(
-        self, name: str, runtime: BaseAgent, is_default: bool = False
+        self, name: str, runtime: "BaseAgent", is_default: bool = False
     ) -> None:
         """Register a new agent runtime."""
         logger.info("Registering runtime: %s", name)
@@ -35,7 +36,7 @@ class RuntimeRegistry:
         # wire
         runtime.link_service_registry(self._service_registry)
 
-    def get_runtime(self, name: Optional[str] = None) -> Optional[BaseAgent]:
+    def get_runtime(self, name: Optional[str] = None) -> Optional["BaseAgent"]:
         """Get a specific runtime by name, or the default runtime if no name provided."""
         if name is None:
             name = self._default_runtime
@@ -50,7 +51,7 @@ class RuntimeRegistry:
 
         return runtime
 
-    def get_all_runtimes(self) -> Dict[str, BaseAgent]:
+    def get_all_runtimes(self) -> Dict[str, "BaseAgent"]:
         """Get all registered runtimes."""
         return self._runtimes.copy()
 

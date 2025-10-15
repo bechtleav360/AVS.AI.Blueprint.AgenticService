@@ -14,7 +14,7 @@ class OpenAIResponseHandler(ResponseHandlerStrategy[T]):
 
     def extract_result(self, agent_response: Any, result_type: Type[T]) -> T:
         """Extract result from OpenAI response.
-        
+
         OpenAI responses with output_type have the result in the .data attribute.
         """
         # Check data attribute first (standard location for output_type results)

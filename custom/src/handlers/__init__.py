@@ -1,11 +1,7 @@
 from .agent_invoker import AgentInvokerHandler
-from .simple_processor import (
-    ProcessingHandler,
-    SimpleProcessorHandler,
-)
+from .simple_processor import SimpleProcessorHandler
 
 __all__ = [
     "AgentInvokerHandler",
-    "ProcessingHandler",
     "SimpleProcessorHandler",
 ]

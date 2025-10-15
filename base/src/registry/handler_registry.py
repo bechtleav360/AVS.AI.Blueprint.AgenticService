@@ -7,8 +7,7 @@ from opentelemetry import trace
 
 from ..config import Config
 from .service_registry import ServiceRegistry
-
-from ..agent import EventHandler
+from ..handler import EventHandler
 from ..models import CloudEvent
 
 logger = logging.getLogger(__name__)
