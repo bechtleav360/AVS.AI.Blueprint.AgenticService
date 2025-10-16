@@ -1,8 +1,0 @@
-# Ignore actual secrets
-secrets.yaml
-*.secret.yaml
-*-secret.yaml
-
-# Ignore local overrides
-*.local.yaml
-local-*.yaml

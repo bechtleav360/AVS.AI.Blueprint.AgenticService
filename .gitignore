@@ -141,5 +141,6 @@ cython_debug/
 custom/dapr/components/rabbitmq-pubsub.yaml
 
 # Secrets
-custom/secrets.toml
+**/secrets.toml
 .env.rabbitmq
+uv.lock
