@@ -6,25 +6,21 @@ from contextlib import asynccontextmanager
 from typing import Type
 
 from fastapi import FastAPI
+from pydantic_ai import Agent
 
-from .agent import BaseAgent
 from .api import actuators, root
-from .config import Config, ConfigError
+from .config import Config, ConfigError, LoggingManager, TelemetryManager
 from .handler import EventHandler
 from .registry.component_registry import ComponentRegistry
-from .services import AIProviderHealthChecker, DaprPubSubHealthChecker, EventPublishingService
+from .services import (AIProviderHealthChecker, DaprPubSubHealthChecker,
+                       EventPublishingService)
 from .services.processing_service import ProcessingService
-
-# Telemetry utilities
-from .telemetry import TelemetryManager
 
 # Dapr generic endpoints
 try:
     from .api import dapr
 except Exception:
     dapr = None
-# from .config import get_observability_config, get_security_config, settings
-# from .telemetry import instrument_fastapi, setup_logging, setup_telemetry
 
 logger = logging.getLogger(__name__)
 
@@ -33,24 +29,27 @@ class AppBuilder:
     """Builds the FastAPI application with a fluent interface."""
 
     def __init__(self, settings_files: list[str] = None, root_path: str = None):
-        # Setup basic logging before config initialization
-        root_logger = logging.getLogger()
-        if not root_logger.handlers:
-            logging.basicConfig(
-                level=logging.INFO,
-                format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-            )
+        # Step 1: Initialize logging
+        self.logging_manager = LoggingManager()
+        self.logging_manager.configure(
+            log_level="INFO",
+            log_format="text",
+            suppress_noisy_loggers=True,
+        )
 
+        # Step 2: Initialize configuration
         try:
             self.config = Config(settings_files=settings_files, root_path=root_path)
         except ConfigError as exc:
             logger.error("Configuration error: %s", exc)
             sys.exit(1)
 
+        # Step 3: Initialize telemetry (will be configured during startup)
+        self.telemetry_manager = TelemetryManager(settings=self.config)
+
         self._custom_routers = []
         self._rest_api_class = None
         self._handler_classes: list[Type[EventHandler]] = []
-        self._runtime_classes: list[dict] = []
 
         # Single unified registry for all components
         self._component_registry = ComponentRegistry(settings=self.config)
@@ -60,30 +59,10 @@ class AppBuilder:
         self._handler_classes.append(handler_class)
         return self
 
-    def with_agent_runtime(
-        self,
-        runtime_class: Type[BaseAgent],
-        name: str | None = None,
-        is_default: bool = False
-    ) -> "AppBuilder":
-        """Register an agent runtime class with the startup manager.
-
-        Args:
-            runtime_class: The agent runtime class to register.
-            name: Optional runtime name for runtime-specific config.
-                 If None, uses the class name. Maps to [runtime.{name}] in settings.toml.
-            is_default: Whether this should be the default runtime.
-
-        Returns:
-            Self for method chaining.
-        """
-        runtime_name = name if name is not None else runtime_class.__name__
-        self._runtime_classes.append(
-            {
-                "runtime_class": runtime_class,
-                "runtime_name": runtime_name,
-                "is_default": is_default
-            }
+    def with_agent(self, agent: Agent) -> "AppBuilder":
+        """Register an agent class with the startup manager."""
+        self._component_registry.get_agent_registry().register(
+            name=agent.name, agent=agent
         )
         return self
 
@@ -123,6 +102,12 @@ class AppBuilder:
         """Initialize and register all agent components."""
         logger.info("Initializing agent components")
 
+        # Configure OpenTelemetry tracing (telemetry manager already initialized in __init__)
+        try:
+            self.telemetry_manager.configure_tracing()
+        except Exception as e:
+            logger.warning("Failed to configure OpenTelemetry: %s", e)
+
         # Initialize and register handlers
         try:
             handlers = [handler_class() for handler_class in self._handler_classes]
@@ -130,33 +115,6 @@ class AppBuilder:
             logger.info("Successfully registered %d handlers", len(handlers))
         except Exception as e:
             logger.error("Failed to register handlers: %s", e, exc_info=True)
-
-        # Initialize and register runtimes
-        try:
-            for runtime_info in self._runtime_classes:
-                runtime_class = runtime_info["runtime_class"]
-                runtime_name = runtime_info["runtime_name"]
-                is_default = runtime_info["is_default"]
-
-                # Instantiate runtime with runtime_name for config lookup
-                runtime_instance = runtime_class(self.config, runtime_name)
-
-                # Register with the registry using the runtime_name
-                self._component_registry.register_runtime(
-                    runtime_name, runtime_instance, is_default=is_default
-                )
-
-                logger.info(
-                    "Registered runtime '%s' (class: %s, default: %s)",
-                    runtime_name,
-                    runtime_class.__name__,
-                    is_default
-                )
-            logger.info(
-                "Successfully registered %d runtimes", len(self._runtime_classes)
-            )
-        except Exception as e:
-            logger.error("Failed to register runtimes: %s", e, exc_info=True)
 
         # Initialize and register ProcessingService
         try:
@@ -175,10 +133,14 @@ class AppBuilder:
                 config=self.config,
                 dapr_http_port=self.config.get("dapr_http_port", 3500),
             )
-            self._component_registry.register_event_publishing_service(event_publishing_service)
+            self._component_registry.register_event_publishing_service(
+                event_publishing_service
+            )
             logger.info("Successfully registered EventPublishingService")
         except Exception as e:
-            logger.error("Failed to register EventPublishingService: %s", e, exc_info=True)
+            logger.error(
+                "Failed to register EventPublishingService: %s", e, exc_info=True
+            )
 
         logger.info("Startup initialization completed")
 

@@ -4,13 +4,10 @@ from decimal import Decimal
 from unittest.mock import MagicMock
 
 import pytest
-from base.src.models.events import CloudEvent
 
-from custom.src.agent.handlers import (
-    AgentInvokerHandler,
-    ProcessingHandler,
-    SimpleProcessorHandler,
-)
+from base.src.models.events import CloudEvent
+from custom.src.agent.handlers import (AgentInvokerHandler, ProcessingHandler,
+                                       SimpleProcessorHandler)
 from custom.src.api.rest import CustomPayload
 
 
@@ -36,20 +33,19 @@ class TestAgentInvokerHandler:
     async def test_can_handle_with_invoke_agent_action(self):
         """Ensures handler recognizes invoke_agent action."""
         handler = AgentInvokerHandler()
-        
+
         payload = CustomPayload(
-            invoice_text="Test invoice",
-            details={"action": "invoke_agent"}
+            invoice_text="Test invoice", details={"action": "invoke_agent"}
         )
-        
+
         event = CloudEvent(
             specversion="1.0",
             id="test-123",
             source="/test",
             type="test.event",
-            data=payload
+            data=payload,
         )
-        
+
         context = {}
         assert await handler._can_handle(event, context) is True
 
@@ -57,20 +53,19 @@ class TestAgentInvokerHandler:
     async def test_cannot_handle_without_invoke_agent_action(self):
         """Ensures handler rejects events without invoke_agent action."""
         handler = AgentInvokerHandler()
-        
+
         payload = CustomPayload(
-            invoice_text="Test invoice",
-            details={"action": "other_action"}
+            invoice_text="Test invoice", details={"action": "other_action"}
         )
-        
+
         event = CloudEvent(
             specversion="1.0",
             id="test-123",
             source="/test",
             type="test.event",
-            data=payload
+            data=payload,
         )
-        
+
         context = {}
         assert await handler._can_handle(event, context) is False
 
@@ -78,23 +73,22 @@ class TestAgentInvokerHandler:
     async def test_handle_sets_context_for_agent(self):
         """Ensures handler sets context flags for agent processing."""
         handler = AgentInvokerHandler()
-        
+
         payload = CustomPayload(
-            invoice_text="Test invoice text",
-            details={"action": "invoke_agent"}
+            invoice_text="Test invoice text", details={"action": "invoke_agent"}
         )
-        
+
         event = CloudEvent(
             specversion="1.0",
             id="test-123",
             source="/test",
             type="test.event",
-            data=payload
+            data=payload,
         )
-        
+
         context = {}
         result = await handler._handle(event, context)
-        
+
         # Handler should return None to pass to next handler
         assert result is None
         # But should set context flags
@@ -106,7 +100,9 @@ class TestAgentInvokerHandler:
 class TestSimpleProcessorHandler:
     """Tests for SimpleProcessorHandler - skipped as it requires line_items."""
 
-    @pytest.mark.skip(reason="SimpleProcessorHandler expects line_items which CustomPayload doesn't have")
+    @pytest.mark.skip(
+        reason="SimpleProcessorHandler expects line_items which CustomPayload doesn't have"
+    )
     async def test_placeholder(self):
         pass
 
@@ -118,14 +114,14 @@ class TestProcessingHandler:
     async def test_can_handle_after_validation(self):
         """Ensures ProcessingHandler runs after validation."""
         handler = ProcessingHandler()
-        
+
         event = MagicMock(spec=CloudEvent)
         event.data = {"key": "value"}
-        
+
         # Should not handle without validation
         context = {}
         assert await handler._can_handle(event, context) is False
-        
+
         # Should handle after validation
         context["validated_at"] = "timestamp"
         assert await handler._can_handle(event, context) is True
@@ -134,23 +130,20 @@ class TestProcessingHandler:
     async def test_handle_enriches_payload(self):
         """Ensures ProcessingHandler enriches the payload."""
         handler = ProcessingHandler()
-        
-        payload = CustomPayload(
-            invoice_text="Test invoice",
-            details={}
-        )
-        
+
+        payload = CustomPayload(invoice_text="Test invoice", details={})
+
         event = CloudEvent(
             specversion="1.0",
             id="test-789",
             source="/test",
             type="test.event",
-            data=payload
+            data=payload,
         )
-        
+
         context = {"validated_at": "timestamp"}
         result = await handler._handle(event, context)
-        
+
         # Handler should return enriched result
         assert result is not None
         assert result["status"] == "processed"

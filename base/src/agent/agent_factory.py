@@ -48,6 +48,7 @@ class AgentFactory:
         """Lazy load factory implementations to avoid circular imports."""
         if not cls._factories:
             from .providers import OpenAIAgentFactory, VLLMAgentFactory
+
             cls._factories["openai"] = OpenAIAgentFactory()
             cls._factories["vllm"] = VLLMAgentFactory()
 

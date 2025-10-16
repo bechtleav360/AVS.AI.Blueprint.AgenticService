@@ -1,20 +1,15 @@
+from .agent_builder import AgentBuilder
 from .agent_factory import AgentFactory
-from .base_agent import BaseAgent
-from .model_provider import ModelProviderFactory, ModelProviderStrategy
+from .model_provider import ModelProviderFactory
 from .prompt_loader import PromptLoader
-from .providers import (
-    OpenAIAgentFactory,
-    OpenAIModelProvider,
-    OpenAIResponseHandler,
-    VLLMAgentFactory,
-    VLLMModelProvider,
-    VLLMResponseHandler,
-)
-from .response_handler import ResponseHandlerFactory, ResponseHandlerStrategy
+from .providers import (OpenAIAgentFactory, OpenAIModelProvider,
+                        OpenAIResponseHandler, VLLMAgentFactory,
+                        VLLMModelProvider, VLLMResponseHandler)
+from .response_handler import ResponseHandlerFactory
 from .usage_limits import UsageLimitsBuilder
 
 __all__ = [
-    "BaseAgent",
+    "AgentBuilder",
     "AgentFactory",
     "ModelProviderFactory",
     "ResponseHandlerFactory",

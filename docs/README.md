@@ -19,9 +19,10 @@
 Follow these guides to build a complete agent:
 
 1. **[Setting Up Events](guides/events-setup.md)** - Configure Dapr, RabbitMQ, and subscriptions
-2. **[Using the App Builder](guides/app-builder.md)** - Initialize your application
-3. **[Creating Handlers](guides/handlers.md)** - Process events with Chain of Responsibility
-4. **[Building LLM Agents](guides/llm-agents.md)** - Integrate AI models with Pydantic AI
+2. **[Event Routing](guides/event-routing.md)** - Configure topics and routing keys for advanced message routing
+3. **[Using the App Builder](guides/app-builder.md)** - Initialize your application
+4. **[Creating Handlers](guides/handlers.md)** - Process events with Chain of Responsibility
+5. **[Building LLM Agents](guides/llm-agents.md)** - Integrate AI models with Pydantic AI
 
 ### ⚙️ Configuration
 

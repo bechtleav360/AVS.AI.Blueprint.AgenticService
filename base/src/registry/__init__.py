@@ -1,13 +1,11 @@
-"""Registry system for handlers and agent runtimes."""
+"""Registry module for managing application components."""
 
+from .agent_registry import AgentRegistry
 from .component_registry import ComponentRegistry
-from .handler_registry import HandlerRegistry
-from .runtime_registry import RuntimeRegistry
 from .service_registry import ServiceRegistry
 
 __all__ = [
+    "AgentRegistry",
     "ComponentRegistry",
-    "HandlerRegistry",
-    "RuntimeRegistry",
     "ServiceRegistry",
 ]

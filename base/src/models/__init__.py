@@ -1,15 +1,8 @@
 """Data models for the agent service."""
 
-from .api import (
-    AgentHealthDependencies,
-    AgentHealthResponse,
-    AIModelHealth,
-    CloudEventDataPayload,
-    CloudEventResponse,
-    CustomCheckHealth,
-    ProcessResourceRequest,
-    ProcessResourceResponse,
-)
+from .api import (AgentHealthDependencies, AgentHealthResponse, AIModelHealth,
+                  CloudEventDataPayload, CloudEventResponse, CustomCheckHealth,
+                  ProcessResourceRequest, ProcessResourceResponse)
 from .errors import HandlerError
 from .events import CloudEvent, GenericCloudEvent
 from .result import AgentOutput, Evidence
@@ -28,9 +21,9 @@ __all__ = [
     "EnvironmentStatus",
     "Evidence",
     "GenericCloudEvent",
+    "HandlerError",
     "LLMStatus",
     "ProcessResourceRequest",
     "ProcessResourceResponse",
-    "HandlerError",
     "VLLMInfo",
 ]

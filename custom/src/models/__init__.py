@@ -12,11 +12,13 @@ class MyOutput(AgentOutput):
     pass
 """
 
+from .payloads import CustomPayload
 from .processing import ProcessingContext
 from .resource import InvoiceInput, InvoiceLineItem
 from .results import InvoiceAnalysisOutput
 
 __all__ = [
+    "CustomPayload",
     "ProcessingContext",
     "InvoiceAnalysisOutput",
     "InvoiceInput",

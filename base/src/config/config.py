@@ -201,7 +201,7 @@ class Config:
         Returns:
             Dictionary with event publishing configuration:
             - default_pubsub_name: The default Dapr pubsub component name
-            - topic_mapping: Dictionary mapping event types to topics
+            - topic_mapping: Dictionary mapping event types to topics or routing configs
         """
         return {
             "default_pubsub_name": self.get(
@@ -209,6 +209,36 @@ class Config:
             ),
             "topic_mapping": self.get("event_publishing.topic_mapping", {}),
         }
+
+    def get_routing_for_event_type(self, event_type: str) -> Dict[str, Any] | None:
+        """Get the routing configuration for a specific event type.
+
+        Args:
+            event_type: The CloudEvent type (e.g., "agent.output.invoice.processed")
+
+        Returns:
+            Dictionary with 'topic' and optional 'routing_key', or None if no mapping exists.
+
+            Examples:
+                {"topic": "invoice.events", "routing_key": "invoice.processed"}
+                {"topic": "invoice.events"}  # No routing key
+        """
+        topic_mapping = self.get("event_publishing.topic_mapping", {})
+        config = topic_mapping.get(event_type)
+
+        if config is None:
+            return None
+
+        # Support both simple string (topic only) and dict (topic + routing_key)
+        if isinstance(config, str):
+            return {"topic": config, "routing_key": None}
+        elif isinstance(config, dict):
+            return {
+                "topic": config.get("topic"),
+                "routing_key": config.get("routing_key"),
+            }
+
+        return None
 
     def get_topic_for_event_type(self, event_type: str) -> str | None:
         """Get the topic name for a specific event type.
@@ -219,8 +249,8 @@ class Config:
         Returns:
             The topic name to publish to, or None if no mapping exists
         """
-        topic_mapping = self.get("event_publishing.topic_mapping", {})
-        return topic_mapping.get(event_type)
+        routing = self.get_routing_for_event_type(event_type)
+        return routing["topic"] if routing else None
 
     def validate(self):
         """Validate the configuration."""

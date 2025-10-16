@@ -1,7 +1,12 @@
 """Pure logic functions for invoice processing and tax calculation."""
 
+import logging
 from decimal import Decimal
 from typing import Any
+
+from pydantic_ai import RunContext
+
+logger = logging.getLogger(__name__)
 
 
 class InvoiceProcessingLogic:
@@ -118,3 +123,61 @@ class InvoiceProcessingLogic:
             recommendations.append("No tax detected. Confirm if this invoice is tax-exempt.")
 
         return recommendations
+
+    @staticmethod
+    async def calculate_invoice_tool(ctx: RunContext, invoice):
+        """
+        Tool function for Pydantic AI agent to calculate invoice totals.
+
+        This static method wraps the business logic for use as an agent tool.
+        It can be passed directly to AgentBuilder.with_tool().
+
+        Args:
+            ctx: Pydantic AI run context
+            invoice: InvoiceInput model with invoice data
+
+        Returns:
+            InvoiceAnalysisOutput with calculated totals and analysis
+        """
+        logger.info("Executing calculate_invoice tool for invoice %s", invoice.invoice_id)
+
+        invoice_dict = invoice.model_dump()
+        calculation = InvoiceProcessingLogic.calculate_invoice(invoice_dict)
+        recommendations = InvoiceProcessingLogic.generate_recommendations(calculation, invoice_dict)
+
+        status = calculation.get("status", "unknown")
+        total_amount = calculation.get("total_amount", Decimal("0.00"))
+        inferred_tax = calculation.get("inferred_tax_amount", Decimal("0.00"))
+        confidence = calculation.get("confidence", 0.0)
+
+        summary = (
+            f"Invoice {invoice.invoice_id} processed: total {total_amount} {invoice.currency}, "
+            f"inferred tax {inferred_tax} {invoice.currency}."
+        )
+
+        notes = None
+        if not calculation.get("evidence"):
+            notes = "No calculation evidence; review line items."
+
+        # Import here to avoid circular dependency
+        from ..models import InvoiceAnalysisOutput
+
+        return InvoiceAnalysisOutput(
+            invoice_id=invoice.invoice_id,
+            status=status,
+            summary=summary,
+            total_amount=total_amount,
+            inferred_tax_amount=inferred_tax,
+            confidence=confidence,
+            notes=notes,
+            metadata={
+                "currency": invoice.currency,
+                "line_item_count": len(invoice.line_items),
+                "evidence": calculation.get("evidence", []),
+                "recommendations": recommendations,
+                "context": {
+                    "correlation_id": (str(ctx.deps.correlation_id) if ctx.deps and ctx.deps.correlation_id else None),
+                    "event_id": (str(ctx.deps.event_id) if ctx.deps and ctx.deps.event_id else None),
+                },
+            },
+        )

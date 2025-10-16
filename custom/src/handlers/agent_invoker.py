@@ -1,58 +1,23 @@
-"""Customizable event handlers for the decision engine.
+"""Example handler that invokes an AI agent for processing.
 
-Guide: How to add a custom handler
-----------------------------------
+This handler demonstrates:
+- Validating event data
+- Calling an agent runtime directly using _get_agent_runtime()
+- Returning a final result (stops the chain)
+- Error handling for agent failures
 
-This module is where you implement domain-specific event handlers that plug
-into the framework's chain-of-responsibility `DecisionEngine`.
-
-Key points:
-- The base framework provides tracing automatically. You do NOT need to add
-  spans in your handlers. Just implement business logic.
-- Extend `base.src.agent.base.decisions.EventHandler` and override the two
-  template methods:
-  - `_can_handle(event, context) -> bool`: Return True if your handler should
-    process the event.
-  - `_handle(event, context) -> Optional[Any]`: Perform processing and return
-    a result or `None` to pass control to the next handler.
-- Register your handler in `get_all_handlers()` at the bottom of this file to
-  enable the engine to use it.
-
-Example:
-
-```python
-from base.src.agent.base.decisions import EventHandler
-from base.src.models.events import CloudEvent
-
-class MyHandler(EventHandler):
-    def __init__(self):
-        super().__init__("MyHandler", priority=20)
-
-    async def _can_handle(self, event: CloudEvent, context: dict) -> bool:
-        return event.type == "my.event.type"
-
-    async def _handle(self, event: CloudEvent, context: dict):
-        # domain logic here
-        context["processed_by"] = self.name
-        return {"status": "processed"}
-
-# Add MyHandler() to get_all_handlers() below
-```
-
-Best practices:
-- Keep handlers single-purpose and composable.
-- Use `context` to pass data between handlers; avoid tight coupling.
-- Prefer adding fields to custom models in `agent/src/custom/models/` and
-  import them here if needed.
+The handler uses the Chain of Responsibility pattern where it can process
+the event and return a result, or return None to pass to the next handler.
 """
 
 import logging
-from typing import Any
+from typing import Any, Optional
 
+from base.src.agent import PromptLoader
 from base.src.handler import EventHandler
 from base.src.models import CloudEvent
 
-from ..api.rest import CustomPayload
+from ..models import CustomPayload
 
 # from ..models.domain import AgentOutput
 
@@ -65,30 +30,79 @@ class AgentInvokerHandler(EventHandler):
     def __init__(self) -> None:
         super().__init__("AgentInvokerHandler", priority=10)
 
-    async def can_handle_event(self, event: CloudEvent, context: dict[str, Any]) -> bool:
+    async def can_handle_event(
+        self, event: CloudEvent, context: dict[str, Any]
+    ) -> bool:
         """Handle events with 'invoke_agent' action."""
-        if not event.data or not isinstance(event.data, CustomPayload):
+        if not event.data:
             return False
-        return event.data.details.get("action") == "invoke_agent"
 
-    async def handle_event(self, event: CloudEvent, context: dict[str, Any]) -> Any | None:
-        """Validate the payload and trigger the agent."""
-        logger.info("AgentInvokerHandler validated event '%s' and will request agent support", event.type)
+        # Handle both CustomPayload objects and plain dictionaries
+        if isinstance(event.data, CustomPayload):
+            return event.data.details.get("action") == "invoke_agent"
+        elif isinstance(event.data, dict):
+            details = event.data.get("details", {})
+            return details.get("action") == "invoke_agent"
 
-        # Pass unstructured invoice text to context for agent processing
+        return False
+
+    async def handle_event(
+        self, event: CloudEvent, context: dict[str, Any]
+    ) -> Any | None:
+        """Validate the payload and invoke the agent."""
+        logger.info(
+            "AgentInvokerHandler processing event '%s'",
+            event.type,
+        )
+
+        # Extract payload
         payload = event.data
-        context["validated_at"] = "timestamp_placeholder"
-        context["invoice_text"] = payload.invoice_text
-        context["metadata"] = payload.details
 
-        return None
+        # Handle both CustomPayload objects and plain dictionaries
+        if isinstance(payload, CustomPayload):
+            invoice_text = payload.invoice_text
+            metadata = payload.details
+        elif isinstance(payload, dict):
+            invoice_text = payload.get("invoice_text")
+            metadata = payload.get("details", {})
+        else:
+            return {"status": "error", "message": "Invalid payload format"}
 
-    def get_runtime_name(self, event: CloudEvent, context: dict[str, Any]) -> str | None:
-        """Return the runtime to use for invoice processing.
-        
-        Returns:
-            "invoice_analyzer" to use the invoice analyzer runtime,
-            or empty string "" to use the default runtime.
-        """
-        # Use invoice_analyzer runtime for invoice processing
-        return "invoice_analyzer"
+        # Get pre-configured agent and process
+        try:
+            # Get agent from registry (configured at startup)
+            agent = self._get_agent("invoice_analyzer")
+
+            # Load instruction prompt from file with template variables
+            # The prompt file path can be overridden via environment config
+            instruction = PromptLoader.load_instruction_prompt(
+                "instruction",
+                self.__class__,
+                config=None,  # Uses default search paths
+                invoice_text=invoice_text,
+                metadata=metadata,
+            )
+
+            # Run agent
+            result = await agent.run(instruction)
+
+            logger.info("Agent processing completed successfully")
+
+            return {
+                "status": "success",
+                "result": result.data,
+            }
+
+        except Exception as e:
+            logger.error("Agent processing failed: %s", str(e), exc_info=True)
+            return {
+                "status": "error",
+                "message": str(e),
+            }
+
+    def get_published_event_types(self):
+        """Declare event types this handler publishes."""
+        return (
+            "agent.output.invoice.processed",
+            "agent.error.invoice.processing",
+        )

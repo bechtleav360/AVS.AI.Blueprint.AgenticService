@@ -85,7 +85,7 @@ appSettings:
   data_gateway_base_url: ""
   data_gateway_timeout: 30
   data_gateway_max_retries: 3
-  
+
   # RabbitMQ
   rabbitmq_host: "rabbitmq.dev-bios-bechtle.svc:5672"
   rabbitmq_vhost: "bios"
@@ -202,19 +202,35 @@ subscriptions:
 eventPublishing:
   # Default pubsub component name
   defaultPubsubName: pubsub
-  
+
   # Event type to topic mapping
   # Maps CloudEvent types to RabbitMQ topics for publishing
+  # Supports two formats:
+  #   1. Simple string: "event.type": "topic.name"
+  #   2. Object with routing key: "event.type": {topic: "topic.name", routing_key: "routing.key"}
   topicMapping:
     # Agent output events
-    "agent.output.invoice.processed": "invoice.processed"
-    "agent.output.invoice.validated": "invoice.validated"
-    "agent.output.document.classified": "document.classified"
-    
-    # Error/DLQ events
-    "agent.error.processing": "agent.errors"
-    "agent.error.validation": "agent.errors"
-    
+    # Simple format (topic only)
+    "agent.output.invoice": "test.connection"
+
+    # Advanced format with routing key for topic-based routing
+    "agent.output.invoice.validated":
+      topic: "invoice.events"
+      routing_key: "invoice.validated.success"
+
+    "agent.output.document.classified":
+      topic: "document.events"
+      routing_key: "document.classified"
+
+    # Error/DLQ events with routing keys
+    "agent.error.processing":
+      topic: "agent.errors"
+      routing_key: "error.processing"
+
+    "agent.error.validation":
+      topic: "agent.errors"
+      routing_key: "error.validation"
+
     # Status events
     "agent.status.started": "agent.status"
     "agent.status.completed": "agent.status"

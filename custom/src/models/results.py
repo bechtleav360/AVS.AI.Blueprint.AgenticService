@@ -22,8 +22,6 @@ class InvoiceAnalysisOutput(BaseModel):
     summary: str = Field(..., description="A brief summary of the invoice analysis")
     total_amount: Decimal = Field(..., description="Total invoice amount (sum of line items)")
     inferred_tax_amount: Decimal = Field(..., description="Inferred or calculated tax amount")
-    confidence: float | None = Field(
-        None, ge=0.0, le=1.0, description="Confidence score (0.0-1.0)"
-    )
+    confidence: float | None = Field(None, ge=0.0, le=1.0, description="Confidence score (0.0-1.0)")
     notes: str | None = Field(None, description="Additional notes or details")
     metadata: dict[str, Any] | None = Field(None, description="Additional metadata")

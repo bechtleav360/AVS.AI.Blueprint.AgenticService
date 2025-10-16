@@ -1,7 +1,7 @@
 """Event publishing service for publishing CloudEvents via Dapr pub/sub."""
 
 import logging
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import httpx
 from opentelemetry import trace
@@ -55,6 +55,7 @@ class EventPublishingService:
         source: Optional[str] = None,
         pubsub_name: Optional[str] = None,
         topic: Optional[str] = None,
+        routing_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Publish a CloudEvent to a topic via Dapr.
@@ -66,12 +67,14 @@ class EventPublishingService:
             source: Optional CloudEvent source (defaults to service name)
             pubsub_name: Optional pubsub component name (uses default if not provided)
             topic: Optional explicit topic name (uses mapping if not provided)
+            routing_key: Optional routing key for topic-based routing (e.g., RabbitMQ)
 
         Returns:
             Dictionary with publishing result:
             - status: "published" or "failed"
             - topic: The topic the event was published to
             - pubsub_name: The pubsub component used
+            - routing_key: The routing key used (if any)
             - error: Error message if failed
 
         Raises:
@@ -81,14 +84,20 @@ class EventPublishingService:
         with tracer.start_as_current_span("event_publishing.publish") as span:
             span.set_attribute("event.type", event_type)
 
-            # Determine topic from mapping or explicit parameter
-            if topic is None:
-                topic = self._config.get_topic_for_event_type(event_type)
-                if topic is None:
+            # Determine topic and routing key from mapping or explicit parameters
+            if topic is None or routing_key is None:
+                routing_config = self._config.get_routing_for_event_type(event_type)
+                if routing_config is None:
                     error_msg = f"No topic mapping found for event type: {event_type}"
                     logger.error(error_msg)
                     span.set_status(trace.Status(trace.StatusCode.ERROR, error_msg))
                     raise ValueError(error_msg)
+
+                # Use config values if not explicitly provided
+                if topic is None:
+                    topic = routing_config["topic"]
+                if routing_key is None:
+                    routing_key = routing_config.get("routing_key")
 
             # Use default pubsub if not specified
             if pubsub_name is None:
@@ -96,6 +105,8 @@ class EventPublishingService:
 
             span.set_attribute("pubsub.name", pubsub_name)
             span.set_attribute("pubsub.topic", topic)
+            if routing_key:
+                span.set_attribute("pubsub.routing_key", routing_key)
 
             # Build CloudEvent envelope
             cloud_event = {
@@ -111,24 +122,32 @@ class EventPublishingService:
             publish_url = f"{self._dapr_base_url}/v1.0/publish/{pubsub_name}/{topic}"
 
             logger.info(
-                "Publishing event type '%s' to topic '%s' on pubsub '%s'",
+                "Publishing event type '%s' to topic '%s' on pubsub '%s'%s",
                 event_type,
                 topic,
                 pubsub_name,
+                f" with routing key '{routing_key}'" if routing_key else "",
                 extra={
                     "event_type": event_type,
                     "topic": topic,
                     "pubsub_name": pubsub_name,
+                    "routing_key": routing_key,
                     "event_id": cloud_event["id"],
                 },
             )
 
             try:
+                # Prepare headers with routing key metadata for Dapr
+                headers = {"Content-Type": "application/cloudevents+json"}
+                if routing_key:
+                    # Dapr metadata for RabbitMQ routing key
+                    headers["metadata.routingKey"] = routing_key
+
                 async with httpx.AsyncClient() as client:
                     response = await client.post(
                         publish_url,
                         json=cloud_event,
-                        headers={"Content-Type": "application/cloudevents+json"},
+                        headers=headers,
                         timeout=5.0,
                     )
                     response.raise_for_status()
@@ -150,6 +169,7 @@ class EventPublishingService:
                     "status": "published",
                     "topic": topic,
                     "pubsub_name": pubsub_name,
+                    "routing_key": routing_key,
                     "event_id": cloud_event["id"],
                 }
 

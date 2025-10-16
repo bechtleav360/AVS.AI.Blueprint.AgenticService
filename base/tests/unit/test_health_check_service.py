@@ -1,14 +1,13 @@
 """Unit tests for health check services."""
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from base.src.config import Config
 from base.src.models.api import ComponentHealth
-from base.src.services.health_check_service import (
-    AIProviderHealthChecker,
-    DaprPubSubHealthChecker,
-)
+from base.src.services.health_check_service import (AIProviderHealthChecker,
+                                                    DaprPubSubHealthChecker)
 
 
 class TestAIProviderHealthChecker:
@@ -26,9 +25,9 @@ class TestAIProviderHealthChecker:
         """Test health check when disabled."""
         mock_config.get.return_value = False
         checker = AIProviderHealthChecker(mock_config)
-        
+
         result = await checker.health_check()
-        
+
         assert result.status == "healthy"
         assert "disabled" in result.message.lower()
 
@@ -38,9 +37,9 @@ class TestAIProviderHealthChecker:
         mock_config.get.return_value = True
         mock_config.get_ai_config.return_value = {"provider": None}
         checker = AIProviderHealthChecker(mock_config)
-        
+
         result = await checker.health_check()
-        
+
         assert result.status == "healthy"
         assert "no ai provider configured" in result.message.lower()
 
@@ -53,14 +52,16 @@ class TestAIProviderHealthChecker:
             "api_key": "test-key",
         }
         checker = AIProviderHealthChecker(mock_config)
-        
+
         with patch("httpx.AsyncClient") as mock_client:
             mock_response = AsyncMock()
             mock_response.raise_for_status = MagicMock()
-            mock_client.return_value.__aenter__.return_value.get.return_value = mock_response
-            
+            mock_client.return_value.__aenter__.return_value.get.return_value = (
+                mock_response
+            )
+
             result = await checker.health_check()
-            
+
             assert result.status == "healthy"
             assert "vLLM reachable" in result.message
 
@@ -73,9 +74,9 @@ class TestAIProviderHealthChecker:
             "api_key": "test-key",
         }
         checker = AIProviderHealthChecker(mock_config)
-        
+
         result = await checker.health_check()
-        
+
         assert result.status == "unhealthy"
         assert "base_url not configured" in result.message
 
@@ -88,9 +89,9 @@ class TestAIProviderHealthChecker:
             "api_key": None,
         }
         checker = AIProviderHealthChecker(mock_config)
-        
+
         result = await checker.health_check()
-        
+
         assert result.status == "unhealthy"
         assert "api_key not configured" in result.message
 
@@ -101,9 +102,9 @@ class TestAIProviderHealthChecker:
             "provider": "openai",
         }
         checker = AIProviderHealthChecker(mock_config)
-        
+
         result = await checker.health_check()
-        
+
         assert result.status == "healthy"
         assert "openai" in result.message.lower()
 
@@ -133,9 +134,9 @@ class TestDaprPubSubHealthChecker:
             "rabbitmq_host": "localhost:5672",
         }.get(key, default)
         checker = DaprPubSubHealthChecker(mock_config)
-        
+
         result = await checker.health_check()
-        
+
         assert result.status == "healthy"
         assert "disabled" in result.message.lower()
 
@@ -149,9 +150,9 @@ class TestDaprPubSubHealthChecker:
             "rabbitmq_host": None,
         }.get(key, default)
         checker = DaprPubSubHealthChecker(mock_config)
-        
+
         result = await checker.health_check()
-        
+
         assert result.status == "healthy"
         assert "not configured" in result.message.lower()
 
@@ -159,13 +160,16 @@ class TestDaprPubSubHealthChecker:
     async def test_dapr_sidecar_unreachable(self, mock_config):
         """Test health check when Dapr sidecar is unreachable."""
         checker = DaprPubSubHealthChecker(mock_config)
-        
+
         with patch("httpx.AsyncClient") as mock_client:
             import httpx
-            mock_client.return_value.__aenter__.return_value.get.side_effect = httpx.RequestError("Connection refused")
-            
+
+            mock_client.return_value.__aenter__.return_value.get.side_effect = (
+                httpx.RequestError("Connection refused")
+            )
+
             result = await checker.health_check()
-            
+
             assert result.status == "unhealthy"
             assert "dapr sidecar unreachable" in result.message.lower()
 
@@ -173,22 +177,24 @@ class TestDaprPubSubHealthChecker:
     async def test_pubsub_component_not_loaded(self, mock_config):
         """Test health check when pubsub component is not loaded."""
         checker = DaprPubSubHealthChecker(mock_config)
-        
+
         with patch("httpx.AsyncClient") as mock_client:
             # Mock Dapr health check success
             mock_health_response = MagicMock()
             mock_health_response.raise_for_status = MagicMock()
-            
+
             # Mock metadata response with no pubsub component
             mock_metadata_response = MagicMock()
             mock_metadata_response.raise_for_status = MagicMock()
             mock_metadata_response.json = MagicMock(return_value={"components": []})
-            
+
             mock_client_instance = mock_client.return_value.__aenter__.return_value
-            mock_client_instance.get = AsyncMock(side_effect=[mock_health_response, mock_metadata_response])
-            
+            mock_client_instance.get = AsyncMock(
+                side_effect=[mock_health_response, mock_metadata_response]
+            )
+
             result = await checker.health_check()
-            
+
             assert result.status == "unhealthy"
             assert "not loaded" in result.message.lower()
 
@@ -196,31 +202,35 @@ class TestDaprPubSubHealthChecker:
     async def test_successful_health_check(self, mock_config):
         """Test successful health check with all components working."""
         checker = DaprPubSubHealthChecker(mock_config)
-        
+
         with patch("httpx.AsyncClient") as mock_client:
             # Mock Dapr health check success
             mock_health_response = MagicMock()
             mock_health_response.raise_for_status = MagicMock()
-            
+
             # Mock metadata response with pubsub component
             mock_metadata_response = MagicMock()
             mock_metadata_response.raise_for_status = MagicMock()
-            mock_metadata_response.json = MagicMock(return_value={
-                "components": [
-                    {"name": "rabbitmq-pubsub", "type": "pubsub.rabbitmq"}
-                ]
-            })
-            
+            mock_metadata_response.json = MagicMock(
+                return_value={
+                    "components": [
+                        {"name": "rabbitmq-pubsub", "type": "pubsub.rabbitmq"}
+                    ]
+                }
+            )
+
             # Mock publish success
             mock_publish_response = MagicMock()
             mock_publish_response.raise_for_status = MagicMock()
-            
+
             mock_client_instance = mock_client.return_value.__aenter__.return_value
-            mock_client_instance.get = AsyncMock(side_effect=[mock_health_response, mock_metadata_response])
+            mock_client_instance.get = AsyncMock(
+                side_effect=[mock_health_response, mock_metadata_response]
+            )
             mock_client_instance.post = AsyncMock(return_value=mock_publish_response)
-            
+
             result = await checker.health_check()
-            
+
             assert result.status == "healthy"
             assert "reachable" in result.message.lower()
             assert "rabbitmq-pubsub" in result.message
@@ -229,27 +239,34 @@ class TestDaprPubSubHealthChecker:
     async def test_publish_failure(self, mock_config):
         """Test health check when publish fails."""
         checker = DaprPubSubHealthChecker(mock_config)
-        
+
         with patch("httpx.AsyncClient") as mock_client:
             import httpx
+
             # Mock Dapr health check success
             mock_health_response = MagicMock()
             mock_health_response.raise_for_status = MagicMock()
-            
+
             # Mock metadata response with pubsub component
             mock_metadata_response = MagicMock()
             mock_metadata_response.raise_for_status = MagicMock()
-            mock_metadata_response.json = MagicMock(return_value={
-                "components": [
-                    {"name": "rabbitmq-pubsub", "type": "pubsub.rabbitmq"}
-                ]
-            })
-            
+            mock_metadata_response.json = MagicMock(
+                return_value={
+                    "components": [
+                        {"name": "rabbitmq-pubsub", "type": "pubsub.rabbitmq"}
+                    ]
+                }
+            )
+
             mock_client_instance = mock_client.return_value.__aenter__.return_value
-            mock_client_instance.get = AsyncMock(side_effect=[mock_health_response, mock_metadata_response])
-            mock_client_instance.post = AsyncMock(side_effect=httpx.RequestError("Publish failed"))
-            
+            mock_client_instance.get = AsyncMock(
+                side_effect=[mock_health_response, mock_metadata_response]
+            )
+            mock_client_instance.post = AsyncMock(
+                side_effect=httpx.RequestError("Publish failed")
+            )
+
             result = await checker.health_check()
-            
+
             assert result.status == "unhealthy"
             assert "publish failed" in result.message.lower()

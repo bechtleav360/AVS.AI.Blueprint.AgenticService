@@ -129,7 +129,7 @@ git push origin main
 
 ## Step 6: Sync the Application in ArgoCD
 
-1. Open the ArgoCD UI:  
+1. Open the ArgoCD UI:
    [https://openshift-gitops-server-openshift-gitops.apps.mgmt.env.av360.org/](https://openshift-gitops-server-openshift-gitops.apps.mgmt.env.av360.org/)
 
 2. Navigate to the **app-of-apps** application (this manages all agent applications)

@@ -570,9 +570,10 @@ async def _handle(self, event: CloudEvent, context: dict):
 
 Now that you have event processing set up:
 
-1. **[Create Custom Handlers](handlers.md)** - Build domain-specific processors
-2. **[Build LLM Agents](llm-agents.md)** - Add AI capabilities
-3. **[Testing Guide](testing.md)** - Test event processing
+1. **[Event Routing](event-routing.md)** - Configure topics and routing keys for advanced message routing
+2. **[Create Custom Handlers](handlers.md)** - Build domain-specific processors
+3. **[Build LLM Agents](llm-agents.md)** - Add AI capabilities
+4. **[Testing Guide](testing.md)** - Test event processing
 
 ## Quick Reference
 

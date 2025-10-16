@@ -3,7 +3,7 @@
 import inspect
 import logging
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -18,9 +18,7 @@ class PromptLoader:
 
     @staticmethod
     def load_prompt(
-        prompt_name: str,
-        agent_class: type,
-        config: Optional[Dict[str, Any]] = None
+        prompt_name: str, agent_class: type, config: Optional[Dict[str, Any]] = None
     ) -> str:
         """Load a system prompt file based on the agent class location.
 
@@ -62,9 +60,7 @@ class PromptLoader:
 
     @staticmethod
     def _get_prompt_search_paths(
-        prompt_name: str,
-        agent_class: type,
-        config: Optional[Dict[str, Any]] = None
+        prompt_name: str, agent_class: type, config: Optional[Dict[str, Any]] = None
     ) -> List[Path]:
         """Get list of paths to search for the prompt file.
 
@@ -100,24 +96,79 @@ class PromptLoader:
                 search_paths.append(search_path / filename)
             logger.debug(
                 "Added %d additional search paths from config",
-                len(config["search_paths"])
+                len(config["search_paths"]),
             )
 
         # 3. Add default search paths based on agent class location
         default_paths = [
             module_dir.parent / "prompts" / filename,  # ../prompts/
-            module_dir / "prompts" / filename,          # ./prompts/
-            module_dir / filename,                      # ./
+            module_dir / "prompts" / filename,  # ./prompts/
+            module_dir / filename,  # ./
         ]
         search_paths.extend(default_paths)
 
         logger.debug(
             "Prompt search paths for %s: %s",
             agent_class.__name__,
-            [str(p) for p in search_paths]
+            [str(p) for p in search_paths],
         )
 
         return search_paths
+
+    @staticmethod
+    def load_instruction_prompt(
+        prompt_name: str,
+        caller_class: type,
+        config: Optional[Dict[str, Any]] = None,
+        **template_vars: Any,
+    ) -> str:
+        """Load an instruction prompt file and format it with template variables.
+
+        This method loads a prompt file and formats it using Python's str.format()
+        with the provided template variables. This allows handlers to load
+        instruction prompts that can be customized at runtime via configuration.
+
+        Args:
+            prompt_name: Name of the prompt file (without .prompt extension).
+            caller_class: The class requesting the prompt (for path resolution).
+            config: Optional prompt configuration dict with keys:
+                   - custom_path: Custom prompt directory path
+                   - search_paths: List of additional search paths
+            **template_vars: Variables to use in template formatting.
+
+        Returns:
+            Formatted prompt text.
+
+        Raises:
+            FileNotFoundError: If prompt file doesn't exist.
+            KeyError: If template variable is missing.
+
+        Example:
+            instruction = PromptLoader.load_instruction_prompt(
+                "invoice_instruction",
+                self.__class__,
+                config=prompt_config,
+                invoice_text=text,
+                metadata=meta
+            )
+        """
+        # Load the prompt template
+        template = PromptLoader.load_prompt(prompt_name, caller_class, config)
+
+        # Format with template variables
+        try:
+            formatted = template.format(**template_vars)
+            logger.debug(
+                "Formatted instruction prompt '%s' with %d variables",
+                prompt_name,
+                len(template_vars),
+            )
+            return formatted
+        except KeyError as e:
+            raise KeyError(
+                f"Missing template variable in prompt '{prompt_name}': {e}. "
+                f"Available variables: {list(template_vars.keys())}"
+            ) from e
 
     @staticmethod
     def get_prompt_dir(agent_class: type) -> Path:
@@ -139,9 +190,7 @@ class PromptLoader:
         prompt_dir = module_dir.parent / "prompts"  # e.g., .../custom/prompts
 
         logger.debug(
-            "Resolved prompt directory for %s: %s",
-            agent_class.__name__,
-            prompt_dir
+            "Resolved prompt directory for %s: %s", agent_class.__name__, prompt_dir
         )
 
         return prompt_dir

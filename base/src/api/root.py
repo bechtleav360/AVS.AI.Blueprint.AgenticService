@@ -1,6 +1,7 @@
 """Root endpoints providing service metadata."""
 
 from typing import Any
+
 from fastapi import APIRouter
 
 

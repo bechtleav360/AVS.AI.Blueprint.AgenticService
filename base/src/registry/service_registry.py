@@ -1,6 +1,6 @@
 """Service registry implementation for the base agent services."""
 
-from typing import Dict, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Dict, Optional
 
 from ..config import Config
 

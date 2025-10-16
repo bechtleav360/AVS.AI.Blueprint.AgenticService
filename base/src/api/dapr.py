@@ -1,7 +1,7 @@
 """Generic Dapr pub/sub endpoints for the agent service (framework-level)."""
 
 import logging
-from typing import Any, Dict, List, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List
 
 from fastapi import APIRouter, HTTPException, Request, status
 from opentelemetry import trace
@@ -53,24 +53,32 @@ class DaprApi:
             span.set_attribute("dapr.topic", topic)
             try:
                 payload = await request.json()
-                logger.info("Received Dapr event on topic %s", topic)
+                logger.debug("Received Dapr event on topic %s", topic)
 
-                # Convert Dapr payload to CloudEvent format
-                cloud_event = CloudEvent(
-                    specversion="1.0",
-                    id=payload.get("id", f"dapr-{topic}"),
-                    source=f"/dapr/topic/{topic}",
-                    type=f"dapr.{topic}",
-                    data=payload,
-                )
+                # Check if payload is already a CloudEvent
+                if self._is_cloudevent(payload):
+                    logger.debug("Payload is already a CloudEvent, using as-is")
+                    cloud_event = CloudEvent(**payload)
+                else:
+                    # Wrap non-CloudEvent payload in CloudEvent format
+                    logger.debug("Wrapping payload in CloudEvent format")
+                    cloud_event = CloudEvent(
+                        specversion="1.0",
+                        id=payload.get("id", f"dapr-{topic}"),
+                        source=f"/dapr/topic/{topic}",
+                        type=f"dapr.{topic}",
+                        data=payload,
+                    )
 
                 # Process through the unified service
                 processing_service = self._component_registry.get_processing_service()
                 context = {"dapr_topic": topic}
-                result = await processing_service.process_event(cloud_event, context)
+                result_event = await processing_service.process_event(
+                    cloud_event, context
+                )
 
-                # Return Dapr-compatible response
-                if result["status"] == "processed":
+                # Return Dapr-compatible response based on result event
+                if result_event.data.get("status") == "processed":
                     return {"status": "SUCCESS"}
                 else:
                     logger.warning("No processor handled Dapr event on topic %s", topic)
@@ -85,3 +93,17 @@ class DaprApi:
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail="Dapr event handling failed",
                 )
+
+    def _is_cloudevent(self, payload: Dict[str, Any]) -> bool:
+        """
+        Check if a payload is already a CloudEvent.
+
+        Args:
+            payload: The payload to check
+
+        Returns:
+            True if payload contains CloudEvent required fields
+        """
+        # CloudEvents 1.0 required fields
+        required_fields = {"specversion", "id", "source", "type"}
+        return required_fields.issubset(payload.keys())

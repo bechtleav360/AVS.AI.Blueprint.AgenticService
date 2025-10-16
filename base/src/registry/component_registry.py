@@ -6,12 +6,12 @@ ProcessingService.
 """
 
 import logging
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from ..config import Config
 
 if TYPE_CHECKING:  # pragma: no cover
-    from ..agent import BaseAgent, EventHandler
+    from ..handler import EventHandler
 
 logger = logging.getLogger(__name__)
 
@@ -19,28 +19,32 @@ logger = logging.getLogger(__name__)
 class ComponentRegistry:
     """
     Unified registry for managing handlers and runtimes.
-    
+
     This class is responsible ONLY for:
     - Storing and organizing components (handlers, runtimes)
     - Providing access to registered components
     - Managing component lifecycle (registration, retrieval)
-    
+
     Business logic (event processing, orchestration) belongs in ProcessingService.
     """
 
     def __init__(self, settings: Config) -> None:
         """
         Initialize the component registry.
-        
+
         Args:
             settings: Application configuration
         """
         self._settings = settings
         self._handlers: List["EventHandler"] = []
-        self._runtimes: Dict[str, "BaseAgent"] = {}
-        self._default_runtime: Optional[str] = None
         self._processing_service: Optional[Any] = None
         self._event_publishing_service: Optional[Any] = None
+
+        # Import here to avoid circular dependency
+        from .agent_registry import AgentRegistry
+
+        self._agent_registry = AgentRegistry()
+
         logger.info("ComponentRegistry initialized")
 
     # ========================================================================
@@ -50,7 +54,7 @@ class ComponentRegistry:
     def register_handler(self, handler: "EventHandler") -> None:
         """
         Register a single event handler.
-        
+
         Args:
             handler: The handler instance to register
         """
@@ -58,6 +62,7 @@ class ComponentRegistry:
             "Registering handler: %s with priority %d", handler.name, handler.priority
         )
         handler.link_service_registry(self)
+        handler.link_component_registry(self)  # Inject component registry
         self._handlers.append(handler)
         # Keep handlers sorted by priority (lower numbers first)
         self._handlers.sort()
@@ -65,7 +70,7 @@ class ComponentRegistry:
     def register_handlers(self, handlers: List["EventHandler"]) -> None:
         """
         Register multiple event handlers.
-        
+
         Args:
             handlers: List of handler instances to register
         """
@@ -75,7 +80,7 @@ class ComponentRegistry:
     def get_handlers(self) -> List["EventHandler"]:
         """
         Get all registered handlers, sorted by priority.
-        
+
         Returns:
             Copy of the handlers list
         """
@@ -87,95 +92,23 @@ class ComponentRegistry:
         self._handlers.clear()
 
     # ========================================================================
-    # Runtime Management
-    # ========================================================================
-
-    def register_runtime(
-        self, name: str, runtime: "BaseAgent", is_default: bool = False
-    ) -> None:
-        """
-        Register an agent runtime.
-        
-        Args:
-            name: Unique name for the runtime
-            runtime: The runtime instance to register
-            is_default: Whether this should be the default runtime
-        """
-        logger.info("Registering runtime: %s", name)
-        self._runtimes[name] = runtime
-
-        if is_default or self._default_runtime is None:
-            self._default_runtime = name
-            logger.info("Set %s as default runtime", name)
-
-        # Link registry to runtime
-        runtime.link_service_registry(self)
-
-    def get_runtime(self, name: Optional[str] = None) -> Optional["BaseAgent"]:
-        """
-        Get a specific runtime by name, or the default runtime.
-        
-        Args:
-            name: Name of the runtime to retrieve, or None for default
-            
-        Returns:
-            The requested runtime, or None if not found
-        """
-        if name is None:
-            name = self._default_runtime
-
-        if name is None:
-            logger.warning("No default runtime set and no name provided")
-            return None
-
-        runtime = self._runtimes.get(name)
-        if runtime is None:
-            logger.warning("Runtime %s not found", name)
-
-        return runtime
-
-    def get_all_runtimes(self) -> Dict[str, "BaseAgent"]:
-        """
-        Get all registered runtimes.
-        
-        Returns:
-            Dictionary of runtime name to runtime instance
-        """
-        return self._runtimes.copy()
-
-    def get_default_runtime_name(self) -> Optional[str]:
-        """
-        Get the name of the default runtime.
-        
-        Returns:
-            Name of the default runtime, or None if not set
-        """
-        return self._default_runtime
-
-    def clear_runtimes(self) -> None:
-        """Clear all registered runtimes (useful for testing)."""
-        logger.info("Clearing all registered runtimes")
-        self._runtimes.clear()
-        self._default_runtime = None
-
-    # ========================================================================
     # General Management
     # ========================================================================
 
     def clear(self) -> None:
         """
         Clear all registered components.
-        
+
         Useful for testing or resetting the registry state.
         """
         logger.info("Clearing all components from registry")
         self.clear_handlers()
-        self.clear_runtimes()
+        self._agent_registry.clear()
 
     def get_settings(self) -> Config:
         """
         Get the application settings.
-        
+
         Returns:
             Application configuration
         """
@@ -188,7 +121,7 @@ class ComponentRegistry:
     def register_processing_service(self, processing_service: Any) -> None:
         """
         Register the processing service instance.
-        
+
         Args:
             processing_service: The ProcessingService instance
         """
@@ -198,10 +131,10 @@ class ComponentRegistry:
     def get_processing_service(self) -> Any:
         """
         Get the registered processing service.
-        
+
         Returns:
             The ProcessingService instance
-            
+
         Raises:
             ValueError: If no processing service is registered
         """
@@ -218,7 +151,7 @@ class ComponentRegistry:
     def register_event_publishing_service(self, event_publishing_service: Any) -> None:
         """
         Register the event publishing service instance.
-        
+
         Args:
             event_publishing_service: The EventPublishingService instance
         """
@@ -228,10 +161,10 @@ class ComponentRegistry:
     def get_event_publishing_service(self) -> Any:
         """
         Get the registered event publishing service.
-        
+
         Returns:
             The EventPublishingService instance
-            
+
         Raises:
             ValueError: If no event publishing service is registered
         """
@@ -240,3 +173,16 @@ class ComponentRegistry:
             logger.error(error_msg)
             raise ValueError(error_msg)
         return self._event_publishing_service
+
+    # ========================================================================
+    # AgentRegistry Management
+    # ========================================================================
+
+    def get_agent_registry(self):
+        """
+        Get the agent registry for managing configured agents.
+
+        Returns:
+            The AgentRegistry instance
+        """
+        return self._agent_registry

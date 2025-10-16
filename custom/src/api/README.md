@@ -3,7 +3,6 @@
 The base framework (`base/src/app.py`) already includes generic routers:
 
 - `base/src/api/rest.py` → mounted at `/api`
-- `base/src/api/events.py` → mounted at `/events`
 - `base/src/api/dapr.py` → Dapr discovery and generic event handler
 - `base/src/api/actuators.py` → health and liveness
 

@@ -34,10 +34,7 @@ class OpenAIModelProvider(ModelProviderStrategy):
         )
         provider = OpenAIProvider(openai_client=client)
 
-        logger.info(
-            "OpenAI model configured: %s",
-            ai_config["model_name"]
-        )
+        logger.info("OpenAI model configured: %s", ai_config["model_name"])
 
         return OpenAIChatModel(
             provider=provider,

@@ -1,7 +1,7 @@
 """Unified processing service that coordinates handlers and runtimes."""
 
 import logging
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, Optional
 from uuid import uuid4
 
 from opentelemetry import trace
@@ -39,7 +39,7 @@ class ProcessingService:
         event: CloudEvent,
         context: Optional[Dict[str, Any]] = None,
         runtime_name: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> CloudEvent:
         """
         Process a CloudEvent through the handler chain and optionally through an agent runtime.
 
@@ -49,7 +49,7 @@ class ProcessingService:
             runtime_name: Specific runtime to use, or None for default
 
         Returns:
-            A dictionary containing the processing result
+            A CloudEvent containing the processing result
         """
         if context is None:
             context = {}
@@ -78,87 +78,48 @@ class ProcessingService:
             )
 
             try:
-                # Step 1: Process through handler chain and get runtime name
-                handler_result, requested_runtime = await self._process_through_handlers(event, context)
+                # Process through handler chain
+                # Handlers can call agents directly using _get_agent_runtime()
+                handler_result = await self._process_through_handlers(event, context)
 
-                # Step 2: Use agent if handler returned a runtime name
-                agent_result = None
+                # Prepare result data
+                status = (
+                    "processed" if handler_result is not None else "no_handler_found"
+                )
 
-                if requested_runtime is not None:
-                    # Empty string means use default runtime
-                    actual_runtime = requested_runtime if requested_runtime else runtime_name
-                    
-                    logger.info(
-                        "Processing with agent runtime for request %s",
-                        request_id,
-                        extra={
-                            "request_id": request_id,
-                            "runtime_name": actual_runtime,
-                            "handler_specified": bool(requested_runtime),
-                        },
-                    )
-
-                    # Prepare context for agent
-                    agent_context = {
-                        "event": event,
-                        "handler_result": handler_result,
-                        **context,
-                    }
-
-                    try:
-                        agent_result = await self._process_with_runtime(
-                            runtime_name=actual_runtime, **agent_context
-                        )
-                        span.set_attribute("agent.processed", True)
-                        span.set_attribute("agent.name", actual_runtime)
-
-                    except Exception as e:
-                        logger.error(
-                            "Agent processing failed for request %s: %s",
-                            request_id,
-                            str(e),
-                            extra={
-                                "request_id": request_id,
-                                "error": str(e),
-                                "runtime_name": runtime_name,
-                            },
-                            exc_info=True,
-                        )
-                        span.record_exception(e)
-                        span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
-                        raise
-
-                # Step 3: Prepare final result
-                final_result = {
+                result_data = {
                     "request_id": request_id,
-                    "status": "processed",
-                    "handler_result": handler_result,
-                    "agent_result": agent_result,
-                    "processed_by": [],
+                    "status": status,
+                    "result": handler_result,
                 }
 
-                if handler_result is not None:
-                    final_result["processed_by"].append("handlers")
-                if agent_result is not None:
-                    final_result["processed_by"].append("agent")
+                if handler_result is None:
+                    result_data["message"] = "No handler processed this event"
 
-                if not final_result["processed_by"]:
-                    final_result["status"] = "no_processor_found"
-                    final_result["message"] = "No handler or agent processed this event"
-
-                logger.info(
+                logger.debug(
                     "Event processing completed for request %s",
                     request_id,
                     extra={
                         "request_id": request_id,
-                        "status": final_result["status"],
-                        "processed_by": final_result["processed_by"],
-                        "has_handler_result": handler_result is not None,
-                        "has_agent_result": agent_result is not None,
+                        "status": status,
+                        "has_result": handler_result is not None,
                     },
                 )
 
-                return final_result
+                # Create result CloudEvent
+                result_event = CloudEvent(
+                    specversion="1.0",
+                    id=str(uuid4()),
+                    source=self._settings.get("app_name", "agent-service"),
+                    type=f"agent.output.{event.type}",
+                    data=result_data,
+                    subject=event.subject,
+                )
+
+                # Publish result event if topic mapping exists
+                await self._publish_result_event(result_event)
+
+                return result_event
 
             except Exception as e:
                 logger.error(
@@ -176,7 +137,7 @@ class ProcessingService:
         payload: Dict[str, Any],
         context: Optional[Dict[str, Any]] = None,
         runtime_name: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> CloudEvent:
         """
         Process a REST request by converting it to a CloudEvent and processing.
 
@@ -186,7 +147,7 @@ class ProcessingService:
             runtime_name: Specific runtime to use, or None for default
 
         Returns:
-            A dictionary containing the processing result
+            A CloudEvent containing the processing result
         """
         # Convert REST payload to CloudEvent format
         event = CloudEvent(
@@ -248,23 +209,23 @@ class ProcessingService:
 
     async def _process_through_handlers(
         self, event: CloudEvent, context: Dict[str, Any]
-    ) -> tuple[Optional[Any], Optional[str]]:
+    ) -> Optional[Any]:
         """
-        Process an event through all registered handlers.
+        Process an event through all registered handlers in priority order.
+
+        Handlers are executed in sequence until one returns a result.
+        Handlers can call agents directly using _get_agent_runtime().
 
         Returns:
-            Tuple of (handler_result, runtime_name) where:
-            - handler_result: Result from the first handler that processes the event, or None
-            - runtime_name: Runtime name from handler's get_runtime_name(), or None to skip agent
+            Result from the first handler that returns a non-None value, or None
         """
         handlers = self._component_registry.get_handlers()
-        runtime_name = None
 
         with tracer.start_as_current_span("processing_service.handler_chain") as span:
             span.set_attribute("event.type", event.type)
             span.set_attribute("handlers.count", len(handlers))
 
-            logger.info(
+            logger.debug(
                 "Processing event through %d handlers",
                 len(handlers),
                 extra={
@@ -289,15 +250,6 @@ class ProcessingService:
                         )
 
                         result = await handler.handle(event, context)
-                        
-                        # Get runtime name from handler
-                        runtime_name = handler.get_runtime_name(event, context)
-                        
-                        logger.debug(
-                            "Handler %s specified runtime: %s",
-                            handler.name,
-                            runtime_name if runtime_name else "None (no agent)"
-                        )
 
                         if result is not None:
                             logger.info(
@@ -309,13 +261,10 @@ class ProcessingService:
                                     "event_type": event.type,
                                     "event_id": getattr(event, "id", None),
                                     "has_result": True,
-                                    "runtime_name": runtime_name,
                                 },
                             )
                             span.set_attribute("handler.processed_by", handler.name)
-                            if runtime_name is not None:
-                                span.set_attribute("handler.runtime_name", runtime_name)
-                            return result, runtime_name
+                            return result
                         else:
                             logger.info(
                                 "Handler %s processed event %s but passed to next handler",
@@ -326,10 +275,9 @@ class ProcessingService:
                                     "event_type": event.type,
                                     "event_id": getattr(event, "id", None),
                                     "has_result": False,
-                                    "runtime_name": runtime_name,
                                 },
                             )
-                            # Continue to next handler but keep the runtime_name
+                            # Continue to next handler
 
                 except Exception as e:
                     logger.error(
@@ -358,7 +306,7 @@ class ProcessingService:
                     "handlers_count": len(handlers),
                 },
             )
-            return None, runtime_name
+            return None
 
     async def _process_with_runtime(
         self, runtime_name: Optional[str] = None, context: Any = None, **kwargs
@@ -383,12 +331,14 @@ class ProcessingService:
             runtime = self._component_registry.get_runtime(runtime_name)
 
             if runtime is None:
-                error_msg = "No runtime available (requested: %s)" % runtime_name
+                error_msg = f"No runtime available (requested: {runtime_name})"
                 logger.error(error_msg)
                 span.set_status(trace.Status(trace.StatusCode.ERROR, error_msg))
                 raise ValueError(error_msg)
 
-            actual_name = runtime_name or self._component_registry.get_default_runtime_name()
+            actual_name = (
+                runtime_name or self._component_registry.get_default_runtime_name()
+            )
             span.set_attribute("runtime.name", actual_name)
 
             logger.info(
@@ -423,6 +373,59 @@ class ProcessingService:
                 )
                 span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
                 raise
+
+    async def _publish_result_event(self, result_event: CloudEvent) -> None:
+        """
+        Publish result event if topic mapping exists for the event type.
+
+        Args:
+            result_event: The CloudEvent to potentially publish
+        """
+        try:
+            # Get event publishing service
+            publishing_service = self._component_registry.get_event_publishing_service()
+            if not publishing_service:
+                logger.debug(
+                    "No event publishing service registered, skipping publication"
+                )
+                return
+
+            # Check if there's a topic mapping for this event type
+            event_pub_config = self._settings.get_event_publishing_config()
+            topic_mapping = event_pub_config.get("topic_mapping", {})
+
+            if result_event.type in topic_mapping:
+                topic = topic_mapping[result_event.type]
+                logger.info(
+                    "Publishing result event type '%s' to topic '%s'",
+                    result_event.type,
+                    topic,
+                )
+
+                await publishing_service.publish_event(event=result_event, topic=topic)
+
+                logger.debug(
+                    "Successfully published result event %s to topic %s",
+                    result_event.id,
+                    topic,
+                )
+            else:
+                logger.debug(
+                    "No topic mapping found for event type '%s', skipping publication",
+                    result_event.type,
+                )
+
+        except Exception as e:
+            # Log but don't fail the request if publishing fails
+            logger.warning(
+                "Failed to publish result event: %s",
+                str(e),
+                extra={
+                    "event_id": result_event.id,
+                    "event_type": result_event.type,
+                    "error": str(e),
+                },
+            )
 
     async def _health_check_runtimes(self) -> Dict[str, Dict[str, Any]]:
         """Perform health checks on all registered runtimes."""

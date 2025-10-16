@@ -26,14 +26,15 @@ PayloadT = TypeVar("PayloadT", bound=BaseModel)
 class RestApi(Generic[PayloadT]):
     """Generic OOP wrapper for the REST API router."""
 
-    def __init__(self, payload_type: Type[PayloadT], registry: ComponentRegistry) -> None:
+    def __init__(
+        self, payload_type: Type[PayloadT], registry: ComponentRegistry
+    ) -> None:
         self.router = APIRouter()
         self.payload_type = payload_type
         self._component_registry = registry
         # Create processing service with the component registry
         self._processing_service = ProcessingService(
-            settings=registry.get_settings(),
-            component_registry=registry
+            settings=registry.get_settings(), component_registry=registry
         )
         self._register_routes()
 
@@ -95,9 +96,12 @@ class RestApi(Generic[PayloadT]):
                     "client_ip": request.client.host if request.client else None,
                 }
 
-                result = await self._processing_service.process_rest_request(
+                result_event = await self._processing_service.process_rest_request(
                     payload, context
                 )
+
+                # Extract result data from CloudEvent
+                result = result_event.data
 
                 # Determine success based on processing result
                 success = result["status"] == "processed"

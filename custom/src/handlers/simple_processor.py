@@ -1,55 +1,52 @@
-"""Customizable event handlers for the decision engine.
+"""Example event handlers demonstrating the Chain of Responsibility pattern.
 
 Guide: How to add a custom handler
 ----------------------------------
 
-This module is where you implement domain-specific event handlers that plug
-into the framework's chain-of-responsibility `DecisionEngine`.
-
-Key points:
-- The base framework provides tracing automatically. You do NOT need to add
-  spans in your handlers. Just implement business logic.
-- Extend `base.src.agent.base.decisions.EventHandler` and override the two
-  template methods:
-  - `_can_handle(event, context) -> bool`: Return True if your handler should
-    process the event.
-  - `_handle(event, context) -> Optional[Any]`: Perform processing and return
-    a result or `None` to pass control to the next handler.
-- Register your handler in `get_all_handlers()` at the bottom of this file to
-  enable the engine to use it.
+Handlers process events in priority order. Each handler can:
+1. Check if it can handle the event (can_handle_event)
+2. Process the event and either:
+   - Return a result (stops the chain)
+   - Return None (continues to next handler)
+3. Optionally call agents using await self._get_agent_runtime()
 
 Example:
 
 ```python
-from base.src.agent.base.decisions import EventHandler
-from base.src.models.events import CloudEvent
+from base.src.handler import EventHandler
+from base.src.models import CloudEvent
 
 class MyHandler(EventHandler):
     def __init__(self):
         super().__init__("MyHandler", priority=20)
 
-    async def _can_handle(self, event: CloudEvent, context: dict) -> bool:
+    async def can_handle_event(self, event: CloudEvent, context: dict) -> bool:
         return event.type == "my.event.type"
 
-    async def _handle(self, event: CloudEvent, context: dict):
-        # domain logic here
-        context["processed_by"] = self.name
-        return {"status": "processed"}
+    async def handle_event(self, event: CloudEvent, context: dict):
+        # Simple processing - no agent needed
+        return {"status": "processed", "data": event.data}
 
-# Add MyHandler() to get_all_handlers() below
+        # OR call agent if needed
+        runtime = await self._get_agent_runtime("my_analyzer")
+        result = await runtime.process_request(context={...})
+        return {"status": "success", "result": result}
 ```
 
 Best practices:
-- Keep handlers single-purpose and composable.
-- Use `context` to pass data between handlers; avoid tight coupling.
-- Prefer adding fields to custom models in `agent/src/custom/models/` and
-  import them here if needed.
+- Keep handlers single-purpose and composable
+- Return None to continue chain, return result to stop
+- Call agents directly when needed using _get_agent_runtime()
+- Use context to pass data between handlers
 """
 
 import logging
 from typing import Any
 
-from ..api.rest import CustomPayload
+from base.src.handler import EventHandler
+from base.src.models import CloudEvent
+
+from ..models import CustomPayload
 
 
 class HandlerError(Exception):
@@ -61,9 +58,6 @@ class HandlerError(Exception):
         self.reason = reason
         self.code = code or "handler_error"
 
-
-from base.src.handler import EventHandler
-from base.src.models import CloudEvent
 
 # from ..models.domain import AgentOutput
 
@@ -102,7 +96,3 @@ class SimpleProcessorHandler(EventHandler):
         context["processed_without_agent"] = True
 
         return result
-
-    def get_runtime_name(self, event: CloudEvent, context: dict[str, Any]) -> str | None:
-        """Return None to skip agent processing for simple events."""
-        return None  # No agent needed for simple processing

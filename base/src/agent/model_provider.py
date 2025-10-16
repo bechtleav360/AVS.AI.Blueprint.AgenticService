@@ -2,7 +2,7 @@
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Dict, Any
+from typing import Any, Dict
 
 from pydantic_ai.models import Model
 
@@ -40,6 +40,7 @@ class ModelProviderFactory:
         """Lazy load provider implementations to avoid circular imports."""
         if not cls._providers:
             from .providers import OpenAIModelProvider, VLLMModelProvider
+
             cls._providers["openai"] = OpenAIModelProvider()
             cls._providers["vllm"] = VLLMModelProvider()
 
@@ -67,9 +68,7 @@ class ModelProviderFactory:
 
     @classmethod
     def register_provider(
-        cls,
-        provider_name: str,
-        provider: ModelProviderStrategy
+        cls, provider_name: str, provider: ModelProviderStrategy
     ) -> None:
         """Register a custom model provider strategy.
 

@@ -3,8 +3,8 @@
 from unittest.mock import MagicMock
 
 import pytest
-from base.src.config import Config
 
+from base.src.config import Config
 from custom.src.agent.runtime import AgentRuntime
 from custom.src.models.processing import ProcessingContext
 from custom.src.models.results import CustomAgentOutput

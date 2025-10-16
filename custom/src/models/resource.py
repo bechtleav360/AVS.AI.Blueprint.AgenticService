@@ -12,9 +12,7 @@ class InvoiceLineItem(BaseModel):
     description: str = Field(..., description="Description of the item or service")
     quantity: Decimal = Field(..., gt=0, description="Quantity of items")
     unit_price: Decimal = Field(..., ge=0, description="Price per unit")
-    tax_rate: Decimal | None = Field(
-        None, ge=0, le=1, description="Tax rate as decimal (e.g., 0.19 for 19%)"
-    )
+    tax_rate: Decimal | None = Field(None, ge=0, le=1, description="Tax rate as decimal (e.g., 0.19 for 19%)")
 
 
 class InvoiceInput(BaseModel):

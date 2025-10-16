@@ -2,7 +2,7 @@
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Type, TypeVar, Generic
+from typing import Any, Generic, Type, TypeVar
 
 from pydantic import BaseModel
 
@@ -41,6 +41,7 @@ class ResponseHandlerFactory:
         """Lazy load handler implementations to avoid circular imports."""
         if not cls._handlers:
             from .providers import OpenAIResponseHandler, VLLMResponseHandler
+
             cls._handlers["openai"] = OpenAIResponseHandler()
             cls._handlers["vllm"] = VLLMResponseHandler()
 
@@ -68,9 +69,7 @@ class ResponseHandlerFactory:
 
     @classmethod
     def register_handler(
-        cls,
-        provider_name: str,
-        handler: ResponseHandlerStrategy
+        cls, provider_name: str, handler: ResponseHandlerStrategy
     ) -> None:
         """Register a custom response handler strategy.
 
