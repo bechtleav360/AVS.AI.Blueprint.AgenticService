@@ -22,3 +22,9 @@ data:
   {{- end }}
   {{- end }}
   {{- end }}
+  
+  # Event publishing configuration
+  DYNACONF_EVENT_PUBLISHING__DEFAULT_PUBSUB_NAME: {{ .Values.eventPublishing.defaultPubsubName | quote }}
+  {{- range $eventType, $topic := .Values.eventPublishing.topicMapping }}
+  DYNACONF_EVENT_PUBLISHING__TOPIC_MAPPING__{{ $eventType | replace "." "_" | upper }}: {{ $topic | quote }}
+  {{- end }}

@@ -191,6 +191,33 @@ class Config:
             "log_level": self.get("log_level"),
         }
 
+    def get_event_publishing_config(self) -> Dict[str, Any]:
+        """Get complete event publishing configuration.
+
+        Returns:
+            Dictionary with event publishing configuration:
+            - default_pubsub_name: The default Dapr pubsub component name
+            - topic_mapping: Dictionary mapping event types to topics
+        """
+        return {
+            "default_pubsub_name": self.get(
+                "event_publishing.default_pubsub_name", "pubsub"
+            ),
+            "topic_mapping": self.get("event_publishing.topic_mapping", {}),
+        }
+
+    def get_topic_for_event_type(self, event_type: str) -> str | None:
+        """Get the topic name for a specific event type.
+
+        Args:
+            event_type: The CloudEvent type (e.g., "agent.output.invoice.processed")
+
+        Returns:
+            The topic name to publish to, or None if no mapping exists
+        """
+        topic_mapping = self.get("event_publishing.topic_mapping", {})
+        return topic_mapping.get(event_type)
+
     def validate(self):
         """Validate the configuration."""
         self._validation_errors.clear()

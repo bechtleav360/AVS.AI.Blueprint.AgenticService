@@ -48,17 +48,6 @@ app.kubernetes.io/name: {{ include "agent-blueprint.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
-{{/*
-Create the name of the service account to use
-*/}}
-{{- define "agent-blueprint.serviceAccountName" -}}
-{{- if .Values.serviceAccount.create }}
-{{- default (include "agent-blueprint.fullname" .) .Values.serviceAccount.name }}
-{{- else }}
-{{- default "default" .Values.serviceAccount.name }}
-{{- end }}
-{{- end }}
-
 {{- define "agent-blueprint.runtimeSectionName" -}}
 {{- regexReplaceAll "([a-z0-9])([A-Z])" . "${1}_${2}" | lower -}}
 {{- end }}

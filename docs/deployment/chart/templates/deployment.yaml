@@ -4,10 +4,16 @@ metadata:
   name: {{ include "agent-blueprint.fullname" . }}
   labels:
     {{- include "agent-blueprint.labels" . | nindent 4 }}
-spec:
-  {{- if not .Values.autoscaling.enabled }}
-  replicas: {{ .Values.replicaCount }}
+  {{- if .Values.dapr.enabled }}
+  {{- if .Values.dapr.useCRDs }}
+  annotations:
+    # Ignore Dapr sidecar injection differences in ArgoCD
+    argocd.argoproj.io/compare-options: IgnoreExtraneous
+    argocd.argoproj.io/sync-options: Prune=false
   {{- end }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
       {{- include "agent-blueprint.selectorLabels" . | nindent 6 }}
@@ -16,17 +22,38 @@ spec:
       annotations:
         checksum/settings: {{ include (print $.Template.BasePath "/configmap-settings.yaml") . | sha256sum }}
         checksum/prompts: {{ include (print $.Template.BasePath "/configmap-prompts.yaml") . | sha256sum }}
+        {{- if .Values.dapr.enabled }}
+        {{- if .Values.dapr.useCRDs }}
+        dapr.io/enabled: "true"
+        dapr.io/app-id: {{ .Values.dapr.appId | quote }}
+        dapr.io/app-port: {{ .Values.dapr.appPort | quote }}
+        dapr.io/log-level: {{ .Values.dapr.logLevel | quote }}
+        dapr.io/enable-metrics: {{ .Values.dapr.enableMetrics | quote }}
+        dapr.io/metrics-port: {{ .Values.dapr.metricsPort | quote }}
+        dapr.io/sidecar-cpu-limit: {{ .Values.dapr.sidecar.resources.limits.cpu | quote }}
+        dapr.io/sidecar-memory-limit: {{ .Values.dapr.sidecar.resources.limits.memory | quote }}
+        dapr.io/sidecar-cpu-request: {{ .Values.dapr.sidecar.resources.requests.cpu | quote }}
+        dapr.io/sidecar-memory-request: {{ .Values.dapr.sidecar.resources.requests.memory | quote }}
+        dapr.io/http-max-request-size: {{ .Values.dapr.httpMaxRequestSize | quote }}
+        dapr.io/http-read-buffer-size: {{ .Values.dapr.httpReadBufferSize | quote }}
+        dapr.io/enable-api-logging: {{ .Values.dapr.enableApiLogging | quote }}
+        dapr.io/env: "DAPR_UNSAFE_SKIP_CONTAINER_UID_GID_CHECK=true"
+        {{- if .Values.dapr.config }}
+        dapr.io/config: {{ .Values.dapr.config | quote }}
+        {{- end }}
+        {{- end }}
+        {{- end }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
       labels:
         {{- include "agent-blueprint.selectorLabels" . | nindent 8 }}
     spec:
+      serviceAccountName: default
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      serviceAccountName: {{ include "agent-blueprint.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
@@ -46,7 +73,6 @@ spec:
           # Python settings
           - name: PYTHONUNBUFFERED
             value: "1"
-        
         livenessProbe:
           {{- toYaml .Values.livenessProbe | nindent 12 }}
         readinessProbe:
@@ -57,8 +83,8 @@ spec:
         - name: prompts
           mountPath: /etc/agent/prompts
           readOnly: true
-      {{- if .Values.dapr.enabled }}
-      # Dapr sidecar container (manual injection)
+      {{- if and .Values.dapr.enabled (not .Values.dapr.useCRDs) }}
+      # Dapr sidecar container (manual injection - only when not using CRDs)
       - name: daprd
         image: "{{ .Values.dapr.image.repository }}:{{ .Values.dapr.image.tag }}"
         imagePullPolicy: {{ .Values.dapr.image.pullPolicy }}
@@ -126,7 +152,7 @@ spec:
           valueFrom:
             secretKeyRef:
               name: {{ .Values.daprComponents.rabbitmq.existingSecret }}
-              key: {{ .Values.daprComponents.rabbitmq.secretKeys.host }}
+              key: {{ .Values.daprComponents.rabbitmq.secretKeys.connectionString }}
         {{- end }}
         ports:
         - name: dapr-http

@@ -11,17 +11,15 @@ metadata:
     {{- include "agent-blueprint.labels" $ | nindent 4 }}
 spec:
   topic: {{ $subscription.topic }}
-  route: {{ $subscription.route }}
-  pubsubname: {{ $subscription.pubsubname | default "rabbitmq-pubsub" }}
+  routes:
+    default: {{ $subscription.route }}
+  pubsubname: {{ $subscription.pubsubname | default "pubsub" }}
   {{- if $subscription.deadLetterTopic }}
   deadLetterTopic: {{ $subscription.deadLetterTopic }}
   {{- end }}
   {{- if $subscription.metadata }}
   metadata:
-    {{- range $key, $value := $subscription.metadata }}
-    - name: {{ $key }}
-      value: {{ $value | quote }}
-    {{- end }}
+    {{- toYaml $subscription.metadata | nindent 4 }}
   {{- end }}
   scopes:
     - {{ $.Values.dapr.appId }}

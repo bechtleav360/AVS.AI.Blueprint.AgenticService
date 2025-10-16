@@ -1,13 +1,15 @@
 """Generic Dapr pub/sub endpoints for the agent service (framework-level)."""
 
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException, Request, status
 from opentelemetry import trace
 
 from ..models.events import CloudEvent
-from ..services import processing_service
+
+if TYPE_CHECKING:  # pragma: no cover
+    from ..registry.component_registry import ComponentRegistry
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -16,7 +18,8 @@ tracer = trace.get_tracer(__name__)
 class DaprApi:
     """Encapsulates all Dapr-related endpoints and logic."""
 
-    def __init__(self):
+    def __init__(self, component_registry: "ComponentRegistry"):
+        self._component_registry = component_registry
         self.router = APIRouter()
         self._register_routes()
 
@@ -62,6 +65,7 @@ class DaprApi:
                 )
 
                 # Process through the unified service
+                processing_service = self._component_registry.get_processing_service()
                 context = {"dapr_topic": topic}
                 result = await processing_service.process_event(cloud_event, context)
 

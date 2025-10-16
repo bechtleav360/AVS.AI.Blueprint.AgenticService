@@ -39,6 +39,8 @@ class ComponentRegistry:
         self._handlers: List["EventHandler"] = []
         self._runtimes: Dict[str, "BaseAgent"] = {}
         self._default_runtime: Optional[str] = None
+        self._processing_service: Optional[Any] = None
+        self._event_publishing_service: Optional[Any] = None
         logger.info("ComponentRegistry initialized")
 
     # ========================================================================
@@ -178,3 +180,63 @@ class ComponentRegistry:
             Application configuration
         """
         return self._settings
+
+    # ========================================================================
+    # ProcessingService Management
+    # ========================================================================
+
+    def register_processing_service(self, processing_service: Any) -> None:
+        """
+        Register the processing service instance.
+        
+        Args:
+            processing_service: The ProcessingService instance
+        """
+        logger.info("Registering processing service")
+        self._processing_service = processing_service
+
+    def get_processing_service(self) -> Any:
+        """
+        Get the registered processing service.
+        
+        Returns:
+            The ProcessingService instance
+            
+        Raises:
+            ValueError: If no processing service is registered
+        """
+        if self._processing_service is None:
+            error_msg = "No processing service registered"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+        return self._processing_service
+
+    # ========================================================================
+    # EventPublishingService Management
+    # ========================================================================
+
+    def register_event_publishing_service(self, event_publishing_service: Any) -> None:
+        """
+        Register the event publishing service instance.
+        
+        Args:
+            event_publishing_service: The EventPublishingService instance
+        """
+        logger.info("Registering event publishing service")
+        self._event_publishing_service = event_publishing_service
+
+    def get_event_publishing_service(self) -> Any:
+        """
+        Get the registered event publishing service.
+        
+        Returns:
+            The EventPublishingService instance
+            
+        Raises:
+            ValueError: If no event publishing service is registered
+        """
+        if self._event_publishing_service is None:
+            error_msg = "No event publishing service registered"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+        return self._event_publishing_service

@@ -9,11 +9,11 @@ from fastapi import FastAPI
 
 from .agent import BaseAgent
 from .api import actuators, root
-from .api.events import EventApi
 from .config import Config, ConfigError
 from .handler import EventHandler
 from .registry.component_registry import ComponentRegistry
-from .services import AIProviderHealthChecker
+from .services import AIProviderHealthChecker, DaprPubSubHealthChecker, EventPublishingService
+from .services.processing_service import ProcessingService
 
 # Telemetry utilities
 from .telemetry import TelemetryManager
@@ -137,15 +137,15 @@ class AppBuilder:
                 runtime_class = runtime_info["runtime_class"]
                 runtime_name = runtime_info["runtime_name"]
                 is_default = runtime_info["is_default"]
-                
+
                 # Instantiate runtime with runtime_name for config lookup
                 runtime_instance = runtime_class(self.config, runtime_name)
-                
+
                 # Register with the registry using the runtime_name
                 self._component_registry.register_runtime(
                     runtime_name, runtime_instance, is_default=is_default
                 )
-                
+
                 logger.info(
                     "Registered runtime '%s' (class: %s, default: %s)",
                     runtime_name,
@@ -157,6 +157,28 @@ class AppBuilder:
             )
         except Exception as e:
             logger.error("Failed to register runtimes: %s", e, exc_info=True)
+
+        # Initialize and register ProcessingService
+        try:
+            processing_service = ProcessingService(
+                settings=self.config,
+                component_registry=self._component_registry,
+            )
+            self._component_registry.register_processing_service(processing_service)
+            logger.info("Successfully registered ProcessingService")
+        except Exception as e:
+            logger.error("Failed to register ProcessingService: %s", e, exc_info=True)
+
+        # Initialize and register EventPublishingService
+        try:
+            event_publishing_service = EventPublishingService(
+                config=self.config,
+                dapr_http_port=self.config.get("dapr_http_port", 3500),
+            )
+            self._component_registry.register_event_publishing_service(event_publishing_service)
+            logger.info("Successfully registered EventPublishingService")
+        except Exception as e:
+            logger.error("Failed to register EventPublishingService: %s", e, exc_info=True)
 
         logger.info("Startup initialization completed")
 
@@ -185,16 +207,17 @@ class AppBuilder:
         # )
 
         # Instantiate and include actuator routes with dependencies
-        health_dependencies = {"ai_provider": AIProviderHealthChecker(self.config)}
+        health_dependencies = {
+            "ai_provider": AIProviderHealthChecker(self.config),
+            "rabbitmq": DaprPubSubHealthChecker(self.config),
+        }
         actuator_api = actuators.ActuatorApi(config=self.config, **health_dependencies)
         app.include_router(actuator_api.router, tags=["actuators"])
 
         # Include other base routers
-        event_api = EventApi(component_registry=self._component_registry)
-        app.include_router(event_api.router, prefix="/events", tags=["events"])
         app.include_router(root.router, tags=["root"])
         if dapr is not None:
-            dapr_api = dapr.DaprApi()
+            dapr_api = dapr.DaprApi(component_registry=self._component_registry)
             app.include_router(dapr_api.router, tags=["dapr"])
 
         # Include custom routers

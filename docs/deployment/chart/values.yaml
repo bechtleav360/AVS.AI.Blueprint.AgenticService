@@ -29,11 +29,11 @@ dapr:
   enableMetrics: true
 
   # Dapr mode: "standalone" or "kubernetes"
-  mode: standalone
+  mode: kubernetes
 
   # Use Dapr CRDs (requires Dapr operator and CRDs installed)
   # Set to false to use local component files mounted via ConfigMap
-  useCRDs: false
+  useCRDs: true
 
   # Dapr sidecar image (manual injection without operator)
   image:
@@ -86,8 +86,13 @@ appSettings:
   data_gateway_timeout: 30
   data_gateway_max_retries: 3
   
+  # RabbitMQ
+  rabbitmq_host: "rabbitmq.dev-bios-bechtle.svc:5672"
+  rabbitmq_vhost: "bios"
+
   # Health checks
-  health_check_ai_provider: false
+  health_check_ai_provider: true
+  health_check_rabbitmq: true
 
 # Multi-runtime configuration
 runtimes:
@@ -153,36 +158,14 @@ prompts:
 
     Use the calculate_invoice tool to verify the calculations.
 
-# Dapr components
-daprComponents:
-  # RabbitMQ pub/sub
-  rabbitmq:
-    enabled: true
-    # IMPORTANT: Override this with your actual RabbitMQ connection string
-    # Format: amqp://username:password@host:port/vhost
-    host: "amqp://default_user_gL_0b5UoGT7HlwnDWib:HJ7PBBqNljN4KWMsXOtQ97LPuqaX7pBb@rabbitmq.dev-bios-bechtle.svc:5672/bios"
-    vhost: "bios"
-    consumerID: "agent-invoiceprocessor"
-    durable: true
-    autoAck: false
-    deliveryMode: 2
-    reconnectWait: 5
-    prefetchCount: 10
-    exchangeKind: "topic"
-    publisherConfirm: true
-    # Use existing secret for credentials (not currently used with local components)
-    existingSecret: ""
-    secretKeys:
-      host: connection_string
-
-# Dapr subscriptions - generic structure for any number of subscriptions
+# Dapr subscriptions - receive events from topics
 subscriptions:
   # Invoice processing subscription
   invoiceCreated:
     enabled: true
     topic: invoice.created
     route: /events/invoice
-    pubsubname: rabbitmq-pubsub
+    pubsubname: pubsub
     metadata:
       queueName: invoice-processing-queue
       durable: "true"
@@ -195,7 +178,7 @@ subscriptions:
     enabled: true
     topic: document.uploaded
     route: /events/document
-    pubsubname: rabbitmq-pubsub
+    pubsubname: pubsub
     metadata:
       queueName: document-classification-queue
       durable: "true"
@@ -208,12 +191,34 @@ subscriptions:
     enabled: false
     topic: invoice.validate
     route: /events/validate
-    pubsubname: rabbitmq-pubsub
+    pubsubname: pubsub
     deadLetterTopic: invoice.validate.deadletter
     metadata:
       queueName: invoice-validation-queue
       durable: "true"
       prefetchCount: "20"
+
+# Event publishing - send events to topics based on event type
+eventPublishing:
+  # Default pubsub component name
+  defaultPubsubName: pubsub
+  
+  # Event type to topic mapping
+  # Maps CloudEvent types to RabbitMQ topics for publishing
+  topicMapping:
+    # Agent output events
+    "agent.output.invoice.processed": "invoice.processed"
+    "agent.output.invoice.validated": "invoice.validated"
+    "agent.output.document.classified": "document.classified"
+    
+    # Error/DLQ events
+    "agent.error.processing": "agent.errors"
+    "agent.error.validation": "agent.errors"
+    
+    # Status events
+    "agent.status.started": "agent.status"
+    "agent.status.completed": "agent.status"
+    "agent.status.failed": "agent.status"
 
 # Secrets
 secrets:
@@ -241,23 +246,6 @@ service:
   port: 8000
   annotations: {}
 
-# Ingress configuration
-ingress:
-  enabled: false
-  className: "nginx"
-  annotations: {}
-    # cert-manager.io/cluster-issuer: letsencrypt-prod
-    # nginx.ingress.kubernetes.io/rewrite-target: /
-  hosts:
-    - host: agent-blueprint.example.com
-      paths:
-        - path: /
-          pathType: Prefix
-  tls: []
-  #  - secretName: agent-blueprint-tls
-  #    hosts:
-  #      - agent-blueprint.example.com
-
 # Resource limits
 resources:
   requests:
@@ -266,30 +254,6 @@ resources:
   limits:
     cpu: 2000m
     memory: 2Gi
-
-# Autoscaling
-autoscaling:
-  enabled: false
-  minReplicas: 1
-  maxReplicas: 10
-  targetCPUUtilizationPercentage: 70
-  targetMemoryUtilizationPercentage: 80
-  behavior:
-    scaleDown:
-      stabilizationWindowSeconds: 300
-      policies:
-        - type: Percent
-          value: 50
-          periodSeconds: 60
-    scaleUp:
-      stabilizationWindowSeconds: 0
-      policies:
-        - type: Percent
-          value: 100
-          periodSeconds: 30
-        - type: Pods
-          value: 2
-          periodSeconds: 30
 
 # Health checks
 livenessProbe:
@@ -334,9 +298,3 @@ tolerations: []
 
 # Affinity
 affinity: {}
-
-# Service account
-serviceAccount:
-  create: true
-  annotations: {}
-  name: ""

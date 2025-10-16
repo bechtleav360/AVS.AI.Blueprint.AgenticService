@@ -20,6 +20,10 @@ dapr_grpc_port = 50001
 rabbitmq_host = "localhost:5672"
 rabbitmq_vhost = "bios"
 
+# Health Check Configuration
+health_check_ai_provider = true
+health_check_rabbitmq = true
+
 # Circuit Breaker Configuration
 circuit_breaker_failure_threshold = 5
 circuit_breaker_timeout_s = 60
