@@ -189,6 +189,221 @@ app = (
 )
 ```
 
+## Publishing Events from Handlers
+
+Handlers can automatically publish events based on their processing results using the **HandlerResult** pattern.
+
+### Why Publish Events?
+
+When a handler completes processing, you often want to:
+- Notify other systems about the result
+- Trigger downstream workflows
+- Send different events based on success/failure
+- Use routing keys for topic-based routing
+
+### The HandlerResult Model
+
+Instead of returning plain dictionaries, return a **HandlerResult** model:
+
+```python
+from custom.src.models import HandlerResult
+
+return HandlerResult(
+    data={"result": "data"},           # Your result data
+    event_type="invoice.validated",    # Event type to publish (optional)
+    metadata={"key": "value"}          # Additional metadata
+)
+```
+
+**Key Features:**
+- ✅ **Type-safe** - Pydantic model validation
+- ✅ **Automatic publishing** - Set `event_type` and it's published
+- ✅ **Optional** - Leave `event_type=None` to skip publishing
+- ✅ **Stops chain** - Returning HandlerResult stops the handler chain
+
+### Example: Publishing Different Events Based on Validation
+
+This example shows how to publish three different events based on invoice validation status:
+
+```python
+from typing import Optional
+from base.src.handler import EventHandler
+from base.src.models import CloudEvent
+from base.src.agent import PromptLoader
+from custom.src.models import HandlerResult, InvoiceAnalysisOutput
+
+class AgentInvokerHandler(EventHandler):
+    """Handler that validates invoices and publishes different events."""
+    
+    def __init__(self):
+        super().__init__("AgentInvokerHandler", priority=10)
+    
+    async def can_handle_event(self, event, context):
+        return event.data.get("details", {}).get("action") == "invoke_agent"
+    
+    async def handle_event(self, event, context) -> Optional[HandlerResult]:
+        """Process invoice and publish result event."""
+        
+        try:
+            # Get agent and process
+            agent = self._get_agent("invoice_analyzer")
+            instruction = PromptLoader.load_instruction_prompt(
+                "invoice_instruction",
+                self.__class__,
+                invoice_text=event.data["invoice_text"]
+            )
+            
+            result = await agent.run(instruction)
+            analysis: InvoiceAnalysisOutput = result.data
+            
+            # Determine which event to publish based on validation status
+            if analysis.status.lower() == "valid":
+                event_type = "invoice.validated"
+                logger.info("Invoice %s is VALID", analysis.invoice_id)
+                
+            elif analysis.status.lower() in ["invalid", "incomplete"]:
+                event_type = "invoice.invalidated"
+                logger.warning("Invoice %s is INVALID: %s", 
+                             analysis.invoice_id, analysis.notes)
+            else:
+                # Unknown status - treat as invalid
+                event_type = "invoice.invalidated"
+            
+            # Return structured result with event type for publishing
+            return HandlerResult(
+                data=analysis.model_dump(),
+                event_type=event_type,  # ← Triggers automatic publishing
+                metadata={
+                    "invoice_id": analysis.invoice_id,
+                    "status": analysis.status,
+                    "confidence": analysis.confidence,
+                },
+            )
+            
+        except Exception as e:
+            logger.error("Agent processing failed: %s", str(e), exc_info=True)
+            
+            # Return error result with error event type
+            return HandlerResult(
+                data={"error": str(e)},
+                event_type="invoice.analysis.error",  # ← Error event
+                metadata={"error_type": type(e).__name__},
+            )
+    
+    def get_published_event_types(self):
+        """Declare event types this handler can publish."""
+        return (
+            "invoice.validated",
+            "invoice.invalidated",
+            "invoice.analysis.error",
+        )
+```
+
+### Configuring Event Publishing
+
+Map event types to topics in `values.yaml`:
+
+```yaml
+eventPublishing:
+  defaultPubsubName: pubsub
+  topicMapping:
+    # Three different events, same topic, different routing keys
+    "invoice.validated":
+      topic: "test.connection"
+      routing_key: "valid"
+    
+    "invoice.invalidated":
+      topic: "test.connection"
+      routing_key: "invalid"
+    
+    "invoice.analysis.error":
+      topic: "test.connection"
+      routing_key: "error"
+```
+
+### Event Flow
+
+```
+1. Handler processes event
+   ↓
+2. Returns HandlerResult with event_type
+   ↓
+3. ProcessingService detects event_type
+   ↓
+4. Creates new CloudEvent
+   ↓
+5. Publishes to RabbitMQ with routing key
+   ↓
+6. Downstream systems receive event
+```
+
+### When to Use HandlerResult
+
+**Use HandlerResult when:**
+- ✅ You want to publish events automatically
+- ✅ You need type-safe results
+- ✅ You want to stop the handler chain
+- ✅ You need structured metadata
+
+**Use None when:**
+- ✅ You want to continue to the next handler
+- ✅ You're enriching context for other handlers
+- ✅ You're doing validation only
+
+**Use plain dict when:**
+- ✅ You need backward compatibility
+- ✅ You don't need event publishing
+- ✅ You want to stop chain without publishing
+
+### Multiple Event Types Example
+
+```python
+async def handle_event(self, event, context) -> Optional[HandlerResult]:
+    result = await self.process(event.data)
+    
+    # Different events based on result
+    if result["score"] > 0.9:
+        return HandlerResult(
+            data=result,
+            event_type="high.confidence.result"
+        )
+    elif result["score"] > 0.5:
+        return HandlerResult(
+            data=result,
+            event_type="medium.confidence.result"
+        )
+    else:
+        return HandlerResult(
+            data=result,
+            event_type="low.confidence.result"
+        )
+```
+
+### Error Handling with Events
+
+Always publish error events for monitoring:
+
+```python
+try:
+    result = await self.risky_operation()
+    return HandlerResult(
+        data=result,
+        event_type="operation.success"
+    )
+except ValidationError as e:
+    return HandlerResult(
+        data={"error": str(e)},
+        event_type="operation.validation.error",
+        metadata={"error_type": "validation"}
+    )
+except TimeoutError as e:
+    return HandlerResult(
+        data={"error": "Timeout"},
+        event_type="operation.timeout.error",
+        metadata={"error_type": "timeout"}
+    )
+```
+
 ## Common Patterns
 
 ### Pattern 1: Validation → Processing

@@ -5,6 +5,11 @@ app_environment = "development"
 log_level = "INFO"
 log_format = "json"
 
+# Prompt Configuration
+# In Kubernetes, prompts are mounted at /etc/agent/prompts from ConfigMap
+# For multiple paths, use comma-separated string or set via environment
+prompt_search_paths = "/etc/agent/prompts"
+
 # Data Gateway Configuration
 data_gateway_base_url = "http://localhost:8001"
 data_gateway_timeout_s = 30

@@ -10,14 +10,15 @@ data:
   DYNACONF_{{ $key | upper }}: {{ $value | quote }}
   {{- end }}
   
-  # DYNACONF_ prefixed environment variables for runtime configurations
-  {{- range $runtimeName, $runtimeConfig := .Values.runtimes }}
-  {{- if $runtimeConfig.enabled }}
-  {{- $runtimeKey := include "agent-blueprint.toEnvKey" $runtimeName }}
-  {{- range $settingKey, $settingValue := $runtimeConfig }}
+  # DYNACONF_ prefixed environment variables for agent configurations
+  # Maps to [runtime.{agent_name}] sections in settings.toml
+  {{- range $agentName, $agentConfig := .Values.agents }}
+  {{- if or (not (hasKey $agentConfig "enabled")) $agentConfig.enabled }}
+  {{- $agentKey := include "agent-blueprint.toEnvKey" $agentName }}
+  {{- range $settingKey, $settingValue := $agentConfig }}
   {{- if ne $settingKey "enabled" }}
   {{- $envKey := include "agent-blueprint.toEnvKey" $settingKey }}
-  DYNACONF_RUNTIME__{{ $runtimeKey }}__{{ $envKey }}: {{ $settingValue | quote }}
+  DYNACONF_RUNTIME__{{ $agentKey | upper }}__{{ $envKey | upper }}: {{ $settingValue | quote }}
   {{- end }}
   {{- end }}
   {{- end }}

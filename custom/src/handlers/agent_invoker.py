@@ -1,13 +1,16 @@
-"""Example handler that invokes an AI agent for processing.
+"""Invoice analysis handler that invokes an AI agent and publishes results.
 
 This handler demonstrates:
 - Validating event data
-- Calling an agent runtime directly using _get_agent_runtime()
-- Returning a final result (stops the chain)
-- Error handling for agent failures
+- Calling an agent using _get_agent()
+- Returning Pydantic models (HandlerResult) or None
+- Publishing different events based on validation status:
+  * invoice.validated - When invoice is valid
+  * invoice.invalidated - When invoice is invalid
+  * invoice.analysis.error - When processing fails
 
 The handler uses the Chain of Responsibility pattern where it can process
-the event and return a result, or return None to pass to the next handler.
+the event and return a result (stops chain), or return None (continues chain).
 """
 
 import logging
@@ -17,15 +20,17 @@ from base.src.agent import PromptLoader
 from base.src.handler import EventHandler
 from base.src.models import CloudEvent
 
-from ..models import CustomPayload
-
-# from ..models.domain import AgentOutput
+from ..models import CustomPayload, HandlerResult, InvoiceAnalysisOutput
 
 logger = logging.getLogger(__name__)
 
 
 class AgentInvokerHandler(EventHandler):
-    """Handler that validates input and invokes the Pydantic AI agent."""
+    """Handler that validates input, invokes the AI agent, and publishes results.
+
+    Returns HandlerResult with event_type to trigger automatic event publishing.
+    Demonstrates three different event types based on validation status.
+    """
 
     def __init__(self) -> None:
         super().__init__("AgentInvokerHandler", priority=10)
@@ -48,8 +53,17 @@ class AgentInvokerHandler(EventHandler):
 
     async def handle_event(
         self, event: CloudEvent, context: dict[str, Any]
-    ) -> Any | None:
-        """Validate the payload and invoke the agent."""
+    ) -> Optional[HandlerResult]:
+        """Validate the payload, invoke the agent, and return structured result.
+
+        Returns:
+            HandlerResult with event_type for publishing, or None to continue chain.
+
+        Event Types Published:
+            - invoice.validated: When invoice status is 'valid'
+            - invoice.invalidated: When invoice status is 'invalid' or 'incomplete'
+            - invoice.analysis.error: When processing fails
+        """
         logger.info(
             "AgentInvokerHandler processing event '%s'",
             event.type,
@@ -66,7 +80,12 @@ class AgentInvokerHandler(EventHandler):
             invoice_text = payload.get("invoice_text")
             metadata = payload.get("details", {})
         else:
-            return {"status": "error", "message": "Invalid payload format"}
+            logger.error("Invalid payload format")
+            return HandlerResult(
+                data={"error": "Invalid payload format"},
+                event_type="invoice.analysis.error",
+                metadata={"reason": "invalid_payload"},
+            )
 
         # Get pre-configured agent and process
         try:
@@ -74,7 +93,6 @@ class AgentInvokerHandler(EventHandler):
             agent = self._get_agent("invoice_analyzer")
 
             # Load instruction prompt from file with template variables
-            # The prompt file path can be overridden via environment config
             instruction = PromptLoader.load_instruction_prompt(
                 "instruction",
                 self.__class__,
@@ -83,26 +101,64 @@ class AgentInvokerHandler(EventHandler):
                 metadata=metadata,
             )
 
-            # Run agent
+            # Run agent - expects InvoiceAnalysisOutput
             result = await agent.run(instruction)
+            analysis: InvoiceAnalysisOutput = result.data
 
-            logger.info("Agent processing completed successfully")
+            logger.info(
+                "Agent processing completed: status=%s, invoice_id=%s",
+                analysis.status,
+                analysis.invoice_id,
+            )
 
-            return {
-                "status": "success",
-                "result": result.data,
-            }
+            # Determine which event to publish based on validation status
+            if analysis.status.lower() == "valid":
+                event_type = "invoice.validated"
+                logger.info("Invoice %s is VALID", analysis.invoice_id)
+            elif analysis.status.lower() in ["invalid", "incomplete"]:
+                event_type = "invoice.invalidated"
+                logger.warning(
+                    "Invoice %s is INVALID: %s", analysis.invoice_id, analysis.notes
+                )
+            else:
+                # Unknown status - treat as invalid
+                event_type = "invoice.invalidated"
+                logger.warning(
+                    "Invoice %s has unknown status: %s",
+                    analysis.status,
+                    analysis.invoice_id,
+                )
+
+            # Return structured result with event type for publishing
+            return HandlerResult(
+                data=analysis.model_dump(),
+                event_type=event_type,
+                metadata={
+                    "invoice_id": analysis.invoice_id,
+                    "status": analysis.status,
+                    "confidence": analysis.confidence,
+                },
+            )
 
         except Exception as e:
             logger.error("Agent processing failed: %s", str(e), exc_info=True)
-            return {
-                "status": "error",
-                "message": str(e),
-            }
+            # Return error result with error event type
+            return HandlerResult(
+                data={"error": str(e), "invoice_text_preview": invoice_text[:100]},
+                event_type="invoice.analysis.error",
+                metadata={"error_type": type(e).__name__, "source": "agent_processing"},
+            )
 
-    def get_published_event_types(self):
-        """Declare event types this handler publishes."""
+    def get_published_event_types(self) -> tuple[str, ...]:
+        """Declare event types this handler can publish.
+
+        These event types are mapped in values.yaml:
+        - invoice.validated -> test.connection (routing_key: valid)
+        - invoice.invalidated -> test.connection (routing_key: invalid)
+        - invoice.analysis.error -> test.connection (routing_key: error)
+        """
         return (
-            "agent.output.invoice.processed",
-            "agent.error.invoice.processing",
+            "invoice.validated",
+            "invoice.invalidated",
+            "invoice.analysis.error",
         )

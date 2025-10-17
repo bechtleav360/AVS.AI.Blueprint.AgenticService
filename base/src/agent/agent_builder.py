@@ -193,12 +193,11 @@ class AgentBuilder:
             raise ValueError("System prompt must be configured before building agent")
 
         # Create agent with configuration
-        agent = Agent(
+        # Note: result_type is now a generic parameter, not a constructor argument
+        agent = Agent[self._deps_type, self._result_type](
             model=self._model,
             system_prompt=self._system_prompt,
             tools=self._tools if self._tools else None,
-            result_type=self._result_type,
-            deps_type=self._deps_type,
         )
 
         logger.info(

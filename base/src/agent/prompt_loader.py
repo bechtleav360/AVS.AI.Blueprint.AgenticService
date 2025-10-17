@@ -89,15 +89,31 @@ class PromptLoader:
 
         # 2. Add additional search paths from config
         if config and config.get("search_paths"):
-            for search_path_str in config["search_paths"]:
-                search_path = Path(search_path_str)
+            search_paths_config = config["search_paths"]
+            
+            # Handle both list and string (for backward compatibility)
+            if isinstance(search_paths_config, str):
+                # Single path as string
+                search_path = Path(search_paths_config)
                 if not search_path.is_absolute():
                     search_path = module_dir / search_path
                 search_paths.append(search_path / filename)
-            logger.debug(
-                "Added %d additional search paths from config",
-                len(config["search_paths"]),
-            )
+                logger.debug("Added search path from config: %s", search_path)
+            elif isinstance(search_paths_config, (list, tuple)):
+                # Multiple paths as list
+                for search_path_str in search_paths_config:
+                    search_path = Path(search_path_str)
+                    if not search_path.is_absolute():
+                        search_path = module_dir / search_path
+                    search_paths.append(search_path / filename)
+                logger.debug(
+                    "Added %d additional search paths from config",
+                    len(search_paths_config),
+                )
+            else:
+                logger.warning(
+                    "Invalid search_paths config type: %s", type(search_paths_config)
+                )
 
         # 3. Add default search paths based on agent class location
         default_paths = [

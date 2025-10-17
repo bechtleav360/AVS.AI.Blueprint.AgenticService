@@ -1,5 +1,4 @@
 {{- if .Values.dapr.enabled }}
-{{- if .Values.dapr.useCRDs }}
 {{- range $name, $subscription := .Values.subscriptions }}
 {{- if $subscription.enabled }}
 ---
@@ -23,7 +22,6 @@ spec:
   {{- end }}
   scopes:
     - {{ $.Values.dapr.appId }}
-{{- end }}
 {{- end }}
 {{- end }}
 {{- end }}

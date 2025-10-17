@@ -13,17 +13,41 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
-# Dapr configuration (using Dapr operator for automatic sidecar injection)
+# Dapr configuration
 dapr:
   enabled: true
   appId: agent-invoiceprocessor
   appPort: 8000
-  logLevel: info
-  enableApiLogging: true
-  enableMetrics: true
+  httpPort: 3500
+  grpcPort: 50001
   metricsPort: 9090
+  logLevel: info
+  enableProfiling: false
+  enableApiLogging: true
+  httpMaxRequestSize: 4
+  httpReadBufferSize: 4
+  enableMetrics: true
 
-  # Sidecar resource limits
+  # Dapr mode: "standalone" or "kubernetes"
+  mode: kubernetes
+
+  # Use Dapr CRDs (requires Dapr operator and CRDs installed)
+  # Set to false to use local component files mounted via ConfigMap
+  useCRDs: true
+
+  # Dapr sidecar image (manual injection without operator)
+  image:
+    repository: daprio/daprd
+    tag: "latest"
+    pullPolicy: IfNotPresent
+
+  # Dapr control plane addresses (optional, only if you have Dapr control plane installed)
+  # Leave empty for standalone mode
+  controlPlaneAddress: "" # e.g., "dapr-api.dapr-system.svc.cluster.local:80"
+  placementHostAddress: "" # e.g., "dapr-placement-server.dapr-system.svc.cluster.local:50006"
+  sentryAddress: "" # e.g., "dapr-sentry.dapr-system.svc.cluster.local:80"
+  config: "" # Dapr configuration name
+
   sidecar:
     resources:
       requests:
@@ -70,11 +94,6 @@ appSettings:
   health_check_ai_provider: true
   health_check_rabbitmq: true
 
-  # Prompt Configuration
-  # Prompts are mounted from ConfigMap at /etc/agent/prompts
-  # Using comma-separated string for Dynaconf compatibility
-  prompt_search_paths: "/etc/agent/prompts"
-
 # Agent configurations - each agent built with AgentBuilder in main.py
 # These settings map to [runtime.{agent_name}] in settings.toml
 agents:
@@ -85,6 +104,22 @@ agents:
     max_tokens: 2000
     timeout: 60
     max_retries: 3
+
+  # Document classifier agent (disabled by default)
+  document_classifier:
+    enabled: false
+    model_name: "default"
+    temperature: 0.1
+    max_tokens: 1000
+    timeout: 30
+
+  # Summarizer agent (disabled by default)
+  summarizer:
+    enabled: false
+    model_name: "default"
+    temperature: 0.3
+    max_tokens: 1500
+    timeout: 45
 
 # Prompts configuration - each key becomes a .prompt file in the ConfigMap
 # System prompts define the agent's role (used with .with_system_prompt_file())
@@ -142,6 +177,31 @@ subscriptions:
       prefetchCount: "10"
       consumerTag: invoice-processor
 
+  # Document classification subscription
+  documentUploaded:
+    enabled: true
+    topic: document.uploaded
+    route: /events/document
+    pubsubname: pubsub
+    metadata:
+      queueName: document-classification-queue
+      durable: "true"
+      autoDelete: "false"
+      prefetchCount: "5"
+      consumerTag: document-classifier
+
+  # Invoice validation subscription
+  invoiceValidate:
+    enabled: false
+    topic: invoice.validate
+    route: /events/validate
+    pubsubname: pubsub
+    deadLetterTopic: invoice.validate.deadletter
+    metadata:
+      queueName: invoice-validation-queue
+      durable: "true"
+      prefetchCount: "20"
+
 # Event publishing - send events to topics based on event type
 eventPublishing:
   # Default pubsub component name
@@ -155,19 +215,31 @@ eventPublishing:
   topicMapping:
     # Agent output events
     # Simple format (topic only)
+    "agent.output.invoice": "test.connection"
 
     # Advanced format with routing key for topic-based routing
-    "invoice.validated":
-      topic: "test.connection"
-      routing_key: "valid"
+    "agent.output.invoice.validated":
+      topic: "invoice.events"
+      routing_key: "invoice.validated.success"
 
-    "invoice.invalidated":
-      topic: "test.connection"
-      routing_key: "invalid"
+    "agent.output.document.classified":
+      topic: "document.events"
+      routing_key: "document.classified"
 
-    "invoice.analysis.error":
-      topic: "test.connection"
-      routing_key: "error"
+    # Error/DLQ events with routing keys
+    "agent.error.processing":
+      topic: "agent.errors"
+      routing_key: "error.processing"
+
+    "agent.error.validation":
+      topic: "agent.errors"
+      routing_key: "error.validation"
+
+    # Status events
+    "agent.status.started": "agent.status"
+    "agent.status.completed": "agent.status"
+    "agent.status.failed": "agent.status"
+
 # Secrets
 secrets:
   # AI Model API keys
@@ -226,12 +298,17 @@ readinessProbe:
 podAnnotations: {}
 
 # Pod security context
-# OpenShift will automatically set security context based on SCC
 podSecurityContext: {}
+  # fsGroup: 2000
 
 # Container security context
-# OpenShift will automatically set security context based on SCC
 securityContext: {}
+  # capabilities:
+  #   drop:
+  #   - ALL
+  # readOnlyRootFilesystem: true
+  # runAsNonRoot: true
+  # runAsUser: 1000
 
 # Node selector
 nodeSelector: {}

@@ -79,8 +79,26 @@ class ProcessingService:
 
             try:
                 # Process through handler chain
-                # Handlers can call agents directly using _get_agent_runtime()
+                # Handlers can call agents directly using _get_agent()
                 handler_result = await self._process_through_handlers(event, context)
+
+                # Check if result is a Pydantic model with event_type
+                event_type_to_publish = None
+                result_data_dict = None
+                result_metadata = {}
+
+                if handler_result is not None:
+                    # Check if it's a Pydantic model with event_type attribute
+                    if hasattr(handler_result, "event_type") and hasattr(
+                        handler_result, "data"
+                    ):
+                        event_type_to_publish = handler_result.event_type
+                        result_data_dict = handler_result.data
+                        if hasattr(handler_result, "metadata"):
+                            result_metadata = handler_result.metadata or {}
+                    else:
+                        # Legacy dict result
+                        result_data_dict = handler_result
 
                 # Prepare result data
                 status = (
@@ -90,7 +108,8 @@ class ProcessingService:
                 result_data = {
                     "request_id": request_id,
                     "status": status,
-                    "result": handler_result,
+                    "result": result_data_dict,
+                    "metadata": result_metadata,
                 }
 
                 if handler_result is None:
@@ -103,8 +122,18 @@ class ProcessingService:
                         "request_id": request_id,
                         "status": status,
                         "has_result": handler_result is not None,
+                        "event_type_to_publish": event_type_to_publish,
                     },
                 )
+
+                # Publish event if handler specified an event_type
+                if event_type_to_publish:
+                    await self._publish_handler_event(
+                        event_type=event_type_to_publish,
+                        data=result_data_dict,
+                        metadata=result_metadata,
+                        source_event=event,
+                    )
 
                 # Create result CloudEvent
                 result_event = CloudEvent(
@@ -424,6 +453,91 @@ class ProcessingService:
                     "event_id": result_event.id,
                     "event_type": result_event.type,
                     "error": str(e),
+                },
+            )
+
+    async def _publish_handler_event(
+        self,
+        event_type: str,
+        data: Any,
+        metadata: Dict[str, Any],
+        source_event: CloudEvent,
+    ) -> None:
+        """
+        Publish an event from a handler result.
+
+        This method is called when a handler returns a HandlerResult with an event_type.
+        It creates a new CloudEvent and publishes it according to the topic mapping.
+
+        Args:
+            event_type: The event type to publish (e.g., 'invoice.validated')
+            data: The event data
+            metadata: Additional metadata
+            source_event: The original event that triggered this processing
+        """
+        try:
+            # Get event publishing service
+            publishing_service = self._component_registry.get_event_publishing_service()
+            if not publishing_service:
+                logger.debug(
+                    "No event publishing service registered, skipping handler event publication"
+                )
+                return
+
+            # Check if there's a topic mapping for this event type
+            event_pub_config = self._settings.get_event_publishing_config()
+            topic_mapping = event_pub_config.get("topic_mapping", {})
+
+            if event_type not in topic_mapping:
+                logger.warning(
+                    "No topic mapping found for handler event type '%s', skipping publication",
+                    event_type,
+                )
+                return
+
+            # Create new CloudEvent for the handler result
+            handler_event = CloudEvent(
+                specversion="1.0",
+                id=str(uuid4()),
+                source=self._settings.get("app_name", "agent-service"),
+                type=event_type,
+                data=data,
+                subject=source_event.subject,
+            )
+
+            # Get topic configuration (can be string or dict with routing_key)
+            topic_config = topic_mapping[event_type]
+
+            logger.info(
+                "Publishing handler event type '%s' with config: %s",
+                event_type,
+                topic_config,
+                extra={
+                    "event_type": event_type,
+                    "event_id": handler_event.id,
+                    "metadata": metadata,
+                },
+            )
+
+            await publishing_service.publish_event(
+                event=handler_event, topic=topic_config
+            )
+
+            logger.info(
+                "Successfully published handler event %s (type: %s)",
+                handler_event.id,
+                event_type,
+            )
+
+        except Exception as e:
+            # Log but don't fail the request if publishing fails
+            logger.warning(
+                "Failed to publish handler event: %s",
+                str(e),
+                extra={
+                    "event_type": event_type,
+                    "error": str(e),
+                    "metadata": metadata,
                 },
             )
 
