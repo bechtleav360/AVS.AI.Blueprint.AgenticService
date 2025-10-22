@@ -15,8 +15,8 @@ from base.src.app_builder import AppBuilder
 from base.src.config import Config
 
 from .api.rest import CustomRestApi
-from .handlers import AgentInvokerHandler, SimpleProcessorHandler
-from .models.results import InvoiceAnalysisOutput
+from .handlers import AgentInvokerHandler, AssetFetchHandler, AssetTagUpdateHandler
+from .models.results import AssetTaggingOutput
 from .services import InvoiceProcessingLogic
 
 # Define the project root and paths to your custom settings files
@@ -34,10 +34,10 @@ settings_files = [
 config = Config(settings_files=settings_files, root_path=project_root)
 
 # Build invoice analyzer agent
-invoice_agent: Agent = (
-    AgentBuilder(config, runtime_name="invoice_analyzer")
-    .with_model_from_config("invoice_analyzer")
-    .with_system_prompt_file("invoice_analyzer")
+asset_tagging_agent: Agent = (
+    AgentBuilder(config, runtime_name="asset_tagging")
+    .with_model_from_config("asset_tagging")
+    .with_system_prompt_file("asset_tagging")
     .with_tools(
         [
             Tool(
@@ -46,8 +46,8 @@ invoice_agent: Agent = (
             )
         ]
     )
-    .with_result_type(InvoiceAnalysisOutput)
-    .build(name="invoice_analyzer")
+    .with_result_type(AssetTaggingOutput)
+    .build(name="asset_tagging")
 )
 
 # Add more agents here as needed
@@ -64,9 +64,10 @@ invoice_agent: Agent = (
 
 app = (
     AppBuilder(settings_files=settings_files, root_path=project_root)
+    .with_handler(AssetFetchHandler)
     .with_handler(AgentInvokerHandler)
-    .with_handler(SimpleProcessorHandler)
+    .with_handler(AssetTagUpdateHandler)
     .with_rest_api(CustomRestApi)
-    .with_agent(invoice_agent)
+    .with_agent(asset_tagging_agent)
     .build()
 )

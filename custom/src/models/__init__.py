@@ -15,12 +15,12 @@ class MyOutput(AgentOutput):
 from .payloads import CustomPayload
 from .processing import ProcessingContext
 from .resource import InvoiceInput, InvoiceLineItem
-from .results import HandlerResult, InvoiceAnalysisOutput
+from .results import HandlerResult, AssetTaggingOutput
 
 __all__ = [
     "CustomPayload",
     "ProcessingContext",
-    "InvoiceAnalysisOutput",
+    "AssetTaggingOutput",
     "HandlerResult",
     "InvoiceInput",
     "InvoiceLineItem",
