@@ -5,6 +5,8 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
+from .asset import Asset
+
 
 class AssetTaggingOutput(BaseModel):
     """LLM classification output following the exact required JSON schema.
@@ -86,4 +88,24 @@ class HandlerResult(BaseModel):
     )
     metadata: dict[str, Any] = Field(
         default_factory=dict, description="Additional metadata for the result"
+    )
+
+
+class HarmonizingOutput(BaseModel):
+    """Output from the harmonizing agent.
+
+    Contains the harmonized Asset plus metadata about the harmonization process.
+    """
+
+    asset: Asset = Field(..., description="The harmonized asset")
+    confidence: float = Field(
+        ..., ge=0.0, le=1.0, description="Confidence score (0.0-1.0)"
+    )
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="List of warnings or issues encountered during harmonization",
+    )
+    mapped_fields: list[str] = Field(
+        default_factory=list,
+        description="List of source fields that were successfully mapped",
     )

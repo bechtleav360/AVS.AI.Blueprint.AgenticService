@@ -34,7 +34,7 @@ class AssetFetchHandler(EventHandler):
     async def can_handle_event(self, event: CloudEvent, context: dict[str, Any]) -> bool:
         if not event.data:
             return False
-        
+
         return True
 
     async def handle_event(self, event: CloudEvent, context: dict[str, Any]) -> Any | None:
@@ -53,7 +53,7 @@ class AssetFetchHandler(EventHandler):
                 event_type="invoice.analysis.error",
                 metadata={"reason": "invalid_payload"},
             )
-        
+
         context["asset"] = asset
 
         asset_id = asset.get("id")
@@ -67,7 +67,7 @@ class AssetFetchHandler(EventHandler):
 
         base_url = os.environ.get("CORE_INDEX_URL", "https://bios-index-core-frontend-dev-bios-bechtle.apps.mgmt.env.av360.org")
         url = f"{base_url.rstrip('/')}/v1/assets/{asset_id}?referenceDepth=1"
-        _api_key = ""
+        _api_key = "sadfghjgfkhj.j,hgnfbxdvycs<xacsdvfbghjkuzt1234567tu7ztfgdf"
         _original_async_client = httpx.AsyncClient
 
         class _AsyncClientWithApiKey(_original_async_client):
@@ -79,7 +79,7 @@ class AssetFetchHandler(EventHandler):
                 super().__init__(*args, headers=headers, **kwargs)
 
         httpx.AsyncClient = _AsyncClientWithApiKey
-        
+
         # url = f"https://bios-index-core-frontend-dev-bios-bechtle.apps.mgmt.env.av360.org/v1/assets?pageIndex=0&pageSize=10&referenceDepth=1"
         logger.info("AssetFetchHandler fetching asset %s from %s", asset_id, url)
 
@@ -104,7 +104,7 @@ class AssetFetchHandler(EventHandler):
         try:
             asset_json = resp.json()
         except Exception:
-            asset_json = resp.text    
+            asset_json = resp.text
         logger.info("AssetFetchHandler fetched asset %s: %s", asset_id, str(asset_json))
         context["asset_fetched"] = asset_json
         logger.info("AssetFetchHandler saved asset %s into context", asset_id)

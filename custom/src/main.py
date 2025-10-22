@@ -15,8 +15,13 @@ from base.src.app_builder import AppBuilder
 from base.src.config import Config
 
 from .api.rest import CustomRestApi
-from .handlers import AgentInvokerHandler, AssetFetchHandler, AssetTagUpdateHandler
-from .models.results import AssetTaggingOutput
+from .handlers import (
+    AgentInvokerHandler,
+    AssetFetchHandler,
+    AssetHarmonizingHandler,
+    AssetTagUpdateHandler,
+)
+from .models import Asset, AssetTaggingOutput
 from .services import InvoiceProcessingLogic
 
 # Define the project root and paths to your custom settings files
@@ -50,6 +55,17 @@ asset_tagging_agent: Agent = (
     .build(name="asset_tagging")
 )
 
+# Build harmonizing agent
+asset_harmonizing_agent: Agent = (
+    AgentBuilder(config, runtime_name="asset_harmonizing")
+    .with_model_from_config(runtime_name="asset_harmonizing")
+    .with_system_prompt_file(
+        prompt_name="asset_harmonizing", runtime_name="asset_harmonizing"
+    )
+    .with_result_type(Asset)
+    .build()
+)
+
 # Add more agents here as needed
 # document_agent = (
 #     AgentBuilder(config, runtime_name="document_classifier")
@@ -66,8 +82,10 @@ app = (
     AppBuilder(settings_files=settings_files, root_path=project_root)
     .with_handler(AssetFetchHandler)
     .with_handler(AgentInvokerHandler)
+    .with_handler(AssetHarmonizingHandler)
     .with_handler(AssetTagUpdateHandler)
     .with_rest_api(CustomRestApi)
     .with_agent(asset_tagging_agent)
+    .with_agent(asset_harmonizing_agent)
     .build()
 )
