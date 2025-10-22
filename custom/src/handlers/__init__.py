@@ -1,7 +1,9 @@
 from .agent_invoker import AgentInvokerHandler
-from .simple_processor import SimpleProcessorHandler
+from .asset_fetch_handler import AssetFetchHandler
+from .asset_tag_update_handler import AssetTagUpdateHandler
 
 __all__ = [
     "AgentInvokerHandler",
-    "SimpleProcessorHandler",
+    "AssetFetchHandler",
+    "AssetTagUpdateHandler"
 ]

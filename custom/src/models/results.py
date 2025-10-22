@@ -3,35 +3,74 @@
 from decimal import Decimal
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
 
-class InvoiceAnalysisOutput(BaseModel):
-    """Invoice analysis output compatible with vLLM schema constraints.
+class AssetTaggingOutput(BaseModel):
+    """LLM classification output following the exact required JSON schema.
 
-    Uses flat structure to avoid $defs references that vLLM doesn't support.
+    Output format (strict JSON only). Always produce this exact schema:
+    {
+      "category": { "code": "A0X" or "UNKNOWN", "name": "..." },
+      "confidence": 0.0-1.0,
+      "ambiguous": true/false,
+      "rationale": ["short explanation of why this category was chosen (3-4 bullet points or a short sentence).", ... ],
+      "matched_fields": [ "name", "description", "tags", "hardwareExtension.model", ... ],
+      "missing_data": [ list of fields that would increase confidence, e.g. "type","softwareExtension.licenseType","providerExtension.serviceCategory" ],
+      "recommended_next_steps": [ short actionable items, e.g. "ask for device model", "check vendor docs", "request screenshots" ]
+    }
+
+    Use the `to_strict_json()` helper to produce the exact JSON-compatible dict.
     """
 
-    model_config = ConfigDict(json_encoders={Decimal: lambda value: str(value)})
+    class Category(BaseModel):
+        code: str = Field(..., description='Category code (e.g. "A0X" or "UNKNOWN")')
+        name: str = Field(..., description="Human-readable category name")
 
-    invoice_id: str = Field(..., description="The unique identifier of the invoice")
-    status: str = Field(
+    category: Category = Field(..., description="Category object with code and name")
+    ambiguous: bool = Field(..., description="Whether the classification is ambiguous")
+    rationale: list[str] = Field(
         ...,
-        description="The determined status (e.g., 'valid', 'invalid', 'incomplete')",
+        description="Short explanation of why this category was chosen (3-4 bullet points or a short sentence).",
     )
-    summary: str = Field(..., description="A brief summary of the invoice analysis")
-    total_amount: Decimal = Field(
-        ..., description="Total invoice amount (sum of line items)"
+
+    matched_fields: list[str] = Field(
+        ..., description='List of matched fields (e.g., "name", "description", "tags")'
     )
-    inferred_tax_amount: Decimal = Field(
-        ..., description="Inferred or calculated tax amount"
+    missing_data: list[str] = Field(
+        ..., description='List of fields that would increase confidence if provided'
     )
+    recommended_next_steps: list[str] = Field(
+        ..., description='Actionable next steps (short items)'
+    )
+
+    def to_strict_json(self) -> dict:
+        """
+        Return a JSON-serializable dict that exactly matches the required schema.
+        Use this for producing output to the caller or for serialization.
+        """
+        return {
+            "category": {"code": self.category.code, "name": self.category.name},
+            "confidence": self.confidence,
+            "ambiguous": bool(self.ambiguous),
+            "rationale": list(self.rationale),
+            "matched_fields": list(self.matched_fields),
+            "missing_data": list(self.missing_data),
+            "recommended_next_steps": list(self.recommended_next_steps),
+        }
+
+    # model_config = ConfigDict(json_encoders={Decimal: lambda value: str(value)})
+
+    # status: str = Field(
+    #     ...,
+    #     description="The determined status (e.g., 'valid', 'invalid', 'incomplete')",
+    # )
+    # summary: str = Field(..., description="A brief summary of the invoice analysis")
     confidence: float | None = Field(
         None, ge=0.0, le=1.0, description="Confidence score (0.0-1.0)"
     )
-    notes: str | None = Field(None, description="Additional notes or details")
-    metadata: dict[str, Any] | None = Field(None, description="Additional metadata")
-
+    # notes: str | None = Field(None, description="Additional notes or details")
+    # metadata: dict[str, Any] | None = Field(None, description="Additional metadata")
 
 class HandlerResult(BaseModel):
     """Base result model for handler outputs.

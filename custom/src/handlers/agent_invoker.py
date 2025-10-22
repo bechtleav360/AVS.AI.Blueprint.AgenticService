@@ -20,10 +20,13 @@ from base.src.agent import PromptLoader
 from base.src.handler import EventHandler
 from base.src.models import CloudEvent
 
-from ..models import CustomPayload, HandlerResult, InvoiceAnalysisOutput
+from ..models import HandlerResult, AssetTaggingOutput
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+THIS_FILE = Path(__file__).resolve()
+BLUEPRINT_ROOT = THIS_FILE.parents[1]
 
 class AgentInvokerHandler(EventHandler):
     """Handler that validates input, invokes the AI agent, and publishes results.
@@ -33,23 +36,16 @@ class AgentInvokerHandler(EventHandler):
     """
 
     def __init__(self) -> None:
-        super().__init__("AgentInvokerHandler", priority=10)
+        super().__init__("AgentInvokerHandler", priority=20)
 
     async def can_handle_event(
         self, event: CloudEvent, context: dict[str, Any]
     ) -> bool:
-        """Handle events with 'invoke_agent' action."""
+        """Handle events"""
         if not event.data:
             return False
 
-        # Handle both CustomPayload objects and plain dictionaries
-        if isinstance(event.data, CustomPayload):
-            return event.data.details.get("action") == "invoke_agent"
-        elif isinstance(event.data, dict):
-            details = event.data.get("details", {})
-            return details.get("action") == "invoke_agent"
-
-        return False
+        return True
 
     async def handle_event(
         self, event: CloudEvent, context: dict[str, Any]
@@ -69,82 +65,84 @@ class AgentInvokerHandler(EventHandler):
             event.type,
         )
 
-        # Extract payload
-        payload = event.data
+        asset = context.get("asset_fetched")
 
-        # Handle both CustomPayload objects and plain dictionaries
-        if isinstance(payload, CustomPayload):
-            invoice_text = payload.invoice_text
-            metadata = payload.details
-        elif isinstance(payload, dict):
-            invoice_text = payload.get("invoice_text")
-            metadata = payload.get("details", {})
-        else:
-            logger.error("Invalid payload format")
-            return HandlerResult(
+        if not asset or not isinstance(asset, dict):
+            raise HandlerResult(
                 data={"error": "Invalid payload format"},
                 event_type="invoice.analysis.error",
-                metadata={"reason": "invalid_payload"},
+                metadata={"reason": "No asset in context to update tags"},
             )
+
+        categories_path = BLUEPRINT_ROOT / "prompts/categories.txt"
+
+        try:
+            categories = categories_path.read_text(encoding="utf-8")
+        except Exception:
+            categories = ""
+
 
         # Get pre-configured agent and process
         try:
             # Get agent from registry (configured at startup)
-            agent = self._get_agent("invoice_analyzer")
+            agent = self._get_agent("asset_tagging")
 
             # Load instruction prompt from file with template variables
             instruction = PromptLoader.load_instruction_prompt(
-                "instruction",
+                "asset_tagging",
                 self.__class__,
                 config=None,  # Uses default search paths
-                invoice_text=invoice_text,
-                metadata=metadata,
+                asset=asset,
+                categories=categories
             )
 
             # Run agent - expects InvoiceAnalysisOutput
             result = await agent.run(instruction)
-            analysis: InvoiceAnalysisOutput = result.data
+            print(result)
+            analysis = AssetTaggingOutput.model_validate_json(result.output)
 
             logger.info(
-                "Agent processing completed: status=%s, invoice_id=%s",
-                analysis.status,
-                analysis.invoice_id,
+                "Agent processing completed: category=%s, confidence=%s",
+                analysis.category,
+                analysis.confidence,
             )
 
-            # Determine which event to publish based on validation status
-            if analysis.status.lower() == "valid":
-                event_type = "invoice.validated"
-                logger.info("Invoice %s is VALID", analysis.invoice_id)
-            elif analysis.status.lower() in ["invalid", "incomplete"]:
-                event_type = "invoice.invalidated"
-                logger.warning(
-                    "Invoice %s is INVALID: %s", analysis.invoice_id, analysis.notes
-                )
-            else:
-                # Unknown status - treat as invalid
-                event_type = "invoice.invalidated"
-                logger.warning(
-                    "Invoice %s has unknown status: %s",
-                    analysis.status,
-                    analysis.invoice_id,
-                )
+            context["asset_tagged"] = analysis
+            # # Determine which event to publish based on validation status
+            # if analysis.status.lower() == "valid":
+            #     event_type = "invoice.validated"
+            #     logger.info("Invoice %s is VALID", analysis.invoice_id)
+            # elif analysis.status.lower() in ["invalid", "incomplete"]:
+            #     event_type = "invoice.invalidated"
+            #     logger.warning(
+            #         "Invoice %s is INVALID: %s", analysis.invoice_id, analysis.notes
+            #     )
+            # else:
+            #     # Unknown status - treat as invalid
+            #     event_type = "invoice.invalidated"
+            #     logger.warning(
+            #         "Invoice %s has unknown status: %s",
+            #         analysis.status,
+            #         analysis.invoice_id,
+            #     )
 
-            # Return structured result with event type for publishing
-            return HandlerResult(
-                data=analysis.model_dump(),
-                event_type=event_type,
-                metadata={
-                    "invoice_id": analysis.invoice_id,
-                    "status": analysis.status,
-                    "confidence": analysis.confidence,
-                },
-            )
+            # # Return structured result with event type for publishing
+            # return HandlerResult(
+            #     data=analysis.model_dump(),
+            #     event_type=event_type,
+            #     metadata={
+            #         "invoice_id": analysis.invoice_id,
+            #         "status": analysis.status,
+            #         "confidence": analysis.confidence,
+            #     },
+            # )
+            return None
 
         except Exception as e:
             logger.error("Agent processing failed: %s", str(e), exc_info=True)
             # Return error result with error event type
             return HandlerResult(
-                data={"error": str(e), "invoice_text_preview": invoice_text[:100]},
+                data={"error": str(e), "asset": asset},
                 event_type="invoice.analysis.error",
                 metadata={"error_type": type(e).__name__, "source": "agent_processing"},
             )
