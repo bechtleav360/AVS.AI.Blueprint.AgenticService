@@ -82,3 +82,18 @@ app_port = 8000
 app_environment = "production"
 log_level = "INFO"
 # Production values should come from environment variables or secret stores
+
+# Runtime-specific configurations
+# Override AI settings per agent runtime if needed
+
+[runtime.asset_tagging]
+# Uses global AI config by default
+# Override here if needed for tagging agent
+
+[runtime.asset_harmonizing]
+# Configuration for the harmonizing agent
+# Harmonizing may need different settings (e.g., higher token limits)
+ai_model_max_tokens = 2000
+ai_model_temperature = 0.0
+ai_usage_output_tokens_limit = 6000
+ai_usage_total_tokens_limit = 15000
