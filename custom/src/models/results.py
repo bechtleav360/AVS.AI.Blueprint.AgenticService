@@ -5,7 +5,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
-from .asset import Asset
+from .asset import AssetHarmonizingOutput
 
 
 class AssetTaggingOutput(BaseModel):
@@ -97,7 +97,7 @@ class HarmonizingOutput(BaseModel):
     Contains the harmonized Asset plus metadata about the harmonization process.
     """
 
-    asset: Asset = Field(..., description="The harmonized asset")
+    asset: AssetHarmonizingOutput = Field(..., description="The harmonized asset")
     confidence: float = Field(
         ..., ge=0.0, le=1.0, description="Confidence score (0.0-1.0)"
     )

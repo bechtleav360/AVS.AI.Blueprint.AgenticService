@@ -13,26 +13,27 @@ class MyOutput(AgentOutput):
 """
 
 from .asset import (
-    Asset,
+    AssetHarmonizingOutput,
     AssetStatus,
     AssetType,
     HardwareExtension,
     Reference,
     SoftwareExtension,
 )
-from .payloads import CustomPayload
+from .payloads import AssetData, HarmonizingInputPayload
 from .processing import ProcessingContext
 from .resource import InvoiceInput, InvoiceLineItem
 from .results import AssetTaggingOutput, HandlerResult, HarmonizingOutput
 
 __all__ = [
-    "Asset",
+    "AssetHarmonizingOutput",
+    "AssetData",
     "AssetStatus",
     "AssetTaggingOutput",
     "AssetType",
-    "CustomPayload",
     "HandlerResult",
     "HardwareExtension",
+    "HarmonizingInputPayload",
     "HarmonizingOutput",
     "InvoiceInput",
     "InvoiceLineItem",

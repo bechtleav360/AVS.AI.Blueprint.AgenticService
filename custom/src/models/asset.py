@@ -50,7 +50,7 @@ class SoftwareExtension(BaseModel):
     )
 
 
-class Asset(BaseModel):
+class AssetHarmonizingOutput(BaseModel):
     """Canonical Asset schema for harmonized data.
 
     This is the unified schema that all source data is harmonized into.
