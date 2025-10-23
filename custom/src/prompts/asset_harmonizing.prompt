@@ -49,3 +49,8 @@ STRICT RULES (must follow without exception):
    - No prose, no Markdown, no code fences/backticks
    - No <think> tags or explanatory text
    - Just the JSON object
+
+
+Here is the given asset:
+
+{asset}

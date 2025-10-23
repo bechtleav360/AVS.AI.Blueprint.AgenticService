@@ -1,4 +1,10 @@
-"""Unit tests for event handlers in `custom.src.agent.handlers`."""
+"""Unit tests for event handlers in `custom.src.agent.handlers`.
+
+TODO: These tests need to be updated to use HarmonizingInputPayload structure:
+- Replace CustomPayload with HarmonizingInputPayload
+- Update payload structure to match new schema (subject, data.type, data.properties)
+- Update test assertions accordingly
+"""
 
 from decimal import Decimal
 from unittest.mock import MagicMock
@@ -8,7 +14,7 @@ import pytest
 from base.src.models.events import CloudEvent
 from custom.src.agent.handlers import (AgentInvokerHandler, ProcessingHandler,
                                        SimpleProcessorHandler)
-from custom.src.api.rest import CustomPayload
+from custom.src.models import HarmonizingInputPayload
 
 
 @pytest.fixture

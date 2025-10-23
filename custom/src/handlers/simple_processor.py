@@ -46,7 +46,7 @@ from typing import Any
 from base.src.handler import EventHandler
 from base.src.models import CloudEvent
 
-from ..models import CustomPayload
+from ..models import HarmonizingInputPayload
 
 
 class HandlerError(Exception):
@@ -71,10 +71,12 @@ class SimpleProcessorHandler(EventHandler):
         super().__init__("SimpleProcessorHandler", priority=15)
 
     async def can_handle_event(self, event: CloudEvent, context: dict[str, Any]) -> bool:
-        """Handle events with 'simple_process' action."""
-        if not event.data or not isinstance(event.data, CustomPayload):
+        """Handle events with HarmonizingInputPayload structure."""
+        if not event.data or not isinstance(event.data, HarmonizingInputPayload):
             return False
-        return event.data.details.get("action") == "simple_process"
+        # TODO: Update this logic based on your business requirements
+        # The new payload doesn't have 'details.action' field
+        return True
 
     async def handle_event(self, event: CloudEvent, context: dict[str, Any]) -> Any | None:
         """Process the payload without agent invocation."""

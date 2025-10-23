@@ -56,7 +56,7 @@ class AssetTagUpdateHandler(EventHandler):
         logger.info(tags)
         base_url = os.environ.get("CORE_INDEX_URL", "https://bios-index-core-frontend-dev-bios-bechtle.apps.mgmt.env.av360.org")
         url = f"{base_url.rstrip('/')}/v1/assets/{asset_id}/tags"
-        _api_key = "sadfghjgfkhj.j,hgnfbxdvycs<xacsdvfbghjkuzt1234567tu7ztfgdf"
+        _api_key = ""
         _original_async_client = httpx.AsyncClient
 
         class _AsyncClientWithApiKey(_original_async_client):

@@ -20,7 +20,7 @@ from base.src.agent import PromptLoader
 from base.src.handler import EventHandler
 from base.src.models import CloudEvent
 
-from ..models import HandlerResult, AssetTaggingOutput
+from ..models import AssetHarmonizingOutput, HandlerResult
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -74,40 +74,31 @@ class AgentInvokerHandler(EventHandler):
                 metadata={"reason": "No asset in context to update tags"},
             )
 
-        categories_path = BLUEPRINT_ROOT / "prompts/categories.txt"
-
-        try:
-            categories = categories_path.read_text(encoding="utf-8")
-        except Exception:
-            categories = ""
 
 
         # Get pre-configured agent and process
         try:
             # Get agent from registry (configured at startup)
-            agent = self._get_agent("asset_tagging")
+            agent = self._get_agent("asset_harmonizing")
 
             # Load instruction prompt from file with template variables
             instruction = PromptLoader.load_instruction_prompt(
-                "asset_tagging",
+                "asset_harmonizing",
                 self.__class__,
                 config=None,  # Uses default search paths
                 asset=asset,
-                categories=categories
             )
 
             # Run agent - expects InvoiceAnalysisOutput
             result = await agent.run(instruction)
-            print(result)
-            analysis = AssetTaggingOutput.model_validate_json(result.output)
+            clean_output = AssetHarmonizingOutput.model_validate_json(result.output)
 
             logger.info(
-                "Agent processing completed: category=%s, confidence=%s",
-                analysis.category,
-                analysis.confidence,
+                "Agent processing completed: clean_outout=%s, ",
+                clean_output
             )
 
-            context["asset_tagged"] = analysis
+            context["asset_tagged"] = clean_output
             # # Determine which event to publish based on validation status
             # if analysis.status.lower() == "valid":
             #     event_type = "invoice.validated"
@@ -148,15 +139,5 @@ class AgentInvokerHandler(EventHandler):
             )
 
     def get_published_event_types(self) -> tuple[str, ...]:
-        """Declare event types this handler can publish.
 
-        These event types are mapped in values.yaml:
-        - invoice.validated -> test.connection (routing_key: valid)
-        - invoice.invalidated -> test.connection (routing_key: invalid)
-        - invoice.analysis.error -> test.connection (routing_key: error)
-        """
-        return (
-            "invoice.validated",
-            "invoice.invalidated",
-            "invoice.analysis.error",
-        )
+        return ()

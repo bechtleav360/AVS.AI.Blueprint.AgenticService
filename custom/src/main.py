@@ -18,10 +18,10 @@ from .api.rest import CustomRestApi
 from .handlers import (
     AgentInvokerHandler,
     AssetFetchHandler,
-    AssetHarmonizingHandler,
+    AssetPreprocessingHandler,
     AssetTagUpdateHandler,
 )
-from .models import Asset, AssetTaggingOutput
+from .models import AssetHarmonizingOutput
 from .services import InvoiceProcessingLogic
 
 # Define the project root and paths to your custom settings files
@@ -38,31 +38,15 @@ settings_files = [
 # Load configuration
 config = Config(settings_files=settings_files, root_path=project_root)
 
-# Build invoice analyzer agent
-asset_tagging_agent: Agent = (
-    AgentBuilder(config, runtime_name="asset_tagging")
-    .with_model_from_config("asset_tagging")
-    .with_system_prompt_file("asset_tagging")
-    .with_tools(
-        [
-            Tool(
-                name="calculate_invoice",
-                function=InvoiceProcessingLogic.calculate_invoice_tool,
-            )
-        ]
-    )
-    .with_result_type(AssetTaggingOutput)
-    .build(name="asset_tagging")
-)
+
 
 # Build harmonizing agent
 asset_harmonizing_agent: Agent = (
     AgentBuilder(config, runtime_name="asset_harmonizing")
-    .with_model_from_config(runtime_name="asset_harmonizing")
-    .with_system_prompt_file(
-        prompt_name="asset_harmonizing", runtime_name="asset_harmonizing"
-    )
-    .with_result_type(Asset)
+    .with_model_from_config("asset_harmonizing")
+    .with_system_prompt_file("asset_harmonizing")
+    .with_result_type(AssetHarmonizingOutput)
+    .build(name="asset_harmonizing")
     .build()
 )
 
@@ -80,12 +64,10 @@ asset_harmonizing_agent: Agent = (
 
 app = (
     AppBuilder(settings_files=settings_files, root_path=project_root)
-    .with_handler(AssetFetchHandler)
-    .with_handler(AgentInvokerHandler)
-    .with_handler(AssetHarmonizingHandler)
-    .with_handler(AssetTagUpdateHandler)
+    .with_handler(AssetPreprocessingHandler)  # Runs first (priority=10)
+    .with_handler(AgentInvokerHandler)         # Runs second (priority=20)
     .with_rest_api(CustomRestApi)
-    .with_agent(asset_tagging_agent)
     .with_agent(asset_harmonizing_agent)
     .build()
 )
+

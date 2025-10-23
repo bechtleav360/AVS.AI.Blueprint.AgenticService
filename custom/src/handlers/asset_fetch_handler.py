@@ -7,7 +7,7 @@ import httpx
 from base.src.handler import EventHandler
 from base.src.models import CloudEvent
 
-from ..models import CustomPayload, HandlerResult
+from ..models import HandlerResult, HarmonizingInputPayload
 
 logger = logging.getLogger(__name__)
 
@@ -41,11 +41,11 @@ class AssetFetchHandler(EventHandler):
         # Extract payload
         payload = event.data
 
-        # Handle both CustomPayload objects and plain dictionaries
-        if isinstance(payload, CustomPayload):
-            asset = payload.asset
+        # Handle HarmonizingInputPayload objects
+        if isinstance(payload, HarmonizingInputPayload):
+            asset_properties = payload.data.properties
         elif isinstance(payload, dict):
-            asset = payload.get("asset")
+            asset_properties = payload.get("data", {}).get("properties", {})
         else:
             logger.error("Invalid payload format")
             return HandlerResult(
@@ -54,9 +54,9 @@ class AssetFetchHandler(EventHandler):
                 metadata={"reason": "invalid_payload"},
             )
 
-        context["asset"] = asset
+        context["asset"] = asset_properties
 
-        asset_id = asset.get("id")
+        asset_id = asset_properties.get("id")
         if not asset_id:
             raise HandlerResult(
                 data={"error": "Invalid payload format"},
