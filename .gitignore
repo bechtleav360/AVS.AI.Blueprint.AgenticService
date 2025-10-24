@@ -144,3 +144,6 @@ custom/dapr/components/rabbitmq-pubsub.yaml
 **/secrets.toml
 .env.rabbitmq
 uv.lock
+
+# PyCharm stuff
+.idea/

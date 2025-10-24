@@ -19,6 +19,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from opentelemetry import trace
 
+from ..config import Config
 from ..models import CloudEvent
 from ..registry.service_registry import ServiceRegistry
 
@@ -47,19 +48,32 @@ class EventHandler(ABC):
     ```
     """
 
-    def __init__(self, name: str, priority: int = 100):
+    def __init__(self, name: str = "EventHandler", priority: int = 100):
         """
         Initialize event handler.
 
         Args:
-            name: Human-readable name for the handler.
+            name: Human-readable name for the handler. Default: "EventHandler". Every handler should override this.
             priority: Execution priority (lower numbers run first).
         """
+
         self.name = name
         self.priority = priority
+        self.config = None
+
+        self._registry = None
+        self._component_registry = None
+
+    def add_config(self, config: Config):
+        """Adds config via dependency injection, so that handlers can access environment variables during runtime
+        """
+
+        self.config = config
 
     def link_service_registry(self, registry: ServiceRegistry) -> None:
-        """Link the service registry to the handler."""
+        """Link the service registry to the handler.
+        """
+
         self._registry = registry
 
     def link_component_registry(self, registry: "ComponentRegistry") -> None:
@@ -67,6 +81,7 @@ class EventHandler(ABC):
 
         This allows handlers to access agent runtimes and other components.
         """
+
         self._component_registry = registry
 
     async def can_handle(self, event: CloudEvent, context: Dict[str, Any]) -> bool:
@@ -74,6 +89,7 @@ class EventHandler(ABC):
 
         Do not override this method. Override can_handle_event() instead.
         """
+
         with tracer.start_as_current_span(f"handler.{self.name}.can_handle") as span:
             span.set_attribute("handler.name", self.name)
             span.set_attribute("handler.priority", self.priority)
@@ -84,6 +100,7 @@ class EventHandler(ABC):
 
         Do not override this method. Override handle_event() instead.
         """
+
         with tracer.start_as_current_span(f"handler.{self.name}.handle") as span:
             span.set_attribute("handler.name", self.name)
             span.set_attribute("handler.priority", self.priority)
@@ -104,6 +121,7 @@ class EventHandler(ABC):
         Returns:
             True if this handler can process the event, False otherwise.
         """
+
         pass
 
     @abstractmethod
@@ -121,6 +139,7 @@ class EventHandler(ABC):
         Returns:
             Processing result, or None to pass to next handler.
         """
+
         pass
 
     def _get_agent(self, agent_name: str):
@@ -149,6 +168,7 @@ class EventHandler(ABC):
                 deps={"invoice_text": text}
             )
         """
+
         if not hasattr(self, "_component_registry") or self._component_registry is None:
             raise RuntimeError(
                 f"Component registry not linked to handler '{self.name}'. "
@@ -177,8 +197,11 @@ class EventHandler(ABC):
 
         Default implementation returns None (no events published).
         """
+
         return None
 
     def __lt__(self, other: "EventHandler") -> bool:
-        """Support sorting by priority."""
+        """Support sorting by priority.
+        """
+
         return self.priority < other.priority
