@@ -17,9 +17,8 @@ from base.src.config import Config
 from .api.rest import CustomRestApi
 from .handlers import (
     AgentInvokerHandler,
-    AssetFetchHandler,
     AssetPreprocessingHandler,
-    AssetTagUpdateHandler,
+    AssetHarmonizedEventPublisher,
 )
 from .models import AssetHarmonizingOutput
 from .services import InvoiceProcessingLogic
@@ -64,8 +63,9 @@ asset_harmonizing_agent: Agent = (
 
 app = (
     AppBuilder(settings_files=settings_files, root_path=project_root)
-    .with_handler(AssetPreprocessingHandler)  # Runs first (priority=10)
-    .with_handler(AgentInvokerHandler)         # Runs second (priority=20)
+    .with_handler(AssetPreprocessingHandler)      # Runs first (priority=10)
+    .with_handler(AgentInvokerHandler)            # Runs second (priority=20)
+    .with_handler(AssetHarmonizedEventPublisher)  # Runs third (priority=40) - publishes result
     .with_rest_api(CustomRestApi)
     .with_agent(asset_harmonizing_agent)
     .build()
