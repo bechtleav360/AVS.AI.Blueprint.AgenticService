@@ -17,18 +17,14 @@ class CloudEvent(BaseModel, Generic[T]):
     """
 
     # Required attributes
-    specversion: Literal["1.0"] = Field("1.0", description="CloudEvents spec version")
     id: str = Field(..., description="Unique identifier for the event")
-    source: str = Field(
-        ..., description="URI reference that identifies the event producer"
-    )
     type: str = Field(..., description="Type of event that occurred")
 
     # Optional attributes
+    specversion: Optional[Literal["1.0"]] = Field("1.0", description="CloudEvents spec version")
+    source: Optional[str] = Field(None, description="URI reference that identifies the event producer.")
     subject: Optional[str] = Field(None, description="Subject of the event")
-    time: Optional[datetime] = Field(
-        default_factory=datetime.utcnow, description="Timestamp of the event"
-    )
+    time: Optional[datetime] = Field(default_factory=datetime.utcnow, description="Timestamp of the event")
     datacontenttype: Optional[str] = Field(None, description="Content type of the data")
     dataschema: Optional[str] = Field(None, description="Schema of the data")
     data: Optional[T] = Field(None, description="Event payload")

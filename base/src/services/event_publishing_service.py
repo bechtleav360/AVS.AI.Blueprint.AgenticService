@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 import httpx
 from opentelemetry import trace
 
+from ..models import GenericCloudEvent, CloudEvent
+
 if TYPE_CHECKING:  # pragma: no cover
     from ..config import Config
 
@@ -32,39 +34,33 @@ class EventPublishingService:
             config: Application configuration
             dapr_http_port: Dapr sidecar HTTP port (default: 3500)
         """
-        self._config = config
+        self.config = config
         self._dapr_http_port = dapr_http_port
         self._dapr_base_url = f"http://localhost:{dapr_http_port}"
 
         # Load event publishing configuration
-        pub_config = self._config.get_event_publishing_config()
+        pub_config = self.config.get_event_publishing_config()
         self._default_pubsub_name = pub_config["default_pubsub_name"]
         self._topic_mapping = pub_config["topic_mapping"]
 
         logger.info(
             "EventPublishingService initialized with pubsub '%s' and %d topic mappings",
             self._default_pubsub_name,
-            len(self._topic_mapping),
+            len(self._topic_mapping)
         )
 
     async def publish_event(
         self,
-        event_type: str,
-        data: Dict[str, Any],
-        event_id: Optional[str] = None,
-        source: Optional[str] = None,
+        event: CloudEvent,
         pubsub_name: Optional[str] = None,
         topic: Optional[str] = None,
-        routing_key: Optional[str] = None,
+        routing_key: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Publish a CloudEvent to a topic via Dapr.
 
         Args:
-            event_type: CloudEvent type (e.g., "agent.output.invoice.processed")
-            data: Event data payload
-            event_id: Optional CloudEvent ID (auto-generated if not provided)
-            source: Optional CloudEvent source (defaults to service name)
+            event: The CloudEvent to publish
             pubsub_name: Optional pubsub component name (uses default if not provided)
             topic: Optional explicit topic name (uses mapping if not provided)
             routing_key: Optional routing key for topic-based routing (e.g., RabbitMQ)
@@ -81,14 +77,15 @@ class EventPublishingService:
             ValueError: If no topic mapping exists for the event type
             httpx.HTTPError: If Dapr publishing fails
         """
+
         with tracer.start_as_current_span("event_publishing.publish") as span:
-            span.set_attribute("event.type", event_type)
+            span.set_attribute("event.type", event.type)
 
             # Determine topic and routing key from mapping or explicit parameters
             if topic is None or routing_key is None:
-                routing_config = self._config.get_routing_for_event_type(event_type)
+                routing_config = self.config.get_routing_for_event_type(event.type)
                 if routing_config is None:
-                    error_msg = f"No topic mapping found for event type: {event_type}"
+                    error_msg = f"No topic mapping found for event type: {event.type}"
                     logger.error(error_msg)
                     span.set_status(trace.Status(trace.StatusCode.ERROR, error_msg))
                     raise ValueError(error_msg)
@@ -108,32 +105,25 @@ class EventPublishingService:
             if routing_key:
                 span.set_attribute("pubsub.routing_key", routing_key)
 
-            # Build CloudEvent envelope
-            cloud_event = {
-                "specversion": "1.0",
-                "type": event_type,
-                "source": source or f"/agent/{self._config.get('app_name', 'agent')}",
-                "id": event_id or self._generate_event_id(),
-                "datacontenttype": "application/json",
-                "data": data,
-            }
+            # Add default source, if not already set
+            event.source = event.source or f"/agent/{self.config.get('app_name', 'agent')}"
 
             # Publish to Dapr
             publish_url = f"{self._dapr_base_url}/v1.0/publish/{pubsub_name}/{topic}"
 
             logger.info(
                 "Publishing event type '%s' to topic '%s' on pubsub '%s'%s",
-                event_type,
+                event.type,
                 topic,
                 pubsub_name,
                 f" with routing key '{routing_key}'" if routing_key else "",
                 extra={
-                    "event_type": event_type,
+                    "event_type": event.type,
                     "topic": topic,
                     "pubsub_name": pubsub_name,
                     "routing_key": routing_key,
-                    "event_id": cloud_event["id"],
-                },
+                    "event_id": event.id
+                }
             )
 
             try:
@@ -146,21 +136,21 @@ class EventPublishingService:
                 async with httpx.AsyncClient() as client:
                     response = await client.post(
                         publish_url,
-                        json=cloud_event,
+                        json=event,
                         headers=headers,
-                        timeout=5.0,
+                        timeout=5.0
                     )
                     response.raise_for_status()
 
                 logger.info(
                     "Successfully published event type '%s' to topic '%s'",
-                    event_type,
+                    event.type,
                     topic,
                     extra={
-                        "event_type": event_type,
+                        "event_type": event.type,
                         "topic": topic,
-                        "event_id": cloud_event["id"],
-                    },
+                        "event_id": event.id
+                    }
                 )
 
                 span.set_attribute("publish.status", "success")
@@ -170,22 +160,22 @@ class EventPublishingService:
                     "topic": topic,
                     "pubsub_name": pubsub_name,
                     "routing_key": routing_key,
-                    "event_id": cloud_event["id"],
+                    "event_id": event.id
                 }
 
             except httpx.HTTPError as e:
                 error_msg = f"Failed to publish event: {str(e)}"
                 logger.error(
                     "Failed to publish event type '%s' to topic '%s': %s",
-                    event_type,
+                    event.type,
                     topic,
                     str(e),
                     extra={
-                        "event_type": event_type,
+                        "event_type": event.type,
                         "topic": topic,
-                        "error": str(e),
+                        "error": str(e)
                     },
-                    exc_info=True,
+                    exc_info=True
                 )
                 span.record_exception(e)
                 span.set_status(trace.Status(trace.StatusCode.ERROR, error_msg))
@@ -195,7 +185,7 @@ class EventPublishingService:
         self,
         output_data: Dict[str, Any],
         event_subtype: str,
-        event_id: Optional[str] = None,
+        event_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Convenience method to publish agent output events.
@@ -208,18 +198,19 @@ class EventPublishingService:
         Returns:
             Publishing result dictionary
         """
-        event_type = f"agent.output.{event_subtype}"
-        return await self.publish_event(
-            event_type=event_type,
+
+        event = GenericCloudEvent(
+            type=f"agent.output.{event_subtype}",
             data=output_data,
-            event_id=event_id,
+            id=event_id
         )
+        return await self.publish_event(event)
 
     async def publish_error_event(
         self,
         error_data: Dict[str, Any],
         error_type: str = "processing",
-        event_id: Optional[str] = None,
+        event_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Convenience method to publish error events.
@@ -232,18 +223,19 @@ class EventPublishingService:
         Returns:
             Publishing result dictionary
         """
-        event_type = f"agent.error.{error_type}"
-        return await self.publish_event(
-            event_type=event_type,
+
+        event = GenericCloudEvent(
+            type=f"agent.error.{error_type}",
             data=error_data,
-            event_id=event_id,
+            id=event_id
         )
+        return await self.publish_event(event)
 
     async def publish_status_event(
         self,
         status_data: Dict[str, Any],
         status: str,
-        event_id: Optional[str] = None,
+        event_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Convenience method to publish status events.
@@ -256,15 +248,18 @@ class EventPublishingService:
         Returns:
             Publishing result dictionary
         """
-        event_type = f"agent.status.{status}"
-        return await self.publish_event(
-            event_type=event_type,
+
+        event = GenericCloudEvent(
+            type=f"agent.status.{status}",
             data=status_data,
-            event_id=event_id,
+            id=event_id
         )
+        return await self.publish_event(event)
 
     def _generate_event_id(self) -> str:
-        """Generate a unique event ID."""
+        """Generate a unique event ID.
+        """
+
         from uuid import uuid4
 
         return str(uuid4())
@@ -279,6 +274,7 @@ class EventPublishingService:
         Returns:
             Topic name or None if no mapping exists
         """
+
         return self._topic_mapping.get(event_type)
 
     def get_available_event_types(self) -> list[str]:
@@ -288,4 +284,5 @@ class EventPublishingService:
         Returns:
             List of event type strings
         """
+
         return list(self._topic_mapping.keys())

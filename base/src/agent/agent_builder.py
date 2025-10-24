@@ -177,8 +177,11 @@ class AgentBuilder:
         logger.debug("Configured agent with deps type: %s", deps_type.__name__)
         return self
 
-    def build(self) -> Agent:
+    def build(self, **kwargs) -> Agent:
         """Build the configured agent.
+
+        Args:
+            **kwargs: Additional keyword arguments for instantiating the agent
 
         Returns:
             Configured Agent instance
@@ -198,6 +201,7 @@ class AgentBuilder:
             model=self._model,
             system_prompt=self._system_prompt,
             tools=self._tools if self._tools else None,
+            **kwargs
         )
 
         logger.info(

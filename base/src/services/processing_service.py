@@ -1,14 +1,12 @@
 """Unified processing service that coordinates handlers and runtimes."""
 
 import logging
+from opentelemetry import trace
 from typing import TYPE_CHECKING, Any, Dict, Optional
 from uuid import uuid4
 
-from opentelemetry import trace
-
-from base.src.config import Config
-
-from ..models.events import CloudEvent
+from ..config import Config
+from ..models.events import CloudEvent, GenericCloudEvent
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..registry.component_registry import ComponentRegistry
@@ -403,13 +401,14 @@ class ProcessingService:
                 span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
                 raise
 
-    async def _publish_result_event(self, result_event: CloudEvent) -> None:
+    async def _publish_result_event(self, result_event: GenericCloudEvent) -> None:
         """
         Publish result event if topic mapping exists for the event type.
 
         Args:
             result_event: The CloudEvent to potentially publish
         """
+
         try:
             # Get event publishing service
             publishing_service = self._component_registry.get_event_publishing_service()
@@ -431,7 +430,7 @@ class ProcessingService:
                     topic,
                 )
 
-                await publishing_service.publish_event(event=result_event, topic=topic)
+                await publishing_service.publish_event(result_event, topic=topic)
 
                 logger.debug(
                     "Successfully published result event %s to topic %s",
@@ -519,9 +518,7 @@ class ProcessingService:
                 },
             )
 
-            await publishing_service.publish_event(
-                event=handler_event, topic=topic_config
-            )
+            await publishing_service.publish_event(handler_event, topic=topic_config)
 
             logger.info(
                 "Successfully published handler event %s (type: %s)",
