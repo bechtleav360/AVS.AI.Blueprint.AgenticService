@@ -1,11 +1,9 @@
 from .agent_invoker import AgentInvokerHandler
-from .asset_fetch_handler import AssetFetchHandler
 from .asset_preprocessing_handler import AssetPreprocessingHandler
-from .asset_tag_update_handler import AssetTagUpdateHandler
+from .asset_tagged_event_publish import AssetHarmonizedEventPublisher
 
 __all__ = [
     "AgentInvokerHandler",
-    "AssetFetchHandler",
     "AssetPreprocessingHandler",
-    "AssetTagUpdateHandler",
+    "AssetHarmonizedEventPublisher",
 ]

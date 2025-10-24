@@ -1,0 +1,32 @@
+{
+    "data": {
+        "data": {
+            "additionalProperties": null,
+            "description": "Test hardware asset for harmonizing",
+            "externalId": null,
+            "hardware": {
+                "manufacturer": "HP",
+                "model": "EliteBook 8 Flip G1i 13 U5 16/512 GB"
+            },
+            "id": null,
+            "name": "HP EliteBook 8 Flip G1i 13 U5 16/512 GB",
+            "references": null,
+            "software": null,
+            "status": "draft",
+            "tags": null,
+            "type": "hardware"
+        },
+        "subject": null
+    },
+    "datacontenttype": "application/json",
+    "id": "a7b0f4df-39a2-4e2d-9bcd-2e9e73fb33d6",
+    "pubsubname": "rabbitmq-pubsub",
+    "source": "harmonizing-agent",
+    "specversion": "1.0",
+    "time": "2025-10-24T09:53:52+02:00",
+    "topic": "Asset-Harmonized-Event",
+    "traceid": "00-30a8b77b7f8438d8a1da5bd5942510d2-4b29ef085981f82f-01",
+    "traceparent": "00-30a8b77b7f8438d8a1da5bd5942510d2-4b29ef085981f82f-01",
+    "tracestate": "",
+    "type": "com.dapr.event.sent"
+}

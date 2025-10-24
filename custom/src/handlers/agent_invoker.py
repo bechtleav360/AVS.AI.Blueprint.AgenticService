@@ -68,7 +68,7 @@ class AgentInvokerHandler(EventHandler):
         asset = context.get("asset_fetched")
 
         if not asset or not isinstance(asset, dict):
-            raise HandlerResult(
+            return HandlerResult(
                 data={"error": "Invalid payload format"},
                 event_type="invoice.analysis.error",
                 metadata={"reason": "No asset in context to update tags"},

@@ -68,6 +68,39 @@
             "jinja": true,
             "justMyCode": false,
             "console": "integratedTerminal"
+        },
+        {
+            "name": "FastAPI: custom-service (uv)",
+            "type": "node-terminal",
+            "request": "launch",
+            "command": "bash -c 'cd custom && PYTHONPATH=\"${workspaceFolder}:$PYTHONPATH\" uv run uvicorn src.main:app --reload --port 8001 --host 0.0.0.0'",
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "FastAPI: custom-service (uv with debug)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "uvicorn",
+            "args": [
+                "src.main:app",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "8001",
+                "--reload"
+            ],
+            "jinja": true,
+            "justMyCode": false,
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/custom",
+            "python": "${workspaceFolder}/custom/.venv/bin/python",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}",
+                "APP_NAME": "agent-service",
+                "LOG_LEVEL": "INFO",
+                "LOG_FORMAT": "text",
+                "DYNACONF_APP_ENVIRONMENT": "development"
+            }
         }
     ],
     "compounds": [

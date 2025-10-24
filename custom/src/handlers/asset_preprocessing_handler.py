@@ -14,7 +14,7 @@ from typing import Any, Optional
 from base.src.handler import EventHandler
 from base.src.models import CloudEvent
 
-from ..models import AssetType, HandlerResult, HarmonizingInputPayload
+from ..models import AssetType, HandlerResult
 
 logger = logging.getLogger(__name__)
 
@@ -36,13 +36,18 @@ class AssetPreprocessingHandler(EventHandler):
         self, event: CloudEvent, context: dict[str, Any]
     ) -> bool:
         """Check if event has valid HarmonizingInputPayload structure."""
-        if not event.data or not isinstance(event.data, HarmonizingInputPayload):
-            logger.debug("Event data is not HarmonizingInputPayload")
+        if not event.data or not isinstance(event.data, dict):
+            logger.debug("Event data is not a dict")
             return False
         
         # Check if data exists with type and properties
-        if not event.data.data:
+        if "data" not in event.data:
             logger.debug("Event data.data is missing")
+            return False
+        
+        inner_data = event.data.get("data", {})
+        if not isinstance(inner_data, dict) or "properties" not in inner_data:
+            logger.debug("Event data.data.properties is missing")
             return False
         
         return True
@@ -60,9 +65,10 @@ class AssetPreprocessingHandler(EventHandler):
             event.type,
         )
 
-        # Extract type and properties
-        asset_type = event.data.data.type
-        properties = event.data.data.properties
+        # Extract type and properties from dict
+        inner_data = event.data.get("data", {})
+        asset_type = inner_data.get("type")
+        properties = inner_data.get("properties", {})
         
         if not properties:
             logger.error("Properties are empty or missing")
