@@ -47,8 +47,10 @@ invoice_agent: Agent = (
         ]
     )
     .with_result_type(InvoiceAnalysisOutput)
-    .build()
+    .build(name="invoice_analyzer")
 )
+
+print(invoice_agent.name)
 
 # Add more agents here as needed
 # document_agent = (

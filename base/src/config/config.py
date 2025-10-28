@@ -203,54 +203,22 @@ class Config:
             - default_pubsub_name: The default Dapr pubsub component name
             - topic_mapping: Dictionary mapping event types to topics or routing configs
         """
+
+        topic_mapping = self.get("event_publishing.topic_mapping", {})
+        for event_type, topic_config in topic_mapping.items():
+            if isinstance(topic_config, str):
+                topic_mapping[event_type] = {"topic": topic_config, "routing_key": None}
+            elif not isinstance(topic_config, dict):
+                raise ValueError(
+                    f"Invalid topic mapping for event type '{event_type}': {topic_config}"
+                )
+
         return {
             "default_pubsub_name": self.get(
                 "event_publishing.default_pubsub_name", "pubsub"
             ),
-            "topic_mapping": self.get("event_publishing.topic_mapping", {}),
+            "topic_mapping": topic_mapping,
         }
-
-    def get_routing_for_event_type(self, event_type: str) -> Dict[str, Any] | None:
-        """Get the routing configuration for a specific event type.
-
-        Args:
-            event_type: The CloudEvent type (e.g., "agent.output.invoice.processed")
-
-        Returns:
-            Dictionary with 'topic' and optional 'routing_key', or None if no mapping exists.
-
-            Examples:
-                {"topic": "invoice.events", "routing_key": "invoice.processed"}
-                {"topic": "invoice.events"}  # No routing key
-        """
-        topic_mapping = self.get("event_publishing.topic_mapping", {})
-        config = topic_mapping.get(event_type)
-
-        if config is None:
-            return None
-
-        # Support both simple string (topic only) and dict (topic + routing_key)
-        if isinstance(config, str):
-            return {"topic": config, "routing_key": None}
-        elif isinstance(config, dict):
-            return {
-                "topic": config.get("topic"),
-                "routing_key": config.get("routing_key"),
-            }
-
-        return None
-
-    def get_topic_for_event_type(self, event_type: str) -> str | None:
-        """Get the topic name for a specific event type.
-
-        Args:
-            event_type: The CloudEvent type (e.g., "agent.output.invoice.processed")
-
-        Returns:
-            The topic name to publish to, or None if no mapping exists
-        """
-        routing = self.get_routing_for_event_type(event_type)
-        return routing["topic"] if routing else None
 
     def validate(self):
         """Validate the configuration."""

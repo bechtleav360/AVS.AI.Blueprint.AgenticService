@@ -1,5 +1,5 @@
 """Builder for creating and configuring AI agents without inheritance."""
-
+import inspect
 import logging
 from typing import Any, Callable, List, Optional, Type
 
@@ -194,6 +194,33 @@ class AgentBuilder:
 
         if self._system_prompt is None:
             raise ValueError("System prompt must be configured before building agent")
+
+        # Check for unexpected kwargs
+        if kwargs:
+            # Get parameters from Agent constructor
+            sig = inspect.signature(Agent)
+
+            # List of arguments set by builder
+            builder_args = [
+                "model",
+                "system_prompt",
+                "tools"
+            ]
+
+            # Check for not allowed kwargs
+            for kwarg in kwargs:
+                if kwarg in builder_args:
+                    raise ValueError(f"The Agent argument '{kwarg}' is set by the builder and cannot be given for instantiation")
+
+            # Remove arguments set by builder
+            filtered_parameters = {
+                name: param
+                for name, param in sig.parameters.items()
+                if name not in builder_args
+            }
+            for kwarg in kwargs:
+                if kwarg not in filtered_parameters:
+                    raise ValueError(f"Unexpected keyword argument for Agent: {kwarg}")
 
         # Create agent with configuration
         # Note: result_type is now a generic parameter, not a constructor argument

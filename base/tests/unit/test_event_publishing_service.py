@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from base.src.config import Config
+from base.src.models import CloudEvent
 from base.src.services.event_publishing_service import EventPublishingService
 
 
@@ -24,25 +25,15 @@ class TestEventPublishingService:
         config.get_event_publishing_config.return_value = {
             "default_pubsub_name": "pubsub",
             "topic_mapping": {
-                "agent.output.invoice.processed": "invoice.processed",
-                "agent.output.document.classified": "document.classified",
-                "agent.error.processing": "agent.errors",
-                "agent.error.validation": "agent.errors",
-                "agent.status.started": "agent.status",
-                "agent.status.completed": "agent.status",
-                "agent.status.failed": "agent.status",
+                "agent.output.invoice.processed": {"topic": "invoice.processed", "routing_key": None},
+                "agent.output.document.classified": {"topic": "document.classified", "routing_key": None},
+                "agent.error.processing": {"topic": "agent.errors", "routing_key": None},
+                "agent.error.validation": {"topic": "agent.errors", "routing_key": None},
+                "agent.status.started": {"topic": "agent.status", "routing_key": None},
+                "agent.status.completed": {"topic": "agent.status", "routing_key": None},
+                "agent.status.failed": {"topic": "agent.status", "routing_key": None}
             },
         }
-
-        config.get_topic_for_event_type.side_effect = lambda event_type: {
-            "agent.output.invoice.processed": "invoice.processed",
-            "agent.output.document.classified": "document.classified",
-            "agent.error.processing": "agent.errors",
-            "agent.error.validation": "agent.errors",
-            "agent.status.started": "agent.status",
-            "agent.status.completed": "agent.status",
-            "agent.status.failed": "agent.status",
-        }.get(event_type)
 
         return config
 
@@ -87,12 +78,13 @@ class TestEventPublishingService:
                 return_value=mock_response
             )
 
-            result = await service.publish_event(
-                event_type="agent.output.invoice.processed",
+            event = CloudEvent(
+                type="agent.output.invoice.processed",
+                id="test-event-123",
                 data={"invoice_id": "INV-123", "status": "processed"},
-                event_id="test-event-123",
-                source="/test/source",
+                source="/test/source"
             )
+            result = await service.publish_event(event)
 
             assert result["status"] == "published"
             assert result["topic"] == "invoice.processed"
@@ -135,10 +127,14 @@ class TestEventPublishingService:
                 return_value=mock_response
             )
 
+            event = CloudEvent(
+                type="custom.event.type",
+                id="test-event-123",
+                data={"key": "value"}
+            )
             result = await service.publish_event(
-                event_type="custom.event.type",
-                data={"key": "value"},
-                topic="custom.topic",  # Explicit topic
+                event,
+                topic="custom.topic"  # Explicit topic
             )
 
             assert result["status"] == "published"
@@ -160,10 +156,14 @@ class TestEventPublishingService:
                 return_value=mock_response
             )
 
+            event = CloudEvent(
+                type="agent.output.invoice.processed",
+                id="test-event-123",
+                data={"key": "value"}
+            )
             result = await service.publish_event(
-                event_type="agent.output.invoice.processed",
-                data={"key": "value"},
-                pubsub_name="custom-pubsub",
+                event,
+                pubsub_name="custom-pubsub"
             )
 
             assert result["pubsub_name"] == "custom-pubsub"
@@ -177,9 +177,12 @@ class TestEventPublishingService:
     async def test_publish_event_no_topic_mapping(self, service):
         """Test publishing event with no topic mapping raises error."""
         with pytest.raises(ValueError) as exc_info:
-            await service.publish_event(
-                event_type="unknown.event.type", data={"key": "value"}
+            event = CloudEvent(
+                type="unknown.event.type",
+                id="test-event-123",
+                data={"key": "value"}
             )
+            await service.publish_event(event)
 
         assert "No topic mapping found" in str(exc_info.value)
         assert "unknown.event.type" in str(exc_info.value)
@@ -198,9 +201,12 @@ class TestEventPublishingService:
             )
 
             with pytest.raises(httpx.HTTPStatusError):
-                await service.publish_event(
-                    event_type="agent.output.invoice.processed", data={"key": "value"}
+                event = CloudEvent(
+                    type="agent.output.invoice.processed",
+                    id="test-event-123",
+                    data={"key": "value"}
                 )
+                await service.publish_event(event)
 
     @pytest.mark.asyncio
     async def test_publish_event_auto_generated_id(self, service):
@@ -213,11 +219,12 @@ class TestEventPublishingService:
                 return_value=mock_response
             )
 
-            result = await service.publish_event(
-                event_type="agent.output.invoice.processed",
-                data={"key": "value"},
-                # No event_id provided
+            event = CloudEvent(
+                type="agent.output.invoice.processed",
+                id="", # No event_id provided
+                data={"key": "value"}
             )
+            result = await service.publish_event(event)
 
             # Should have auto-generated ID
             assert result["event_id"] is not None
@@ -239,11 +246,12 @@ class TestEventPublishingService:
                 return_value=mock_response
             )
 
-            await service.publish_event(
-                event_type="agent.output.invoice.processed",
-                data={"key": "value"},
-                # No source provided
+            event = CloudEvent(
+                type="agent.output.invoice.processed",
+                id="test-event-123",
+                data={"key": "value"}
             )
+            await service.publish_event(event)
 
             # Verify payload has default source
             mock_post = mock_client.return_value.__aenter__.return_value.post
@@ -365,12 +373,13 @@ class TestEventPublishingService:
                 return_value=mock_response
             )
 
-            await service.publish_event(
-                event_type="agent.output.invoice.processed",
-                data={"test": "data"},
-                event_id="test-123",
-                source="/test/source",
+            event = CloudEvent(
+                type="agent.output.invoice.processed",
+                id="test-123",
+                data={"key": "value"},
+                source="/test/source"
             )
+            await service.publish_event(event)
 
             # Verify CloudEvents format
             mock_post = mock_client.return_value.__aenter__.return_value.post
@@ -399,9 +408,12 @@ class TestEventPublishingService:
                 return_value=mock_response
             )
 
-            await service.publish_event(
-                event_type="agent.output.invoice.processed", data={"test": "data"}
+            event = CloudEvent(
+                type="agent.output.invoice.processed",
+                id="test-event-123",
+                data={"test": "data"}
             )
+            await service.publish_event(event)
 
             # Verify timeout is set
             mock_post = mock_client.return_value.__aenter__.return_value.post
