@@ -1,9 +1,9 @@
 """Pydantic models for CloudEvents v1.0 specification."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Generic, Literal, Optional, TypeVar
 
-from pydantic import BaseModel, Field, root_validator
+from pydantic import BaseModel, Field, root_validator, field_validator
 from pydantic.config import ConfigDict
 
 # Generic type for the CloudEvent data payload.
@@ -24,7 +24,10 @@ class CloudEvent(BaseModel, Generic[T]):
     specversion: Optional[Literal["1.0"]] = Field("1.0", description="CloudEvents spec version")
     source: Optional[str] = Field(None, description="URI reference that identifies the event producer.")
     subject: Optional[str] = Field(None, description="Subject of the event")
-    time: Optional[datetime] = Field(default_factory=datetime.utcnow, description="Timestamp of the event")
+    time: Optional[str] = Field(
+        default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        description="Timestamp of the event in ISO 8601 format with 'Z' timezone indicator"
+    )
     datacontenttype: Optional[str] = Field(None, description="Content type of the data")
     dataschema: Optional[str] = Field(None, description="Schema of the data")
     data: Optional[T] = Field(None, description="Event payload")
@@ -49,6 +52,19 @@ class CloudEvent(BaseModel, Generic[T]):
             }
         },
     )
+
+    @field_validator('time')
+    def validate_time_format(cls, v):
+        """Validate that the time is in ISO 8601 format with timezone."""
+        if not isinstance(v, str):
+            raise ValueError("Time must be a string in ISO 8601 format")
+        try:
+            dt = datetime.fromisoformat(v)
+            if dt.tzinfo is None:
+                raise ValueError("Time must include timezone information")
+            return v
+        except ValueError as e:
+            raise ValueError("Time must be in ISO 8601 format with timezone") from e
 
     @root_validator(pre=True)
     def validate_data_exclusivity(cls, values: Dict[str, Any]) -> Dict[str, Any]:
