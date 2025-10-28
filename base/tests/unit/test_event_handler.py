@@ -1,9 +1,9 @@
 """Unit tests for EventHandler and Chain of Responsibility pattern."""
-
-from typing import Any, Dict, Optional
-from unittest.mock import MagicMock, Mock, patch
+from unittest import mock
 
 import pytest
+
+from unittest.mock import MagicMock, Mock, patch, AsyncMock
 
 # Import directly to avoid circular import during testing
 from base.src.handler.event_handler import EventHandler
@@ -423,7 +423,7 @@ class TestChainOfResponsibility:
         mock_component_registry = Mock()
         mock_agent_registry = Mock()
         mock_agent = Mock()
-        mock_agent.run = Mock(return_value=Mock(data="agent_output"))
+        mock_agent.run = AsyncMock(return_value=Mock(data="agent_output"))
 
         mock_component_registry.get_agent_registry.return_value = mock_agent_registry
         mock_agent_registry.get.return_value = mock_agent
@@ -440,5 +440,7 @@ class TestChainOfResponsibility:
         )
         result = await handler.handle_event(event, {})
 
-        assert "agent_result" in result
-        mock_agent.run.assert_called_once_with("test instruction")
+        # Verify
+        mock_agent.run.assert_awaited_once_with("test instruction")
+        assert result == {"agent_result": mock.ANY}
+        assert result["agent_result"].data == "agent_output"
