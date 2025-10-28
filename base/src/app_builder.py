@@ -110,7 +110,7 @@ class AppBuilder:
 
         # Initialize and register handlers
         try:
-            handlers = [handler_class().add_config(self.config) for handler_class in self._handler_classes]
+            handlers: list[EventHandler] = [handler_class().with_config(self.config) for handler_class in self._handler_classes]
             self._component_registry.register_handlers(handlers)
             logger.info("Successfully registered %d handlers", len(handlers))
         except Exception as e:

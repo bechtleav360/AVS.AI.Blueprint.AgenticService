@@ -15,13 +15,15 @@ The framework provides automatic OpenTelemetry tracing for all handlers.
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 
 from opentelemetry import trace
 
 from ..config import Config
 from ..models import CloudEvent
-from ..registry.service_registry import ServiceRegistry
+if TYPE_CHECKING:  # pragma: no cover
+    from ..registry.service_registry import ServiceRegistry
+    from ..registry.component_registry import ComponentRegistry
 
 tracer = trace.get_tracer(__name__)
 
@@ -64,13 +66,14 @@ class EventHandler(ABC):
         self._registry = None
         self._component_registry = None
 
-    def add_config(self, config: Config):
+    def with_config(self, config: Config) -> "EventHandler":
         """Adds config via dependency injection, so that handlers can access environment variables during runtime
         """
 
         self.config = config
+        return self
 
-    def link_service_registry(self, registry: ServiceRegistry) -> None:
+    def link_service_registry(self, registry: "ServiceRegistry") -> None:
         """Link the service registry to the handler.
         """
 
