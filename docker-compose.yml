@@ -22,7 +22,6 @@ services:
       - jaeger
       - redis
       - rabbitmq
-      - placement
     volumes:
       - ./custom/src/prompts:/home/app/custom/src/prompts:ro
     networks:
@@ -41,8 +40,6 @@ services:
         "3500",
         "-dapr-grpc-port",
         "50001",
-        "-placement-host-address",
-        "placement:50006",
         "-components-path",
         "/components",
         "-config",
@@ -55,16 +52,7 @@ services:
       - agent
       - redis
       - rabbitmq
-      - placement
     network_mode: "service:agent"
-
-  placement:
-    image: "daprio/dapr:latest"
-    command: ["./placement", "-port", "50006"]
-    ports:
-      - "50006:50006"
-    networks:
-      - agent-network
 
   redis:
     image: "redis:alpine"

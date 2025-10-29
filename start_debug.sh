@@ -32,19 +32,42 @@ echo ""
 
 echo -e "${YELLOW}🔧 Prerequisites:${NC}"
 echo "   1. RabbitMQ should be running (docker-compose up -d rabbitmq)"
-echo "   2. Redis should be running (docker-compose up -d redis)"
-echo "   3. Placement should be running (docker-compose up -d placement)"
+echo ""
+
+# Check if RabbitMQ is accessible
+echo -e "${YELLOW}🔍 Checking RabbitMQ connection...${NC}"
+if ! nc -z localhost 5672 2>/dev/null; then
+    echo -e "${YELLOW}⚠️  RabbitMQ is not accessible on localhost:5672${NC}"
+    echo -e "${YELLOW}   Waiting for RabbitMQ to start...${NC}"
+    for i in {1..10}; do
+        sleep 1
+        if nc -z localhost 5672 2>/dev/null; then
+            echo -e "${GREEN}✅ RabbitMQ is ready${NC}"
+            break
+        fi
+        if [ $i -eq 10 ]; then
+            echo -e "${YELLOW}⚠️  RabbitMQ still not ready after 10 seconds${NC}"
+            echo -e "${YELLOW}   Starting anyway, Dapr will retry connection${NC}"
+        fi
+    done
+else
+    echo -e "${GREEN}✅ RabbitMQ is ready${NC}"
+fi
 echo ""
 
 echo -e "${GREEN}🚀 Starting Dapr + App...${NC}"
 echo ""
 
 # Start with Dapr
+# Note: Disabling placement and scheduler (not needed for pub/sub messaging)
 dapr run \
     --app-id harmonizing-agent \
     --app-port 8001 \
     --dapr-http-port 3500 \
     --dapr-grpc-port 50001 \
     --resources-path "$SCRIPT_DIR/custom/dapr" \
-    --log-level debug \
+    --config "$SCRIPT_DIR/custom/dapr/config.yaml" \
+    --placement-host-address "" \
+    --scheduler-host-address "" \
+    --log-level info \
     -- uv run uvicorn src.main:app --host 0.0.0.0 --port 8001 --reload
