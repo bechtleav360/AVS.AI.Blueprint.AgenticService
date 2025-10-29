@@ -20,11 +20,7 @@ payload = {
         "type": "hardware",
         "properties": {
             "id": "S4905156",
-            "name": "HP EliteBook 8 Flip G1i 13 U5 16/512 GB",
-            "manufacturer": {
-                "manufacturer_name": "HP"
-            },
-            "description": "Test hardware asset for harmonizing",
+            "description": "HP EliteBook 8 Flip G1i 13 U5 16/512 GB that is ultra awesome!",
             "item_type": "Notebooks"
         }
     }

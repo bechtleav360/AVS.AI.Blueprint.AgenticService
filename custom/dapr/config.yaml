@@ -1,0 +1,14 @@
+apiVersion: dapr.io/v1alpha1
+kind: Configuration
+metadata:
+  name: dapr-config
+spec:
+  tracing:
+    samplingRate: "0"
+  metric:
+    enabled: false
+  features:
+    - name: "Actor"
+      enabled: false
+    - name: "Scheduler"
+      enabled: false

@@ -71,7 +71,7 @@ class AgentInvokerHandler(EventHandler):
             return HandlerResult(
                 data={"error": "Invalid payload format"},
                 event_type="invoice.analysis.error",
-                metadata={"reason": "No asset in context to update tags"},
+                metadata={"reason": "No asset in context for harmonization"},
             )
 
 
@@ -98,7 +98,7 @@ class AgentInvokerHandler(EventHandler):
                 clean_output
             )
 
-            context["asset_tagged"] = clean_output
+            context["asset_harmonized"] = clean_output
             # # Determine which event to publish based on validation status
             # if analysis.status.lower() == "valid":
             #     event_type = "invoice.validated"
