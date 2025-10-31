@@ -1,13 +1,10 @@
-"""Invoice analysis handler that invokes an AI agent and publishes results.
+"""Asset harmonization handler that invokes the harmonizing agent and stores results.
 
 This handler demonstrates:
 - Validating event data
 - Calling an agent using _get_agent()
-- Returning Pydantic models (HandlerResult) or None
-- Publishing different events based on validation status:
-  * invoice.validated - When invoice is valid
-  * invoice.invalidated - When invoice is invalid
-  * invoice.analysis.error - When processing fails
+- Producing a structured model result added to the processing context
+- Deferring publication to a downstream publisher handler
 
 The handler uses the Chain of Responsibility pattern where it can process
 the event and return a result (stops chain), or return None (continues chain).
@@ -22,17 +19,16 @@ from base.src.models import CloudEvent
 
 from ..models import AssetHarmonizingOutput, HandlerResult
 from pathlib import Path
-
+import json
 logger = logging.getLogger(__name__)
 
 THIS_FILE = Path(__file__).resolve()
 BLUEPRINT_ROOT = THIS_FILE.parents[1]
 
 class AgentInvokerHandler(EventHandler):
-    """Handler that validates input, invokes the AI agent, and publishes results.
+    """Validate input, invoke harmonizing agent, and place results into context.
 
-    Returns HandlerResult with event_type to trigger automatic event publishing.
-    Demonstrates three different event types based on validation status.
+    Publication is handled by a dedicated publisher which reads context entries.
     """
 
     def __init__(self) -> None:
@@ -50,15 +46,11 @@ class AgentInvokerHandler(EventHandler):
     async def handle_event(
         self, event: CloudEvent, context: dict[str, Any]
     ) -> Optional[HandlerResult]:
-        """Validate the payload, invoke the agent, and return structured result.
+        """Validate the payload, invoke the harmonizing agent, and update context.
 
         Returns:
-            HandlerResult with event_type for publishing, or None to continue chain.
-
-        Event Types Published:
-            - invoice.validated: When invoice status is 'valid'
-            - invoice.invalidated: When invoice status is 'invalid' or 'incomplete'
-            - invoice.analysis.error: When processing fails
+            None to continue the chain (publisher will read from context), or a
+            HandlerResult with an error event type on failure.
         """
         logger.info(
             "AgentInvokerHandler processing event '%s'",
@@ -68,11 +60,18 @@ class AgentInvokerHandler(EventHandler):
         asset = context.get("asset_fetched")
 
         if not asset or not isinstance(asset, dict):
-            return HandlerResult(
-                data={"error": "Invalid payload format"},
-                event_type="invoice.analysis.error",
-                metadata={"reason": "No asset in context for harmonization"},
-            )
+            logger.error(f"Asset has wrong format: {asset}")
+            logger.error(f"Type is {type(asset)}")
+            logger.error(f"Trying to convert to dict")
+            try:
+                asset = json.loads(asset)
+            except Exception as e:
+                logger.error(f"Failed to convert to dict: {e}")
+                return HandlerResult(
+                    data={"error": "Invalid payload format"},
+                    event_type="asset.harmonization.error",
+                    metadata={"reason": f"Asset has wrong format: {asset}"},
+                )
 
 
 
@@ -89,44 +88,17 @@ class AgentInvokerHandler(EventHandler):
                 asset=asset,
             )
 
-            # Run agent - expects InvoiceAnalysisOutput
+            # Run agent - expects AssetHarmonizingOutput
             result = await agent.run(instruction)
             clean_output = AssetHarmonizingOutput.model_validate_json(result.output)
 
-            logger.info(
-                "Agent processing completed: clean_outout=%s, ",
-                clean_output
-            )
+            logger.info("Agent processing completed: clean_output=%s", clean_output)
 
+            # Store harmonization result and status for downstream publisher
             context["asset_harmonized"] = clean_output
-            # # Determine which event to publish based on validation status
-            # if analysis.status.lower() == "valid":
-            #     event_type = "invoice.validated"
-            #     logger.info("Invoice %s is VALID", analysis.invoice_id)
-            # elif analysis.status.lower() in ["invalid", "incomplete"]:
-            #     event_type = "invoice.invalidated"
-            #     logger.warning(
-            #         "Invoice %s is INVALID: %s", analysis.invoice_id, analysis.notes
-            #     )
-            # else:
-            #     # Unknown status - treat as invalid
-            #     event_type = "invoice.invalidated"
-            #     logger.warning(
-            #         "Invoice %s has unknown status: %s",
-            #         analysis.status,
-            #         analysis.invoice_id,
-            #     )
+            #TODO: add error handling with other status values (should we use status for that?)
+            context["harmonization_status"] = "valid"
 
-            # # Return structured result with event type for publishing
-            # return HandlerResult(
-            #     data=analysis.model_dump(),
-            #     event_type=event_type,
-            #     metadata={
-            #         "invoice_id": analysis.invoice_id,
-            #         "status": analysis.status,
-            #         "confidence": analysis.confidence,
-            #     },
-            # )
             return None
 
         except Exception as e:
@@ -134,7 +106,7 @@ class AgentInvokerHandler(EventHandler):
             # Return error result with error event type
             return HandlerResult(
                 data={"error": str(e), "asset": asset},
-                event_type="invoice.analysis.error",
+                event_type="asset.harmonization.error",
                 metadata={"error_type": type(e).__name__, "source": "agent_processing"},
             )
 
