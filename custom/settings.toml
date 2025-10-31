@@ -21,6 +21,15 @@ dapr_pubsub_name = "rabbitmq-pubsub"
 dapr_http_port = 3500
 dapr_grpc_port = 50001
 
+# Event Publishing Configuration (defaults for all environments)
+[default.event_publishing]
+default_pubsub_name = "rabbitmq-pubsub"
+
+[default.event_publishing.topic_mapping]
+"asset.harmonized" = { topic = "asset.events", routing_key = "harmonized" }
+"asset.not_harmonized" = { topic = "asset.events", routing_key = "not_harmonized" }
+"asset.harmonization.error" = { topic = "asset.events", routing_key = "error" }
+
 # RabbitMQ Configuration
 rabbitmq_host = "localhost:5672"
 rabbitmq_vhost = "bios"
@@ -86,9 +95,6 @@ log_level = "INFO"
 # Runtime-specific configurations
 # Override AI settings per agent runtime if needed
 
-[runtime.asset_tagging]
-# Uses global AI config by default
-# Override here if needed for tagging agent
 
 [runtime.asset_harmonizing]
 # Configuration for the harmonizing agent

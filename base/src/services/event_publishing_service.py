@@ -49,6 +49,14 @@ class EventPublishingService:
             self._default_pubsub_name,
             len(self._topic_mapping)
         )
+        try:
+            logger.info(
+                "Configured topic mappings (keys): %s",
+                list(self._topic_mapping.keys()),
+            )
+        except Exception:
+            # Best-effort logging only
+            pass
 
     async def publish_event(
         self,

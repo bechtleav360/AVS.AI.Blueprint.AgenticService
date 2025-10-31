@@ -38,7 +38,7 @@ class AssetHarmonizedEventPublisher(EventHandler):
         """Check if required context exists (asset and harmonization result)."""
         if not event.data:
             return False
-        return bool(context.get("asset_harmonized")) and bool(context.get("asset_fetched"))
+        return bool(context.get("asset_harmonized"))
 
     async def handle_event(self, event: CloudEvent, context: dict[str, Any]) -> Optional[HandlerResult]:
         """Decide event type based on harmonization result and return it for publishing."""
@@ -46,44 +46,41 @@ class AssetHarmonizedEventPublisher(EventHandler):
             "AssetHarmonizedEventPublisher processing event '%s'",
             event.type,
         )
+        logger.info("Context: %s", context)
 
-        asset = context.get("asset_fetched")
-        if not asset or not isinstance(asset, dict):
-            raise HandlerError(status="invalid", reason="No asset in context to update harmonization result")
 
-        asset_id = asset.get("id")
-        if not asset_id:
-            raise HandlerError(status="invalid", reason="Asset ID missing for harmonization update")
 
         asset_harmonized = context.get("asset_harmonized")
         if not asset_harmonized:
-            raise HandlerError(status="invalid", reason="No harmonization result available")
+            raise HandlerError(status="invalid", reason="No asset in context to update harmonization result")
+
 
         # Determine event type based on harmonization validation status
-        status_lower = getattr(asset_harmonized, "status", "").lower()
+        status_value = context.get("harmonization_status", getattr(asset_harmonized, "status", ""))
+        status_lower = (status_value or "").lower()
         if status_lower == "valid":
             event_type = "asset.harmonized"
-            logger.info("Asset %s is harmonized successfully", asset_id)
         elif status_lower in ["invalid", "incomplete"]:
             event_type = "asset.not_harmonized"
-            logger.warning("Asset %s harmonization is INVALID: %s", asset_id, getattr(asset_harmonized, "rationale", ""))
+            logger.warning("Asset harmonization is INVALID: %s", getattr(asset_harmonized, "rationale", ""))
         else:
             event_type = "asset.not_harmonized"
             logger.warning(
                 "Asset harmonization has unknown status: %s (asset %s)",
                 status_lower,
-                asset_id,
             )
 
-        return HandlerResult(
-            data={"asset_id": getattr(asset_harmonized, "asset_id", None)},
+        result = HandlerResult(
+            data=asset_harmonized.model_dump(),
+            subject=None,
             event_type=event_type,
             metadata={
-                "asset_id": asset_id,
                 "status": getattr(asset_harmonized, "status", None),
                 "confidence": getattr(asset_harmonized, "confidence", None),
             },
         )
+        logger.info("HandlerResult: %s", result)
+        return result
 
     def get_published_event_types(self) -> tuple[str, ...]:
         """Declare event types this handler can publish."""
