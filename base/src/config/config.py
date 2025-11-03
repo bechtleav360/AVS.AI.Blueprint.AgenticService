@@ -295,7 +295,7 @@ class Config:
             - topic_mapping: Dictionary mapping event types to topics or routing configs
         """
 
-        topic_mapping = self.get("event_publishing.topic_mappingg", {})
+        topic_mapping = self.get("event_publishing.topic_mapping", {})
         for event_type, topic_config in topic_mapping.items():
             if isinstance(topic_config, str):
                 topic_mapping[event_type] = {"topic": topic_config, "routing_key": None}
