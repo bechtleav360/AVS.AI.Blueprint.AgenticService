@@ -67,7 +67,8 @@ class AssetPreprocessingHandler(EventHandler):
 
         if event.data and isinstance(event.data, dict):
         # Extract type and properties from dict
-            inner_data = data.get("data", {})
+            inner_data = event.data.get("data", {})
+            logger.info("Inner data: %s", event.data)
             asset_type = inner_data.get("type")
             properties = inner_data.get("properties", {})
         elif event.data and isinstance(event.data, HarmonizingInputPayload):
