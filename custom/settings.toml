@@ -24,11 +24,12 @@ dapr_grpc_port = 50001
 # Event Publishing Configuration (defaults for all environments)
 [default.event_publishing]
 default_pubsub_name = "rabbitmq-pubsub"
+topic_mapping = {'asset-harmonized-v1'='dev.asset.harmonized.v1'}
 
-[default.event_publishing.topic_mapping]
-"asset.harmonized" = { topic = "asset.events", routing_key = "harmonized" }
-"asset.not_harmonized" = { topic = "asset.events", routing_key = "not_harmonized" }
-"asset.harmonization.error" = { topic = "asset.events", routing_key = "error" }
+#[default.event_publishing.topic_mapping]
+#"asset.harmonized" = { topic = "asset.events", routing_key = "harmonized" }
+#"asset.not_harmonized" = { topic = "asset.events", routing_key = "not_harmonized" }
+#"asset.harmonization.error" = { topic = "asset.events", routing_key = "error" }
 
 # RabbitMQ Configuration
 rabbitmq_host = "localhost:5672"
