@@ -37,6 +37,7 @@ class ProcessingService:
         event: CloudEvent,
         context: Optional[Dict[str, Any]] = None,
         runtime_name: Optional[str] = None,
+        new_subject: Optional[str] = None
     ) -> CloudEvent:
         """
         Process a CloudEvent through the handler chain and optionally through an agent runtime.
@@ -45,6 +46,7 @@ class ProcessingService:
             event: The CloudEvent to process
             context: Additional context for processing
             runtime_name: Specific runtime to use, or None for default
+            new_subject: New subject for the CloudEvent
 
         Returns:
             A CloudEvent containing the processing result
@@ -131,6 +133,7 @@ class ProcessingService:
                         data=result_data_dict,
                         metadata=result_metadata,
                         source_event=event,
+                        new_subject=new_subject
                     )
 
                 # Create result CloudEvent
@@ -140,7 +143,7 @@ class ProcessingService:
                     source=self._settings.get("app_name", "agent-service"),
                     type=f"agent.output.{event.type}",
                     data=result_data,
-                    subject=event.subject,
+                    subject=new_subject or event.subject,
                 )
 
                 # Publish result event if topic mapping exists
@@ -461,6 +464,7 @@ class ProcessingService:
         data: Any,
         metadata: Dict[str, Any],
         source_event: CloudEvent,
+        new_subject: Optional[str] = None
     ) -> None:
         """
         Publish an event from a handler result.
@@ -473,6 +477,7 @@ class ProcessingService:
             data: The event data
             metadata: Additional metadata
             source_event: The original event that triggered this processing
+            new_subject: Optional new subject for the event
         """
         try:
             # Get event publishing service
@@ -501,7 +506,7 @@ class ProcessingService:
                 source=self._settings.get("app_name", "agent-service"),
                 type=event_type,
                 data=data,
-                subject=source_event.subject,
+                subject= new_subject or source_event.subject,
             )
 
             # Get topic configuration (can be string or dict with routing_key)

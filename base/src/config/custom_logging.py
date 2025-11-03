@@ -12,12 +12,7 @@ class LoggingManager:
         self.logger = logging.getLogger(self.__class__.__name__)
         self._configured = False
 
-    def configure(
-        self,
-        log_level: str = "INFO",
-        log_format: str = "text",
-        suppress_noisy_loggers: bool = True,
-    ) -> None:
+    def configure(self, log_level: str = "INFO", log_format: str = "text", suppress_noisy_loggers: bool = True) -> None:
         """Configure logging for the application.
 
         Args:
