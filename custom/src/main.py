@@ -46,7 +46,6 @@ asset_harmonizing_agent: Agent = (
     .with_system_prompt_file("asset_harmonizing")
     .with_result_type(AssetHarmonizingOutput)
     .build(name="asset_harmonizing")
-    .build()
 )
 
 # Add more agents here as needed
