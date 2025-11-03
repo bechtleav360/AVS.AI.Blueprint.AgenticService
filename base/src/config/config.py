@@ -350,13 +350,3 @@ class Config:
         """Return collected configuration validation errors."""
 
         return list(self._validation_errors)
-
-if __name__ == '__main__':
-    config = Config(settings_files=[
-        "C:\\Users\\jan.weber\\Repos\\BIOS\\Agents_Blueprint\\custom\\settings.toml",
-        "C:\\Users\\jan.weber\\Repos\\BIOS\\Agents_Blueprint\\custom\\secrets.toml"
-    ])
-    mapping_config = config.get_event_publishing_config()
-    print(mapping_config)
-
-    print(mapping_config["topic_mapping"]["invoice.validated"])
