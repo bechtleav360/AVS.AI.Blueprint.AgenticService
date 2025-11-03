@@ -13,9 +13,8 @@ from typing import Any, Optional
 
 from base.src.handler import EventHandler
 from base.src.models import CloudEvent
-from custom.src.models.payloads import HarmonizingInputPayload
 
-from ..models import AssetType, HandlerResult
+from ..models import AssetType, HandlerResult, HarmonizingInputPayload
 
 logger = logging.getLogger(__name__)
 
@@ -108,26 +107,26 @@ class AssetPreprocessingHandler(EventHandler):
 
     def _normalize_type(self, type_value: str) -> Optional[str]:
         """Normalize asset type to standard values.
-        
+
         Args:
             type_value: Raw type value from event
-            
+
         Returns:
             Normalized type (hardware/software) or None if unknown
         """
         if not type_value:
             return None
-            
+
         type_lower = type_value.lower().strip()
-        
+
         # Hardware variations
         if type_lower in ["hardware", "hw"]:
             return AssetType.HARDWARE
-        
-        # Software variations  
+
+        # Software variations
         if type_lower in ["software", "sw"]:
             return AssetType.SOFTWARE
-            
+
         return None
 
     def get_published_event_types(self) -> tuple[str, ...]:
