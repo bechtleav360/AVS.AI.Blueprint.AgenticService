@@ -50,8 +50,6 @@ invoice_agent: Agent = (
     .build(name="invoice_analyzer")
 )
 
-print(invoice_agent.name)
-
 # Add more agents here as needed
 # document_agent = (
 #     AgentBuilder(config, runtime_name="document_classifier")
