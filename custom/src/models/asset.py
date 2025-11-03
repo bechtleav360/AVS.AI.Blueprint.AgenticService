@@ -98,3 +98,20 @@ class AssetHarmonizingOutput(BaseModel):
     # Extensions
     hardware: Optional[HardwareExtension] = None
     software: Optional[SoftwareExtension] = None
+
+    def to_json(self) -> Dict[str, Any]:
+        """Return a JSON-ready dict with extension fields flattened to top level.
+
+        - Excludes None values.
+        - Merges fields from `hardware` and `software` into the root level.
+        """
+        data: Dict[str, Any] = self.model_dump(exclude_none=True)
+
+        # Extract and flatten extension fields
+        for ext_name in ("hardware", "software"):
+            ext = data.pop(ext_name, None)
+            if isinstance(ext, dict):
+                # Merge extension fields into the top-level dict
+                data.update(ext)
+
+        return data

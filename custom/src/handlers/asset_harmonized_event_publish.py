@@ -71,7 +71,7 @@ class AssetHarmonizedEventPublisher(EventHandler):
             )
 
         result = HandlerResult(
-            data=asset_harmonized.model_dump(),
+            data=asset_harmonized.to_json(),
             subject=None,
             event_type=event_type,
             metadata={
