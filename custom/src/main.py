@@ -41,9 +41,9 @@ config = Config(settings_files=settings_files, root_path=project_root)
 
 # Build harmonizing agent
 asset_harmonizing_agent: Agent = (
-    AgentBuilder(config, runtime_name="asset_harmonizing")
-    .with_model_from_config("asset_harmonizing")
-    .with_system_prompt_file("asset_harmonizing")
+    AgentBuilder(config)
+    .with_model_from_config()
+    .with_system_prompt_file(prompt_name="asset_harmonizing")
     .with_result_type(AssetHarmonizingOutput)
     .build(name="asset_harmonizing")
 )

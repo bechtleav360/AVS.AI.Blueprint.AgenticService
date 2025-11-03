@@ -225,7 +225,6 @@ class AgentBuilder:
         # Create agent with configuration
         # Note: result_type is now a generic parameter, not a constructor argument
         agent = Agent[self._deps_type, self._result_type](
-            name = self._runtime_name,
             model=self._model,
             system_prompt=self._system_prompt,
             tools=self._tools if self._tools else [],

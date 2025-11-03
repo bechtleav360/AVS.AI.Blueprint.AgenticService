@@ -28,7 +28,7 @@ class AssetHarmonizedEventPublisher(EventHandler):
     - Returns a structured HandlerResult for publishing
 
     Event Published:
-        - asset.harmonized / asset.not_harmonized / asset.harmonization.error
+        - asset-harmonized-v1 / asset.not_harmonized / asset.harmonization.error
     """
 
     def __init__(self, dapr_http_port: int = 3500) -> None:
@@ -59,7 +59,7 @@ class AssetHarmonizedEventPublisher(EventHandler):
         status_value = context.get("harmonization_status", getattr(asset_harmonized, "status", ""))
         status_lower = (status_value or "").lower()
         if status_lower == "valid":
-            event_type = "asset.harmonized"
+            event_type = "asset-harmonized-v1"
         elif status_lower in ["invalid", "incomplete"]:
             event_type = "asset.not_harmonized"
             logger.warning("Asset harmonization is INVALID: %s", getattr(asset_harmonized, "rationale", ""))
@@ -85,7 +85,7 @@ class AssetHarmonizedEventPublisher(EventHandler):
     def get_published_event_types(self) -> tuple[str, ...]:
         """Declare event types this handler can publish."""
         return (
-            "asset.harmonized",
+            "asset-harmonized-v1",
             "asset.not_harmonized",
             "asset.harmonization.error",
         )

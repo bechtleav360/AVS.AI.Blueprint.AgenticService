@@ -13,6 +13,7 @@ from typing import Any, Optional
 
 from base.src.handler import EventHandler
 from base.src.models import CloudEvent
+from custom.src.models.payloads import HarmonizingInputPayload
 
 from ..models import AssetType, HandlerResult
 
@@ -21,11 +22,11 @@ logger = logging.getLogger(__name__)
 
 class AssetPreprocessingHandler(EventHandler):
     """Preprocesses incoming events to extract asset data and type information.
-    
+
     This handler validates the event structure and extracts:
     - Asset type (hardware/software)
     - Asset properties (raw key/value pairs)
-    
+
     The extracted data is stored in context for downstream handlers.
     """
 
@@ -36,20 +37,20 @@ class AssetPreprocessingHandler(EventHandler):
         self, event: CloudEvent, context: dict[str, Any]
     ) -> bool:
         """Check if event has valid HarmonizingInputPayload structure."""
-        if not event.data or not isinstance(event.data, dict):
-            logger.debug("Event data is not a dict")
-            return False
-        
-        # Check if data exists with type and properties
-        if "data" not in event.data:
-            logger.debug("Event data.data is missing")
-            return False
-        
-        inner_data = event.data.get("data", {})
-        if not isinstance(inner_data, dict) or "properties" not in inner_data:
-            logger.debug("Event data.data.properties is missing")
-            return False
-        
+        # if not event.data or not isinstance(event.data, dict):
+        #     logger.debug("Event data is not a dict")
+        #     return False
+
+        # # Check if data exists with type and properties
+        # if "data" not in event.data:
+        #     logger.debug("Event data.data is missing")
+        #     return False
+
+        # inner_data = event.data.get("data", {})
+        # if not isinstance(inner_data, dict) or "properties" not in inner_data:
+        #     logger.debug("Event data.data.properties is missing")
+        #     return False
+
         return True
 
     async def handle_event(
@@ -65,11 +66,16 @@ class AssetPreprocessingHandler(EventHandler):
             event.type,
         )
 
+        if event.data and isinstance(event.data, dict):
         # Extract type and properties from dict
-        inner_data = event.data.get("data", {})
-        asset_type = inner_data.get("type")
-        properties = inner_data.get("properties", {})
-        
+            inner_data = data.get("data", {})
+            asset_type = inner_data.get("type")
+            properties = inner_data.get("properties", {})
+        elif event.data and isinstance(event.data, HarmonizingInputPayload):
+            inner_data = event.data.data
+            asset_type = inner_data.type
+            properties = inner_data.properties
+
         if not properties:
             logger.error("Properties are empty or missing")
             return HandlerResult(
