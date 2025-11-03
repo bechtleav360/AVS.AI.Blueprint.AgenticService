@@ -9,19 +9,17 @@ variables:
   - group: Docker Bios
   - name: buildConfiguration
     value: 'Release'
-  - name: buildRevision
-    value: $[counter(format('{0}-{1}', variables['Build.Repository.Name'], variables['Build.SourceBranchName']), 1)]
   # Helm
   - name: chartPath
     value: deploy/charts
   - name: chartName
-    value: bios-agents-blueprint
+    value: 
   # Service
   - name: projectLocation
     value: .
   - name: containerName
-    value: bios-agents-blueprint
-  - name: projectFilePath
+    value: 
+  - name: versionFilePath
     value: custom/pyproject.toml
 
 trigger:
@@ -46,8 +44,7 @@ stages:
         steps:
           - template: extract-version-info.yml@templates
             parameters:
-              projectFilePath: ${{ variables.projectFilePath }}
-              buildRevision: $(buildRevision)
+              versionFilePath: ${{ variables.versionFilePath }}
 
             # build Service
           - template: build-project-container.yaml@templates
@@ -58,6 +55,6 @@ stages:
           #   # build Helm
           # - template: build-helm-chart.yaml@templates
           #   parameters:
-          #     projectFilePath: '$(Build.SourcesDirectory)/$(projectLocation)/$(projectFile)'
+          #     versionFilePath: '$(Build.SourcesDirectory)/$(projectLocation)/$(projectFile)'
           #     chartBasePath: $(chartPath)
           #     chartName: $(chartName)
