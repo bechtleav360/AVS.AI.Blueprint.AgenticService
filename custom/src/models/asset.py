@@ -95,7 +95,8 @@ class AssetHarmonizingOutput(BaseModel):
         default=None, description="Dictionary of unprocessed source properties"
     )
 
-    # Extensions
+    # Extensions -  for easy handling the different types we just treat them as optional. we then load them to top level when using to_json().
+    # TODO: maybe this is more prone to errors as the llm needs to think which fields to use.
     hardware: Optional[HardwareExtension] = None
     software: Optional[SoftwareExtension] = None
 
