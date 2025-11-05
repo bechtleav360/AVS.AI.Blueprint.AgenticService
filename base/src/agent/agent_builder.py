@@ -227,7 +227,7 @@ class AgentBuilder:
         agent = Agent[self._deps_type, self._result_type](
             model=self._model,
             system_prompt=self._system_prompt,
-            tools=self._tools if self._tools else None,
+            tools=self._tools if self._tools else [],
             **kwargs
         )
 
