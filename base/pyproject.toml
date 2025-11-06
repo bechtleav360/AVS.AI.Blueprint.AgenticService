@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agents-blueprint"
-version = "0.1.6"
+version = "0.1.7"
 description = "Microservice blueprint for creating agents"
 authors = [
     {name = "Blueprint Team", email = "patrick.maue@bechtle.com"},
