@@ -1,276 +1,165 @@
-"""Unit tests for ComponentRegistry."""
+"""ComponentRegistry integration tests using real handler and runtime implementations."""
+from __future__ import annotations
 
-from unittest.mock import MagicMock, Mock
+from dataclasses import dataclass
 
 import pytest
 
-from base.src.agent import BaseAgent, EventHandler
-from base.src.config import Config
+from base.src.config.config import Config
+from base.src.handler.event_handler import EventHandler
 from base.src.models.events import CloudEvent
 from base.src.registry.component_registry import ComponentRegistry
 
 
-@pytest.fixture
-def mock_config():
-    """Provides mock configuration."""
-    config = Mock(spec=Config)
-    config.get.return_value = "test_value"
-    return config
+@dataclass
+class DummyProcessingService:
+    """Lightweight processing service placeholder."""
+
+    name: str = "processing"
 
 
-@pytest.fixture
-def component_registry(mock_config):
-    """Provides a ComponentRegistry instance."""
-    return ComponentRegistry(settings=mock_config)
+@dataclass
+class DummyEventPublishingService:
+    """Lightweight event publishing service placeholder."""
+
+    name: str = "event_publisher"
 
 
-class MockHandler(EventHandler):
-    """Mock handler for testing."""
+class EchoHandler(EventHandler):
+    """Concrete handler that echoes the processed event."""
 
     def __init__(self, name: str, priority: int = 100):
-        super().__init__(name, priority)
+        super().__init__(name=name, priority=priority)
 
-    async def _can_handle(self, event: CloudEvent, context: dict) -> bool:
+    async def can_handle_event(self, event: CloudEvent, context: dict) -> bool:
         return True
 
-    async def _handle(self, event: CloudEvent, context: dict):
-        return {"processed_by": self.name}
+    async def handle_event(self, event: CloudEvent, context: dict) -> dict:
+        return {"handled_by": self.name, "source": event.source}
 
 
-class MockRuntime(BaseAgent):
-    """Mock runtime for testing."""
+class ComponentRegistryRuntime:
+    """Minimal runtime exposing configuration for registry interaction tests."""
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config) -> None:
         self.config = config
-        self._agent = None
+        self._service_registry: ComponentRegistry | None = None
+        self._processed_payloads: list[str] = []
 
-    def _get_prompt_name(self) -> str:
-        return "test"
+    def link_service_registry(self, registry: ComponentRegistry) -> None:
+        self._service_registry = registry
 
-    def _get_tools(self) -> list:
-        return []
+    async def process_request(self, event: CloudEvent, context: dict | None = None) -> dict:
+        payload = event.data or {}
+        self._processed_payloads.append(payload.get("id", "unknown"))
+        return {"status": "ok", "processed": payload}
 
     async def custom_health_check(self) -> bool:
         return True
 
-    async def process_request(self, context=None, **kwargs):
-        return {"result": "processed"}
+    def get_processed_payloads(self) -> list[str]:
+        return self._processed_payloads.copy()
+
+
+@pytest.fixture
+def config() -> Config:
+    return Config()
+
+
+@pytest.fixture
+def registry(config: Config) -> ComponentRegistry:
+    return ComponentRegistry(settings=config)
+
+
+@pytest.fixture
+def sample_event() -> CloudEvent:
+    return CloudEvent(
+        id="event-1",
+        source="test-suite",
+        type="com.test.event",
+        specversion="1.0",
+        data={"id": "payload-1", "value": 42},
+    )
 
 
 class TestComponentRegistry:
-    """Tests for ComponentRegistry."""
+    """Integration-style tests covering concrete interactions in the registry."""
 
-    def test_initialization(self, mock_config):
-        """Test registry initializes correctly."""
-        registry = ComponentRegistry(settings=mock_config)
-        assert registry._settings == mock_config
-        assert registry._handlers == []
-        assert registry._runtimes == {}
-        assert registry._default_runtime is None
+    def test_register_and_retrieve_handler(self, registry: ComponentRegistry) -> None:
+        handler = EchoHandler(name="echo", priority=5)
+        registry.register_handler(handler)
 
-    def test_register_single_handler(self, component_registry):
-        """Test registering a single handler."""
-        handler = MockHandler("TestHandler", priority=10)
-        component_registry.register_handler(handler)
-
-        handlers = component_registry.get_handlers()
+        handlers = registry.get_handlers()
         assert len(handlers) == 1
-        assert handlers[0].name == "TestHandler"
-        assert handlers[0].priority == 10
+        assert handlers[0].name == "echo"
+        assert handlers[0].priority == 5
 
-    def test_register_multiple_handlers(self, component_registry):
-        """Test registering multiple handlers."""
-        handler1 = MockHandler("Handler1", priority=20)
-        handler2 = MockHandler("Handler2", priority=10)
-        handler3 = MockHandler("Handler3", priority=30)
+    def test_handlers_are_sorted_by_priority(self, registry: ComponentRegistry) -> None:
+        registry.register_handlers(
+            [
+                EchoHandler(name="slow", priority=30),
+                EchoHandler(name="fast", priority=10),
+                EchoHandler(name="medium", priority=20),
+            ]
+        )
 
-        component_registry.register_handlers([handler1, handler2, handler3])
+        priorities = [handler.priority for handler in registry.get_handlers()]
+        assert priorities == [10, 20, 30]
 
-        handlers = component_registry.get_handlers()
-        assert len(handlers) == 3
-        # Should be sorted by priority
-        assert handlers[0].name == "Handler2"  # priority 10
-        assert handlers[1].name == "Handler1"  # priority 20
-        assert handlers[2].name == "Handler3"  # priority 30
+    def test_get_handlers_returns_copy(self, registry: ComponentRegistry) -> None:
+        handler = EchoHandler(name="copy")
+        registry.register_handler(handler)
 
-    def test_handlers_sorted_by_priority(self, component_registry):
-        """Test that handlers are automatically sorted by priority."""
-        handler1 = MockHandler("Handler1", priority=50)
-        handler2 = MockHandler("Handler2", priority=10)
-        handler3 = MockHandler("Handler3", priority=30)
+        first = registry.get_handlers()
+        second = registry.get_handlers()
 
-        component_registry.register_handler(handler1)
-        component_registry.register_handler(handler2)
-        component_registry.register_handler(handler3)
+        assert first == second
+        assert first is not second
 
-        handlers = component_registry.get_handlers()
-        assert handlers[0].priority == 10
-        assert handlers[1].priority == 30
-        assert handlers[2].priority == 50
+    def test_clear_handlers(self, registry: ComponentRegistry) -> None:
+        registry.register_handlers(
+            [EchoHandler(name="a"), EchoHandler(name="b")]
+        )
+        assert registry.get_handlers()
 
-    def test_get_handlers_returns_copy(self, component_registry):
-        """Test that get_handlers returns a copy, not the original list."""
-        handler = MockHandler("TestHandler")
-        component_registry.register_handler(handler)
+        registry.clear_handlers()
+        assert registry.get_handlers() == []
 
-        handlers1 = component_registry.get_handlers()
-        handlers2 = component_registry.get_handlers()
+    def test_register_runtime_and_retrieve(self, registry: ComponentRegistry, config: Config) -> None:
+        runtime = ComponentRegistryRuntime(config)
+        registry._agent_registry.register("runtime", runtime)  # type: ignore[attr-defined]
 
-        assert handlers1 is not handlers2
-        assert handlers1 == handlers2
+        assert registry.get_agent_registry().get("runtime") is runtime
 
-    def test_clear_handlers(self, component_registry):
-        """Test clearing all handlers."""
-        handler1 = MockHandler("Handler1")
-        handler2 = MockHandler("Handler2")
-        component_registry.register_handlers([handler1, handler2])
+    def test_processing_service_registration(self, registry: ComponentRegistry) -> None:
+        processing = DummyProcessingService()
+        registry.register_processing_service(processing)
+        assert registry.get_processing_service() is processing
 
-        assert len(component_registry.get_handlers()) == 2
+    def test_event_publishing_service_registration(self, registry: ComponentRegistry) -> None:
+        publisher = DummyEventPublishingService()
+        registry.register_event_publishing_service(publisher)
+        assert registry.get_event_publishing_service() is publisher
 
-        component_registry.clear_handlers()
-        assert len(component_registry.get_handlers()) == 0
+    def test_clear_registry_resets_state(self, registry: ComponentRegistry) -> None:
+        registry.register_handler(EchoHandler(name="cleanup"))
+        registry.get_agent_registry().register("cleanup-runtime", ComponentRegistryRuntime(registry.get_settings()))
 
-    def test_register_runtime(self, component_registry, mock_config):
-        """Test registering a runtime."""
-        runtime = MockRuntime(mock_config)
-        component_registry.register_runtime("TestRuntime", runtime)
+        registry.clear()
 
-        retrieved = component_registry.get_runtime("TestRuntime")
-        assert retrieved == runtime
+        assert registry.get_handlers() == []
+        assert registry.get_agent_registry().list_agents() == []
 
-    def test_register_runtime_as_default(self, component_registry, mock_config):
-        """Test registering a runtime as default."""
-        runtime = MockRuntime(mock_config)
-        component_registry.register_runtime("TestRuntime", runtime, is_default=True)
+    def test_handler_links_component_registry(self, registry: ComponentRegistry) -> None:
+        handler = EchoHandler(name="link")
+        registry.register_handler(handler)
 
-        # Should be retrievable by name
-        assert component_registry.get_runtime("TestRuntime") == runtime
-        # Should be retrievable as default
-        assert component_registry.get_runtime() == runtime
-        assert component_registry.get_default_runtime_name() == "TestRuntime"
+        assert handler._component_registry is registry  # pylint: disable=protected-access
 
-    def test_first_runtime_becomes_default(self, component_registry, mock_config):
-        """Test that first runtime automatically becomes default."""
-        runtime1 = MockRuntime(mock_config)
-        runtime2 = MockRuntime(mock_config)
+    def test_processing_service_missing_raises(self, registry: ComponentRegistry) -> None:
+        with pytest.raises(ValueError):
+            registry.get_processing_service()
 
-        component_registry.register_runtime("Runtime1", runtime1)
-        component_registry.register_runtime("Runtime2", runtime2)
-
-        # First runtime should be default
-        assert component_registry.get_default_runtime_name() == "Runtime1"
-        assert component_registry.get_runtime() == runtime1
-
-    def test_explicit_default_overrides_first(self, component_registry, mock_config):
-        """Test that explicit default overrides first runtime."""
-        runtime1 = MockRuntime(mock_config)
-        runtime2 = MockRuntime(mock_config)
-
-        component_registry.register_runtime("Runtime1", runtime1)
-        component_registry.register_runtime("Runtime2", runtime2, is_default=True)
-
-        # Second runtime should be default
-        assert component_registry.get_default_runtime_name() == "Runtime2"
-        assert component_registry.get_runtime() == runtime2
-
-    def test_get_runtime_by_name(self, component_registry, mock_config):
-        """Test retrieving runtime by specific name."""
-        runtime1 = MockRuntime(mock_config)
-        runtime2 = MockRuntime(mock_config)
-
-        component_registry.register_runtime("Runtime1", runtime1)
-        component_registry.register_runtime("Runtime2", runtime2)
-
-        assert component_registry.get_runtime("Runtime1") == runtime1
-        assert component_registry.get_runtime("Runtime2") == runtime2
-
-    def test_get_runtime_returns_none_for_unknown(self, component_registry):
-        """Test that get_runtime returns None for unknown runtime."""
-        result = component_registry.get_runtime("NonExistent")
-        assert result is None
-
-    def test_get_runtime_returns_none_when_no_default(self, component_registry):
-        """Test that get_runtime returns None when no default is set."""
-        result = component_registry.get_runtime()
-        assert result is None
-
-    def test_get_all_runtimes(self, component_registry, mock_config):
-        """Test retrieving all runtimes."""
-        runtime1 = MockRuntime(mock_config)
-        runtime2 = MockRuntime(mock_config)
-
-        component_registry.register_runtime("Runtime1", runtime1)
-        component_registry.register_runtime("Runtime2", runtime2)
-
-        all_runtimes = component_registry.get_all_runtimes()
-        assert len(all_runtimes) == 2
-        assert "Runtime1" in all_runtimes
-        assert "Runtime2" in all_runtimes
-        assert all_runtimes["Runtime1"] == runtime1
-        assert all_runtimes["Runtime2"] == runtime2
-
-    def test_get_all_runtimes_returns_copy(self, component_registry, mock_config):
-        """Test that get_all_runtimes returns a copy."""
-        runtime = MockRuntime(mock_config)
-        component_registry.register_runtime("TestRuntime", runtime)
-
-        runtimes1 = component_registry.get_all_runtimes()
-        runtimes2 = component_registry.get_all_runtimes()
-
-        assert runtimes1 is not runtimes2
-        assert runtimes1 == runtimes2
-
-    def test_clear_runtimes(self, component_registry, mock_config):
-        """Test clearing all runtimes."""
-        runtime1 = MockRuntime(mock_config)
-        runtime2 = MockRuntime(mock_config)
-
-        component_registry.register_runtime("Runtime1", runtime1)
-        component_registry.register_runtime("Runtime2", runtime2)
-
-        assert len(component_registry.get_all_runtimes()) == 2
-        assert component_registry.get_default_runtime_name() is not None
-
-        component_registry.clear_runtimes()
-
-        assert len(component_registry.get_all_runtimes()) == 0
-        assert component_registry.get_default_runtime_name() is None
-
-    def test_clear_all_components(self, component_registry, mock_config):
-        """Test clearing all components (handlers and runtimes)."""
-        handler = MockHandler("TestHandler")
-        runtime = MockRuntime(mock_config)
-
-        component_registry.register_handler(handler)
-        component_registry.register_runtime("TestRuntime", runtime)
-
-        assert len(component_registry.get_handlers()) == 1
-        assert len(component_registry.get_all_runtimes()) == 1
-
-        component_registry.clear()
-
-        assert len(component_registry.get_handlers()) == 0
-        assert len(component_registry.get_all_runtimes()) == 0
-
-    def test_get_settings(self, component_registry, mock_config):
-        """Test retrieving settings from registry."""
-        settings = component_registry.get_settings()
-        assert settings == mock_config
-
-    def test_handler_links_to_registry(self, component_registry):
-        """Test that handler is linked to registry on registration."""
-        handler = MockHandler("TestHandler")
-        component_registry.register_handler(handler)
-
-        # Handler should have registry linked
-        assert hasattr(handler, "_registry")
-        assert handler._registry == component_registry
-
-    def test_runtime_links_to_registry(self, component_registry, mock_config):
-        """Test that runtime is linked to registry on registration."""
-        runtime = MockRuntime(mock_config)
-        component_registry.register_runtime("TestRuntime", runtime)
-
-        # Runtime should have registry linked
-        assert hasattr(runtime, "_service_registry")
-        assert runtime._service_registry == component_registry
+    def test_event_publishing_service_missing_raises(self, registry: ComponentRegistry) -> None:
+        with pytest.raises(ValueError):
+            registry.get_event_publishing_service()

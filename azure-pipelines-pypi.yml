@@ -1,0 +1,148 @@
+trigger:
+  branches:
+    include:
+      - master
+      - dev
+      - feature/pypi
+  paths:
+    exclude:
+      - azure-pipelines-pypi.yml
+
+variables:
+  - name: pythonVersion
+    value: '3.12'
+  - name: packagePath
+    value: 'base'
+  - group: PyPI
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+  - stage: Test
+    displayName: 'Test'
+    jobs:
+      - job: TestPackage
+        displayName: 'Run tests'
+        steps:
+          - checkout: self
+            persistCredentials: true
+            fetchDepth: 0
+
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '$(pythonVersion)'
+              addToPath: true
+            displayName: 'Use Python $(pythonVersion)'
+
+          - script: |
+              python -m pip install --upgrade pip
+              pip install -e .
+              if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+              pip install pytest pytest-cov pytest-asyncio build twine semver
+            workingDirectory: '$(packagePath)'
+            displayName: 'Install dependencies'
+
+          - script: |
+              export PYTHONPATH="$(Build.SourcesDirectory)/custom/src"
+              python -m pytest --cov=agents.base --cov-report=xml --cov-report=html
+            displayName: 'Run tests with coverage'
+
+          - task: PublishPipelineArtifact@1
+            condition: and(succeeded(), exists('$(Build.SourcesDirectory)/coverage.xml'))
+            inputs:
+              targetPath: '$(Build.SourcesDirectory)/coverage.xml'
+              artifact: 'CodeCoverageXML'
+              publishLocation: 'pipeline'
+            displayName: 'Publish coverage XML'
+
+          - task: PublishPipelineArtifact@1
+            condition: and(succeeded(), exists('$(Build.SourcesDirectory)/htmlcov'))
+            inputs:
+              targetPath: '$(Build.SourcesDirectory)/htmlcov'
+              artifact: 'CodeCoverageHTML'
+              publishLocation: 'pipeline'
+            displayName: 'Publish coverage HTML report'
+
+  - stage: Build
+    displayName: 'Build Package'
+    dependsOn: Test
+    condition: succeeded()
+    jobs:
+      - job: BuildPackage
+        displayName: 'Build Python package'
+        steps:
+          - checkout: self
+            persistCredentials: true
+            fetchDepth: 0
+
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '$(pythonVersion)'
+              addToPath: true
+            displayName: 'Use Python $(pythonVersion)'
+
+          - script: |
+              python -m pip install --upgrade pip
+              pip install build twine semver
+            displayName: 'Install build tools'
+
+          - script: |
+              python -m build
+            workingDirectory: '$(packagePath)'
+            displayName: 'Build package'
+
+          - task: CopyFiles@2
+            inputs:
+              SourceFolder: '$(packagePath)/dist'
+              Contents: '*'
+              TargetFolder: '$(Build.ArtifactStagingDirectory)'
+            displayName: 'Copy package artifacts'
+
+          - publish: '$(Build.ArtifactStagingDirectory)'
+            artifact: 'base-dist'
+            displayName: 'Publish package artifacts'
+
+  - stage: Publish
+    displayName: 'Publish Package'
+    dependsOn: Build
+    condition: and(succeeded(), or(eq(variables['Build.SourceBranch'], 'refs/heads/master'), eq(variables['Build.SourceBranch'], 'refs/heads/pypi-master')))
+    jobs:
+      - job: PublishPackage
+        displayName: 'Publish to PyPI'
+        steps:
+          - checkout: self
+            persistCredentials: true
+            fetchDepth: 0
+
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '$(pythonVersion)'
+              addToPath: true
+            displayName: 'Use Python $(pythonVersion)'
+
+          - script: |
+              python -m pip install --upgrade pip
+              pip install build twine semver
+            displayName: 'Install publication tooling'
+
+          - script: |
+              git config user.email "ci-bot@bechtle.com"
+              git config user.name "CI Bot"
+              python scripts/bump_version.py
+            displayName: 'Bump version'
+
+          - script: |
+              rm -rf dist
+              python -m build
+            workingDirectory: '$(packagePath)'
+            displayName: 'Rebuild package for publish'
+
+          - script: |
+              python -m twine upload $(packagePath)/dist/* --username __token__ --password $(PyPIApiToken)
+            displayName: 'Upload package to PyPI'
+
+          - script: |
+              git push origin HEAD
+              git push origin --tags
+            displayName: 'Push version commit and tags'

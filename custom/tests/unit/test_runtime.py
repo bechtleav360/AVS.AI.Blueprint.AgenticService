@@ -1,60 +1,37 @@
-"""Generic unit tests for the agent runtime in `custom.src.agent.runtime`."""
+"""Async service tests for custom runtime-related utilities."""
 
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
-from base.src.config import Config
-from custom.src.agent.runtime import AgentRuntime
-from custom.src.models.processing import ProcessingContext
-from custom.src.models.results import CustomAgentOutput
+from custom.src.models.resource import InvoiceInput, InvoiceLineItem
+from custom.src.services import HealthCheckService, InvoiceProcessingLogic
 
 
-@pytest.fixture
-def mock_settings():
-    """Provides mock settings for the agent runtime."""
-    settings = MagicMock(spec=Config)
-    settings.get_ai_config.return_value = {
-        "provider": "openai",
-        "model_name": "gpt-4",
-        "api_key": "mock_key",
-    }
-    return settings
+@pytest.mark.asyncio
+async def test_health_check_service_returns_true():
+    service = HealthCheckService()
+    assert await service.check_health() is True
 
 
-class TestAgentRuntime:
-    """Tests for the placeholder AgentRuntime to ensure its structure is valid."""
+@pytest.mark.asyncio
+async def test_calculate_invoice_tool_returns_analysis():
+    invoice = InvoiceInput(
+        invoice_id="INV-42",
+        currency="EUR",
+        line_items=[
+            InvoiceLineItem(description="Consulting", quantity="5", unit_price="200", tax_rate="0.19"),
+            InvoiceLineItem(description="Support", quantity="2", unit_price="150", tax_rate="0.07"),
+        ],
+    )
 
-    def test_get_prompt_name_returns_string(self):
-        """Ensures the prompt name is a non-empty string."""
-        runtime = AgentRuntime.__new__(AgentRuntime)  # Create without calling __init__
-        prompt_name = runtime._get_prompt_name()
-        assert isinstance(prompt_name, str)
-        assert prompt_name == "system"  # Should not be empty
+    ctx = SimpleNamespace(
+        deps=SimpleNamespace(correlation_id=uuid4(), event_id=uuid4()),
+    )
 
-    def test_get_tools_returns_list(self):
-        """Ensures the tools are returned as a list."""
-        runtime = AgentRuntime.__new__(AgentRuntime)  # Create without calling __init__
-        tools = runtime._get_tools()
-        assert isinstance(tools, list)
-        assert len(tools) > 0  # Placeholder should have at least one tool
+    result = await InvoiceProcessingLogic.calculate_invoice_tool(ctx, invoice)
 
-    def test_get_processing_context_type_returns_type(self):
-        """Ensures a Pydantic model is returned for the context type."""
-        runtime = AgentRuntime.__new__(AgentRuntime)  # Create without calling __init__
-        context_type = runtime._get_processing_context_type()
-        assert context_type == ProcessingContext
-
-    def test_get_result_type_returns_type(self):
-        """Ensures a Pydantic model is returned for the result type."""
-        runtime = AgentRuntime.__new__(AgentRuntime)  # Create without calling __init__
-        result_type = runtime._get_result_type()
-        assert result_type == CustomAgentOutput
-
-    @pytest.mark.asyncio
-    async def test_custom_health_check_returns_bool(self):
-        """Ensures the placeholder health check returns a boolean."""
-        runtime = AgentRuntime.__new__(AgentRuntime)  # Create without calling __init__
-        health = await runtime.custom_health_check()
-        assert isinstance(health, bool)
-        assert health is True
+    assert result.invoice_id == "INV-42"
+    assert result.status in {"valid", "incomplete"}
+    assert result.metadata["context"]["correlation_id"] is not None

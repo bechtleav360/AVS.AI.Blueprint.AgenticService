@@ -1,66 +1,45 @@
-"""Generic unit tests for placeholder business logic in `custom.src.agent.logic`."""
+"""Unit tests for invoice processing domain logic."""
+
+from decimal import Decimal
 
 import pytest
 
-from custom.src.agent.logic import ProcessingLogic
+from custom.src.services import InvoiceProcessingLogic
 
 
 @pytest.fixture
-def sample_resource():
-    """Provide a sample resource dictionary for testing."""
+def sample_invoice():
     return {
-        "id": "test-resource-123",
-        "tags": {"environment": "production", "service-type": "database"},
-        "properties": {"is_serverless": False},
-        "attributes": {"encryption_enabled": False, "public_access": True},
+        "invoice_id": "INV-100",
+        "line_items": [
+            {"description": "Consulting", "quantity": "10", "unit_price": "150", "tax_rate": "0.19"},
+            {"description": "Software", "quantity": "1", "unit_price": "500", "tax_rate": "0.07"},
+        ],
+        "currency": "EUR",
     }
 
 
-@pytest.fixture
-def sample_analysis_result():
-    """Provide a sample analysis result for testing recommendations and risk."""
-    return {
-        "status": "non_compliant",
-        "confidence": 0.4,
-        "evidence": ["Encryption is disabled.", "Resource is publicly accessible."],
-        "classification": "database",
-    }
+def test_calculate_invoice_returns_expected_fields(sample_invoice):
+    result = InvoiceProcessingLogic.calculate_invoice(sample_invoice)
+
+    assert result["status"] == "valid"
+    assert Decimal(str(result["total_amount"])) > 0
+    assert "evidence" in result
+    assert result["confidence"] >= 0.7
 
 
-class TestProcessingLogic:
-    """Tests for the placeholder ProcessingLogic to ensure the flow is testable."""
+def test_calculate_invoice_handles_missing_items():
+    result = InvoiceProcessingLogic.calculate_invoice({"line_items": []})
 
-    def test_analyze_resource_runs_with_placeholder_logic(self, sample_resource):
-        """Ensures analyze_resource can be called and returns a structured dict."""
-        result = ProcessingLogic.analyze_resource(sample_resource)
+    assert result["status"] == "incomplete"
+    assert Decimal(str(result["total_amount"])) == Decimal("0")
+    assert "No line items provided" in result["evidence"]
 
-        assert isinstance(result, dict)
-        assert "status" in result
-        assert "confidence" in result
-        assert "evidence" in result
-        assert "classification" in result
-        assert result["classification"] == "database"
 
-    def test_generate_recommendations_produces_output(
-        self, sample_analysis_result, sample_resource
-    ):
-        """Ensures generate_recommendations runs and returns a list of strings."""
-        recommendations = ProcessingLogic.generate_recommendations(
-            sample_analysis_result, sample_resource
-        )
+def test_generate_recommendations_produces_guidance(sample_invoice):
+    calculation = InvoiceProcessingLogic.calculate_invoice(sample_invoice)
+    recommendations = InvoiceProcessingLogic.generate_recommendations(calculation, sample_invoice)
 
-        assert isinstance(recommendations, list)
-        assert len(recommendations) > 0
-        assert all(isinstance(rec, str) for rec in recommendations)
-        assert "Enable encryption" in recommendations[1]
+    assert isinstance(recommendations, list)
+    assert all(isinstance(rec, str) for rec in recommendations)
 
-    def test_assess_risk_returns_a_risk_level(
-        self, sample_analysis_result, sample_resource
-    ):
-        """Ensures assess_risk runs and returns a risk string."""
-        risk = ProcessingLogic.assess_risk(sample_analysis_result, sample_resource)
-
-        assert isinstance(risk, str)
-        assert risk in ["Low", "Medium", "High", "Critical"]
-        # Based on placeholder logic for a non-compliant prod resource
-        assert risk == "High"

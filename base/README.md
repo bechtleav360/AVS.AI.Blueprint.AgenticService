@@ -1,18 +1,32 @@
-# Base Framework
+# AVS Blueprint Agents Base Framework
 
 This directory contains the core framework components for the Agent Blueprint. These components provide the foundational functionality that should **NOT** be modified when implementing a new agent.
 
-## Structure
+## Installation
+
+Install the framework from PyPI:
+
+```bash
+pip install avs-blueprint-agents
+```
+
+## Module Layout
+
+The package is published under the namespace `agents.base`. When developing
+locally, the corresponding sources live under `base/src/` and mirror the same
+module layout:
 
 ```
-base/src/
-├── agent/          # Base agent runtime and framework
-├── api/            # Framework API components (actuators, deps)
-├── gateways/       # Data gateway clients
-├── models/         # Base domain models
-├── app.py          # FastAPI application factory
-├── config.py       # Configuration management
-└── telemetry.py    # Observability and tracing
+agents/base/
+├── agent/          # Base agent runtime and framework components
+├── api/            # REST layer (actuators, dependencies, REST base class)
+├── gateways/       # Shared gateway clients
+├── models/         # Core domain/value models
+├── services/       # Application services (processing, health, publishing)
+├── registry/       # Component and service registries
+├── app_builder.py  # FastAPI application builder
+├── config/         # Configuration helpers (Dynaconf integration, logging)
+└── telemetry.py    # Observability helpers
 ```
 
 ## Key Components
@@ -28,7 +42,14 @@ base/src/
 
 ## Usage
 
-This framework is designed to be imported by agent implementations in the `agent/` directory. The framework provides the infrastructure while the agent implementation provides the business logic.
+This framework is designed to be imported by agent implementations. The framework provides the infrastructure while the agent implementation provides the business logic.
+
+Example imports:
+
+```python
+from agents.base.api.rest import RestApi
+from agents.base.agent.agent_builder import AgentBuilder
+```
 
 ## Modification Policy
 
