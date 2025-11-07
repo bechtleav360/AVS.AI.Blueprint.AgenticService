@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from base.src.config import Config
-from base.src.models.api import ComponentHealth
 from base.src.services.health_check_service import (AIProviderHealthChecker,
                                                     DaprPubSubHealthChecker)
 
@@ -122,6 +121,10 @@ class TestDaprPubSubHealthChecker:
             "dapr_http_port": 3500,
             "rabbitmq_host": "localhost:5672",
         }.get(key, default)
+        config.get_event_publishing_config.return_value = {
+            "default_pubsub_name": "rabbitmq-pubsub",
+            "topic_mapping": {"agent.output.test": "test-topic"},
+        }
         return config
 
     @pytest.mark.asyncio

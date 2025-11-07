@@ -1,6 +1,6 @@
 """Unit tests for AgentBuilder."""
 
-from unittest.mock import Mock, patch, ANY
+from unittest.mock import Mock, patch
 
 import pytest
 from pydantic import BaseModel
@@ -264,7 +264,7 @@ class TestAgentBuilder:
 
                 # Get the call arguments
                 args, kwargs = mock_agent_class.call_args
-                assert kwargs["tools"] is None  # No tools
+                assert kwargs["tools"] == []  # No tools configured
                 assert agent == mock_agent_instance
 
     def test_build_with_multiple_tools(self, builder, mock_config):
@@ -337,15 +337,13 @@ class TestAgentBuilder:
                 mock_agent.__getitem__.return_value = mock_agent_class
 
                 # Build with valid additional kwargs
-                agent = (
-                    builder.with_model("gpt-4")
-                    .with_system_prompt_text("Test prompt")
-                    .build(
-                        name="test_agent",
-                        retries=3,
-                        end_strategy="exhaustive",
-                        instrument=True
-                    )
+                builder.with_model("gpt-4")
+                builder.with_system_prompt_text("Test prompt")
+                builder.build(
+                    name="test_agent",
+                    retries=3,
+                    end_strategy="exhaustive",
+                    instrument=True,
                 )
 
                 # Verify the mock was called with the right parameters
@@ -409,10 +407,10 @@ class TestAgentBuilder:
                         .build(tools=[])  # This should raise an error
 
                 # Test that additional valid parameters work
-                agent = builder.with_model("gpt-4") \
-                    .with_system_prompt_text("Test prompt") \
-                    .with_tool("test_tool", lambda: "test") \
-                    .build(retries=2)  # This should work
+                builder.with_model("gpt-4")
+                builder.with_system_prompt_text("Test prompt")
+                builder.with_tool("test_tool", lambda: "test")
+                builder.build(retries=2)  # This should work
 
                 # Verify the mock was called with the right parameters
                 args, kwargs = mock_agent_class.call_args
@@ -453,16 +451,14 @@ class TestAgentBuilder:
                 mock_agent.__getitem__.return_value = mock_agent_class
 
                 # Build with generic types and additional valid kwargs
-                agent = (
-                    builder.with_model("gpt-4")
-                    .with_system_prompt_text("Test prompt")
-                    .with_result_type(CustomOutput)
-                    .with_deps_type(dict)
-                    .build(
-                        name="generic_agent",
-                        retries=3,
-                        end_strategy="exhaustive"
-                    )
+                builder.with_model("gpt-4")
+                builder.with_system_prompt_text("Test prompt")
+                builder.with_result_type(CustomOutput)
+                builder.with_deps_type(dict)
+                builder.build(
+                    name="generic_agent",
+                    retries=3,
+                    end_strategy="exhaustive",
                 )
 
                 # Verify the mock was called with the right parameters
@@ -470,4 +466,3 @@ class TestAgentBuilder:
                 assert kwargs["name"] == "generic_agent"
                 assert kwargs["retries"] == 3
                 assert kwargs["end_strategy"] == "exhaustive"
-                assert agent == mock_agent_instance

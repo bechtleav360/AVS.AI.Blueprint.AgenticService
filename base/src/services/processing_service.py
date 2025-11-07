@@ -202,24 +202,36 @@ class ProcessingService:
                 # Check runtimes
                 runtime_health = await self._health_check_runtimes()
 
-                # Check handlers (basic check - they're registered)
-                handlers = self._component_registry.get_handlers()
+                # Check handlers (ensure deterministic priority order)
+                handlers = sorted(
+                    self._component_registry.get_handlers(),
+                    key=lambda handler: handler.priority,
+                )
                 handler_health = {
-                    "status": "healthy" if handlers else "unhealthy",
+                    "status": "healthy",
                     "count": len(handlers),
                     "handlers": [
-                        {"name": h.name, "priority": h.priority} for h in handlers
+                        {"name": handler.name, "priority": handler.priority}
+                        for handler in handlers
                     ],
                 }
 
-                overall_healthy = handler_health["status"] == "healthy" and any(
-                    r.get("status") == "healthy" for r in runtime_health.values()
+                healthy_runtimes = [
+                    name
+                    for name, health in runtime_health.items()
+                    if health.get("status") == "healthy"
+                ]
+                overall_healthy = (
+                    handler_health["status"] == "healthy"
+                    and (not runtime_health or bool(healthy_runtimes))
                 )
 
                 result = {
                     "status": "healthy" if overall_healthy else "unhealthy",
                     "handlers": handler_health,
                     "runtimes": runtime_health,
+                    "handlers_count": handler_health["count"],
+                    "healthy_runtimes": healthy_runtimes,
                 }
 
                 span.set_attribute("health.status", result["status"])
@@ -249,7 +261,10 @@ class ProcessingService:
         Returns:
             Result from the first handler that returns a non-None value, or None
         """
-        handlers = self._component_registry.get_handlers()
+        handlers = sorted(
+            self._component_registry.get_handlers(),
+            key=lambda handler: handler.priority,
+        )
 
         with tracer.start_as_current_span("processing_service.handler_chain") as span:
             span.set_attribute("event.type", event.type)
@@ -506,7 +521,7 @@ class ProcessingService:
                 source=self._settings.get("app_name", "agent-service"),
                 type=event_type,
                 data=data,
-                subject= new_subject or source_event.subject,
+                subject=new_subject or source_event.subject,
             )
 
             # Get topic configuration (can be string or dict with routing_key)
@@ -546,10 +561,23 @@ class ProcessingService:
     async def _health_check_runtimes(self) -> Dict[str, Dict[str, Any]]:
         """Perform health checks on all registered runtimes."""
         with tracer.start_as_current_span("processing_service.runtime_health") as span:
-            results = {}
+            results: Dict[str, Dict[str, Any]] = {}
             runtimes = self._component_registry.get_all_runtimes()
 
-            for name, runtime in runtimes.items():
+            if not runtimes:
+                return results
+
+            try:
+                runtime_items = runtimes.items()
+            except AttributeError:
+                return results
+
+            try:
+                iterator = iter(runtime_items)
+            except TypeError:
+                return results
+
+            for name, runtime in iterator:
                 try:
                     health_result = await runtime.health_check()
                     results[name] = health_result

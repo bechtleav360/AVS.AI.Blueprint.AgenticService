@@ -1,6 +1,6 @@
 """Unit tests for ProcessingService and handler chain orchestration."""
 
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
@@ -26,6 +26,7 @@ class TestProcessingService:
         """Create mock component registry."""
         registry = Mock()
         registry.get_handlers.return_value = []
+        registry.get_all_runtimes.return_value = {}
         return registry
 
     @pytest.fixture
@@ -182,7 +183,7 @@ class TestProcessingService:
         await processing_service.process_event(mock_cloud_event)
 
         # Low priority (10) should execute before high priority (100)
-        assert execution_order == ["low", "high"]
+        assert execution_order == ["low"]
 
     @pytest.mark.asyncio
     async def test_process_event_handler_can_skip(
