@@ -42,14 +42,14 @@ stages:
             displayName: "Install dependencies"
 
           - script: |
-              export PYTHONPATH="$(Build.SourcesDirectory)/custom/src:$(Build.SourcesDirectory)/base/src"
               python -m pytest --cov=agents.base --cov-report=xml --cov-report=html
+            workingDirectory: "$(packagePath)"
             displayName: "Run tests with coverage"
 
           - task: PublishPipelineArtifact@1
             condition: succeeded()
             inputs:
-              targetPath: "$(Build.SourcesDirectory)/coverage.xml"
+              targetPath: "$(Build.SourcesDirectory)/$(packagePath)/coverage.xml"
               artifact: "CodeCoverageXML"
               publishLocation: "pipeline"
             displayName: "Publish coverage XML"
@@ -57,7 +57,7 @@ stages:
           - task: PublishPipelineArtifact@1
             condition: succeeded()
             inputs:
-              targetPath: "$(Build.SourcesDirectory)/htmlcov"
+              targetPath: "$(Build.SourcesDirectory)/$(packagePath)/htmlcov"
               artifact: "CodeCoverageHTML"
               publishLocation: "pipeline"
             displayName: "Publish coverage HTML report"
