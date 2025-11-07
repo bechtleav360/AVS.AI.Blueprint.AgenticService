@@ -145,7 +145,7 @@ stages:
           - script: |
               python -m pip install --upgrade pip
               pip install twine
-              python -m twine upload -r PyPi-Local --config-file $(PYPIRC_PATH) $(Pipeline.Workspace)/dist/*
+              python -m twine upload -r PyPi-Local --config-file $(PYPIRC_PATH) $(Build.SourcesDirectory)/$(packagePath)/dist/*
             displayName: "Upload package to Azure Artifacts"
 
           - script: |
