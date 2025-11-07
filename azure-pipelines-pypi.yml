@@ -10,20 +10,19 @@ trigger:
 
 variables:
   - name: pythonVersion
-    value: '3.12'
+    value: "3.13"
   - name: packagePath
-    value: 'base'
-  - group: PyPI
+    value: "base"
 
 pool:
-  vmImage: 'ubuntu-latest'
+  vmImage: "ubuntu-latest"
 
 stages:
   - stage: Test
-    displayName: 'Test'
+    displayName: "Test"
     jobs:
       - job: TestPackage
-        displayName: 'Run tests'
+        displayName: "Run tests"
         steps:
           - checkout: self
             persistCredentials: true
@@ -31,46 +30,45 @@ stages:
 
           - task: UsePythonVersion@0
             inputs:
-              versionSpec: '$(pythonVersion)'
+              versionSpec: "$(pythonVersion)"
               addToPath: true
-            displayName: 'Use Python $(pythonVersion)'
+            displayName: "Use Python $(pythonVersion)"
 
           - script: |
               python -m pip install --upgrade pip
-              pip install -e .
-              if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
-              pip install pytest pytest-cov pytest-asyncio build twine semver
-            workingDirectory: '$(packagePath)'
-            displayName: 'Install dependencies'
+              pip install -e ".[dev]"
+              pip install pytest-cov
+            workingDirectory: "$(packagePath)"
+            displayName: "Install dependencies"
 
           - script: |
-              export PYTHONPATH="$(Build.SourcesDirectory)/custom/src"
+              export PYTHONPATH="$(Build.SourcesDirectory)/custom/src:$(Build.SourcesDirectory)/base/src"
               python -m pytest --cov=agents.base --cov-report=xml --cov-report=html
-            displayName: 'Run tests with coverage'
+            displayName: "Run tests with coverage"
 
           - task: PublishPipelineArtifact@1
-            condition: and(succeeded(), exists('$(Build.SourcesDirectory)/coverage.xml'))
+            condition: succeeded()
             inputs:
-              targetPath: '$(Build.SourcesDirectory)/coverage.xml'
-              artifact: 'CodeCoverageXML'
-              publishLocation: 'pipeline'
-            displayName: 'Publish coverage XML'
+              targetPath: "$(Build.SourcesDirectory)/coverage.xml"
+              artifact: "CodeCoverageXML"
+              publishLocation: "pipeline"
+            displayName: "Publish coverage XML"
 
           - task: PublishPipelineArtifact@1
-            condition: and(succeeded(), exists('$(Build.SourcesDirectory)/htmlcov'))
+            condition: succeeded()
             inputs:
-              targetPath: '$(Build.SourcesDirectory)/htmlcov'
-              artifact: 'CodeCoverageHTML'
-              publishLocation: 'pipeline'
-            displayName: 'Publish coverage HTML report'
+              targetPath: "$(Build.SourcesDirectory)/htmlcov"
+              artifact: "CodeCoverageHTML"
+              publishLocation: "pipeline"
+            displayName: "Publish coverage HTML report"
 
   - stage: Build
-    displayName: 'Build Package'
+    displayName: "Build Package"
     dependsOn: Test
     condition: succeeded()
     jobs:
       - job: BuildPackage
-        displayName: 'Build Python package'
+        displayName: "Build Python package"
         steps:
           - checkout: self
             persistCredentials: true
@@ -78,38 +76,39 @@ stages:
 
           - task: UsePythonVersion@0
             inputs:
-              versionSpec: '$(pythonVersion)'
+              versionSpec: "$(pythonVersion)"
               addToPath: true
-            displayName: 'Use Python $(pythonVersion)'
+            displayName: "Use Python $(pythonVersion)"
 
           - script: |
               python -m pip install --upgrade pip
-              pip install build twine semver
-            displayName: 'Install build tools'
+              pip install -e ".[dev]"
+            workingDirectory: "$(packagePath)"
+            displayName: "Install build dependencies"
 
           - script: |
               python -m build
-            workingDirectory: '$(packagePath)'
-            displayName: 'Build package'
+            workingDirectory: "$(packagePath)"
+            displayName: "Build package"
 
           - task: CopyFiles@2
             inputs:
-              SourceFolder: '$(packagePath)/dist'
-              Contents: '*'
-              TargetFolder: '$(Build.ArtifactStagingDirectory)'
-            displayName: 'Copy package artifacts'
+              SourceFolder: "$(packagePath)/dist"
+              Contents: "*"
+              TargetFolder: "$(Build.ArtifactStagingDirectory)"
+            displayName: "Copy package artifacts"
 
-          - publish: '$(Build.ArtifactStagingDirectory)'
-            artifact: 'base-dist'
-            displayName: 'Publish package artifacts'
+          - publish: "$(Build.ArtifactStagingDirectory)"
+            artifact: "base-dist"
+            displayName: "Publish package artifacts"
 
   - stage: Publish
-    displayName: 'Publish Package'
+    displayName: "Publish Package"
     dependsOn: Build
     condition: and(succeeded(), or(eq(variables['Build.SourceBranch'], 'refs/heads/master'), eq(variables['Build.SourceBranch'], 'refs/heads/pypi-master')))
     jobs:
       - job: PublishPackage
-        displayName: 'Publish to PyPI'
+        displayName: "Publish to PyPI"
         steps:
           - checkout: self
             persistCredentials: true
@@ -117,32 +116,39 @@ stages:
 
           - task: UsePythonVersion@0
             inputs:
-              versionSpec: '$(pythonVersion)'
+              versionSpec: "$(pythonVersion)"
               addToPath: true
-            displayName: 'Use Python $(pythonVersion)'
+            displayName: "Use Python $(pythonVersion)"
 
           - script: |
               python -m pip install --upgrade pip
-              pip install build twine semver
-            displayName: 'Install publication tooling'
+              pip install -e ".[dev]"
+            workingDirectory: "$(packagePath)"
+            displayName: "Install publication tooling"
 
           - script: |
               git config user.email "ci-bot@bechtle.com"
               git config user.name "CI Bot"
               python scripts/bump_version.py
-            displayName: 'Bump version'
+            displayName: "Bump version"
 
           - script: |
               rm -rf dist
               python -m build
-            workingDirectory: '$(packagePath)'
-            displayName: 'Rebuild package for publish'
+            workingDirectory: "$(packagePath)"
+            displayName: "Rebuild package for publish"
+          - task: TwineAuthenticate@1
+            inputs:
+              artifactFeed: PyPi-Local
+            displayName: "Authenticate with Azure Artifacts"
 
           - script: |
-              python -m twine upload $(packagePath)/dist/* --username __token__ --password $(PyPIApiToken)
-            displayName: 'Upload package to PyPI'
+              python -m pip install --upgrade pip
+              pip install twine
+              python -m twine upload -r PyPi-Local --config-file $(PYPIRC_PATH) $(Pipeline.Workspace)/dist/*
+            displayName: "Upload package to Azure Artifacts"
 
           - script: |
               git push origin HEAD
               git push origin --tags
-            displayName: 'Push version commit and tags'
+            displayName: "Push version commit and tags"
