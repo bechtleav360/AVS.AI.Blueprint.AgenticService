@@ -1,6 +1,6 @@
 """Unit tests for ProcessingService and handler chain orchestration."""
 
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
 
 import pytest
@@ -26,7 +26,6 @@ class TestProcessingService:
         """Create mock component registry."""
         registry = Mock()
         registry.get_handlers.return_value = []
-        registry.get_all_runtimes.return_value = {}
         return registry
 
     @pytest.fixture
@@ -46,9 +45,7 @@ class TestProcessingService:
         )
 
     @pytest.mark.asyncio
-    async def test_process_event_with_no_handlers(
-        self, processing_service, mock_cloud_event, mock_component_registry
-    ):
+    async def test_process_event_with_no_handlers(self, processing_service, mock_cloud_event, mock_component_registry):
         """Test processing event when no handlers are registered."""
         mock_component_registry.get_handlers.return_value = []
 
@@ -59,9 +56,7 @@ class TestProcessingService:
         assert result.data["result"] is None
 
     @pytest.mark.asyncio
-    async def test_process_event_with_handler_that_processes(
-        self, processing_service, mock_cloud_event, mock_component_registry
-    ):
+    async def test_process_event_with_handler_that_processes(self, processing_service, mock_cloud_event, mock_component_registry):
         """Test processing event with handler that returns result."""
 
         class TestHandler(EventHandler):
@@ -81,9 +76,7 @@ class TestProcessingService:
         assert result.data["result"]["processed"] is True
 
     @pytest.mark.asyncio
-    async def test_process_event_chain_stops_at_first_result(
-        self, processing_service, mock_cloud_event, mock_component_registry
-    ):
+    async def test_process_event_chain_stops_at_first_result(self, processing_service, mock_cloud_event, mock_component_registry):
         """Test handler chain stops at first handler that returns result."""
         handler2_called = False
 
@@ -114,9 +107,7 @@ class TestProcessingService:
         assert not handler2_called  # Handler2 should not be called
 
     @pytest.mark.asyncio
-    async def test_process_event_chain_continues_on_none(
-        self, processing_service, mock_cloud_event, mock_component_registry
-    ):
+    async def test_process_event_chain_continues_on_none(self, processing_service, mock_cloud_event, mock_component_registry):
         """Test handler chain continues when handler returns None."""
         handler1_called = False
         handler2_called = False
@@ -152,9 +143,7 @@ class TestProcessingService:
         assert result.data["result"]["processed_by"] == "Handler2"
 
     @pytest.mark.asyncio
-    async def test_process_event_respects_handler_priority(
-        self, processing_service, mock_cloud_event, mock_component_registry
-    ):
+    async def test_process_event_respects_handler_priority(self, processing_service, mock_cloud_event, mock_component_registry):
         """Test handlers are executed in priority order."""
         execution_order = []
 
@@ -183,12 +172,10 @@ class TestProcessingService:
         await processing_service.process_event(mock_cloud_event)
 
         # Low priority (10) should execute before high priority (100)
-        assert execution_order == ["low"]
+        assert execution_order == ["low", "high"]
 
     @pytest.mark.asyncio
-    async def test_process_event_handler_can_skip(
-        self, processing_service, mock_cloud_event, mock_component_registry
-    ):
+    async def test_process_event_handler_can_skip(self, processing_service, mock_cloud_event, mock_component_registry):
         """Test handler can skip processing based on can_handle_event."""
         handler1_called = False
         handler2_called = False
@@ -223,9 +210,7 @@ class TestProcessingService:
         assert result.data["result"]["processed"] is True
 
     @pytest.mark.asyncio
-    async def test_process_event_context_shared_between_handlers(
-        self, processing_service, mock_cloud_event, mock_component_registry
-    ):
+    async def test_process_event_context_shared_between_handlers(self, processing_service, mock_cloud_event, mock_component_registry):
         """Test context is shared and accumulated across handlers."""
 
         class EnrichmentHandler(EventHandler):
@@ -259,9 +244,7 @@ class TestProcessingService:
         assert result.data["result"]["data"] == "test_data"
 
     @pytest.mark.asyncio
-    async def test_process_event_handler_exception_propagates(
-        self, processing_service, mock_cloud_event, mock_component_registry
-    ):
+    async def test_process_event_handler_exception_propagates(self, processing_service, mock_cloud_event, mock_component_registry):
         """Test exception in handler propagates correctly."""
 
         class FailingHandler(EventHandler):
@@ -278,9 +261,7 @@ class TestProcessingService:
             await processing_service.process_event(mock_cloud_event)
 
     @pytest.mark.asyncio
-    async def test_process_event_adds_request_id(
-        self, processing_service, mock_cloud_event, mock_component_registry
-    ):
+    async def test_process_event_adds_request_id(self, processing_service, mock_cloud_event, mock_component_registry):
         """Test process_event adds request_id to result."""
         mock_component_registry.get_handlers.return_value = []
 
@@ -290,23 +271,17 @@ class TestProcessingService:
         assert result.data["request_id"] is not None
 
     @pytest.mark.asyncio
-    async def test_process_event_with_runtime_name_parameter(
-        self, processing_service, mock_cloud_event, mock_component_registry
-    ):
+    async def test_process_event_with_runtime_name_parameter(self, processing_service, mock_cloud_event, mock_component_registry):
         """Test process_event accepts runtime_name parameter (for compatibility)."""
         mock_component_registry.get_handlers.return_value = []
 
         # Should not raise error even with runtime_name
-        result = await processing_service.process_event(
-            mock_cloud_event, runtime_name="test_runtime"
-        )
+        result = await processing_service.process_event(mock_cloud_event, runtime_name="test_runtime")
 
         assert result is not None
 
     @pytest.mark.asyncio
-    async def test_health_check_returns_healthy(
-        self, processing_service, mock_component_registry
-    ):
+    async def test_health_check_returns_healthy(self, processing_service, mock_component_registry):
         """Test health check returns healthy status."""
         mock_component_registry.get_handlers.return_value = []
 
@@ -316,9 +291,7 @@ class TestProcessingService:
         assert "handlers_count" in result
 
     @pytest.mark.asyncio
-    async def test_health_check_includes_handler_count(
-        self, processing_service, mock_component_registry
-    ):
+    async def test_health_check_includes_handler_count(self, processing_service, mock_component_registry):
         """Test health check includes number of registered handlers."""
 
         class DummyHandler(EventHandler):
@@ -339,9 +312,7 @@ class TestProcessingService:
         assert result["handlers_count"] == 2
 
     @pytest.mark.asyncio
-    async def test_process_event_creates_output_event(
-        self, processing_service, mock_cloud_event, mock_component_registry
-    ):
+    async def test_process_event_creates_output_event(self, processing_service, mock_cloud_event, mock_component_registry):
         """Test process_event creates proper output CloudEvent."""
 
         class TestHandler(EventHandler):

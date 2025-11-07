@@ -37,7 +37,7 @@ class ProcessingService:
         event: CloudEvent,
         context: Optional[Dict[str, Any]] = None,
         runtime_name: Optional[str] = None,
-        new_subject: Optional[str] = None
+        new_subject: Optional[str] = None,
     ) -> CloudEvent:
         """
         Process a CloudEvent through the handler chain and optionally through an agent runtime.
@@ -89,9 +89,7 @@ class ProcessingService:
 
                 if handler_result is not None:
                     # Check if it's a Pydantic model with event_type attribute
-                    if hasattr(handler_result, "event_type") and hasattr(
-                        handler_result, "data"
-                    ):
+                    if hasattr(handler_result, "event_type") and hasattr(handler_result, "data"):
                         event_type_to_publish = handler_result.event_type
                         result_data_dict = handler_result.data
                         if hasattr(handler_result, "metadata"):
@@ -101,9 +99,7 @@ class ProcessingService:
                         result_data_dict = handler_result
 
                 # Prepare result data
-                status = (
-                    "processed" if handler_result is not None else "no_handler_found"
-                )
+                status = "processed" if handler_result is not None else "no_handler_found"
 
                 result_data = {
                     "request_id": request_id,
@@ -133,7 +129,7 @@ class ProcessingService:
                         data=result_data_dict,
                         metadata=result_metadata,
                         source_event=event,
-                        new_subject=new_subject
+                        new_subject=new_subject,
                     )
 
                 # Create result CloudEvent
@@ -202,36 +198,22 @@ class ProcessingService:
                 # Check runtimes
                 runtime_health = await self._health_check_runtimes()
 
-                # Check handlers (ensure deterministic priority order)
-                handlers = sorted(
-                    self._component_registry.get_handlers(),
-                    key=lambda handler: handler.priority,
-                )
+                # Check handlers (basic check - they're registered)
+                handlers = self._component_registry.get_handlers()
                 handler_health = {
-                    "status": "healthy",
+                    "status": "healthy" if handlers else "unhealthy",
                     "count": len(handlers),
-                    "handlers": [
-                        {"name": handler.name, "priority": handler.priority}
-                        for handler in handlers
-                    ],
+                    "handlers": [{"name": h.name, "priority": h.priority} for h in handlers],
                 }
 
-                healthy_runtimes = [
-                    name
-                    for name, health in runtime_health.items()
-                    if health.get("status") == "healthy"
-                ]
-                overall_healthy = (
-                    handler_health["status"] == "healthy"
-                    and (not runtime_health or bool(healthy_runtimes))
+                overall_healthy = handler_health["status"] == "healthy" and any(
+                    r.get("status") == "healthy" for r in runtime_health.values()
                 )
 
                 result = {
                     "status": "healthy" if overall_healthy else "unhealthy",
                     "handlers": handler_health,
                     "runtimes": runtime_health,
-                    "handlers_count": handler_health["count"],
-                    "healthy_runtimes": healthy_runtimes,
                 }
 
                 span.set_attribute("health.status", result["status"])
@@ -249,9 +231,7 @@ class ProcessingService:
     # Private Helper Methods (Business Logic)
     # ========================================================================
 
-    async def _process_through_handlers(
-        self, event: CloudEvent, context: Dict[str, Any]
-    ) -> Optional[Any]:
+    async def _process_through_handlers(self, event: CloudEvent, context: Dict[str, Any]) -> Optional[Any]:
         """
         Process an event through all registered handlers in priority order.
 
@@ -261,10 +241,7 @@ class ProcessingService:
         Returns:
             Result from the first handler that returns a non-None value, or None
         """
-        handlers = sorted(
-            self._component_registry.get_handlers(),
-            key=lambda handler: handler.priority,
-        )
+        handlers = self._component_registry.get_handlers()
 
         with tracer.start_as_current_span("processing_service.handler_chain") as span:
             span.set_attribute("event.type", event.type)
@@ -353,9 +330,7 @@ class ProcessingService:
             )
             return None
 
-    async def _process_with_runtime(
-        self, runtime_name: Optional[str] = None, context: Any = None, **kwargs
-    ) -> Any:
+    async def _process_with_runtime(self, runtime_name: Optional[str] = None, context: Any = None, **kwargs) -> Any:
         """
         Process a request using the specified runtime or default runtime.
 
@@ -370,9 +345,7 @@ class ProcessingService:
         Raises:
             ValueError: If no runtime is available or runtime not found
         """
-        with tracer.start_as_current_span(
-            "processing_service.runtime_execution"
-        ) as span:
+        with tracer.start_as_current_span("processing_service.runtime_execution") as span:
             runtime = self._component_registry.get_runtime(runtime_name)
 
             if runtime is None:
@@ -381,9 +354,7 @@ class ProcessingService:
                 span.set_status(trace.Status(trace.StatusCode.ERROR, error_msg))
                 raise ValueError(error_msg)
 
-            actual_name = (
-                runtime_name or self._component_registry.get_default_runtime_name()
-            )
+            actual_name = runtime_name or self._component_registry.get_default_runtime_name()
             span.set_attribute("runtime.name", actual_name)
 
             logger.info(
@@ -431,9 +402,7 @@ class ProcessingService:
             # Get event publishing service
             publishing_service = self._component_registry.get_event_publishing_service()
             if not publishing_service:
-                logger.debug(
-                    "No event publishing service registered, skipping publication"
-                )
+                logger.debug("No event publishing service registered, skipping publication")
                 return
 
             # Check if there's a topic mapping for this event type
@@ -474,12 +443,7 @@ class ProcessingService:
             )
 
     async def _publish_handler_event(
-        self,
-        event_type: str,
-        data: Any,
-        metadata: Dict[str, Any],
-        source_event: CloudEvent,
-        new_subject: Optional[str] = None
+        self, event_type: str, data: Any, metadata: Dict[str, Any], source_event: CloudEvent, new_subject: Optional[str] = None
     ) -> None:
         """
         Publish an event from a handler result.
@@ -498,9 +462,7 @@ class ProcessingService:
             # Get event publishing service
             publishing_service = self._component_registry.get_event_publishing_service()
             if not publishing_service:
-                logger.debug(
-                    "No event publishing service registered, skipping handler event publication"
-                )
+                logger.debug("No event publishing service registered, skipping handler event publication")
                 return
 
             # Check if there's a topic mapping for this event type
@@ -561,23 +523,10 @@ class ProcessingService:
     async def _health_check_runtimes(self) -> Dict[str, Dict[str, Any]]:
         """Perform health checks on all registered runtimes."""
         with tracer.start_as_current_span("processing_service.runtime_health") as span:
-            results: Dict[str, Dict[str, Any]] = {}
+            results = {}
             runtimes = self._component_registry.get_all_runtimes()
 
-            if not runtimes:
-                return results
-
-            try:
-                runtime_items = runtimes.items()
-            except AttributeError:
-                return results
-
-            try:
-                iterator = iter(runtime_items)
-            except TypeError:
-                return results
-
-            for name, runtime in iterator:
+            for name, runtime in runtimes.items():
                 try:
                     health_result = await runtime.health_check()
                     results[name] = health_result

@@ -42,7 +42,7 @@
         "**/*.egg-info": true,
         "**/.pytest_cache": true,
         "**/.mypy_cache": true,
-        "**/.venv": true,
+        "**/.venv": false,
         "**/.ruff_cache": true
     },
     "[python]": {

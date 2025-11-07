@@ -5,8 +5,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from base.src.config import Config
-from base.src.services.health_check_service import (AIProviderHealthChecker,
-                                                    DaprPubSubHealthChecker)
+from base.src.models.api import ComponentHealth
+from base.src.services.health_check_service import AIProviderHealthChecker, DaprPubSubHealthChecker
 
 
 class TestAIProviderHealthChecker:
@@ -55,9 +55,7 @@ class TestAIProviderHealthChecker:
         with patch("httpx.AsyncClient") as mock_client:
             mock_response = AsyncMock()
             mock_response.raise_for_status = MagicMock()
-            mock_client.return_value.__aenter__.return_value.get.return_value = (
-                mock_response
-            )
+            mock_client.return_value.__aenter__.return_value.get.return_value = mock_response
 
             result = await checker.health_check()
 
@@ -121,10 +119,6 @@ class TestDaprPubSubHealthChecker:
             "dapr_http_port": 3500,
             "rabbitmq_host": "localhost:5672",
         }.get(key, default)
-        config.get_event_publishing_config.return_value = {
-            "default_pubsub_name": "rabbitmq-pubsub",
-            "topic_mapping": {"agent.output.test": "test-topic"},
-        }
         return config
 
     @pytest.mark.asyncio
@@ -167,9 +161,7 @@ class TestDaprPubSubHealthChecker:
         with patch("httpx.AsyncClient") as mock_client:
             import httpx
 
-            mock_client.return_value.__aenter__.return_value.get.side_effect = (
-                httpx.RequestError("Connection refused")
-            )
+            mock_client.return_value.__aenter__.return_value.get.side_effect = httpx.RequestError("Connection refused")
 
             result = await checker.health_check()
 
@@ -192,9 +184,7 @@ class TestDaprPubSubHealthChecker:
             mock_metadata_response.json = MagicMock(return_value={"components": []})
 
             mock_client_instance = mock_client.return_value.__aenter__.return_value
-            mock_client_instance.get = AsyncMock(
-                side_effect=[mock_health_response, mock_metadata_response]
-            )
+            mock_client_instance.get = AsyncMock(side_effect=[mock_health_response, mock_metadata_response])
 
             result = await checker.health_check()
 
@@ -214,22 +204,14 @@ class TestDaprPubSubHealthChecker:
             # Mock metadata response with pubsub component
             mock_metadata_response = MagicMock()
             mock_metadata_response.raise_for_status = MagicMock()
-            mock_metadata_response.json = MagicMock(
-                return_value={
-                    "components": [
-                        {"name": "rabbitmq-pubsub", "type": "pubsub.rabbitmq"}
-                    ]
-                }
-            )
+            mock_metadata_response.json = MagicMock(return_value={"components": [{"name": "rabbitmq-pubsub", "type": "pubsub.rabbitmq"}]})
 
             # Mock publish success
             mock_publish_response = MagicMock()
             mock_publish_response.raise_for_status = MagicMock()
 
             mock_client_instance = mock_client.return_value.__aenter__.return_value
-            mock_client_instance.get = AsyncMock(
-                side_effect=[mock_health_response, mock_metadata_response]
-            )
+            mock_client_instance.get = AsyncMock(side_effect=[mock_health_response, mock_metadata_response])
             mock_client_instance.post = AsyncMock(return_value=mock_publish_response)
 
             result = await checker.health_check()
@@ -253,21 +235,11 @@ class TestDaprPubSubHealthChecker:
             # Mock metadata response with pubsub component
             mock_metadata_response = MagicMock()
             mock_metadata_response.raise_for_status = MagicMock()
-            mock_metadata_response.json = MagicMock(
-                return_value={
-                    "components": [
-                        {"name": "rabbitmq-pubsub", "type": "pubsub.rabbitmq"}
-                    ]
-                }
-            )
+            mock_metadata_response.json = MagicMock(return_value={"components": [{"name": "rabbitmq-pubsub", "type": "pubsub.rabbitmq"}]})
 
             mock_client_instance = mock_client.return_value.__aenter__.return_value
-            mock_client_instance.get = AsyncMock(
-                side_effect=[mock_health_response, mock_metadata_response]
-            )
-            mock_client_instance.post = AsyncMock(
-                side_effect=httpx.RequestError("Publish failed")
-            )
+            mock_client_instance.get = AsyncMock(side_effect=[mock_health_response, mock_metadata_response])
+            mock_client_instance.post = AsyncMock(side_effect=httpx.RequestError("Publish failed"))
 
             result = await checker.health_check()
 

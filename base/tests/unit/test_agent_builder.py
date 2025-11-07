@@ -1,6 +1,6 @@
 """Unit tests for AgentBuilder."""
 
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, patch, ANY
 
 import pytest
 from pydantic import BaseModel
@@ -44,9 +44,7 @@ class TestAgentBuilder:
 
     def test_with_model_sets_model_name(self, builder, mock_config):
         """Test with_model configures model with specific name."""
-        with patch(
-            "base.src.agent.agent_builder.ModelProviderFactory.create_model"
-        ) as mock_create:
+        with patch("base.src.agent.agent_builder.ModelProviderFactory.create_model") as mock_create:
             mock_model = Mock()
             mock_create.return_value = mock_model
 
@@ -58,9 +56,7 @@ class TestAgentBuilder:
 
     def test_with_model_from_config_uses_runtime_config(self, builder, mock_config):
         """Test with_model_from_config loads model from configuration."""
-        with patch(
-            "base.src.agent.agent_builder.ModelProviderFactory.create_model"
-        ) as mock_create:
+        with patch("base.src.agent.agent_builder.ModelProviderFactory.create_model") as mock_create:
             mock_model = Mock()
             mock_create.return_value = mock_model
 
@@ -72,9 +68,7 @@ class TestAgentBuilder:
 
     def test_with_model_from_config_custom_runtime(self, builder, mock_config):
         """Test with_model_from_config can use custom runtime name."""
-        with patch(
-            "base.src.agent.agent_builder.ModelProviderFactory.create_model"
-        ) as mock_create:
+        with patch("base.src.agent.agent_builder.ModelProviderFactory.create_model") as mock_create:
             mock_model = Mock()
             mock_create.return_value = mock_model
 
@@ -94,9 +88,7 @@ class TestAgentBuilder:
 
     def test_with_system_prompt_file_loads_from_file(self, builder, mock_config):
         """Test with_system_prompt_file loads prompt from file."""
-        with patch(
-            "base.src.agent.agent_builder.PromptLoader.load_prompt"
-        ) as mock_load:
+        with patch("base.src.agent.agent_builder.PromptLoader.load_prompt") as mock_load:
             mock_load.return_value = "Loaded prompt from file"
 
             result = builder.with_system_prompt_file("test_prompt")
@@ -162,9 +154,7 @@ class TestAgentBuilder:
 
     def test_build_requires_system_prompt(self, builder):
         """Test build raises error if system prompt not configured."""
-        with patch(
-            "base.src.agent.agent_builder.ModelProviderFactory.create_model"
-        ) as mock_create:
+        with patch("base.src.agent.agent_builder.ModelProviderFactory.create_model") as mock_create:
             mock_create.return_value = Mock()
             builder.with_model("gpt-4")
 
@@ -180,9 +170,7 @@ class TestAgentBuilder:
         class CustomOutput(BaseModel):
             result: str
 
-        with patch(
-            "base.src.agent.agent_builder.ModelProviderFactory.create_model"
-        ) as mock_create:
+        with patch("base.src.agent.agent_builder.ModelProviderFactory.create_model") as mock_create:
             mock_model = Mock()
             mock_create.return_value = mock_model
 
@@ -221,27 +209,18 @@ class TestAgentBuilder:
 
     def test_fluent_interface_chaining(self, builder, mock_config):
         """Test builder methods can be chained fluently."""
-        with patch(
-            "base.src.agent.agent_builder.ModelProviderFactory.create_model"
-        ) as mock_create:
+        with patch("base.src.agent.agent_builder.ModelProviderFactory.create_model") as mock_create:
             mock_create.return_value = Mock()
 
             with patch("base.src.agent.agent_builder.Agent"):
                 # Should not raise error
-                agent = (
-                    builder.with_model("gpt-4")
-                    .with_system_prompt_text("Test")
-                    .with_tools([])
-                    .build()
-                )
+                agent = builder.with_model("gpt-4").with_system_prompt_text("Test").with_tools([]).build()
 
                 assert agent is not None
 
     def test_build_with_no_tools(self, builder, mock_config):
         """Test build works with no tools configured."""
-        with patch(
-                "base.src.agent.agent_builder.ModelProviderFactory.create_model"
-        ) as mock_create:
+        with patch("base.src.agent.agent_builder.ModelProviderFactory.create_model") as mock_create:
             mock_model = Mock()
             mock_create.return_value = mock_model
 
@@ -253,18 +232,14 @@ class TestAgentBuilder:
                 # Configure __getitem__ to return our mock class
                 mock_agent.__getitem__.return_value = mock_agent_class
 
-                agent = (
-                    builder.with_model("gpt-4")
-                    .with_system_prompt_text("Test")
-                    .build()
-                )
+                agent = builder.with_model("gpt-4").with_system_prompt_text("Test").build()
 
                 # Verify the agent was created with the right parameters
                 mock_agent_class.assert_called_once()
 
                 # Get the call arguments
                 args, kwargs = mock_agent_class.call_args
-                assert kwargs["tools"] == []  # No tools configured
+                assert kwargs["tools"] is None  # No tools
                 assert agent == mock_agent_instance
 
     def test_build_with_multiple_tools(self, builder, mock_config):
@@ -276,9 +251,7 @@ class TestAgentBuilder:
         def tool2():
             return "2"
 
-        with patch(
-                "base.src.agent.agent_builder.ModelProviderFactory.create_model"
-        ) as mock_create:
+        with patch("base.src.agent.agent_builder.ModelProviderFactory.create_model") as mock_create:
             mock_model = Mock()
             mock_create.return_value = mock_model
 
@@ -291,11 +264,7 @@ class TestAgentBuilder:
                 mock_agent.__getitem__.return_value = mock_agent_class
 
                 agent = (
-                    builder.with_model("gpt-4")
-                    .with_system_prompt_text("Test")
-                    .with_tool("tool1", tool1)
-                    .with_tool("tool2", tool2)
-                    .build()
+                    builder.with_model("gpt-4").with_system_prompt_text("Test").with_tool("tool1", tool1).with_tool("tool2", tool2).build()
                 )
 
                 # Verify the agent was created with the right parameters
@@ -308,10 +277,10 @@ class TestAgentBuilder:
 
     def test_build_with_additional_kwargs(self, builder, mock_config):
         """Test build passes additional valid kwargs to Agent constructor."""
-        with patch(
-                "base.src.agent.agent_builder.ModelProviderFactory.create_model"
-        ) as mock_create, \
-                patch("inspect.signature") as mock_signature:
+        with (
+            patch("base.src.agent.agent_builder.ModelProviderFactory.create_model") as mock_create,
+            patch("inspect.signature") as mock_signature,
+        ):
             # Mock the model
             mock_model = Mock()
             mock_create.return_value = mock_model
@@ -330,20 +299,17 @@ class TestAgentBuilder:
                 "name": Mock(),  # Valid parameter
                 "retries": Mock(),  # Valid parameter
                 "end_strategy": Mock(),  # Valid parameter
-                "instrument": Mock()  # Valid parameter
+                "instrument": Mock(),  # Valid parameter
             }
 
             with patch("base.src.agent.agent_builder.Agent") as mock_agent:
                 mock_agent.__getitem__.return_value = mock_agent_class
 
                 # Build with valid additional kwargs
-                builder.with_model("gpt-4")
-                builder.with_system_prompt_text("Test prompt")
-                builder.build(
-                    name="test_agent",
-                    retries=3,
-                    end_strategy="exhaustive",
-                    instrument=True,
+                agent = (
+                    builder.with_model("gpt-4")
+                    .with_system_prompt_text("Test prompt")
+                    .build(name="test_agent", retries=3, end_strategy="exhaustive", instrument=True)
                 )
 
                 # Verify the mock was called with the right parameters
@@ -355,9 +321,7 @@ class TestAgentBuilder:
 
     def test_build_with_invalid_kwargs(self, builder, mock_config):
         """Test build raises error for invalid kwargs."""
-        with patch(
-                "base.src.agent.agent_builder.ModelProviderFactory.create_model"
-        ) as mock_create:
+        with patch("base.src.agent.agent_builder.ModelProviderFactory.create_model") as mock_create:
             mock_create.return_value = Mock()
 
             with patch("base.src.agent.agent_builder.Agent") as mock_agent:
@@ -365,18 +329,14 @@ class TestAgentBuilder:
 
                 # Try to build with an invalid kwarg
                 with pytest.raises(ValueError, match="Unexpected keyword argument for Agent: invalid_param"):
-                    (
-                        builder.with_model("gpt-4")
-                        .with_system_prompt_text("Test prompt")
-                        .build(invalid_param="should-fail")
-                    )
+                    (builder.with_model("gpt-4").with_system_prompt_text("Test prompt").build(invalid_param="should-fail"))
 
     def test_build_with_kwargs_overrides(self, builder, mock_config):
         """Test that explicitly passed kwargs take precedence over builder settings."""
-        with patch(
-                "base.src.agent.agent_builder.ModelProviderFactory.create_model"
-        ) as mock_create, \
-                patch("inspect.signature") as mock_signature:
+        with (
+            patch("base.src.agent.agent_builder.ModelProviderFactory.create_model") as mock_create,
+            patch("inspect.signature") as mock_signature,
+        ):
             # Mock the model
             mock_model = Mock()
             mock_create.return_value = mock_model
@@ -388,29 +348,26 @@ class TestAgentBuilder:
             # Create a mock for the signature
             mock_sig = Mock()
             mock_signature.return_value = mock_sig
-            mock_sig.parameters = {
-                "model": Mock(),
-                "system_prompt": Mock(),
-                "tools": Mock(),
-                "retries": Mock()  # Valid parameter
-            }
+            mock_sig.parameters = {"model": Mock(), "system_prompt": Mock(), "tools": Mock(), "retries": Mock()}  # Valid parameter
 
             with patch("base.src.agent.agent_builder.Agent") as mock_agent:
                 mock_agent.__getitem__.return_value = mock_agent_class
 
                 # Test that trying to override builder-set parameters raises an error
-                with pytest.raises(ValueError,
-                                   match="The Agent argument 'tools' is set by the builder and cannot be given for instantiation"):
-                    builder.with_model("gpt-4") \
-                        .with_system_prompt_text("Test prompt") \
-                        .with_tool("test_tool", lambda: "test") \
-                        .build(tools=[])  # This should raise an error
+                with pytest.raises(
+                    ValueError, match="The Agent argument 'tools' is set by the builder and cannot be given for instantiation"
+                ):
+                    builder.with_model("gpt-4").with_system_prompt_text("Test prompt").with_tool("test_tool", lambda: "test").build(
+                        tools=[]
+                    )  # This should raise an error
 
                 # Test that additional valid parameters work
-                builder.with_model("gpt-4")
-                builder.with_system_prompt_text("Test prompt")
-                builder.with_tool("test_tool", lambda: "test")
-                builder.build(retries=2)  # This should work
+                agent = (
+                    builder.with_model("gpt-4")
+                    .with_system_prompt_text("Test prompt")
+                    .with_tool("test_tool", lambda: "test")
+                    .build(retries=2)
+                )  # This should work
 
                 # Verify the mock was called with the right parameters
                 args, kwargs = mock_agent_class.call_args
@@ -423,10 +380,10 @@ class TestAgentBuilder:
         class CustomOutput(BaseModel):
             result: str
 
-        with patch(
-                "base.src.agent.agent_builder.ModelProviderFactory.create_model"
-        ) as mock_create, \
-                patch("inspect.signature") as mock_signature:
+        with (
+            patch("base.src.agent.agent_builder.ModelProviderFactory.create_model") as mock_create,
+            patch("inspect.signature") as mock_signature,
+        ):
             # Mock the model
             mock_model = Mock()
             mock_create.return_value = mock_model
@@ -444,21 +401,19 @@ class TestAgentBuilder:
                 "tools": Mock(),
                 "name": Mock(),
                 "retries": Mock(),
-                "end_strategy": Mock()
+                "end_strategy": Mock(),
             }
 
             with patch("base.src.agent.agent_builder.Agent") as mock_agent:
                 mock_agent.__getitem__.return_value = mock_agent_class
 
                 # Build with generic types and additional valid kwargs
-                builder.with_model("gpt-4")
-                builder.with_system_prompt_text("Test prompt")
-                builder.with_result_type(CustomOutput)
-                builder.with_deps_type(dict)
-                builder.build(
-                    name="generic_agent",
-                    retries=3,
-                    end_strategy="exhaustive",
+                agent = (
+                    builder.with_model("gpt-4")
+                    .with_system_prompt_text("Test prompt")
+                    .with_result_type(CustomOutput)
+                    .with_deps_type(dict)
+                    .build(name="generic_agent", retries=3, end_strategy="exhaustive")
                 )
 
                 # Verify the mock was called with the right parameters
@@ -466,3 +421,4 @@ class TestAgentBuilder:
                 assert kwargs["name"] == "generic_agent"
                 assert kwargs["retries"] == 3
                 assert kwargs["end_strategy"] == "exhaustive"
+                assert agent == mock_agent_instance
