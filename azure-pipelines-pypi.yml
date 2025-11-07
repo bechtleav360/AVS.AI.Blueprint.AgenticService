@@ -42,7 +42,7 @@ stages:
             displayName: "Install dependencies"
 
           - script: |
-              python -m pytest --cov=agents.base --cov-report=xml --cov-report=html
+              python -m pytest --cov=base.src --cov-report=xml --cov-report=html
             workingDirectory: "$(packagePath)"
             displayName: "Run tests with coverage"
 
