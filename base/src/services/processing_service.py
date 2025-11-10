@@ -518,8 +518,7 @@ class ProcessingService:
                 },
             )
 
-            await publishing_service.publish_event(handler_event, topic=topic_config)
-
+            await publishing_service.publish_event(handler_event, topic=topic_config.get("topic"), routing_key=topic_config.get("routing_key"))
             logger.info(
                 "Successfully published handler event %s (type: %s)",
                 handler_event.id,
