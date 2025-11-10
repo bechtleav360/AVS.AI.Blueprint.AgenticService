@@ -75,3 +75,12 @@ class CloudEvent(BaseModel, Generic[T]):
 
 # A generic CloudEvent for use in API layers, accepting any JSON payload.
 GenericCloudEvent = CloudEvent[Dict[str, Any]]
+
+
+class HandlerResult(BaseModel):
+    """Standardized result emitted by event handlers."""
+
+    event_type: Optional[str] = None
+    subject: Optional[str] = None
+    data: Optional[Dict[str, Any]] = None
+    metadata: Optional[Dict[str, Any]] = None

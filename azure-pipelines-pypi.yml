@@ -147,8 +147,3 @@ stages:
               pip install twine
               python -m twine upload -r PyPi-Local --config-file $(PYPIRC_PATH) $(Build.SourcesDirectory)/$(packagePath)/dist/*
             displayName: "Upload package to Azure Artifacts"
-
-          - script: |
-              git push origin HEAD
-              git push origin --tags
-            displayName: "Push version commit and tags"

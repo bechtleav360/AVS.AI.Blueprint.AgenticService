@@ -15,19 +15,18 @@ The framework provides automatic OpenTelemetry tracing for all handlers.
 """
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Union
 
 from opentelemetry import trace
 
+from pydantic import BaseModel, ValidationError
+
 from ..config import Config
-from ..models import CloudEvent
-if TYPE_CHECKING:  # pragma: no cover
-    from ..registry.service_registry import ServiceRegistry
-    from ..registry.component_registry import ComponentRegistry
+from ..models import CloudEvent, HandlerResult
+from ..registry.service_registry import ServiceRegistry
+from ..registry.component_registry import ComponentRegistry
 
 tracer = trace.get_tracer(__name__)
-
-
 class EventHandler(ABC):
     """Abstract base class for event handlers in the chain of responsibility.
 
@@ -98,7 +97,9 @@ class EventHandler(ABC):
             span.set_attribute("handler.priority", self.priority)
             return await self.can_handle_event(event, context)
 
-    async def handle(self, event: CloudEvent, context: Dict[str, Any]) -> Optional[Any]:
+    async def handle(
+        self, event: CloudEvent, context: Dict[str, Any]
+    ) -> Optional[Union[Any, HandlerResult]]:
         """Framework method that adds tracing around handler execution.
 
         Do not override this method. Override handle_event() instead.
@@ -107,7 +108,18 @@ class EventHandler(ABC):
         with tracer.start_as_current_span(f"handler.{self.name}.handle") as span:
             span.set_attribute("handler.name", self.name)
             span.set_attribute("handler.priority", self.priority)
-            return await self.handle_event(event, context)
+            result = await self.handle_event(event, context)
+
+            if isinstance(result, BaseModel):
+                try:
+                    HandlerResult.model_validate(result)
+                except ValidationError as exc:
+                    raise ValueError(
+                        "EventHandler.handle_event returned a Pydantic model without the required "
+                        "'event_type' (str) and 'data' (Any) fields"
+                    ) from exc
+
+            return result
 
     @abstractmethod
     async def can_handle_event(
@@ -130,7 +142,7 @@ class EventHandler(ABC):
     @abstractmethod
     async def handle_event(
         self, event: CloudEvent, context: Dict[str, Any]
-    ) -> Optional[Any]:
+    ) -> Optional[Union[Any, HandlerResult]]:
         """Process the event and optionally return a result.
 
         Override this method in your handler implementation.
@@ -140,7 +152,12 @@ class EventHandler(ABC):
             context: Processing context dictionary.
 
         Returns:
-            Processing result, or None to pass to next handler.
+            Processing result. Handlers may return:
+
+            * ``None`` to pass control to the next handler.
+            * Any plain Python object for internal chaining.
+            * A :class:`HandlerResult` Pydantic model that includes ``event_type``
+              (str) and ``data`` (Any) fields for downstream event publication.
         """
 
         pass

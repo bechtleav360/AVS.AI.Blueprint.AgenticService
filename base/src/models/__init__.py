@@ -4,7 +4,7 @@ from .api import (AgentHealthDependencies, AgentHealthResponse, AIModelHealth,
                   CloudEventDataPayload, CloudEventResponse, CustomCheckHealth,
                   ProcessResourceRequest, ProcessResourceResponse)
 from .errors import HandlerError
-from .events import CloudEvent, GenericCloudEvent
+from .events import CloudEvent, HandlerResult, GenericCloudEvent
 from .result import AgentOutput, Evidence
 from .status import BuildStatus, EnvironmentStatus, LLMStatus, VLLMInfo
 
@@ -20,6 +20,7 @@ __all__ = [
     "CustomCheckHealth",
     "EnvironmentStatus",
     "Evidence",
+    "HandlerResult",
     "GenericCloudEvent",
     "HandlerError",
     "LLMStatus",
