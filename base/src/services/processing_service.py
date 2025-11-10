@@ -7,6 +7,10 @@ from uuid import uuid4
 
 from ..config import Config
 from ..models.events import CloudEvent, GenericCloudEvent
+from .processing._handler_chain import _HandlerChainProcessor
+from .processing._event_publisher import _EventPublisher
+from .processing._health_checker import _HealthChecker
+from .processing._result_builder import _ResultBuilder
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..registry.component_registry import ComponentRegistry
@@ -31,6 +35,10 @@ class ProcessingService:
     ) -> None:
         self._settings = settings
         self._component_registry = component_registry
+        self._handler_chain = _HandlerChainProcessor(component_registry)
+        self._event_publisher = _EventPublisher(component_registry, settings)
+        self._health_checker = _HealthChecker(component_registry)
+        self._result_builder = _ResultBuilder()
 
     async def process_event(
         self,
@@ -79,52 +87,32 @@ class ProcessingService:
 
             try:
                 # Process through handler chain
-                # Handlers can call agents directly using _get_agent()
-                handler_result = await self._process_through_handlers(event, context)
+                handler_result = await self._handler_chain.process(event, context)
 
-                # Check if result is a Pydantic model with event_type
-                event_type_to_publish = None
-                result_data_dict = None
-                result_metadata = {}
+                # Extract handler result components
+                event_type_to_publish, result_data_dict, result_metadata = (
+                    self._result_builder.extract_handler_result(handler_result)
+                )
 
-                if handler_result is not None:
-                    # Check if it's a Pydantic model with event_type attribute
-                    if hasattr(handler_result, "event_type") and hasattr(handler_result, "data"):
-                        event_type_to_publish = handler_result.event_type
-                        result_data_dict = handler_result.data
-                        if hasattr(handler_result, "metadata"):
-                            result_metadata = handler_result.metadata or {}
-                    else:
-                        # Legacy dict result
-                        result_data_dict = handler_result
-
-                # Prepare result data
-                status = "processed" if handler_result is not None else "no_handler_found"
-
-                result_data = {
-                    "request_id": request_id,
-                    "status": status,
-                    "result": result_data_dict,
-                    "metadata": result_metadata,
-                }
-
-                if handler_result is None:
-                    result_data["message"] = "No handler processed this event"
+                # Build result data
+                result_data = self._result_builder.build_result_data(
+                    request_id, result_data_dict, event_type_to_publish
+                )
 
                 logger.debug(
                     "Event processing completed for request %s",
                     request_id,
                     extra={
                         "request_id": request_id,
-                        "status": status,
+                        "status": result_data["status"],
                         "has_result": handler_result is not None,
                         "event_type_to_publish": event_type_to_publish,
                     },
                 )
 
-                # Publish event if handler specified an event_type
+                # Publish handler event if specified
                 if event_type_to_publish:
-                    await self._publish_handler_event(
+                    await self._event_publisher.publish_handler_event(
                         event_type=event_type_to_publish,
                         data=result_data_dict,
                         metadata=result_metadata,
@@ -132,7 +120,7 @@ class ProcessingService:
                         new_subject=new_subject,
                     )
 
-                # Create result CloudEvent
+                # Create and publish result CloudEvent
                 result_event = CloudEvent(
                     specversion="1.0",
                     id=str(uuid4()),
@@ -142,8 +130,7 @@ class ProcessingService:
                     subject=new_subject or event.subject,
                 )
 
-                # Publish result event if topic mapping exists
-                await self._publish_result_event(result_event)
+                await self._event_publisher.publish_result_event(result_event)
 
                 return result_event
 
@@ -195,16 +182,8 @@ class ProcessingService:
         """
         with tracer.start_as_current_span("processing_service.health_check") as span:
             try:
-                # Check runtimes
-                runtime_health = await self._health_check_runtimes()
-
-                # Check handlers (basic check - they're registered)
-                handlers = self._component_registry.get_handlers()
-                handler_health = {
-                    "status": "healthy" if handlers else "unhealthy",
-                    "count": len(handlers),
-                    "handlers": [{"name": h.name, "priority": h.priority} for h in handlers],
-                }
+                runtime_health = await self._health_checker.check_runtimes()
+                handler_health = self._health_checker.check_handlers()
 
                 overall_healthy = handler_health["status"] == "healthy" and any(
                     r.get("status") == "healthy" for r in runtime_health.values()
@@ -217,7 +196,7 @@ class ProcessingService:
                 }
 
                 span.set_attribute("health.status", result["status"])
-                span.set_attribute("handlers.count", len(handlers))
+                span.set_attribute("handlers.count", handler_health["count"])
                 span.set_attribute("runtimes.count", len(runtime_health))
 
                 return result
@@ -227,108 +206,6 @@ class ProcessingService:
                 span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
                 return {"status": "unhealthy", "error": str(e)}
 
-    # ========================================================================
-    # Private Helper Methods (Business Logic)
-    # ========================================================================
-
-    async def _process_through_handlers(self, event: CloudEvent, context: Dict[str, Any]) -> Optional[Any]:
-        """
-        Process an event through all registered handlers in priority order.
-
-        Handlers are executed in sequence until one returns a result.
-        Handlers can call agents directly using _get_agent_runtime().
-
-        Returns:
-            Result from the first handler that returns a non-None value, or None
-        """
-        handlers = self._component_registry.get_handlers()
-
-        with tracer.start_as_current_span("processing_service.handler_chain") as span:
-            span.set_attribute("event.type", event.type)
-            span.set_attribute("handlers.count", len(handlers))
-
-            logger.debug(
-                "Processing event through %d handlers",
-                len(handlers),
-                extra={
-                    "event_type": event.type,
-                    "event_id": getattr(event, "id", None),
-                    "handlers_count": len(handlers),
-                },
-            )
-
-            for handler in handlers:
-                try:
-                    if await handler.can_handle(event, context):
-                        logger.info(
-                            "Handler %s can handle event %s",
-                            handler.name,
-                            event.type,
-                            extra={
-                                "handler_name": handler.name,
-                                "event_type": event.type,
-                                "event_id": getattr(event, "id", None),
-                            },
-                        )
-
-                        result = await handler.handle(event, context)
-
-                        if result is not None:
-                            logger.info(
-                                "Handler %s processed event %s and returned result",
-                                handler.name,
-                                event.type,
-                                extra={
-                                    "handler_name": handler.name,
-                                    "event_type": event.type,
-                                    "event_id": getattr(event, "id", None),
-                                    "has_result": True,
-                                },
-                            )
-                            span.set_attribute("handler.processed_by", handler.name)
-                            return result
-                        else:
-                            logger.info(
-                                "Handler %s processed event %s but passed to next handler",
-                                handler.name,
-                                event.type,
-                                extra={
-                                    "handler_name": handler.name,
-                                    "event_type": event.type,
-                                    "event_id": getattr(event, "id", None),
-                                    "has_result": False,
-                                },
-                            )
-                            # Continue to next handler
-
-                except Exception as e:
-                    logger.error(
-                        "Handler %s failed to process event %s: %s",
-                        handler.name,
-                        event.type,
-                        str(e),
-                        extra={
-                            "handler_name": handler.name,
-                            "event_type": event.type,
-                            "event_id": getattr(event, "id", None),
-                            "error": str(e),
-                        },
-                        exc_info=True,
-                    )
-                    span.record_exception(e)
-                    span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
-                    raise
-
-            logger.warning(
-                "No handler processed event %s",
-                event.type,
-                extra={
-                    "event_type": event.type,
-                    "event_id": getattr(event, "id", None),
-                    "handlers_count": len(handlers),
-                },
-            )
-            return None
 
     async def _process_with_runtime(self, runtime_name: Optional[str] = None, context: Any = None, **kwargs) -> Any:
         """
@@ -390,155 +267,3 @@ class ProcessingService:
                 span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
                 raise
 
-    async def _publish_result_event(self, result_event: GenericCloudEvent) -> None:
-        """
-        Publish result event if topic mapping exists for the event type.
-
-        Args:
-            result_event: The CloudEvent to potentially publish
-        """
-
-        try:
-            # Get event publishing service
-            publishing_service = self._component_registry.get_event_publishing_service()
-            if not publishing_service:
-                logger.debug("No event publishing service registered, skipping publication")
-                return
-
-            # Check if there's a topic mapping for this event type
-            event_pub_config = self._settings.get_event_publishing_config()
-            topic_mapping = event_pub_config.get("topic_mapping", {})
-
-            if result_event.type in topic_mapping:
-                topic = topic_mapping[result_event.type]
-                logger.info(
-                    "Publishing result event type '%s' to topic '%s'",
-                    result_event.type,
-                    topic,
-                )
-
-                await publishing_service.publish_event(result_event, topic=topic)
-
-                logger.debug(
-                    "Successfully published result event %s to topic %s",
-                    result_event.id,
-                    topic,
-                )
-            else:
-                logger.debug(
-                    "No topic mapping found for event type '%s', skipping publication",
-                    result_event.type,
-                )
-
-        except Exception as e:
-            # Log but don't fail the request if publishing fails
-            logger.warning(
-                "Failed to publish result event: %s",
-                str(e),
-                extra={
-                    "event_id": result_event.id,
-                    "event_type": result_event.type,
-                    "error": str(e),
-                },
-            )
-
-    async def _publish_handler_event(
-        self, event_type: str, data: Any, metadata: Dict[str, Any], source_event: CloudEvent, new_subject: Optional[str] = None
-    ) -> None:
-        """
-        Publish an event from a handler result.
-
-        This method is called when a handler returns a HandlerResult with an event_type.
-        It creates a new CloudEvent and publishes it according to the topic mapping.
-
-        Args:
-            event_type: The event type to publish (e.g., 'invoice.validated')
-            data: The event data
-            metadata: Additional metadata
-            source_event: The original event that triggered this processing
-            new_subject: Optional new subject for the event
-        """
-        try:
-            # Get event publishing service
-            publishing_service = self._component_registry.get_event_publishing_service()
-            if not publishing_service:
-                logger.debug("No event publishing service registered, skipping handler event publication")
-                return
-
-            # Check if there's a topic mapping for this event type
-            event_pub_config = self._settings.get_event_publishing_config()
-            topic_mapping = event_pub_config.get("topic_mapping", {})
-
-            if event_type not in topic_mapping:
-                logger.warning(
-                    "No topic mapping found for handler event type '%s', skipping publication",
-                    event_type,
-                )
-                return
-
-            # Create new CloudEvent for the handler result
-            handler_event = CloudEvent(
-                specversion="1.0",
-                id=str(uuid4()),
-                source=self._settings.get("app_name", "agent-service"),
-                type=event_type,
-                data=data,
-                subject=new_subject or source_event.subject,
-            )
-
-            # Get topic configuration (can be string or dict with routing_key)
-            topic_config = topic_mapping[event_type]
-
-            logger.info(
-                "Publishing handler event type '%s' with config: %s",
-                event_type,
-                topic_config,
-                extra={
-                    "event_type": event_type,
-                    "event_id": handler_event.id,
-                    "metadata": metadata,
-                },
-            )
-
-            await publishing_service.publish_event(handler_event)
-
-            logger.info(
-                "Successfully published handler event %s (type: %s)",
-                handler_event.id,
-                event_type,
-            )
-
-        except Exception as e:
-            # Log but don't fail the request if publishing fails
-            logger.warning(
-                "Failed to publish handler event: %s",
-                str(e),
-                extra={
-                    "event_type": event_type,
-                    "error": str(e),
-                    "metadata": metadata,
-                },
-            )
-
-    async def _health_check_runtimes(self) -> Dict[str, Dict[str, Any]]:
-        """Perform health checks on all registered runtimes."""
-        with tracer.start_as_current_span("processing_service.runtime_health") as span:
-            results = {}
-            runtimes = self._component_registry.get_all_runtimes()
-
-            for name, runtime in runtimes.items():
-                try:
-                    health_result = await runtime.health_check()
-                    results[name] = health_result
-                    logger.info("Health check passed for runtime %s", name)
-                except Exception as e:
-                    logger.error("Health check failed for runtime %s: %s", name, str(e))
-                    results[name] = {"status": "unhealthy", "error": str(e)}
-
-            span.set_attribute("runtimes.count", len(runtimes))
-            span.set_attribute(
-                "runtimes.healthy_count",
-                sum(1 for r in results.values() if r.get("status") == "healthy"),
-            )
-
-            return results
