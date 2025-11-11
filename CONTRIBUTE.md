@@ -160,6 +160,18 @@ pip install --force-reinstall --no-deps dist/avs_blueprint_agents-*.whl
 
 ### Install in a Separate Virtual Environment
 
+Publish to a local “index” directory (behaves like a mini PyPI)
+```bash
+mkdir -p ~/local-pypi
+cp dist/* ~/local-pypi/
+
+```
+
+In the other project, install from that local index (example)
+```bash
+uv pip install --no-cache-dir --find-links file:///home/pajoma/pypi/ avs-blueprint-agents==0.1.16
+```
+
 To test in isolation:
 
 ```bash
