@@ -239,7 +239,7 @@ class TestAgentBuilder:
 
                 # Get the call arguments
                 args, kwargs = mock_agent_class.call_args
-                assert kwargs["tools"] is None  # No tools
+                assert kwargs["tools"] == []  # No tools configured
                 assert agent == mock_agent_instance
 
     def test_build_with_multiple_tools(self, builder, mock_config):

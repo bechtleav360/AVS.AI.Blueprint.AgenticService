@@ -119,6 +119,11 @@ class TestDaprPubSubHealthChecker:
             "dapr_http_port": 3500,
             "rabbitmq_host": "localhost:5672",
         }.get(key, default)
+        # Mock get_event_publishing_config to return a dict with pubsub name
+        config.get_event_publishing_config.return_value = {
+            "default_pubsub_name": "rabbitmq-pubsub",
+            "topic_mapping": {},
+        }
         return config
 
     @pytest.mark.asyncio
