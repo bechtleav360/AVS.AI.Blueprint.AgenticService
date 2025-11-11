@@ -13,6 +13,7 @@ variables:
     value: "3.13"
   - name: packagePath
     value: "base"
+  - group: PyPI
 
 pool:
   vmImage: "ubuntu-latest"
@@ -36,28 +37,29 @@ stages:
 
           - script: |
               python -m pip install --upgrade pip
-              pip install -e ".[dev]"
-              pip install pytest-cov
+              pip install -e .
+              if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+              pip install pytest pytest-cov pytest-asyncio build twine semver
             workingDirectory: "$(packagePath)"
             displayName: "Install dependencies"
 
           - script: |
-              python -m pytest --cov=base.src --cov-report=xml --cov-report=html
-            workingDirectory: "$(packagePath)"
+              export PYTHONPATH="$(Build.SourcesDirectory)/custom/src"
+              python -m pytest --cov=agents.base --cov-report=xml --cov-report=html
             displayName: "Run tests with coverage"
 
           - task: PublishPipelineArtifact@1
-            condition: succeeded()
+            condition: and(succeeded(), exists('$(Build.SourcesDirectory)/coverage.xml'))
             inputs:
-              targetPath: "$(Build.SourcesDirectory)/$(packagePath)/coverage.xml"
+              targetPath: "$(Build.SourcesDirectory)/coverage.xml"
               artifact: "CodeCoverageXML"
               publishLocation: "pipeline"
             displayName: "Publish coverage XML"
 
           - task: PublishPipelineArtifact@1
-            condition: succeeded()
+            condition: and(succeeded(), exists('$(Build.SourcesDirectory)/htmlcov'))
             inputs:
-              targetPath: "$(Build.SourcesDirectory)/$(packagePath)/htmlcov"
+              targetPath: "$(Build.SourcesDirectory)/htmlcov"
               artifact: "CodeCoverageHTML"
               publishLocation: "pipeline"
             displayName: "Publish coverage HTML report"
@@ -82,9 +84,8 @@ stages:
 
           - script: |
               python -m pip install --upgrade pip
-              pip install -e ".[dev]"
-            workingDirectory: "$(packagePath)"
-            displayName: "Install build dependencies"
+              pip install build twine semver
+            displayName: "Install build tools"
 
           - script: |
               python -m build
@@ -122,8 +123,7 @@ stages:
 
           - script: |
               python -m pip install --upgrade pip
-              pip install -e ".[dev]"
-            workingDirectory: "$(packagePath)"
+              pip install build twine semver
             displayName: "Install publication tooling"
 
           - script: |
@@ -139,34 +139,10 @@ stages:
             displayName: "Rebuild package for publish"
 
           - script: |
-              python -m pip install --upgrade pip
-              pip install twine
-            displayName: "Upload dependencies"
-
-          # ---- Upload to PyPi-Local ----
-          - task: TwineAuthenticate@1
-            inputs:
-              artifactFeed: "PyPi-Local" # or 'Bechtle-Index-of-Sovereignty/PyPi-Local' if project-scoped
-            displayName: "Authenticate with PyPi-Local"
+              python -m twine upload $(packagePath)/dist/* --username __token__ --password $(PyPIApiToken)
+            displayName: "Upload package to PyPI"
 
           - script: |
-              python -m twine upload \
-                -r "PyPi-Local" \
-                --config-file "$(PYPIRC_PATH)" \
-                "$(Build.SourcesDirectory)/$(packagePath)/dist/*"
-            displayName: "Upload to PyPi-Local"
-
-          # ---- Upload to BIoS ----
-          # DISABLED, since PyPi-Local is defined as upstream fir BioS
-
-          # - task: TwineAuthenticate@1
-          #   inputs:
-          #     artifactFeed: 'Bechtle-Index-of-Sovereignty/BIoS'  # << important
-          #   displayName: "Authenticate with BIoS"
-
-          # - script: |
-          #     python -m twine upload \
-          #       -r "BIoS" \
-          #       --config-file "$(PYPIRC_PATH)" \
-          #       "$(Build.SourcesDirectory)/$(packagePath)/dist/*"
-          #   displayName: "Upload to BIoS"
+              git push origin HEAD
+              git push origin --tags
+            displayName: "Push version commit and tags"
