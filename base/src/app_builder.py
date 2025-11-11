@@ -12,8 +12,7 @@ from .api import actuators, root
 from .config import Config, ConfigError, LoggingManager, TelemetryManager
 from .handler import EventHandler
 from .registry.component_registry import ComponentRegistry
-from .services import (AIProviderHealthChecker, DaprPubSubHealthChecker,
-                       EventPublishingService)
+from .services import AIProviderHealthChecker, DaprPubSubHealthChecker, EventPublishingService
 from .services.processing_service import ProcessingService
 
 # Dapr generic endpoints
@@ -61,9 +60,7 @@ class AppBuilder:
 
     def with_agent(self, agent: Agent) -> "AppBuilder":
         """Register an agent class with the startup manager."""
-        self._component_registry.get_agent_registry().register(
-            name=agent.name, agent=agent
-        )
+        self._component_registry.get_agent_registry().register(name=agent.name, agent=agent)
         return self
 
     def with_rest_api(self, api_class: Type) -> "AppBuilder":
@@ -71,13 +68,9 @@ class AppBuilder:
         self._rest_api_class = api_class
         return self
 
-    def with_router(
-        self, router, prefix: str = "", tags: list[str] = None
-    ) -> "AppBuilder":
+    def with_router(self, router, prefix: str = "", tags: list[str] = None) -> "AppBuilder":
         """Add a custom router to the application."""
-        self._custom_routers.append(
-            {"router": router, "prefix": prefix, "tags": tags or []}
-        )
+        self._custom_routers.append({"router": router, "prefix": prefix, "tags": tags or []})
         return self
 
     def _create_lifespan_manager(self):
@@ -129,18 +122,11 @@ class AppBuilder:
 
         # Initialize and register EventPublishingService
         try:
-            event_publishing_service = EventPublishingService(
-                config=self.config,
-                dapr_http_port=self.config.get("dapr_http_port", 3500),
-            )
-            self._component_registry.register_event_publishing_service(
-                event_publishing_service
-            )
+            event_publishing_service = EventPublishingService(config=self.config)
+            self._component_registry.register_event_publishing_service(event_publishing_service)
             logger.info("Successfully registered EventPublishingService")
         except Exception as e:
-            logger.error(
-                "Failed to register EventPublishingService: %s", e, exc_info=True
-            )
+            logger.error("Failed to register EventPublishingService: %s", e, exc_info=True)
 
         logger.info("Startup initialization completed")
 

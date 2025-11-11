@@ -1,11 +1,14 @@
 """Handler chain processor for event handling."""
 
 import logging
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from opentelemetry import trace
 
 from ...models.events import CloudEvent
+
+if TYPE_CHECKING:  # pragma: no cover
+    from ...registry.component_registry import ComponentRegistry
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -14,8 +17,8 @@ tracer = trace.get_tracer(__name__)
 class _HandlerChainProcessor:
     """Processes events through registered handler chain."""
 
-    def __init__(self, component_registry):
-        self._component_registry = component_registry
+    def __init__(self, component_registry: "ComponentRegistry") -> None:
+        self._component_registry: "ComponentRegistry" = component_registry
 
     async def process(self, event: CloudEvent, context: Dict[str, Any]) -> Optional[Any]:
         """

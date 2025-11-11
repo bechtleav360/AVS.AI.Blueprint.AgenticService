@@ -33,12 +33,12 @@ class ProcessingService:
         settings: Config,
         component_registry: "ComponentRegistry",
     ) -> None:
-        self._settings = settings
-        self._component_registry = component_registry
-        self._handler_chain = _HandlerChainProcessor(component_registry)
-        self._event_publisher = _EventPublisher(component_registry, settings)
-        self._health_checker = _HealthChecker(component_registry)
-        self._result_builder = _ResultBuilder()
+        self._settings: Config = settings
+        self._component_registry: "ComponentRegistry" = component_registry
+        self._handler_chain: _HandlerChainProcessor = _HandlerChainProcessor(component_registry)
+        self._event_publisher: _EventPublisher = _EventPublisher(component_registry, settings)
+        self._health_checker: _HealthChecker = _HealthChecker(component_registry)
+        self._result_builder: _ResultBuilder = _ResultBuilder()
 
     async def process_event(
         self,

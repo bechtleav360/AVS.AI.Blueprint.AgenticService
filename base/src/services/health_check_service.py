@@ -8,6 +8,7 @@ import httpx
 
 from ..config import Config
 from ..models.api import ComponentHealth
+from ..models.config import AIConfig
 
 logger = logging.getLogger(__name__)
 
@@ -15,9 +16,9 @@ logger = logging.getLogger(__name__)
 class AIProviderHealthChecker:
     """Health check provider for the configured AI model."""
 
-    def __init__(self, config: Config):
-        self.config = config
-        self.enabled = config.get("health_check_ai_provider", True)
+    def __init__(self, config: Config) -> None:
+        self.config: Config = config
+        self.enabled: bool = config.get("health_check_ai_provider", True)
 
     async def health_check(self) -> ComponentHealth:
         """Check AI provider health if enabled."""
@@ -28,8 +29,8 @@ class AIProviderHealthChecker:
                 message="AI provider health check disabled",
             )
 
-        ai_config = self.config.get_ai_config()
-        provider = ai_config.get("provider")
+        ai_config: AIConfig = self.config.get_ai_config()
+        provider: Optional[str] = ai_config.provider
 
         if not provider:
             return ComponentHealth(
@@ -38,14 +39,14 @@ class AIProviderHealthChecker:
             )
 
         if provider == "vllm":
-            base_url = ai_config.get("base_url")
+            base_url: Optional[str] = ai_config.base_url
             if not base_url:
                 return ComponentHealth(
                     status="unhealthy",
                     message="vLLM base_url not configured",
                 )
 
-            api_key = ai_config.get("api_key")
+            api_key: Optional[str] = ai_config.api_key
             if not api_key:
                 return ComponentHealth(
                     status="unhealthy",
@@ -90,18 +91,18 @@ class AIProviderHealthChecker:
 class DaprPubSubHealthChecker:
     """Health check for RabbitMQ connectivity through Dapr pubsub."""
 
-    def __init__(self, config: Config, pubsub_name: Optional[str] = None):
-        self.config = config
-        self.enabled = config.get("health_check_rabbitmq", True)
+    def __init__(self, config: Config, pubsub_name: Optional[str] = None) -> None:
+        self.config: Config = config
+        self.enabled: bool = config.get("health_check_rabbitmq", True)
 
         # Get pubsub name from event publishing config if not provided
         if pubsub_name is None:
-            event_pub_config = config.get_event_publishing_config()
-            pubsub_name = event_pub_config.get("default_pubsub_name", "pubsub")
+            event_pub_config = self.config.get_event_publishing_config()
+            pubsub_name = event_pub_config.default_pubsub_name
 
-        self.pubsub_name = pubsub_name
-        self.dapr_http_port = config.get("dapr_http_port", 3500)
-        self.dapr_base_url = f"http://localhost:{self.dapr_http_port}"
+        self.pubsub_name: str = pubsub_name
+        self.dapr_http_port: int = config.get("dapr_http_port", 3500)
+        self.dapr_base_url: str = f"http://localhost:{self.dapr_http_port}"
 
     async def health_check(self) -> ComponentHealth:
         """Check RabbitMQ connectivity through Dapr pubsub.
