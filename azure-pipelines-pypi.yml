@@ -137,19 +137,35 @@ stages:
               python -m build
             workingDirectory: "$(packagePath)"
             displayName: "Rebuild package for publish"
+
+          - script: |
+              python -m pip install --upgrade pip
+              pip install twine
+            displayName: "Upload dependencies"            
+
+
+          # ---- Upload to PyPi-Local ----
           - task: TwineAuthenticate@1
             inputs:
-              artifactFeed: BIoS
-            displayName: "Authenticate with Azure Artifacts"
+              artifactFeed: 'PyPi-Local' # or 'Bechtle-Index-of-Sovereignty/PyPi-Local' if project-scoped
+            displayName: "Authenticate with PyPi-Local"
 
           - script: |
-              python -m pip install --upgrade pip
-              pip install twine
-              python -m twine upload -r BIoS --config-file $(PYPIRC_PATH) $(Build.SourcesDirectory)/$(packagePath)/dist/*
-            displayName: "Upload package to Azure Artifacts"
+              python -m twine upload \
+                -r "PyPi-Local" \
+                --config-file "$(PYPIRC_PATH)" \
+                "$(Build.SourcesDirectory)/$(packagePath)/dist/*"
+            displayName: "Upload to PyPi-Local"
+
+          # ---- Upload to BIoS ----
+          - task: TwineAuthenticate@1
+            inputs:
+              artifactFeed: 'Bechtle-Index-of-Sovereignty/BIoS'  # << important
+            displayName: "Authenticate with BIoS"
 
           - script: |
-              python -m pip install --upgrade pip
-              pip install twine
-              python -m twine upload -r BIoS --config-file $(PYPIRC_PATH) $(Build.SourcesDirectory)/$(packagePath)/dist/*
-            displayName: "Upload package to Azure Artifacts"
+              python -m twine upload \
+                -r "Bechtle-Index-of-Sovereignty/BIoS" \
+                --config-file "$(PYPIRC_PATH)" \
+                "$(Build.SourcesDirectory)/$(packagePath)/dist/*"
+            displayName: "Upload to BIoS"
