@@ -165,7 +165,7 @@ stages:
 
           - script: |
               python -m twine upload \
-                -r "Bechtle-Index-of-Sovereignty/BIoS" \
+                -r "BIoS" \
                 --config-file "$(PYPIRC_PATH)" \
                 "$(Build.SourcesDirectory)/$(packagePath)/dist/*"
             displayName: "Upload to BIoS"
