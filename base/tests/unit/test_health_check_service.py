@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from base.src.config import Config
-from base.src.models.api import ComponentHealth
+from base.src.models.config import AIConfig
 from base.src.services.health_check_service import AIProviderHealthChecker, DaprPubSubHealthChecker
 
 
@@ -34,7 +34,7 @@ class TestAIProviderHealthChecker:
     async def test_health_check_no_provider_configured(self, mock_config):
         """Test health check when no provider is configured."""
         mock_config.get.return_value = True
-        mock_config.get_ai_config.return_value = {"provider": None}
+        mock_config.get_ai_config.return_value = AIConfig()
         checker = AIProviderHealthChecker(mock_config)
 
         result = await checker.health_check()
@@ -45,11 +45,11 @@ class TestAIProviderHealthChecker:
     @pytest.mark.asyncio
     async def test_vllm_health_check_success(self, mock_config):
         """Test successful vLLM health check."""
-        mock_config.get_ai_config.return_value = {
-            "provider": "vllm",
-            "base_url": "https://test-vllm.example.com/v1",
-            "api_key": "test-key",
-        }
+        mock_config.get_ai_config.return_value = AIConfig(
+            provider="vllm",
+            base_url="https://test-vllm.example.com/v1",
+            api_key="test-key",
+        )
         checker = AIProviderHealthChecker(mock_config)
 
         with patch("httpx.AsyncClient") as mock_client:
@@ -65,11 +65,11 @@ class TestAIProviderHealthChecker:
     @pytest.mark.asyncio
     async def test_vllm_health_check_missing_base_url(self, mock_config):
         """Test vLLM health check with missing base URL."""
-        mock_config.get_ai_config.return_value = {
-            "provider": "vllm",
-            "base_url": None,
-            "api_key": "test-key",
-        }
+        mock_config.get_ai_config.return_value = AIConfig(
+            provider="vllm",
+            base_url=None,
+            api_key="test-key",
+        )
         checker = AIProviderHealthChecker(mock_config)
 
         result = await checker.health_check()
@@ -80,11 +80,11 @@ class TestAIProviderHealthChecker:
     @pytest.mark.asyncio
     async def test_vllm_health_check_missing_api_key(self, mock_config):
         """Test vLLM health check with missing API key."""
-        mock_config.get_ai_config.return_value = {
-            "provider": "vllm",
-            "base_url": "https://test-vllm.example.com/v1",
-            "api_key": None,
-        }
+        mock_config.get_ai_config.return_value = AIConfig(
+            provider="vllm",
+            base_url="https://test-vllm.example.com/v1",
+            api_key=None,
+        )
         checker = AIProviderHealthChecker(mock_config)
 
         result = await checker.health_check()
@@ -95,9 +95,7 @@ class TestAIProviderHealthChecker:
     @pytest.mark.asyncio
     async def test_openai_health_check(self, mock_config):
         """Test OpenAI health check (always healthy if configured)."""
-        mock_config.get_ai_config.return_value = {
-            "provider": "openai",
-        }
+        mock_config.get_ai_config.return_value = AIConfig(provider="openai")
         checker = AIProviderHealthChecker(mock_config)
 
         result = await checker.health_check()
@@ -112,6 +110,8 @@ class TestDaprPubSubHealthChecker:
     @pytest.fixture
     def mock_config(self):
         """Create a mock config."""
+        from base.src.models.config import EventPublishingConfig
+
         config = MagicMock(spec=Config)
         config.get.side_effect = lambda key, default=None: {
             "health_check_rabbitmq": True,
@@ -119,11 +119,11 @@ class TestDaprPubSubHealthChecker:
             "dapr_http_port": 3500,
             "rabbitmq_host": "localhost:5672",
         }.get(key, default)
-        # Mock get_event_publishing_config to return a dict with pubsub name
-        config.get_event_publishing_config.return_value = {
-            "default_pubsub_name": "rabbitmq-pubsub",
-            "topic_mapping": {},
-        }
+        # Mock get_event_publishing_config to return EventPublishingConfig model
+        config.get_event_publishing_config.return_value = EventPublishingConfig(
+            default_pubsub_name="rabbitmq-pubsub",
+            topic_mapping={},
+        )
         return config
 
     @pytest.mark.asyncio

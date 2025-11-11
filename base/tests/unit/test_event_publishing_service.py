@@ -7,6 +7,7 @@ import pytest
 
 from base.src.config import Config
 from base.src.models import CloudEvent
+from base.src.models.config import EventPublishingConfig, TopicConfig
 from base.src.services.event_publishing_service import EventPublishingService
 
 
@@ -22,25 +23,25 @@ class TestEventPublishingService:
             "dapr_http_port": 3500,
         }.get(key, default)
 
-        config.get_event_publishing_config.return_value = {
-            "default_pubsub_name": "pubsub",
-            "topic_mapping": {
-                "agent.output.invoice.processed": {"topic": "invoice.processed", "routing_key": None},
-                "agent.output.document.classified": {"topic": "document.classified", "routing_key": None},
-                "agent.error.processing": {"topic": "agent.errors", "routing_key": None},
-                "agent.error.validation": {"topic": "agent.errors", "routing_key": None},
-                "agent.status.started": {"topic": "agent.status", "routing_key": None},
-                "agent.status.completed": {"topic": "agent.status", "routing_key": None},
-                "agent.status.failed": {"topic": "agent.status", "routing_key": None}
+        config.get_event_publishing_config.return_value = EventPublishingConfig(
+            default_pubsub_name="pubsub",
+            topic_mapping={
+                "agent.output.invoice.processed": TopicConfig(topic="invoice.processed"),
+                "agent.output.document.classified": TopicConfig(topic="document.classified"),
+                "agent.error.processing": TopicConfig(topic="agent.errors"),
+                "agent.error.validation": TopicConfig(topic="agent.errors"),
+                "agent.status.started": TopicConfig(topic="agent.status"),
+                "agent.status.completed": TopicConfig(topic="agent.status"),
+                "agent.status.failed": TopicConfig(topic="agent.status"),
             },
-        }
+        )
 
         return config
 
     @pytest.fixture
     def service(self, mock_config):
         """Create an EventPublishingService instance."""
-        return EventPublishingService(config=mock_config, dapr_http_port=3500)
+        return EventPublishingService(config=mock_config)
 
     def test_initialization(self, service, mock_config):
         """Test service initialization."""
@@ -74,15 +75,13 @@ class TestEventPublishingService:
         mock_response.raise_for_status = MagicMock()
 
         with patch("httpx.AsyncClient") as mock_client:
-            mock_client.return_value.__aenter__.return_value.post = AsyncMock(
-                return_value=mock_response
-            )
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
             event = CloudEvent(
                 type="agent.output.invoice.processed",
                 id="test-event-123",
                 data={"invoice_id": "INV-123", "status": "processed"},
-                source="/test/source"
+                source="/test/source",
             )
             result = await service.publish_event(event)
 
@@ -97,10 +96,7 @@ class TestEventPublishingService:
             call_args = mock_post.call_args
 
             # Check URL
-            assert (
-                call_args[0][0]
-                == "http://localhost:3500/v1.0/publish/pubsub/invoice.processed"
-            )
+            assert call_args[0][0] == "http://localhost:3500/v1.0/publish/pubsub/invoice.processed"
 
             # Check payload
             payload = call_args[1]["json"]
@@ -111,10 +107,7 @@ class TestEventPublishingService:
             assert payload["data"]["invoice_id"] == "INV-123"
 
             # Check headers
-            assert (
-                call_args[1]["headers"]["Content-Type"]
-                == "application/cloudevents+json"
-            )
+            assert call_args[1]["headers"]["Content-Type"] == "application/cloudevents+json"
 
     @pytest.mark.asyncio
     async def test_publish_event_with_explicit_topic(self, service):
@@ -123,19 +116,10 @@ class TestEventPublishingService:
         mock_response.raise_for_status = MagicMock()
 
         with patch("httpx.AsyncClient") as mock_client:
-            mock_client.return_value.__aenter__.return_value.post = AsyncMock(
-                return_value=mock_response
-            )
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
-            event = CloudEvent(
-                type="custom.event.type",
-                id="test-event-123",
-                data={"key": "value"}
-            )
-            result = await service.publish_event(
-                event,
-                topic="custom.topic"  # Explicit topic
-            )
+            event = CloudEvent(type="custom.event.type", id="test-event-123", data={"key": "value"})
+            result = await service.publish_event(event, topic="custom.topic")  # Explicit topic
 
             assert result["status"] == "published"
             assert result["topic"] == "custom.topic"
@@ -152,19 +136,10 @@ class TestEventPublishingService:
         mock_response.raise_for_status = MagicMock()
 
         with patch("httpx.AsyncClient") as mock_client:
-            mock_client.return_value.__aenter__.return_value.post = AsyncMock(
-                return_value=mock_response
-            )
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
-            event = CloudEvent(
-                type="agent.output.invoice.processed",
-                id="test-event-123",
-                data={"key": "value"}
-            )
-            result = await service.publish_event(
-                event,
-                pubsub_name="custom-pubsub"
-            )
+            event = CloudEvent(type="agent.output.invoice.processed", id="test-event-123", data={"key": "value"})
+            result = await service.publish_event(event, pubsub_name="custom-pubsub")
 
             assert result["pubsub_name"] == "custom-pubsub"
 
@@ -177,11 +152,7 @@ class TestEventPublishingService:
     async def test_publish_event_no_topic_mapping(self, service):
         """Test publishing event with no topic mapping raises error."""
         with pytest.raises(ValueError) as exc_info:
-            event = CloudEvent(
-                type="unknown.event.type",
-                id="test-event-123",
-                data={"key": "value"}
-            )
+            event = CloudEvent(type="unknown.event.type", id="test-event-123", data={"key": "value"})
             await service.publish_event(event)
 
         assert "No topic mapping found" in str(exc_info.value)
@@ -196,16 +167,10 @@ class TestEventPublishingService:
         )
 
         with patch("httpx.AsyncClient") as mock_client:
-            mock_client.return_value.__aenter__.return_value.post = AsyncMock(
-                return_value=mock_response
-            )
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
             with pytest.raises(httpx.HTTPStatusError):
-                event = CloudEvent(
-                    type="agent.output.invoice.processed",
-                    id="test-event-123",
-                    data={"key": "value"}
-                )
+                event = CloudEvent(type="agent.output.invoice.processed", id="test-event-123", data={"key": "value"})
                 await service.publish_event(event)
 
     @pytest.mark.asyncio
@@ -215,15 +180,9 @@ class TestEventPublishingService:
         mock_response.raise_for_status = MagicMock()
 
         with patch("httpx.AsyncClient") as mock_client:
-            mock_client.return_value.__aenter__.return_value.post = AsyncMock(
-                return_value=mock_response
-            )
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
-            event = CloudEvent(
-                type="agent.output.invoice.processed",
-                id="", # No event_id provided
-                data={"key": "value"}
-            )
+            event = CloudEvent(type="agent.output.invoice.processed", id="", data={"key": "value"})  # No event_id provided
             result = await service.publish_event(event)
 
             # Should have auto-generated ID
@@ -242,15 +201,9 @@ class TestEventPublishingService:
         mock_response.raise_for_status = MagicMock()
 
         with patch("httpx.AsyncClient") as mock_client:
-            mock_client.return_value.__aenter__.return_value.post = AsyncMock(
-                return_value=mock_response
-            )
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
-            event = CloudEvent(
-                type="agent.output.invoice.processed",
-                id="test-event-123",
-                data={"key": "value"}
-            )
+            event = CloudEvent(type="agent.output.invoice.processed", id="test-event-123", data={"key": "value"})
             await service.publish_event(event)
 
             # Verify payload has default source
@@ -259,67 +212,13 @@ class TestEventPublishingService:
             assert payload["source"] == "/agent/test-agent"
 
     @pytest.mark.asyncio
-    async def test_publish_agent_output(self, service):
-        """Test convenience method for publishing agent output."""
-        mock_response = MagicMock()
-        mock_response.raise_for_status = MagicMock()
-
-        with patch("httpx.AsyncClient") as mock_client:
-            mock_client.return_value.__aenter__.return_value.post = AsyncMock(
-                return_value=mock_response
-            )
-
-            result = await service.publish_agent_output(
-                output_data={"result": "success", "confidence": 0.95},
-                event_subtype="invoice.processed",
-                event_id="test-123",
-            )
-
-            assert result["status"] == "published"
-            assert result["topic"] == "invoice.processed"
-
-            # Verify event type was constructed correctly
-            mock_post = mock_client.return_value.__aenter__.return_value.post
-            payload = mock_post.call_args[1]["json"]
-            assert payload["type"] == "agent.output.invoice.processed"
-            assert payload["data"]["result"] == "success"
-
-    @pytest.mark.asyncio
-    async def test_publish_error_event(self, service):
-        """Test convenience method for publishing error events."""
-        mock_response = MagicMock()
-        mock_response.raise_for_status = MagicMock()
-
-        with patch("httpx.AsyncClient") as mock_client:
-            mock_client.return_value.__aenter__.return_value.post = AsyncMock(
-                return_value=mock_response
-            )
-
-            result = await service.publish_error_event(
-                error_data={"error": "validation failed", "details": "missing field"},
-                error_type="validation",
-                event_id="error-123",
-            )
-
-            assert result["status"] == "published"
-            assert result["topic"] == "agent.errors"
-
-            # Verify event type
-            mock_post = mock_client.return_value.__aenter__.return_value.post
-            payload = mock_post.call_args[1]["json"]
-            assert payload["type"] == "agent.error.validation"
-            assert payload["data"]["error"] == "validation failed"
-
-    @pytest.mark.asyncio
     async def test_publish_status_event(self, service):
         """Test convenience method for publishing status events."""
         mock_response = MagicMock()
         mock_response.raise_for_status = MagicMock()
 
         with patch("httpx.AsyncClient") as mock_client:
-            mock_client.return_value.__aenter__.return_value.post = AsyncMock(
-                return_value=mock_response
-            )
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
             result = await service.publish_status_event(
                 status_data={"task_id": "task-123", "progress": 100},
@@ -337,48 +236,15 @@ class TestEventPublishingService:
             assert payload["data"]["progress"] == 100
 
     @pytest.mark.asyncio
-    async def test_publish_multiple_events_to_same_topic(self, service):
-        """Test that multiple event types can map to the same topic."""
-        mock_response = MagicMock()
-        mock_response.raise_for_status = MagicMock()
-
-        with patch("httpx.AsyncClient") as mock_client:
-            mock_client.return_value.__aenter__.return_value.post = AsyncMock(
-                return_value=mock_response
-            )
-
-            # Both error types should go to same topic
-            result1 = await service.publish_error_event(
-                error_data={"error": "processing failed"}, error_type="processing"
-            )
-
-            result2 = await service.publish_error_event(
-                error_data={"error": "validation failed"}, error_type="validation"
-            )
-
-            assert result1["topic"] == "agent.errors"
-            assert result2["topic"] == "agent.errors"
-
-            # Both should have been published
-            assert mock_client.return_value.__aenter__.return_value.post.call_count == 2
-
-    @pytest.mark.asyncio
     async def test_cloudevent_format_compliance(self, service):
         """Test that published events comply with CloudEvents specification."""
         mock_response = MagicMock()
         mock_response.raise_for_status = MagicMock()
 
         with patch("httpx.AsyncClient") as mock_client:
-            mock_client.return_value.__aenter__.return_value.post = AsyncMock(
-                return_value=mock_response
-            )
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
-            event = CloudEvent(
-                type="agent.output.invoice.processed",
-                id="test-123",
-                data={"key": "value"},
-                source="/test/source"
-            )
+            event = CloudEvent(type="agent.output.invoice.processed", id="test-123", data={"key": "value"}, source="/test/source")
             await service.publish_event(event)
 
             # Verify CloudEvents format
@@ -404,15 +270,9 @@ class TestEventPublishingService:
         mock_response.raise_for_status = MagicMock()
 
         with patch("httpx.AsyncClient") as mock_client:
-            mock_client.return_value.__aenter__.return_value.post = AsyncMock(
-                return_value=mock_response
-            )
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
-            event = CloudEvent(
-                type="agent.output.invoice.processed",
-                id="test-event-123",
-                data={"test": "data"}
-            )
+            event = CloudEvent(type="agent.output.invoice.processed", id="test-event-123", data={"test": "data"})
             await service.publish_event(event)
 
             # Verify timeout is set

@@ -1,9 +1,12 @@
 """Health checker for service components."""
 
 import logging
-from typing import Any, Dict
+from typing import TYPE_CHECKING, Any, Dict
 
 from opentelemetry import trace
+
+if TYPE_CHECKING:  # pragma: no cover
+    from ...registry.component_registry import ComponentRegistry
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -12,8 +15,8 @@ tracer = trace.get_tracer(__name__)
 class _HealthChecker:
     """Performs health checks on service components."""
 
-    def __init__(self, component_registry):
-        self._component_registry = component_registry
+    def __init__(self, component_registry: "ComponentRegistry") -> None:
+        self._component_registry: "ComponentRegistry" = component_registry
 
     async def check_runtimes(self) -> Dict[str, Dict[str, Any]]:
         """

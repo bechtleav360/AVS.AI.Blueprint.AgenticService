@@ -1,4 +1,5 @@
 """Object-oriented configuration management using Dynaconf."""
+
 import json
 import logging
 
@@ -6,6 +7,15 @@ from dynaconf import Dynaconf, Validator
 from dynaconf.validator import ValidationError
 from dynaconf.utils.boxing import DynaBox
 from typing import Any
+
+from ..models.config import (
+    AIConfig,
+    EventPublishingConfig,
+    ObservabilityConfig,
+    PromptConfig,
+    RuntimeConfig,
+    UsageLimits,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,11 +37,7 @@ class Config:
 
         # First pass: load config to get app_environment
         temp_settings = Dynaconf(
-            settings_files=settings_files,
-            environments=False,
-            load_dotenv=False,
-            merge_enabled=True,
-            root_path=root_path
+            settings_files=settings_files, environments=False, load_dotenv=False, merge_enabled=True, root_path=root_path
         )
         app_env = temp_settings.get("app_environment", "development")
         logger.info("Loading configuration properties for environment: %s", app_env)
@@ -91,16 +97,16 @@ class Config:
                 return items
 
             # Only convert if all items are dicts with a 'key' field
-            if not all(isinstance(item, dict) and 'key' in item for item in items):
+            if not all(isinstance(item, dict) and "key" in item for item in items):
                 return items
 
             list_to_keys_result = {}
             for item in items:
-                key = item.pop('key')
+                key = item.pop("key")
                 list_to_keys_result[key] = item
             return list_to_keys_result
 
-        if isinstance(box, dict) or hasattr(box, 'items'):
+        if isinstance(box, dict) or hasattr(box, "items"):
             result = {}
             for key, value in list(box.items()):
                 # Process the key - replace placeholder and convert to lowercase
@@ -115,28 +121,29 @@ class Config:
                 if isinstance(value, list):
                     value = _convert_keyed_list_to_dict(value)
 
-                if isinstance(value, (dict, DynaBox)) or hasattr(value, 'items'):
+                if isinstance(value, (dict, DynaBox)) or hasattr(value, "items"):
                     new_value = self._process_dynabox(value, placeholder, replacement)
                 elif isinstance(value, list):
                     new_value = [
-                        self._process_dynabox(item, placeholder, replacement)
-                        if isinstance(item, (dict, DynaBox)) or hasattr(item, 'items')
-                        else _try_parse_json(item) if isinstance(item, str) else item
+                        (
+                            self._process_dynabox(item, placeholder, replacement)
+                            if isinstance(item, (dict, DynaBox)) or hasattr(item, "items")
+                            else _try_parse_json(item) if isinstance(item, str) else item
+                        )
                         for item in value
                     ]
                 else:
                     new_value = value
 
                 # Only update if key changed to avoid unnecessary updates
-                if new_key != key and hasattr(box, 'pop'):
+                if new_key != key and hasattr(box, "pop"):
                     box.pop(key, None)  # Remove old key if it exists
                 result[new_key] = new_value  # Always use the new (lowercase) key
             return result
         return box
 
     def get(self, key: str, default: Any = None) -> Any:
-        """Get a configuration value.
-        """
+        """Get a configuration value."""
 
         env_var = self.settings.get(key, default)
         # Convert DynaBox to dict
@@ -191,125 +198,82 @@ class Config:
 
         return config
 
-    def get_ai_config(self, runtime_name: str = "default") -> dict[str, Any]:
+    def get_ai_config(self, runtime_name: str = "default") -> AIConfig:
         """Get AI-related configuration for a specific runtime.
 
         Args:
             runtime_name: Name of the runtime to get AI config for.
 
         Returns:
-            AI configuration dictionary with runtime-specific overrides.
+            AIConfig model with runtime-specific overrides.
         """
         runtime_config = self.get_runtime_config(runtime_name)
 
-        config = {
-            "provider": runtime_config.get(
-                "ai_model_provider", self.get("ai_model_provider")
-            ),
-            "model_name": runtime_config.get(
-                "ai_model_name", self.get("ai_model_name")
-            ),
-            "api_key": runtime_config.get(
-                "ai_model_api_key", self.get("ai_model_api_key")
-            ),
-            "base_url": runtime_config.get(
-                "ai_model_base_url", self.get("ai_model_base_url")
-            ),
-            "max_tokens": runtime_config.get(
-                "ai_model_max_tokens", self.get("ai_model_max_tokens")
-            ),
-            "temperature": runtime_config.get(
-                "ai_model_temperature", self.get("ai_model_temperature")
-            ),
-            "concurrency_limit": runtime_config.get(
-                "ai_concurrent_requests", self.get("ai_concurrent_requests")
-            ),
-            "usage_limits": {
-                "request_limit": runtime_config.get(
-                    "ai_usage_request_limit", self.get("ai_usage_request_limit")
-                ),
-                "input_tokens_limit": runtime_config.get(
+        return AIConfig(
+            provider=runtime_config.get("ai_model_provider", self.get("ai_model_provider")),
+            model_name=runtime_config.get("ai_model_name", self.get("ai_model_name")),
+            api_key=runtime_config.get("ai_model_api_key", self.get("ai_model_api_key")),
+            base_url=runtime_config.get("ai_model_base_url", self.get("ai_model_base_url")),
+            max_tokens=runtime_config.get("ai_model_max_tokens", self.get("ai_model_max_tokens")),
+            temperature=runtime_config.get("ai_model_temperature", self.get("ai_model_temperature")),
+            concurrency_limit=runtime_config.get("ai_concurrent_requests", self.get("ai_concurrent_requests")),
+            usage_limits=UsageLimits(
+                request_limit=runtime_config.get("ai_usage_request_limit", self.get("ai_usage_request_limit")),
+                input_tokens_limit=runtime_config.get(
                     "ai_usage_input_tokens_limit",
                     self.get("ai_usage_input_tokens_limit"),
                 ),
-                "output_tokens_limit": runtime_config.get(
+                output_tokens_limit=runtime_config.get(
                     "ai_usage_output_tokens_limit",
                     self.get("ai_usage_output_tokens_limit"),
                 ),
-                "total_tokens_limit": runtime_config.get(
+                total_tokens_limit=runtime_config.get(
                     "ai_usage_total_tokens_limit",
                     self.get("ai_usage_total_tokens_limit"),
                 ),
-            },
-        }
-        return config
+            ),
+        )
 
-    def get_prompt_config(self, runtime_name: str = "default") -> dict[str, Any]:
+    def get_prompt_config(self, runtime_name: str = "default") -> PromptConfig:
         """Get prompt-related configuration for a specific runtime.
 
         Args:
             runtime_name: Name of the runtime to get prompt config for.
 
         Returns:
-            Dictionary with prompt configuration:
-            - custom_path: Optional custom path to prompt directory
-            - search_paths: Optional list of additional search paths
-            - system_prompt_name: Name of system prompt file (default: "system")
-            - instruction_prompt_name: Name of instruction prompt file (default: "instruction")
+            PromptConfig model with prompt configuration.
         """
         runtime_config = self.get_runtime_config(runtime_name)
 
-        return {
-            "custom_path": runtime_config.get(
-                "prompt_directory", self.get("prompt_directory")
-            ),
-            "search_paths": runtime_config.get(
-                "prompt_search_paths", self.get("prompt_search_paths", [])
-            ),
-            "system_prompt_name": runtime_config.get(
-                "system_prompt_name", self.get("system_prompt_name", "system")
-            ),
-            "instruction_prompt_name": runtime_config.get(
+        return PromptConfig(
+            custom_path=runtime_config.get("prompt_directory", self.get("prompt_directory")),
+            search_paths=runtime_config.get("prompt_search_paths", self.get("prompt_search_paths", [])),
+            system_prompt_name=runtime_config.get("system_prompt_name", self.get("system_prompt_name", "system")),
+            instruction_prompt_name=runtime_config.get(
                 "instruction_prompt_name",
                 self.get("instruction_prompt_name", "instruction"),
             ),
-        }
+        )
 
-    def get_observability_config(self) -> dict[str, Any]:
+    def get_observability_config(self) -> ObservabilityConfig:
         """Get observability-related configuration."""
-        return {
-            "otel_enabled": self.get("otel_enabled", False),
-            "otel_endpoint": self.get("otel_endpoint"),
-            "otel_service_name": self.get(
-                "otel_service_name", self.get("app_name", "agent-service")
-            ),
-            "log_level": self.get("log_level", "INFO"),
-        }
+        return ObservabilityConfig(
+            otel_enabled=self.get("otel_enabled", False),
+            otel_endpoint=self.get("otel_endpoint"),
+            otel_service_name=self.get("otel_service_name", self.get("app_name", "agent-service")),
+            log_level=self.get("log_level", "INFO"),
+        )
 
-    def get_event_publishing_config(self) -> dict[str, Any]:
+    def get_event_publishing_config(self) -> EventPublishingConfig:
         """Get complete event publishing configuration.
 
         Returns:
-            Dictionary with event publishing configuration:
-            - default_pubsub_name: The default Dapr pubsub component name
-            - topic_mapping: Dictionary mapping event types to topics or routing configs
+            EventPublishingConfig model with event publishing configuration.
         """
-
-        topic_mapping = self.get("event_publishing.topic_mapping", {})
-        for event_type, topic_config in topic_mapping.items():
-            if isinstance(topic_config, str):
-                topic_mapping[event_type] = {"topic": topic_config, "routing_key": None}
-            elif not isinstance(topic_config, dict):
-                raise ValueError(
-                    f"Invalid topic mapping for event type '{event_type}': {topic_config}"
-                )
-
-        return {
-            "default_pubsub_name": self.get(
-                "event_publishing.default_pubsub_name", "pubsub"
-            ),
-            "topic_mapping": topic_mapping,
-        }
+        return EventPublishingConfig(
+            default_pubsub_name=self.get("event_publishing.default_pubsub_name", "pubsub"),
+            topic_mapping=self.get("event_publishing.topic_mapping", {}),
+        )
 
     def validate(self):
         """Validate the configuration."""
@@ -320,7 +284,7 @@ class Config:
                 raise ConfigError(f"Invalid app port: {self.get('app_port')}")
 
             ai_config = self.get_ai_config()
-            if ai_config.get("provider") == "vllm" and not ai_config.get("api_key"):
+            if ai_config.provider == "vllm" and not ai_config.api_key:
                 raise ConfigError("Missing API key for vLLM provider")
 
             return True
