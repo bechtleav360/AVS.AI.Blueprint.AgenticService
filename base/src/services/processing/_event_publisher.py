@@ -35,7 +35,7 @@ class _EventPublisher:
                 return
 
             event_pub_config: EventPublishingConfig = self._settings.get_event_publishing_config()
-            topic_mapping = event_pub_config.topic_mapping
+            topic_mapping: Dict[str, Any] = {k: v.model_dump() for k, v in event_pub_config.topic_mapping.items()}
 
             if result_event.type in topic_mapping:
                 topic_config = topic_mapping[result_event.type]
