@@ -8,16 +8,22 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - APP_NAME=agent-service
-      - LOG_LEVEL=INFO
-      - LOG_FORMAT=json
-      - APP_PORT=8000
-      - AI_PROVIDER=openai
-      - AI_MODEL_NAME=gpt-4
-      - OTEL_ENDPOINT=http://jaeger:14268/api/traces
-      - OTEL_SERVICE_NAME=agent-service
-      - DAPR_HTTP_PORT=3500
-      - DAPR_GRPC_PORT=50001
+      - DYNACONF_APP_NAME=agents-item-harmonizer
+      - DYNACONF_LOG_LEVEL=INFO
+      - DYNACONF_LOG_FORMAT=json
+      - DYNACONF_APP_PORT=8000
+      - DYNACONF_PROMPT_SEARCH_PATHS=/home/app/custom/src/prompts
+      - DYNACONF_AI_MODEL_PROVIDER=vllm
+      - DYNACONF_AI_MODEL_NAME=default
+      - DYNACONF_AI_MODEL_BASE_URL="https://avs-vllm.q14.net/v1"
+      - DYNACONF_AI_MODEL_API_KEY="put-your-api-key-here"
+      - DYNACONF_OTEL_ENDPOINT=http://jaeger:14268/api/traces
+      - DYNACONF_OTEL_SERVICE_NAME=agents-item-harmonizer
+      - DYNACONF_DAPR_HTTP_PORT=3500
+      - DYNACONF_DAPR_GRPC_PORT=50001
+      - DYNACONF_EVENT_PUBLISHING__DEFAULT_PUBSUB_NAME="rabbitmq-pubsub"
+      - DYNACONF_EVENT_PUBLISHING__TOPIC_MAPPING__asset-harmonized-v1=dev.asset.harmonized.v1
+      - DYNACONF_SUPPORTED_EVENTS=asset-score-v1
     depends_on:
       - jaeger
       - redis
@@ -33,13 +39,15 @@ services:
       [
         "./daprd",
         "-app-id",
-        "agent-service",
+        "agents-item-harmonizer",
         "-app-port",
         "8000",
         "-dapr-http-port",
         "3500",
         "-dapr-grpc-port",
         "50001",
+        "-placement-host-address",
+        "placement:50006",
         "-components-path",
         "/components",
         "-config",
@@ -52,7 +60,16 @@ services:
       - agent
       - redis
       - rabbitmq
+      - placement
     network_mode: "service:agent"
+
+  placement:
+    image: "daprio/dapr:latest"
+    command: ["./placement", "-port", "50006"]
+    ports:
+      - "50006:50006"
+    networks:
+      - agent-network
 
   redis:
     image: "redis:alpine"

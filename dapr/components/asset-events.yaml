@@ -1,0 +1,29 @@
+apiVersion: dapr.io/v2alpha1
+kind: Subscription
+metadata:
+  name: asset-harmonizing-subscription
+spec:
+  # Which pub/sub component to use
+  pubsubname: rabbitmq-pubsub
+
+  # Which topic to subscribe to
+  topic: dev.asset.discovered.v1
+
+  # Where to send events (your agent's endpoint)
+  routes:
+    default: /events/asset
+
+  # Optional: Filter events
+  # Only process events matching these rules
+  metadata:
+    rawPayload: "false"  # Dapr wraps events in CloudEvent format
+
+  # Dead letter queue for failed messages
+  deadLetterTopic: dev.asset.discovered.v1.dlq
+
+  # Bulk subscribe settings
+  bulkSubscribe:
+    enabled: false  # Process one message at a time
+
+scopes:
+  - agents-item-harmonizer  # Only this app can use this component
