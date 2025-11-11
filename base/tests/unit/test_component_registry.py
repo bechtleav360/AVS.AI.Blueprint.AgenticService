@@ -1,4 +1,5 @@
 """ComponentRegistry integration tests using real handler and runtime implementations."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -117,9 +118,7 @@ class TestComponentRegistry:
         assert first is not second
 
     def test_clear_handlers(self, registry: ComponentRegistry) -> None:
-        registry.register_handlers(
-            [EchoHandler(name="a"), EchoHandler(name="b")]
-        )
+        registry.register_handlers([EchoHandler(name="a"), EchoHandler(name="b")])
         assert registry.get_handlers()
 
         registry.clear_handlers()

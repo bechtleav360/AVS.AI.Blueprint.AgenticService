@@ -6,7 +6,7 @@ ProcessingService.
 """
 
 import logging
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any
 
 from ..config import Config
 
@@ -36,9 +36,9 @@ class ComponentRegistry:
             settings: Application configuration
         """
         self._settings = settings
-        self._handlers: List["EventHandler"] = []
-        self._processing_service: Optional[Any] = None
-        self._event_publishing_service: Optional[Any] = None
+        self._handlers: list[EventHandler] = []
+        self._processing_service: Any | None = None
+        self._event_publishing_service: Any | None = None
 
         # Import here to avoid circular dependency
         from .agent_registry import AgentRegistry
@@ -58,16 +58,14 @@ class ComponentRegistry:
         Args:
             handler: The handler instance to register
         """
-        logger.info(
-            "Registering handler: %s with priority %d", handler.name, handler.priority
-        )
+        logger.info("Registering handler: %s with priority %d", handler.name, handler.priority)
         handler.link_service_registry(self)
         handler.link_component_registry(self)  # Inject component registry
         self._handlers.append(handler)
         # Keep handlers sorted by priority (lower numbers first)
         self._handlers.sort()
 
-    def register_handlers(self, handlers: List["EventHandler"]) -> None:
+    def register_handlers(self, handlers: list["EventHandler"]) -> None:
         """
         Register multiple event handlers.
 
@@ -77,7 +75,7 @@ class ComponentRegistry:
         for handler in handlers:
             self.register_handler(handler)
 
-    def get_handlers(self) -> List["EventHandler"]:
+    def get_handlers(self) -> list["EventHandler"]:
         """
         Get all registered handlers, sorted by priority.
 

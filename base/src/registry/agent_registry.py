@@ -1,7 +1,6 @@
 """Registry for managing pre-configured AI agents."""
 
 import logging
-from typing import Dict, Optional
 
 from pydantic_ai import Agent
 
@@ -27,7 +26,7 @@ class AgentRegistry:
 
     def __init__(self):
         """Initialize the agent registry."""
-        self._agents: Dict[str, Agent] = {}
+        self._agents: dict[str, Agent] = {}
         logger.info("AgentRegistry initialized")
 
     def register(self, name: str, agent: Agent) -> None:

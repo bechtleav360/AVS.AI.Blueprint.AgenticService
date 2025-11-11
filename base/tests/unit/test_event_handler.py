@@ -1,4 +1,5 @@
 """Unit tests for EventHandler and Chain of Responsibility pattern."""
+
 from unittest import mock
 
 import pytest
@@ -90,9 +91,7 @@ class TestEventHandler:
         assert sorted_handlers[2].name == "Third"
 
     @pytest.mark.asyncio
-    async def test_can_handle_wrapper_adds_tracing(
-        self, mock_cloud_event, mock_context
-    ):
+    async def test_can_handle_wrapper_adds_tracing(self, mock_cloud_event, mock_context):
         """Test can_handle wrapper adds OpenTelemetry tracing."""
 
         class TestHandler(EventHandler):
@@ -106,9 +105,7 @@ class TestEventHandler:
 
         with patch("base.src.handler.event_handler.tracer") as mock_tracer:
             mock_span = MagicMock()
-            mock_tracer.start_as_current_span.return_value.__enter__.return_value = (
-                mock_span
-            )
+            mock_tracer.start_as_current_span.return_value.__enter__.return_value = mock_span
 
             result = await handler.can_handle(mock_cloud_event, mock_context)
 
@@ -131,9 +128,7 @@ class TestEventHandler:
 
         with patch("base.src.handler.event_handler.tracer") as mock_tracer:
             mock_span = MagicMock()
-            mock_tracer.start_as_current_span.return_value.__enter__.return_value = (
-                mock_span
-            )
+            mock_tracer.start_as_current_span.return_value.__enter__.return_value = mock_span
 
             result = await handler.handle(mock_cloud_event, mock_context)
 

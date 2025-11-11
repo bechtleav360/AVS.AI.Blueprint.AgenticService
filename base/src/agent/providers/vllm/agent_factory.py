@@ -1,7 +1,7 @@
 """vLLM agent factory implementation."""
 
 import logging
-from typing import Any, List, Optional, Type
+from typing import Any
 
 from pydantic import BaseModel
 from pydantic_ai import Agent, Tool
@@ -18,10 +18,10 @@ class VLLMAgentFactory(AgentFactoryStrategy):
     def create_agent(
         self,
         model: Model,
-        tools: List[Tool],
+        tools: list[Tool],
         system_prompt: str,
-        deps_type: Type[Any],
-        result_type: Optional[Type[BaseModel]] = None,
+        deps_type: type[Any],
+        result_type: type[BaseModel] | None = None,
     ) -> Agent:
         """Create agent configured for vLLM.
 
@@ -38,9 +38,7 @@ class VLLMAgentFactory(AgentFactoryStrategy):
         Returns:
             Configured Agent instance.
         """
-        logger.info(
-            "Creating vLLM agent with %d tools (no output_type constraint)", len(tools)
-        )
+        logger.info("Creating vLLM agent with %d tools (no output_type constraint)", len(tools))
 
         return Agent(
             model=model,

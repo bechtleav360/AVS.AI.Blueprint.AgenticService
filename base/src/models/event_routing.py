@@ -1,6 +1,5 @@
 """Event routing configuration models."""
 
-from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -13,7 +12,7 @@ class EventRoutingConfig(BaseModel):
     """
 
     topic: str = Field(..., description="The topic/exchange to publish to")
-    routing_key: Optional[str] = Field(
+    routing_key: str | None = Field(
         None,
         description="Optional routing key for topic-based routing (e.g., 'invoice.processed.success')",
     )
@@ -31,13 +30,9 @@ class HandlerEventConfig(BaseModel):
     events should be routed.
     """
 
-    event_type: str = Field(
-        ..., description="CloudEvent type (e.g., 'agent.output.invoice.processed')"
-    )
+    event_type: str = Field(..., description="CloudEvent type (e.g., 'agent.output.invoice.processed')")
     topic: str = Field(..., description="Topic/exchange to publish to")
-    routing_key: Optional[str] = Field(
-        None, description="Optional routing key for advanced routing"
-    )
+    routing_key: str | None = Field(None, description="Optional routing key for advanced routing")
 
     class Config:
         """Pydantic configuration."""

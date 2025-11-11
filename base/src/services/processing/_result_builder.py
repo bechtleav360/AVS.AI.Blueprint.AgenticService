@@ -1,13 +1,13 @@
 """Result builder for processing outcomes."""
 
-from typing import Any, Dict, Optional
+from typing import Any
 
 
 class _ResultBuilder:
     """Builds processing result data structures."""
 
     @staticmethod
-    def extract_handler_result(handler_result: Any) -> tuple[Optional[str], Optional[Any], Dict[str, Any]]:
+    def extract_handler_result(handler_result: Any) -> tuple[str | None, Any | None, dict[str, Any]]:
         """
         Extract event_type, data, and metadata from handler result.
 
@@ -33,9 +33,7 @@ class _ResultBuilder:
         return event_type_to_publish, result_data_dict, result_metadata
 
     @staticmethod
-    def build_result_data(
-        request_id: str, handler_result: Any, event_type_to_publish: Optional[str]
-    ) -> Dict[str, Any]:
+    def build_result_data(request_id: str, handler_result: Any, event_type_to_publish: str | None) -> dict[str, Any]:
         """
         Build result data dictionary.
 

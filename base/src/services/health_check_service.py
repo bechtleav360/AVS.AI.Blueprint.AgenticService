@@ -2,7 +2,6 @@
 
 import logging
 import uuid
-from typing import Optional
 
 import httpx
 
@@ -30,7 +29,7 @@ class AIProviderHealthChecker:
             )
 
         ai_config: AIConfig = self.config.get_ai_config()
-        provider: Optional[str] = ai_config.provider
+        provider: str | None = ai_config.provider
 
         if not provider:
             return ComponentHealth(
@@ -39,14 +38,14 @@ class AIProviderHealthChecker:
             )
 
         if provider == "vllm":
-            base_url: Optional[str] = ai_config.base_url
+            base_url: str | None = ai_config.base_url
             if not base_url:
                 return ComponentHealth(
                     status="unhealthy",
                     message="vLLM base_url not configured",
                 )
 
-            api_key: Optional[str] = ai_config.api_key
+            api_key: str | None = ai_config.api_key
             if not api_key:
                 return ComponentHealth(
                     status="unhealthy",
@@ -56,9 +55,7 @@ class AIProviderHealthChecker:
             try:
                 headers = {"Authorization": f"Bearer {api_key}"}
                 # Suppress httpx INFO logs for health checks
-                async with httpx.AsyncClient(
-                    event_hooks={"request": [], "response": []}
-                ) as client:
+                async with httpx.AsyncClient(event_hooks={"request": [], "response": []}) as client:
                     # vLLM servers have a /health endpoint at the root, not under /v1
                     # Remove /v1 suffix if present
                     health_url = base_url.rstrip("/").removesuffix("/v1") + "/health"
@@ -91,7 +88,7 @@ class AIProviderHealthChecker:
 class DaprPubSubHealthChecker:
     """Health check for RabbitMQ connectivity through Dapr pubsub."""
 
-    def __init__(self, config: Config, pubsub_name: Optional[str] = None) -> None:
+    def __init__(self, config: Config, pubsub_name: str | None = None) -> None:
         self.config: Config = config
         self.enabled: bool = config.get("health_check_rabbitmq", True)
 
@@ -129,14 +126,10 @@ class DaprPubSubHealthChecker:
 
         try:
             # Suppress httpx INFO logs for health checks
-            async with httpx.AsyncClient(
-                timeout=5.0, event_hooks={"request": [], "response": []}
-            ) as client:
+            async with httpx.AsyncClient(timeout=5.0, event_hooks={"request": [], "response": []}) as client:
                 # Step 1: Check Dapr sidecar health
                 try:
-                    dapr_health_response = await client.get(
-                        f"{self.dapr_base_url}/v1.0/healthz"
-                    )
+                    dapr_health_response = await client.get(f"{self.dapr_base_url}/v1.0/healthz")
                     dapr_health_response.raise_for_status()
                 except httpx.RequestError as e:
                     logger.warning("Dapr sidecar not reachable: %s", e)
@@ -147,9 +140,7 @@ class DaprPubSubHealthChecker:
 
                 # Step 2: Check if pubsub component is loaded
                 try:
-                    metadata_response = await client.get(
-                        f"{self.dapr_base_url}/v1.0/metadata"
-                    )
+                    metadata_response = await client.get(f"{self.dapr_base_url}/v1.0/metadata")
                     metadata_response.raise_for_status()
                     metadata = metadata_response.json()
 
@@ -160,9 +151,7 @@ class DaprPubSubHealthChecker:
                     )
 
                     if not pubsub_component:
-                        logger.warning(
-                            "Pubsub component '%s' not loaded in Dapr", self.pubsub_name
-                        )
+                        logger.warning("Pubsub component '%s' not loaded in Dapr", self.pubsub_name)
                         return ComponentHealth(
                             status="unhealthy",
                             message=f"Pubsub component '{self.pubsub_name}' not loaded in Dapr",
@@ -202,9 +191,7 @@ class DaprPubSubHealthChecker:
                     )
 
         except Exception as e:
-            logger.error(
-                "Unexpected error during RabbitMQ health check: %s", e, exc_info=True
-            )
+            logger.error("Unexpected error during RabbitMQ health check: %s", e, exc_info=True)
             return ComponentHealth(
                 status="unhealthy",
                 message=f"Health check error: {e}",

@@ -2,17 +2,17 @@
 
 import json
 import logging
-from typing import Any, Type
+from typing import Any
 
 from ...response_handler import ResponseHandlerStrategy, T
 
 logger = logging.getLogger(__name__)
 
 
-class OpenAIResponseHandler(ResponseHandlerStrategy[T]):
+class OpenAIResponseHandler(ResponseHandlerStrategy):
     """Response handler for OpenAI models with output_type."""
 
-    def extract_result(self, agent_response: Any, result_type: Type[T]) -> T:
+    def extract_result(self, agent_response: Any, result_type: type[T]) -> T:
         """Extract result from OpenAI response.
 
         OpenAI responses with output_type have the result in the .data attribute.
@@ -41,8 +41,7 @@ class OpenAIResponseHandler(ResponseHandlerStrategy[T]):
 
         # Log diagnostic information
         logger.error(
-            "Failed to extract %s from OpenAI response. "
-            "data type: %s, output type: %s, response type: %s",
+            "Failed to extract %s from OpenAI response. " "data type: %s, output type: %s, response type: %s",
             result_type.__name__,
             type(data).__name__ if data is not None else "None",
             type(output).__name__ if output is not None else "None",
@@ -50,6 +49,5 @@ class OpenAIResponseHandler(ResponseHandlerStrategy[T]):
         )
 
         raise ValueError(
-            f"Could not extract {result_type.__name__} from OpenAI response. "
-            "Ensure the agent is configured with output_type."
+            f"Could not extract {result_type.__name__} from OpenAI response. " "Ensure the agent is configured with output_type."
         )

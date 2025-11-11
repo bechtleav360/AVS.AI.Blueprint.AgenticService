@@ -2,11 +2,11 @@
 
 import logging
 from opentelemetry import trace
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from ..config import Config
-from ..models.events import CloudEvent, GenericCloudEvent
+from ..models.events import CloudEvent
 from .processing._handler_chain import _HandlerChainProcessor
 from .processing._event_publisher import _EventPublisher
 from .processing._health_checker import _HealthChecker
@@ -34,7 +34,7 @@ class ProcessingService:
         component_registry: "ComponentRegistry",
     ) -> None:
         self._settings: Config = settings
-        self._component_registry: "ComponentRegistry" = component_registry
+        self._component_registry: ComponentRegistry = component_registry
         self._handler_chain: _HandlerChainProcessor = _HandlerChainProcessor(component_registry)
         self._event_publisher: _EventPublisher = _EventPublisher(component_registry, settings)
         self._health_checker: _HealthChecker = _HealthChecker(component_registry)
@@ -43,9 +43,9 @@ class ProcessingService:
     async def process_event(
         self,
         event: CloudEvent,
-        context: Optional[Dict[str, Any]] = None,
-        runtime_name: Optional[str] = None,
-        new_subject: Optional[str] = None,
+        context: dict[str, Any] | None = None,
+        runtime_name: str | None = None,
+        new_subject: str | None = None,
     ) -> CloudEvent:
         """
         Process a CloudEvent through the handler chain and optionally through an agent runtime.
@@ -90,14 +90,10 @@ class ProcessingService:
                 handler_result = await self._handler_chain.process(event, context)
 
                 # Extract handler result components
-                event_type_to_publish, result_data_dict, result_metadata = (
-                    self._result_builder.extract_handler_result(handler_result)
-                )
+                event_type_to_publish, result_data_dict, result_metadata = self._result_builder.extract_handler_result(handler_result)
 
                 # Build result data
-                result_data = self._result_builder.build_result_data(
-                    request_id, result_data_dict, event_type_to_publish
-                )
+                result_data = self._result_builder.build_result_data(request_id, result_data_dict, event_type_to_publish)
 
                 logger.debug(
                     "Event processing completed for request %s",
@@ -147,9 +143,9 @@ class ProcessingService:
 
     async def process_rest_request(
         self,
-        payload: Dict[str, Any],
-        context: Optional[Dict[str, Any]] = None,
-        runtime_name: Optional[str] = None,
+        payload: dict[str, Any],
+        context: dict[str, Any] | None = None,
+        runtime_name: str | None = None,
     ) -> CloudEvent:
         """
         Process a REST request by converting it to a CloudEvent and processing.
@@ -173,7 +169,7 @@ class ProcessingService:
 
         return await self.process_event(event, context, runtime_name)
 
-    async def health_check(self) -> Dict[str, Any]:
+    async def health_check(self) -> dict[str, Any]:
         """
         Perform a comprehensive health check of the processing service.
 
@@ -206,8 +202,7 @@ class ProcessingService:
                 span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
                 return {"status": "unhealthy", "error": str(e)}
 
-
-    async def _process_with_runtime(self, runtime_name: Optional[str] = None, context: Any = None, **kwargs) -> Any:
+    async def _process_with_runtime(self, runtime_name: str | None = None, context: Any = None, **kwargs) -> Any:
         """
         Process a request using the specified runtime or default runtime.
 
@@ -266,4 +261,3 @@ class ProcessingService:
                 )
                 span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
                 raise
-

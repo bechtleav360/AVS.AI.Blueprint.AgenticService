@@ -5,8 +5,9 @@ import os
 import platform
 from importlib import metadata
 from importlib.metadata import PackageNotFoundError
-from typing import Any, Dict, List, Optional, Protocol
+from typing import Any, Protocol
 
+import httpx
 from fastapi import APIRouter, HTTPException, status
 from opentelemetry import trace
 
@@ -32,9 +33,7 @@ class HealthCheckProvider(Protocol):
 class ActuatorApi:
     """Encapsulates all actuator-related endpoints and logic."""
 
-    def __init__(
-        self, config: Optional[Config] = None, **dependencies: HealthCheckProvider
-    ):
+    def __init__(self, config: Config | None = None, **dependencies: HealthCheckProvider):
         self.router = APIRouter()
         self.config = config
         self.dependencies = dependencies
@@ -91,13 +90,11 @@ class ActuatorApi:
         """Readiness probe to check if the service is ready to accept traffic."""
         with tracer.start_as_current_span("api.readiness_probe") as span:
             try:
-                components: Dict[str, ComponentHealth] = {}
+                components: dict[str, ComponentHealth] = {}
                 for name, dependency in self.dependencies.items():
                     components[name] = await dependency.health_check()
 
-                all_healthy = all(
-                    component.status == "healthy" for component in components.values()
-                )
+                all_healthy = all(component.status == "healthy" for component in components.values())
 
                 overall_status = "UP" if all_healthy else "DOWN"
 
@@ -111,7 +108,7 @@ class ActuatorApi:
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail="Health check failed",
-                )
+                ) from exc
 
     async def liveness_probe(self) -> LivenessResponse:
         """Liveness probe to indicate the service is running."""
@@ -139,9 +136,7 @@ class ActuatorApi:
         except AttributeError:  # pragma: no cover - defensive
             raw_config = {}
 
-        logger.info(
-            "Returning environment status for env %s", config.settings.current_env
-        )
+        logger.info("Returning environment status for env %s", config.settings.current_env)
 
         return EnvironmentStatus(
             environment=config.settings.current_env,
@@ -152,10 +147,12 @@ class ActuatorApi:
         """Expose AI configuration and provider diagnostics."""
 
         config = self._ensure_config()
-        ai_config = self._sanitize_config(config.get_ai_config())
+        ai_config_model = config.get_ai_config()
+        ai_config_dict = ai_config_model.model_dump() if hasattr(ai_config_model, "model_dump") else ai_config_model
+        ai_config = self._sanitize_config(ai_config_dict)
 
         provider = ai_config.get("provider")
-        vllm_info_data: Optional[VLLMInfo] = None
+        vllm_info_data: VLLMInfo | None = None
 
         if provider == "vllm":
             version = "unknown"
@@ -164,11 +161,11 @@ class ActuatorApi:
             except PackageNotFoundError:
                 pass
 
-            models: Optional[List[str]] = None
-            models_error: Optional[str] = None
+            models: list[str] | None = None
+            models_error: str | None = None
 
-            base_url = config.get_ai_config().get("base_url")
-            api_key = config.get_ai_config().get("api_key")
+            base_url = ai_config_model.base_url
+            api_key = ai_config_model.api_key
 
             if base_url:
                 headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
@@ -214,11 +211,11 @@ class ActuatorApi:
             build_timestamp=os.getenv("BUILD_TIMESTAMP", "unknown"),
         )
 
-    def _sanitize_config(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def _sanitize_config(self, data: dict[str, Any]) -> dict[str, Any]:
         """Mask sensitive keys in configuration dictionaries."""
 
         sensitive = {"api_key", "secret", "token", "password"}
-        sanitized: Dict[str, Any] = {}
+        sanitized: dict[str, Any] = {}
         for key, value in data.items():
             if key.lower() in sensitive:
                 sanitized[key] = "***"

@@ -15,7 +15,7 @@ The framework provides automatic OpenTelemetry tracing for all handlers.
 """
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Union
+from typing import Any
 
 from opentelemetry import trace
 
@@ -23,10 +23,11 @@ from pydantic import BaseModel, ValidationError
 
 from ..config import Config
 from ..models import CloudEvent, HandlerResult
-from ..registry.service_registry import ServiceRegistry
 from ..registry.component_registry import ComponentRegistry
 
 tracer = trace.get_tracer(__name__)
+
+
 class EventHandler(ABC):
     """Abstract base class for event handlers in the chain of responsibility.
 
@@ -60,21 +61,19 @@ class EventHandler(ABC):
 
         self.name = name
         self.priority = priority
-        self.config = None
+        self.config: Config | None = None
 
-        self._registry = None
-        self._component_registry = None
+        self._registry: ComponentRegistry | None = None
+        self._component_registry: ComponentRegistry | None = None
 
     def with_config(self, config: Config) -> "EventHandler":
-        """Adds config via dependency injection, so that handlers can access environment variables during runtime
-        """
+        """Adds config via dependency injection, so that handlers can access environment variables during runtime"""
 
         self.config = config
         return self
 
-    def link_service_registry(self, registry: "ServiceRegistry") -> None:
-        """Link the service registry to the handler.
-        """
+    def link_service_registry(self, registry: "ComponentRegistry") -> None:
+        """Link the component registry to the handler."""
 
         self._registry = registry
 
@@ -86,7 +85,7 @@ class EventHandler(ABC):
 
         self._component_registry = registry
 
-    async def can_handle(self, event: CloudEvent, context: Dict[str, Any]) -> bool:
+    async def can_handle(self, event: CloudEvent, context: dict[str, Any]) -> bool:
         """Framework method that adds tracing around capability checks.
 
         Do not override this method. Override can_handle_event() instead.
@@ -97,9 +96,7 @@ class EventHandler(ABC):
             span.set_attribute("handler.priority", self.priority)
             return await self.can_handle_event(event, context)
 
-    async def handle(
-        self, event: CloudEvent, context: Dict[str, Any]
-    ) -> Optional[Union[Any, HandlerResult]]:
+    async def handle(self, event: CloudEvent, context: dict[str, Any]) -> Any | HandlerResult | None:
         """Framework method that adds tracing around handler execution.
 
         Do not override this method. Override handle_event() instead.
@@ -122,9 +119,7 @@ class EventHandler(ABC):
             return result
 
     @abstractmethod
-    async def can_handle_event(
-        self, event: CloudEvent, context: Dict[str, Any]
-    ) -> bool:
+    async def can_handle_event(self, event: CloudEvent, context: dict[str, Any]) -> bool:
         """Determine if this handler should process the event.
 
         Override this method in your handler implementation.
@@ -140,9 +135,7 @@ class EventHandler(ABC):
         pass
 
     @abstractmethod
-    async def handle_event(
-        self, event: CloudEvent, context: Dict[str, Any]
-    ) -> Optional[Union[Any, HandlerResult]]:
+    async def handle_event(self, event: CloudEvent, context: dict[str, Any]) -> Any | HandlerResult | None:
         """Process the event and optionally return a result.
 
         Override this method in your handler implementation.
@@ -190,15 +183,12 @@ class EventHandler(ABC):
         """
 
         if not hasattr(self, "_component_registry") or self._component_registry is None:
-            raise RuntimeError(
-                f"Component registry not linked to handler '{self.name}'. "
-                "This is a framework initialization error."
-            )
+            raise RuntimeError(f"Component registry not linked to handler '{self.name}'. " "This is a framework initialization error.")
 
         agent_registry = self._component_registry.get_agent_registry()
         return agent_registry.get(agent_name)
 
-    def get_published_event_types(self) -> Optional[Tuple[str, str]]:
+    def get_published_event_types(self) -> tuple[str, str] | None:
         """Declare the event types this handler publishes.
 
         Override this method to declare which event types this handler produces
@@ -221,7 +211,6 @@ class EventHandler(ABC):
         return None
 
     def __lt__(self, other: "EventHandler") -> bool:
-        """Support sorting by priority.
-        """
+        """Support sorting by priority."""
 
         return self.priority < other.priority

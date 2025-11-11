@@ -1,7 +1,7 @@
 """vLLM model provider implementation."""
 
 import logging
-from typing import TYPE_CHECKING, Any, Dict, Union
+from typing import TYPE_CHECKING, Any, Union
 
 from openai import AsyncOpenAI
 from pydantic_ai.models import Model
@@ -23,7 +23,7 @@ class VLLMModelProvider(ModelProviderStrategy):
     def get_provider_name(self) -> str:
         return "vllm"
 
-    def create_model(self, ai_config: Union[Dict[str, Any], "AIConfig"]) -> Model:
+    def create_model(self, ai_config: Union[dict[str, Any], "AIConfig"]) -> Model:
         """Create vLLM model configuration.
 
         Args:

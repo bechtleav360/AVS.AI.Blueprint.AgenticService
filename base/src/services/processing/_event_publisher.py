@@ -1,7 +1,7 @@
 """Event publisher for handling event publication."""
 
 import logging
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from ...config import Config
@@ -18,7 +18,7 @@ class _EventPublisher:
     """Publishes events to configured topics."""
 
     def __init__(self, component_registry: "ComponentRegistry", settings: Config) -> None:
-        self._component_registry: "ComponentRegistry" = component_registry
+        self._component_registry: ComponentRegistry = component_registry
         self._settings: Config = settings
 
     async def publish_result_event(self, result_event: GenericCloudEvent) -> None:
@@ -35,7 +35,7 @@ class _EventPublisher:
                 return
 
             event_pub_config: EventPublishingConfig = self._settings.get_event_publishing_config()
-            topic_mapping: Dict[str, Any] = {k: v.model_dump() for k, v in event_pub_config.topic_mapping.items()}
+            topic_mapping: dict[str, Any] = {k: v.model_dump() for k, v in event_pub_config.topic_mapping.items()}
 
             if result_event.type in topic_mapping:
                 topic_config = topic_mapping[result_event.type]
@@ -73,9 +73,9 @@ class _EventPublisher:
         self,
         event_type: str,
         data: Any,
-        metadata: Dict[str, Any],
+        metadata: dict[str, Any],
         source_event: CloudEvent,
-        new_subject: Optional[str] = None,
+        new_subject: str | None = None,
     ) -> None:
         """
         Publish an event from a handler result.

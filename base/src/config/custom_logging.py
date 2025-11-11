@@ -37,9 +37,7 @@ class LoggingManager:
                 self._suppress_noisy_loggers()
 
             self._configured = True
-            self.logger.info(
-                "Logging configured: level=%s, format=%s", log_level, log_format
-            )
+            self.logger.info("Logging configured: level=%s, format=%s", log_level, log_format)
 
         except Exception as exc:
             # Fallback to print if logging setup fails

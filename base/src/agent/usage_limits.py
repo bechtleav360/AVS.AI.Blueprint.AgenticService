@@ -1,7 +1,7 @@
 """Utility for building usage limits from configuration."""
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any
 
 from pydantic_ai.usage import UsageLimits
 
@@ -12,7 +12,7 @@ class UsageLimitsBuilder:
     """Builder for creating UsageLimits from configuration."""
 
     @staticmethod
-    def build_from_config(ai_config: Dict[str, Any]) -> Optional[UsageLimits]:
+    def build_from_config(ai_config: dict[str, Any]) -> UsageLimits | None:
         """Build UsageLimits from AI configuration.
 
         Args:

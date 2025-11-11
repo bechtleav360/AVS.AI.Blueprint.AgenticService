@@ -1,7 +1,7 @@
 """OpenAI model provider implementation."""
 
 import logging
-from typing import TYPE_CHECKING, Any, Dict, Union
+from typing import TYPE_CHECKING, Any, Union
 
 from openai import AsyncOpenAI
 from pydantic_ai.models import Model
@@ -22,7 +22,7 @@ class OpenAIModelProvider(ModelProviderStrategy):
     def get_provider_name(self) -> str:
         return "openai"
 
-    def create_model(self, ai_config: Union[Dict[str, Any], "AIConfig"]) -> Model:
+    def create_model(self, ai_config: Union[dict[str, Any], "AIConfig"]) -> Model:
         """Create OpenAI model configuration.
 
         Args:

@@ -1,7 +1,7 @@
 """Generic result models for agent processing outcomes."""
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field, validator
@@ -10,9 +10,7 @@ from pydantic import BaseModel, Field, validator
 class Evidence(BaseModel):
     """A piece of evidence supporting a conclusion."""
 
-    type: str = Field(
-        ..., description="Type of evidence (e.g., 'tag', 'api_response')."
-    )
+    type: str = Field(..., description="Type of evidence (e.g., 'tag', 'api_response').")
     source: str = Field(..., description="The source of the evidence.")
     value: Any = Field(..., description="The actual evidence content.")
     confidence: float = Field(
@@ -21,17 +19,13 @@ class Evidence(BaseModel):
         le=1.0,
         description="Confidence score for this piece of evidence (0.0-1.0).",
     )
-    description: Optional[str] = Field(
-        None, description="A human-readable description of the evidence."
-    )
+    description: str | None = Field(None, description="A human-readable description of the evidence.")
 
 
 class AgentOutput(BaseModel):
     """A generic, structured output from an agent's analysis."""
 
-    resource_id: str = Field(
-        ..., description="The unique identifier of the resource that was analyzed."
-    )
+    resource_id: str = Field(..., description="The unique identifier of the resource that was analyzed.")
     status: str = Field(
         ...,
         description="The final determined status of the resource (e.g., 'compliant', 'vulnerable').",
@@ -43,37 +37,23 @@ class AgentOutput(BaseModel):
         description="The overall confidence in the status determination.",
     )
 
-    evidence: List[Evidence] = Field(
+    evidence: list[Evidence] = Field(
         default_factory=list,
         description="A list of evidence supporting the conclusion.",
     )
-    reasoning: Optional[str] = Field(
-        None, description="The reasoning process or explanation from the AI agent."
-    )
-    recommendations: List[str] = Field(
-        default_factory=list, description="Actionable recommendations for the user."
-    )
-    risk_level: Optional[str] = Field(
-        None, description="An assessed risk level (e.g., 'low', 'medium', 'high')."
-    )
+    reasoning: str | None = Field(None, description="The reasoning process or explanation from the AI agent.")
+    recommendations: list[str] = Field(default_factory=list, description="Actionable recommendations for the user.")
+    risk_level: str | None = Field(None, description="An assessed risk level (e.g., 'low', 'medium', 'high').")
 
     processed_at: datetime = Field(
         default_factory=datetime.utcnow,
         description="The timestamp of when the analysis was performed.",
     )
-    agent_version: Optional[str] = Field(
-        None, description="The version of the agent that performed the analysis."
-    )
-    processing_time_ms: Optional[int] = Field(
-        None, description="The total processing time in milliseconds."
-    )
+    agent_version: str | None = Field(None, description="The version of the agent that performed the analysis.")
+    processing_time_ms: int | None = Field(None, description="The total processing time in milliseconds.")
 
-    correlation_id: Optional[UUID] = Field(
-        None, description="A correlation ID for tracing the request through systems."
-    )
-    event_id: Optional[UUID] = Field(
-        None, description="The ID of the event that may have triggered this analysis."
-    )
+    correlation_id: UUID | None = Field(None, description="A correlation ID for tracing the request through systems.")
+    event_id: UUID | None = Field(None, description="The ID of the event that may have triggered this analysis.")
 
     @validator("evidence")
     def sort_evidence_by_confidence(cls, v):
@@ -86,12 +66,8 @@ class AgentOutput(BaseModel):
 class AnalysisRequest(BaseModel):
     """A generic request to analyze a resource."""
 
-    resource_id: Optional[str] = Field(
-        None, description="The ID of a resource to fetch and analyze."
-    )
-    resource: Optional[Dict[str, Any]] = Field(
-        None, description="The full resource data to analyze directly."
-    )
+    resource_id: str | None = Field(None, description="The ID of a resource to fetch and analyze.")
+    resource: dict[str, Any] | None = Field(None, description="The full resource data to analyze directly.")
 
     force_recheck: bool = Field(
         default=False,
@@ -111,12 +87,6 @@ class AnalysisRequest(BaseModel):
 class AnalysisResponse(BaseModel):
     """A generic response containing the result of an analysis."""
 
-    success: bool = Field(
-        ..., description="Indicates whether the analysis was successfully completed."
-    )
-    result: Optional[AgentOutput] = Field(
-        None, description="The output of the analysis if successful."
-    )
-    error: Optional[str] = Field(
-        None, description="An error message if the analysis failed."
-    )
+    success: bool = Field(..., description="Indicates whether the analysis was successfully completed.")
+    result: AgentOutput | None = Field(None, description="The output of the analysis if successful.")
+    error: str | None = Field(None, description="An error message if the analysis failed.")

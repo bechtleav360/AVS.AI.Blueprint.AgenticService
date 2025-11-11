@@ -1,7 +1,7 @@
 """Root endpoints providing service metadata."""
 
 from importlib import metadata as importlib_metadata
-from typing import Any, Dict
+from typing import Any
 
 from fastapi import APIRouter
 
@@ -32,10 +32,10 @@ class RootApi:
                 # "your-custom-endpoint": "/your-endpoint",
             }
 
-    def _load_project_metadata(self) -> Dict[str, str]:
+    def _load_project_metadata(self) -> dict[str, str]:
         """Load distribution metadata exposed from pyproject configuration."""
         distribution_name = "avs-blueprint-agents"
-        defaults: Dict[str, str] = {
+        defaults: dict[str, str] = {
             "name": "agent-service",
             "version": "0.0.0",
             "description": "Generic microservice blueprint for building intelligent agents",

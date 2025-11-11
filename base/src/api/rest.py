@@ -3,7 +3,7 @@
 import logging
 from http import HTTPStatus
 from time import perf_counter
-from typing import Any, Generic, Type, TypeVar
+from typing import Any, TypeVar
 from uuid import uuid4
 
 from fastapi import APIRouter, Body, HTTPException, Request, status
@@ -18,24 +18,18 @@ from ..services.processing_service import ProcessingService
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
 
-
 # Define a TypeVar for the generic payload model
-PayloadT = TypeVar("PayloadT", bound=BaseModel)
+PayloadT = TypeVar('PayloadT', bound=BaseModel)
 
-
-class RestApi(Generic[PayloadT]):
+class RestApi:
     """Generic OOP wrapper for the REST API router."""
 
-    def __init__(
-        self, payload_type: Type[PayloadT], registry: ComponentRegistry
-    ) -> None:
+    def __init__(self, payload_type: type[PayloadT], registry: ComponentRegistry) -> None:
         self.router = APIRouter()
         self.payload_type = payload_type
         self._component_registry = registry
         # Create processing service with the component registry
-        self._processing_service = ProcessingService(
-            settings=registry.get_settings(), component_registry=registry
-        )
+        self._processing_service = ProcessingService(settings=registry.get_settings(), component_registry=registry)
         self._register_routes()
 
     def _register_routes(self) -> None:
@@ -64,9 +58,7 @@ class RestApi(Generic[PayloadT]):
         ) -> ProcessResourceResponse:
             return await self._process_resource(request, payload)
 
-    async def _process_resource(
-        self, request: Request, payload: PayloadT
-    ) -> ProcessResourceResponse | JSONResponse:
+    async def _process_resource(self, request: Request, payload: PayloadT) -> ProcessResourceResponse | JSONResponse:
         """Generic endpoint for processing resources with illustrative payloads."""
         with tracer.start_as_current_span("api.process_resource") as span:
             request_id = str(uuid4())
@@ -96,9 +88,7 @@ class RestApi(Generic[PayloadT]):
                     "client_ip": request.client.host if request.client else None,
                 }
 
-                result_event = await self._processing_service.process_rest_request(
-                    payload, context
-                )
+                result_event = await self._processing_service.process_rest_request(payload, context)
 
                 # Extract result data from CloudEvent
                 result = result_event.data

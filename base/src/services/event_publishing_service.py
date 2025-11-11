@@ -3,7 +3,7 @@
 import logging
 import httpx
 
-from typing import Any, Dict, Optional
+from typing import Any
 from opentelemetry import trace
 from uuid import uuid4
 
@@ -40,18 +40,27 @@ class EventPublishingService:
         # Load event publishing configuration
         self._pub_config: EventPublishingConfig = self.config.get_event_publishing_config()
         self._default_pubsub_name: str = self._pub_config.default_pubsub_name
-        self._topic_mapping: Dict[str, TopicConfig] = self._pub_config.topic_mapping
+        self._topic_mapping: dict[str, TopicConfig] = self._pub_config.topic_mapping
 
         logger.info(
             "EventPublishingService initialized with pubsub '%s' and %d topic mappings",
             self._default_pubsub_name,
             len(self._topic_mapping),
         )
-        logger.debug("Topic mappings: %s", self._topic_mapping)
+
+        if logger.isEnabledFor(logging.DEBUG):
+            if self._topic_mapping:
+                formatted_mappings = "\n".join(
+                    f"  - {event_type}: topic='{cfg.topic}'" + (f", routing_key='{cfg.routing_key}'" if cfg.routing_key else "")
+                    for event_type, cfg in self._topic_mapping.items()
+                )
+            else:
+                formatted_mappings = "  (no topic mappings configured)"
+            logger.debug("Topic mappings:\n%s", formatted_mappings)
 
     async def publish_event(
-        self, event: CloudEvent, pubsub_name: Optional[str] = None, topic: Optional[str] = None, routing_key: Optional[str] = None
-    ) -> Dict[str, Any]:
+        self, event: CloudEvent, pubsub_name: str | None = None, topic: str | None = None, routing_key: str | None = None
+    ) -> dict[str, Any]:
         """
         Publish a CloudEvent to a topic via Dapr.
 
@@ -163,7 +172,7 @@ class EventPublishingService:
                 span.set_status(trace.Status(trace.StatusCode.ERROR, error_msg))
                 raise
 
-    async def publish_status_event(self, status_data: Dict[str, Any], status: str, event_id: Optional[str] = "") -> Dict[str, Any]:
+    async def publish_status_event(self, status_data: dict[str, Any], status: str, event_id: str | None = "") -> dict[str, Any]:
         """
         Convenience method to publish status events.
 
@@ -179,7 +188,7 @@ class EventPublishingService:
         event = GenericCloudEvent(type=f"agent.status.{status}", data=status_data, id=event_id)
         return await self.publish_event(event)
 
-    def get_topic_for_event_type(self, event_type: str) -> Optional[str]:
+    def get_topic_for_event_type(self, event_type: str) -> str | None:
         """
         Get the topic name for a specific event type.
 

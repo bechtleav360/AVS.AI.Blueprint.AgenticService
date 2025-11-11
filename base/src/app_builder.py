@@ -3,7 +3,7 @@
 import logging
 import sys
 from contextlib import asynccontextmanager
-from typing import Type
+from typing import Any
 
 from fastapi import FastAPI
 from pydantic_ai import Agent
@@ -27,8 +27,8 @@ logger = logging.getLogger(__name__)
 class AppBuilder:
     """Builds the FastAPI application with a fluent interface."""
 
-    def __init__(self, settings_files: list[str] = None, root_path: str = None):
-        # Step 1: Initialize logging
+    def __init__(self, settings_files: list[str] | None = None, root_path: str | None = None):
+        # Step 1: Initialize logging with default INFO level
         self.logging_manager = LoggingManager()
         self.logging_manager.configure(
             log_level="INFO",
@@ -36,24 +36,28 @@ class AppBuilder:
             suppress_noisy_loggers=True,
         )
 
-        # Step 2: Initialize configuration
+        # Step 2: Initialize configuration (may log warnings/errors if required params missing)
         try:
             self.config = Config(settings_files=settings_files, root_path=root_path)
         except ConfigError as exc:
             logger.error("Configuration error: %s", exc)
             sys.exit(1)
 
-        # Step 3: Initialize telemetry (will be configured during startup)
+        # Step 3: Set logging level from configuration
+        config_log_level = self.config.get("log_level", "INFO")
+        self.logging_manager.set_level(config_log_level)
+
+        # Step 4: Initialize telemetry (will be configured during startup)
         self.telemetry_manager = TelemetryManager(settings=self.config)
 
-        self._custom_routers = []
-        self._rest_api_class = None
-        self._handler_classes: list[Type[EventHandler]] = []
+        self._custom_routers: list[dict[str, Any]] = []
+        self._rest_api_class: type | None = None
+        self._handler_classes: list[type[EventHandler]] = []
 
         # Single unified registry for all components
         self._component_registry = ComponentRegistry(settings=self.config)
 
-    def with_handler(self, handler_class: Type[EventHandler]) -> "AppBuilder":
+    def with_handler(self, handler_class: type[EventHandler]) -> "AppBuilder":
         """Register a handler class with the startup manager."""
         self._handler_classes.append(handler_class)
         return self
@@ -63,12 +67,12 @@ class AppBuilder:
         self._component_registry.get_agent_registry().register(name=agent.name, agent=agent)
         return self
 
-    def with_rest_api(self, api_class: Type) -> "AppBuilder":
+    def with_rest_api(self, api_class: type) -> "AppBuilder":
         """Register a custom REST API class."""
         self._rest_api_class = api_class
         return self
 
-    def with_router(self, router, prefix: str = "", tags: list[str] = None) -> "AppBuilder":
+    def with_router(self, router: Any, prefix: str = "", tags: list[str] | None = None) -> "AppBuilder":
         """Add a custom router to the application."""
         self._custom_routers.append({"router": router, "prefix": prefix, "tags": tags or []})
         return self

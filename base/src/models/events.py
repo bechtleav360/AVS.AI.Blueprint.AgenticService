@@ -1,7 +1,7 @@
 """Pydantic models for CloudEvents v1.0 specification."""
 
-from datetime import datetime, timezone
-from typing import Any, Dict, Generic, Literal, Optional, TypeVar
+from datetime import datetime, UTC
+from typing import Any, Generic, Literal, TypeVar
 
 from pydantic import BaseModel, Field, root_validator, field_validator
 from pydantic.config import ConfigDict
@@ -21,17 +21,17 @@ class CloudEvent(BaseModel, Generic[T]):
     type: str = Field(..., description="Type of event that occurred")
 
     # Optional attributes
-    specversion: Optional[Literal["1.0"]] = Field("1.0", description="CloudEvents spec version")
-    source: Optional[str] = Field(None, description="URI reference that identifies the event producer.")
-    subject: Optional[str] = Field(None, description="Subject of the event")
-    time: Optional[str] = Field(
-        default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        description="Timestamp of the event in ISO 8601 format with 'Z' timezone indicator"
+    specversion: Literal["1.0"] | None = Field("1.0", description="CloudEvents spec version")
+    source: str | None = Field(None, description="URI reference that identifies the event producer.")
+    subject: str | None = Field(None, description="Subject of the event")
+    time: str | None = Field(
+        default_factory=lambda: datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        description="Timestamp of the event in ISO 8601 format with 'Z' timezone indicator",
     )
-    datacontenttype: Optional[str] = Field(None, description="Content type of the data")
-    dataschema: Optional[str] = Field(None, description="Schema of the data")
-    data: Optional[T] = Field(None, description="Event payload")
-    data_base64: Optional[str] = Field(None, description="Base64-encoded event payload")
+    datacontenttype: str | None = Field(None, description="Content type of the data")
+    dataschema: str | None = Field(None, description="Schema of the data")
+    data: T | None = Field(None, description="Event payload")
+    data_base64: str | None = Field(None, description="Base64-encoded event payload")
 
     model_config = ConfigDict(
         extra="allow",
@@ -53,7 +53,7 @@ class CloudEvent(BaseModel, Generic[T]):
         },
     )
 
-    @field_validator('time')
+    @field_validator("time")
     def validate_time_format(cls, v):
         """Validate that the time is in ISO 8601 format with timezone."""
         if not isinstance(v, str):
@@ -67,20 +67,20 @@ class CloudEvent(BaseModel, Generic[T]):
             raise ValueError("Time must be in ISO 8601 format with timezone") from e
 
     @root_validator(pre=True)
-    def validate_data_exclusivity(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+    def validate_data_exclusivity(cls, values: dict[str, Any]) -> dict[str, Any]:
         if values.get("data") is not None and values.get("data_base64") is not None:
             raise ValueError("CloudEvent cannot include both 'data' and 'data_base64'")
         return values
 
 
 # A generic CloudEvent for use in API layers, accepting any JSON payload.
-GenericCloudEvent = CloudEvent[Dict[str, Any]]
+GenericCloudEvent = CloudEvent[dict[str, Any]]
 
 
 class HandlerResult(BaseModel):
     """Standardized result emitted by event handlers."""
 
-    event_type: Optional[str] = None
-    subject: Optional[str] = None
-    data: Optional[Dict[str, Any]] = None
-    metadata: Optional[Dict[str, Any]] = None
+    event_type: str | None = None
+    subject: str | None = None
+    data: dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = None

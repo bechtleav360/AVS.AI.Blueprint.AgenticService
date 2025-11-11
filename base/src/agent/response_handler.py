@@ -2,7 +2,7 @@
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Generic, Type, TypeVar
+from typing import Any, TypeVar
 
 from pydantic import BaseModel
 
@@ -11,11 +11,11 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseModel)
 
 
-class ResponseHandlerStrategy(ABC, Generic[T]):
+class ResponseHandlerStrategy(ABC):
     """Abstract strategy for handling AI model responses."""
 
     @abstractmethod
-    def extract_result(self, agent_response: Any, result_type: Type[T]) -> T:
+    def extract_result(self, agent_response: Any, result_type: type[T]) -> T:
         """Extract the typed result from the agent response.
 
         Args:
@@ -61,16 +61,11 @@ class ResponseHandlerFactory:
         cls._ensure_handlers_loaded()
         handler = cls._handlers.get(provider_name)
         if handler is None:
-            raise ValueError(
-                f"No response handler for provider: {provider_name}. "
-                f"Supported providers: {list(cls._handlers.keys())}"
-            )
+            raise ValueError(f"No response handler for provider: {provider_name}. " f"Supported providers: {list(cls._handlers.keys())}")
         return handler
 
     @classmethod
-    def register_handler(
-        cls, provider_name: str, handler: ResponseHandlerStrategy
-    ) -> None:
+    def register_handler(cls, provider_name: str, handler: ResponseHandlerStrategy) -> None:
         """Register a custom response handler strategy.
 
         Args:

@@ -1,7 +1,6 @@
 """OpenTelemetry configuration and setup."""
 
 import logging
-from typing import Optional
 
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
@@ -19,9 +18,9 @@ class TelemetryManager:
 
     def __init__(
         self,
-        settings: Optional[Config] = None,
+        settings: Config | None = None,
         *,
-        logger: Optional[logging.Logger] = None,
+        logger: logging.Logger | None = None,
     ) -> None:
         self.settings = settings
         self.logger = logger or logging.getLogger(self.__class__.__name__)
@@ -33,9 +32,7 @@ class TelemetryManager:
         """Configure OpenTelemetry tracing using the provided settings."""
 
         if self.settings is None:
-            raise ValueError(
-                "TelemetryManager.configure_tracing requires a Config instance"
-            )
+            raise ValueError("TelemetryManager.configure_tracing requires a Config instance")
 
         try:
             observability = self.settings.get_observability_config()
@@ -92,20 +89,14 @@ class TelemetryManager:
         try:
             logging.basicConfig(
                 level=getattr(logging, log_level.upper()),
-                format=(
-                    "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-                    if log_format == "text"
-                    else "%(message)s"
-                ),
+                format=("%(asctime)s - %(name)s - %(levelname)s - %(message)s" if log_format == "text" else "%(message)s"),
             )
 
             logging.getLogger("uvicorn").setLevel(logging.INFO)
             logging.getLogger("httpx").setLevel(logging.WARNING)
             logging.getLogger("opentelemetry").setLevel(logging.WARNING)
 
-            self.logger.info(
-                "Logging configured: level=%s, format=%s", log_level, log_format
-            )
+            self.logger.info("Logging configured: level=%s, format=%s", log_level, log_format)
 
         except Exception as exc:  # pragma: no cover - defensive logging
             print(f"Failed to set up logging: {exc}")
@@ -121,9 +112,7 @@ class TelemetryManager:
             try:
                 # Use gRPC exporter for better performance
                 # gRPC doesn't need /v1/traces path, just host:port
-                exporters.append(
-                    OTLPSpanExporter(endpoint=otlp_endpoint, insecure=True)
-                )
+                exporters.append(OTLPSpanExporter(endpoint=otlp_endpoint, insecure=True))
                 self.logger.info("OTLP gRPC exporter configured for %s", otlp_endpoint)
             except Exception as exc:
                 self.logger.warning("Failed to configure OTLP exporter: %s", exc)
@@ -140,7 +129,7 @@ class TelemetryManager:
 class TracingContext:
     """Context manager for creating and managing spans."""
 
-    def __init__(self, name: str, attributes: Optional[dict] = None):
+    def __init__(self, name: str, attributes: dict | None = None):
         self.name = name
         self.attributes = attributes or {}
         self.span = None

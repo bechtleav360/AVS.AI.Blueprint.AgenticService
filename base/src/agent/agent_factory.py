@@ -2,7 +2,7 @@
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Type
+from typing import Any
 
 from pydantic import BaseModel
 from pydantic_ai import Agent, Tool
@@ -18,10 +18,10 @@ class AgentFactoryStrategy(ABC):
     def create_agent(
         self,
         model: Model,
-        tools: List[Tool],
+        tools: list[Tool],
         system_prompt: str,
-        deps_type: Type[Any],
-        result_type: Optional[Type[BaseModel]] = None,
+        deps_type: type[Any],
+        result_type: type[BaseModel] | None = None,
     ) -> Agent:
         """Create a configured Agent instance.
 
@@ -41,7 +41,7 @@ class AgentFactoryStrategy(ABC):
 class AgentFactory:
     """Factory for creating configured Agent instances based on provider type."""
 
-    _factories: Dict[str, AgentFactoryStrategy] = {}
+    _factories: dict[str, AgentFactoryStrategy] = {}
 
     @classmethod
     def _ensure_factories_loaded(cls) -> None:
@@ -57,10 +57,10 @@ class AgentFactory:
         cls,
         model: Model,
         provider_name: str,
-        tools: List[Tool],
+        tools: list[Tool],
         system_prompt: str,
-        deps_type: Type[Any],
-        result_type: Optional[Type[BaseModel]] = None,
+        deps_type: type[Any],
+        result_type: type[BaseModel] | None = None,
     ) -> Agent:
         """Create a configured Agent instance.
 
@@ -79,9 +79,7 @@ class AgentFactory:
         cls._ensure_factories_loaded()
         factory = cls._factories.get(provider_name)
         if factory is None:
-            logger.warning(
-                "Unknown provider '%s', using OpenAI-style configuration", provider_name
-            )
+            logger.warning("Unknown provider '%s', using OpenAI-style configuration", provider_name)
             factory = cls._factories["openai"]
 
         return factory.create_agent(

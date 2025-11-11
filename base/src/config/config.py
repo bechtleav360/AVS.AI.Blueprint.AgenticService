@@ -14,7 +14,6 @@ from ..models.config import (
     EventPublishingConfig,
     ObservabilityConfig,
     PromptConfig,
-    RuntimeConfig,
     UsageLimits,
 )
 

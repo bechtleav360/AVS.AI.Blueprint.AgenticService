@@ -1,6 +1,6 @@
 """Status-related data models for actuator endpoints."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 from pydantic.config import ConfigDict
@@ -14,7 +14,7 @@ class EnvironmentStatus(BaseModel):
         description="Current environment name.",
         examples=["development", "production"],
     )
-    settings: Dict[str, Any] = Field(
+    settings: dict[str, Any] = Field(
         ...,
         description="Sanitized configuration settings.",
     )
@@ -40,12 +40,12 @@ class VLLMInfo(BaseModel):
         description="vLLM package version.",
         examples=["0.6.0"],
     )
-    models: Optional[List[str]] = Field(
+    models: list[str] | None = Field(
         default=None,
         description="Available models from vLLM server.",
         examples=[["qwen2.5-7b-instruct"]],
     )
-    models_error: Optional[str] = Field(
+    models_error: str | None = Field(
         default=None,
         description="Error message if models query failed.",
     )
@@ -54,11 +54,11 @@ class VLLMInfo(BaseModel):
 class LLMStatus(BaseModel):
     """AI/LLM provider configuration and diagnostics."""
 
-    config: Dict[str, Any] = Field(
+    config: dict[str, Any] = Field(
         ...,
         description="Sanitized AI configuration.",
     )
-    vllm: Optional[VLLMInfo] = Field(
+    vllm: VLLMInfo | None = Field(
         default=None,
         description="vLLM-specific information (if provider is vllm).",
     )
@@ -108,7 +108,7 @@ class BuildStatus(BaseModel):
         description="Operating system platform.",
         examples=["Linux-5.15.0-x86_64"],
     )
-    settings_files: List[str] = Field(
+    settings_files: list[str] = Field(
         ...,
         description="Configuration files loaded.",
         examples=[["/app/settings.toml", "/app/.secrets.toml"]],

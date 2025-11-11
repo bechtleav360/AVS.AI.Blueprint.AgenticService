@@ -1,6 +1,6 @@
 """API-related data models for the agent service."""
 
-from typing import Any, Dict, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 from pydantic.config import ConfigDict
@@ -13,41 +13,41 @@ class CloudEventDataPayload(BaseModel):
     should extend or replace this model with domain-specific fields.
     """
 
-    tenant_id: Optional[str] = Field(
+    tenant_id: str | None = Field(
         default=None,
         alias="tenantId",
         description="Tenant identifier (example field - customize as needed)",
         examples=["tenant-42"],
     )
-    asset_id: Optional[str] = Field(
+    asset_id: str | None = Field(
         default=None,
         alias="assetId",
         description="Asset identifier (example field - customize as needed)",
         examples=["asset-12345"],
     )
-    resource_type: Optional[str] = Field(
+    resource_type: str | None = Field(
         default=None,
         alias="resourceType",
         description="Resource type (example field - customize as needed)",
         examples=["database"],
     )
-    correlation_id: Optional[str] = Field(
+    correlation_id: str | None = Field(
         default=None,
         alias="correlationId",
         description="Correlation identifier propagated across services.",
         examples=["7aa7f7b8-5ed9-4f43-bab3-d4a6e67f2fd5"],
     )
-    result: Optional[str] = Field(
+    result: str | None = Field(
         default=None,
         description="Outcome reported by the event (if applicable).",
         examples=["success"],
     )
-    details: Dict[str, Any] = Field(
+    details: dict[str, Any] = Field(
         default_factory=dict,
         description="Domain-specific details forwarded from the event.",
         examples=[{"snapshot_id": "snap-01", "duration_ms": 5230}],
     )
-    attributes: Dict[str, Any] = Field(
+    attributes: dict[str, Any] = Field(
         default_factory=dict,
         description="Additional attributes included in the CloudEvent data.",
         examples=[{"region": "westeurope", "backup_enabled": True}],
@@ -95,17 +95,17 @@ class ProcessResourceRequest(BaseModel):
         description="Unique identifier for the resource to process",
         examples=["res-12345", "invoice-789", "asset-456"],
     )
-    tenant_id: Optional[str] = Field(
+    tenant_id: str | None = Field(
         None,
         description="Tenant identifier for multi-tenant scenarios",
         examples=["tenant-42"],
     )
-    operation: Optional[str] = Field(
+    operation: str | None = Field(
         None,
         description="Operation to perform on the resource",
         examples=["analyze", "validate", "transform", "process"],
     )
-    parameters: Dict[str, Any] = Field(
+    parameters: dict[str, Any] = Field(
         default_factory=dict,
         description="Additional parameters for the operation",
         examples=[{"include_details": True, "language": "en"}],
@@ -151,9 +151,7 @@ class ProcessResourceResponse(BaseModel):
 class LivenessResponse(BaseModel):
     """Response for the liveness probe."""
 
-    status: str = Field(
-        ..., description="Indicates the service is running.", examples=["UP"]
-    )
+    status: str = Field(..., description="Indicates the service is running.", examples=["UP"])
 
 
 class ComponentHealth(BaseModel):
@@ -164,7 +162,7 @@ class ComponentHealth(BaseModel):
         description="Health status of the component.",
         examples=["healthy", "unhealthy"],
     )
-    message: Optional[str] = Field(
+    message: str | None = Field(
         default=None,
         description="An optional message providing more details on the component's status.",
         examples=["Connection successful."],
@@ -187,7 +185,7 @@ class ReadinessResponse(BaseModel):
         description="Overall health status of the service.",
         examples=["UP", "DOWN"],
     )
-    components: Dict[str, ComponentHealth] = Field(
+    components: dict[str, ComponentHealth] = Field(
         ...,
         description="Health status of individual components.",
     )

@@ -3,7 +3,7 @@
 import inspect
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Union
 
 if TYPE_CHECKING:
     from ..models.config import PromptConfig
@@ -20,9 +20,7 @@ class PromptLoader:
     """
 
     @staticmethod
-    def load_prompt(
-        prompt_name: str, agent_class: type, config: Optional[Union[Dict[str, Any], "PromptConfig"]] = None
-    ) -> str:
+    def load_prompt(prompt_name: str, agent_class: type, config: Union[dict[str, Any], "PromptConfig", None] = None) -> str:
         """Load a system prompt file based on the agent class location.
 
         Searches for the prompt file in multiple locations:
@@ -45,9 +43,7 @@ class PromptLoader:
         Raises:
             FileNotFoundError: If prompt file doesn't exist in any location.
         """
-        search_paths = PromptLoader._get_prompt_search_paths(
-            prompt_name, agent_class, config
-        )
+        search_paths = PromptLoader._get_prompt_search_paths(prompt_name, agent_class, config)
 
         for prompt_path in search_paths:
             if prompt_path.exists():
@@ -57,14 +53,13 @@ class PromptLoader:
         # If not found in any location, raise error with all attempted paths
         searched_locations = "\n  - ".join(str(p) for p in search_paths)
         raise FileNotFoundError(
-            f"Prompt file '{prompt_name}.prompt' not found for {agent_class.__name__}. "
-            f"Searched locations:\n  - {searched_locations}"
+            f"Prompt file '{prompt_name}.prompt' not found for {agent_class.__name__}. " f"Searched locations:\n  - {searched_locations}"
         )
 
     @staticmethod
     def _get_prompt_search_paths(
-        prompt_name: str, agent_class: type, config: Optional[Union[Dict[str, Any], "PromptConfig"]] = None
-    ) -> List[Path]:
+        prompt_name: str, agent_class: type, config: Union[dict[str, Any], "PromptConfig", None] = None
+    ) -> list[Path]:
         """Get list of paths to search for the prompt file.
 
         Args:
@@ -79,7 +74,7 @@ class PromptLoader:
         module_dir = subclass_file.parent
         filename = f"{prompt_name}.prompt"
 
-        search_paths: List[Path] = []
+        search_paths: list[Path] = []
 
         # 1. Add custom path from config if provided
         if config:
@@ -128,9 +123,7 @@ class PromptLoader:
                         len(search_paths_config),
                     )
                 else:
-                    logger.warning(
-                        "Invalid search_paths config type: %s", type(search_paths_config)
-                    )
+                    logger.warning("Invalid search_paths config type: %s", type(search_paths_config))
 
         # 3. Add default search paths based on agent class location
         default_paths = [
@@ -152,7 +145,7 @@ class PromptLoader:
     def load_instruction_prompt(
         prompt_name: str,
         caller_class: type,
-        config: Optional[Union[Dict[str, Any], "PromptConfig"]] = None,
+        config: Union[dict[str, Any], "PromptConfig", None] = None,
         **template_vars: Any,
     ) -> str:
         """Load an instruction prompt file and format it with template variables.
@@ -199,8 +192,7 @@ class PromptLoader:
             return formatted
         except KeyError as e:
             raise KeyError(
-                f"Missing template variable in prompt '{prompt_name}': {e}. "
-                f"Available variables: {list(template_vars.keys())}"
+                f"Missing template variable in prompt '{prompt_name}': {e}. " f"Available variables: {list(template_vars.keys())}"
             ) from e
 
     @staticmethod
@@ -222,8 +214,6 @@ class PromptLoader:
         module_dir = subclass_file.parent  # e.g., .../custom/agent
         prompt_dir = module_dir.parent / "prompts"  # e.g., .../custom/prompts
 
-        logger.debug(
-            "Resolved prompt directory for %s: %s", agent_class.__name__, prompt_dir
-        )
+        logger.debug("Resolved prompt directory for %s: %s", agent_class.__name__, prompt_dir)
 
         return prompt_dir

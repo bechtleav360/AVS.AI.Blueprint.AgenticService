@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+import textwrap
 
 from base.src.config import Config
 from base.src.models import CloudEvent
@@ -49,6 +50,40 @@ class TestEventPublishingService:
         assert service._dapr_base_url == "http://localhost:3500"
         assert service._default_pubsub_name == "pubsub"
         assert len(service._topic_mapping) == 7
+
+    def test_topic_mapping_parsing_from_string(self):
+        """Topic mapping should be parsed from string-based env override."""
+
+        mapping_string = textwrap.dedent(
+            """{
+                'invoice.validated': { topic: 'test.connection', routing_key: 'valid' },
+                'invoice.invalidated': { topic: 'test.connection', routing_key: 'invalid' },
+                'invoice.analysis.error': { topic: 'test.connection', routing_key: 'error' }
+            }"""
+        )
+
+        config = EventPublishingConfig(topic_mapping=mapping_string)
+
+        assert config.topic_mapping["invoice.validated"].topic == "test.connection"
+        assert config.topic_mapping["invoice.validated"].routing_key == "valid"
+        assert config.topic_mapping["invoice.invalidated"].topic == "test.connection"
+        assert config.topic_mapping["invoice.invalidated"].routing_key == "invalid"
+        assert config.topic_mapping["invoice.analysis.error"].routing_key == "error"
+
+    def test_topic_mapping_parsing_from_map_strings(self):
+        """Topic mapping should be parsed from map[...] style env vars."""
+
+        mapping_dict = {
+            "ITEM_FILTERED_EVENT": "map[routing_key:filtered topic:test.connection]",
+            "ITEM_FILTERED_EVENT_ERROR": "map[routing_key:error topic:test.connection]",
+        }
+
+        config = EventPublishingConfig(topic_mapping=mapping_dict)
+
+        assert config.topic_mapping["ITEM_FILTERED_EVENT"].topic == "test.connection"
+        assert config.topic_mapping["ITEM_FILTERED_EVENT"].routing_key == "filtered"
+        assert config.topic_mapping["ITEM_FILTERED_EVENT_ERROR"].topic == "test.connection"
+        assert config.topic_mapping["ITEM_FILTERED_EVENT_ERROR"].routing_key == "error"
 
     def test_get_topic_for_event_type(self, service):
         """Test getting topic for event type."""

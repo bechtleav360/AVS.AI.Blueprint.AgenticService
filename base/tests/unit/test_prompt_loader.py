@@ -84,9 +84,7 @@ class TestPromptLoader:
 
             assert result == "Custom prompt"
 
-    def test_load_instruction_prompt_formats_template(
-        self, mock_agent_class, tmp_path
-    ):
+    def test_load_instruction_prompt_formats_template(self, mock_agent_class, tmp_path):
         """Test load_instruction_prompt formats template with variables."""
         prompt_dir = tmp_path / "prompts"
         prompt_dir.mkdir()
@@ -106,9 +104,7 @@ class TestPromptLoader:
 
             assert result == "Process this: test_data\nWith context: test_context"
 
-    def test_load_instruction_prompt_missing_variable_raises_error(
-        self, mock_agent_class, tmp_path
-    ):
+    def test_load_instruction_prompt_missing_variable_raises_error(self, mock_agent_class, tmp_path):
         """Test load_instruction_prompt raises error for missing variable."""
         prompt_dir = tmp_path / "prompts"
         prompt_dir.mkdir()
@@ -126,9 +122,7 @@ class TestPromptLoader:
                     data="test_data",
                 )
 
-    def test_load_instruction_prompt_with_no_variables(
-        self, mock_agent_class, tmp_path
-    ):
+    def test_load_instruction_prompt_with_no_variables(self, mock_agent_class, tmp_path):
         """Test load_instruction_prompt works with no template variables."""
         prompt_dir = tmp_path / "prompts"
         prompt_dir.mkdir()
@@ -138,22 +132,16 @@ class TestPromptLoader:
         with patch("inspect.getfile") as mock_getfile:
             mock_getfile.return_value = str(tmp_path / "agent.py")
 
-            result = PromptLoader.load_instruction_prompt(
-                "instruction", mock_agent_class, config=None
-            )
+            result = PromptLoader.load_instruction_prompt("instruction", mock_agent_class, config=None)
 
             assert result == "Static instruction with no variables"
 
-    def test_load_instruction_prompt_with_multiple_variables(
-        self, mock_agent_class, tmp_path
-    ):
+    def test_load_instruction_prompt_with_multiple_variables(self, mock_agent_class, tmp_path):
         """Test load_instruction_prompt with multiple template variables."""
         prompt_dir = tmp_path / "prompts"
         prompt_dir.mkdir()
         prompt_file = prompt_dir / "instruction.prompt"
-        prompt_file.write_text(
-            "User: {user}\nAction: {action}\nData: {data}\nPriority: {priority}"
-        )
+        prompt_file.write_text("User: {user}\nAction: {action}\nData: {data}\nPriority: {priority}")
 
         with patch("inspect.getfile") as mock_getfile:
             mock_getfile.return_value = str(tmp_path / "agent.py")
@@ -171,9 +159,7 @@ class TestPromptLoader:
             expected = "User: john\nAction: process\nData: invoice\nPriority: high"
             assert result == expected
 
-    def test_load_instruction_prompt_with_dict_variable(
-        self, mock_agent_class, tmp_path
-    ):
+    def test_load_instruction_prompt_with_dict_variable(self, mock_agent_class, tmp_path):
         """Test load_instruction_prompt can format dict variables."""
         prompt_dir = tmp_path / "prompts"
         prompt_dir.mkdir()
@@ -222,9 +208,7 @@ class TestPromptLoader:
 
             assert result == "Found in search path"
 
-    def test_load_instruction_prompt_uses_custom_config(
-        self, mock_agent_class, tmp_path
-    ):
+    def test_load_instruction_prompt_uses_custom_config(self, mock_agent_class, tmp_path):
         """Test load_instruction_prompt respects custom config."""
         custom_dir = tmp_path / "custom"
         custom_dir.mkdir()
@@ -236,15 +220,11 @@ class TestPromptLoader:
         with patch("inspect.getfile") as mock_getfile:
             mock_getfile.return_value = str(tmp_path / "agent.py")
 
-            result = PromptLoader.load_instruction_prompt(
-                "instruction", mock_agent_class, config=config, value="test"
-            )
+            result = PromptLoader.load_instruction_prompt("instruction", mock_agent_class, config=config, value="test")
 
             assert result == "Custom: test"
 
-    def test_load_instruction_prompt_error_shows_available_vars(
-        self, mock_agent_class, tmp_path
-    ):
+    def test_load_instruction_prompt_error_shows_available_vars(self, mock_agent_class, tmp_path):
         """Test error message shows available template variables."""
         prompt_dir = tmp_path / "prompts"
         prompt_dir.mkdir()

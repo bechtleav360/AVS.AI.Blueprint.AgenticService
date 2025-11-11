@@ -1,7 +1,7 @@
 """Chain of responsibility engine for processing events."""
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from opentelemetry import trace
 
@@ -15,7 +15,7 @@ tracer = trace.get_tracer(__name__)
 class DecisionEngine:
     """Chain of responsibility engine for processing events."""
 
-    def __init__(self, handlers: List[EventHandler]):
+    def __init__(self, handlers: list[EventHandler]):
         """
         Initialize the decision engine with a list of handlers.
 
@@ -25,7 +25,7 @@ class DecisionEngine:
         self.handlers = sorted(handlers)
         logger.info("Initialized with handlers: %s", [h.name for h in self.handlers])
 
-    async def process_event(self, event: CloudEvent) -> Optional[Any]:
+    async def process_event(self, event: CloudEvent) -> Any | None:
         """
         Process an event through the chain of responsibility.
 
@@ -35,7 +35,7 @@ class DecisionEngine:
         Returns:
             The final processing result or None if no handler produced a result.
         """
-        context: Dict[str, Any] = {}
+        context: dict[str, Any] = {}
         with tracer.start_as_current_span("decision_engine.process_event") as span:
             span.set_attribute("event.id", str(event.id))
             span.set_attribute("event.type", event.type)

@@ -2,7 +2,7 @@
 
 import logging
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Dict, Union
+from typing import TYPE_CHECKING, Any, Union
 
 from pydantic_ai.models import Model
 
@@ -16,7 +16,7 @@ class ModelProviderStrategy(ABC):
     """Abstract strategy for configuring AI model providers."""
 
     @abstractmethod
-    def create_model(self, ai_config: Union[Dict[str, Any], "AIConfig"]) -> Model:
+    def create_model(self, ai_config: Union[dict[str, Any], "AIConfig"]) -> Model:
         """Create and configure the AI model based on provider-specific settings.
 
         Args:
@@ -36,7 +36,7 @@ class ModelProviderStrategy(ABC):
 class ModelProviderFactory:
     """Factory for creating model provider strategies."""
 
-    _providers: Dict[str, ModelProviderStrategy] = {}
+    _providers: dict[str, ModelProviderStrategy] = {}
 
     @classmethod
     def _ensure_providers_loaded(cls) -> None:
@@ -63,16 +63,11 @@ class ModelProviderFactory:
         cls._ensure_providers_loaded()
         provider = cls._providers.get(provider_name)
         if provider is None:
-            raise ValueError(
-                f"Unsupported AI provider: {provider_name}. "
-                f"Supported providers: {list(cls._providers.keys())}"
-            )
+            raise ValueError(f"Unsupported AI provider: {provider_name}. " f"Supported providers: {list(cls._providers.keys())}")
         return provider
 
     @classmethod
-    def register_provider(
-        cls, provider_name: str, provider: ModelProviderStrategy
-    ) -> None:
+    def register_provider(cls, provider_name: str, provider: ModelProviderStrategy) -> None:
         """Register a custom model provider strategy.
 
         Args:
@@ -83,7 +78,7 @@ class ModelProviderFactory:
         logger.info("Registered custom model provider: %s", provider_name)
 
     @classmethod
-    def create_model(cls, ai_config: Union[Dict[str, Any], "AIConfig"]) -> Model:
+    def create_model(cls, ai_config: Union[dict[str, Any], "AIConfig"]) -> Model:
         """Create a model using the appropriate provider strategy.
 
         Args:

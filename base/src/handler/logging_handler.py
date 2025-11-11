@@ -6,7 +6,7 @@ It can be used in any agent to inspect incoming events.
 
 import json
 import logging
-from typing import Any, Dict, Optional
+from typing import Any
 
 from ..models import CloudEvent
 from .event_handler import EventHandler
@@ -42,13 +42,11 @@ class LoggingHandler(EventHandler):
         super().__init__("LoggingHandler", priority=priority)
         self.log_level = getattr(logging, log_level.upper(), logging.INFO)
 
-    async def _can_handle(self, event: CloudEvent, context: Dict[str, Any]) -> bool:
+    async def _can_handle(self, event: CloudEvent, context: dict[str, Any]) -> bool:
         """Always returns True - this handler processes all events."""
         return True
 
-    async def _handle(
-        self, event: CloudEvent, context: Dict[str, Any]
-    ) -> Optional[Any]:
+    async def _handle(self, event: CloudEvent, context: dict[str, Any]) -> Any | None:
         """
         Log event content to console.
 

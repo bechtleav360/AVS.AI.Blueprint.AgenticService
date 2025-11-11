@@ -2,7 +2,8 @@
 
 import inspect
 import logging
-from typing import Any, Callable, List, Optional, Type
+from collections.abc import Callable
+from typing import Any
 
 from pydantic import BaseModel
 from pydantic_ai import Agent, Tool
@@ -50,11 +51,11 @@ class AgentBuilder:
         """
         self._config = config
         self._runtime_name = runtime_name
-        self._model: Optional[Model] = None
-        self._system_prompt: Optional[str] = None
-        self._tools: List[Tool] = []
-        self._result_type: Type[BaseModel] = BaseModel
-        self._deps_type: Type[Any] = type(None)
+        self._model: Model | None = None
+        self._system_prompt: str | None = None
+        self._tools: list[Tool] = []
+        self._result_type: type[BaseModel] = BaseModel
+        self._deps_type: type[Any] = type(None)
 
     def with_model(self, model_name: str) -> "AgentBuilder":
         """Configure with a specific model name.
@@ -73,7 +74,7 @@ class AgentBuilder:
         logger.debug("Configured agent with model: %s", model_name)
         return self
 
-    def with_model_from_config(self, runtime_name: Optional[str] = None) -> "AgentBuilder":
+    def with_model_from_config(self, runtime_name: str | None = None) -> "AgentBuilder":
         """Configure model from runtime-specific config.
 
         Args:
@@ -105,7 +106,7 @@ class AgentBuilder:
         logger.debug("Configured agent with inline system prompt")
         return self
 
-    def with_system_prompt_file(self, prompt_name: str, runtime_name: Optional[str] = None) -> "AgentBuilder":
+    def with_system_prompt_file(self, prompt_name: str, runtime_name: str | None = None) -> "AgentBuilder":
         """Configure with a system prompt from file.
 
         Args:
@@ -121,7 +122,7 @@ class AgentBuilder:
         logger.debug("Configured agent with system prompt file: %s", prompt_name)
         return self
 
-    def with_system_prompt_from_config(self, runtime_name: Optional[str] = None) -> "AgentBuilder":
+    def with_system_prompt_from_config(self, runtime_name: str | None = None) -> "AgentBuilder":
         """Configure with system prompt from config-specified file.
 
         Uses the system_prompt_name from PromptConfig to load the prompt file.
@@ -141,7 +142,7 @@ class AgentBuilder:
         )
         return self
 
-    def with_tools(self, tools: List[Tool]) -> "AgentBuilder":
+    def with_tools(self, tools: list[Tool]) -> "AgentBuilder":
         """Configure with a list of tools.
 
         Args:
@@ -168,7 +169,7 @@ class AgentBuilder:
         logger.debug("Added tool: %s", name)
         return self
 
-    def with_result_type(self, result_type: Type[BaseModel]) -> "AgentBuilder":
+    def with_result_type(self, result_type: type[BaseModel]) -> "AgentBuilder":
         """Configure the result type for structured outputs.
 
         Args:
@@ -181,7 +182,7 @@ class AgentBuilder:
         logger.debug("Configured agent with result type: %s", result_type.__name__)
         return self
 
-    def with_deps_type(self, deps_type: Type[Any]) -> "AgentBuilder":
+    def with_deps_type(self, deps_type: type[Any]) -> "AgentBuilder":
         """Configure the dependencies type.
 
         Args:
@@ -233,7 +234,7 @@ class AgentBuilder:
 
         # Create agent with configuration
         # Note: result_type is now a generic parameter, not a constructor argument
-        agent = Agent[self._deps_type, self._result_type](
+        agent = Agent[self._deps_type, self._result_type](  # type: ignore[misc]
             model=self._model, system_prompt=self._system_prompt, tools=self._tools if self._tools else [], **kwargs
         )
 

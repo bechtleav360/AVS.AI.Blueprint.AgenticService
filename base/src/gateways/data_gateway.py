@@ -3,15 +3,15 @@
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from typing import Any, Dict, Optional
+from typing import Any
 from urllib.parse import urljoin
 
 import httpx
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
-from ..config import get_data_gateway_config
-from ..models.asset import AssetMetadata
+# Note: get_data_gateway_config and AssetMetadata are not yet implemented
+# This module is a stub for future data gateway integration
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -23,7 +23,7 @@ class DataGatewayError(Exception):
     def __init__(
         self,
         message: str,
-        status_code: Optional[int] = None,
+        status_code: int | None = None,
         is_transient: bool = False,
     ):
         super().__init__(message)
@@ -45,17 +45,13 @@ class CircuitBreaker:
         self.failure_threshold = failure_threshold
         self.timeout_seconds = timeout_seconds
         self.failure_count = 0
-        self.last_failure_time: Optional[datetime] = None
+        self.last_failure_time: datetime | None = None
         self.state = "closed"  # closed, open, half-open
 
     def is_open(self) -> bool:
         """Check if circuit breaker is open."""
         if self.state == "open":
-            if (
-                self.last_failure_time
-                and datetime.utcnow() - self.last_failure_time
-                > timedelta(seconds=self.timeout_seconds)
-            ):
+            if self.last_failure_time and datetime.utcnow() - self.last_failure_time > timedelta(seconds=self.timeout_seconds):
                 self.state = "half-open"
                 return False
             return True
@@ -74,17 +70,18 @@ class CircuitBreaker:
 
         if self.failure_count >= self.failure_threshold:
             self.state = "open"
-            logger.warning(
-                f"Circuit breaker opened after {self.failure_count} failures"
-            )
+            logger.warning(f"Circuit breaker opened after {self.failure_count} failures")
 
 
 class DataGatewayClient:
     """Client for fetching asset data from the data gateway."""
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
+    def __init__(self, config: dict[str, Any] | None = None):
         """Initialize the data gateway client."""
-        self.config = config or get_data_gateway_config()
+        if config is None:
+            raise ValueError("DataGatewayClient requires a config dict. get_data_gateway_config() is not yet implemented.")
+
+        self.config = config
         self.base_url = self.config["base_url"].rstrip("/")
         self.timeout = self.config["timeout"]
         self.api_key = self.config.get("api_key")
@@ -122,9 +119,7 @@ class DataGatewayClient:
         """Close the HTTP client."""
         await self.client.aclose()
 
-    async def get_asset(
-        self, asset_id: str, traceparent: Optional[str] = None
-    ) -> AssetMetadata:
+    async def get_asset(self, asset_id: str, traceparent: str | None = None) -> dict[str, Any]:
         """
         Fetch asset metadata by ID.
 
@@ -167,16 +162,16 @@ class DataGatewayClient:
                     # Handle response
                     if response.status_code == 200:
                         data = response.json()
-                        asset = AssetMetadata(**data)
 
                         # Record success
                         self.circuit_breaker.record_success()
                         span.set_status(Status(StatusCode.OK))
-                        span.set_attribute("asset_type", asset.type)
-                        span.set_attribute("asset_provider", asset.provider)
+                        if isinstance(data, dict):
+                            span.set_attribute("asset_type", data.get("type", "unknown"))
+                            span.set_attribute("asset_provider", data.get("provider", "unknown"))
 
                         logger.info(f"Successfully fetched asset {asset_id}")
-                        return asset
+                        return data
 
                     elif response.status_code == 404:
                         # Asset not found - permanent error
@@ -189,9 +184,7 @@ class DataGatewayClient:
 
                     elif response.status_code in (401, 403):
                         # Authentication/authorization error - permanent
-                        span.set_status(
-                            Status(StatusCode.ERROR, "Authentication failed")
-                        )
+                        span.set_status(Status(StatusCode.ERROR, "Authentication failed"))
                         raise DataGatewayError(
                             f"Authentication failed: {response.status_code}",
                             status_code=response.status_code,
@@ -223,21 +216,15 @@ class DataGatewayClient:
                         )
 
                 except httpx.TimeoutException as e:
-                    last_exception = DataGatewayError(
-                        f"Request timeout: {e}", is_transient=True
-                    )
+                    last_exception = DataGatewayError(f"Request timeout: {e}", is_transient=True)
                     logger.warning(f"Attempt {attempt + 1} timed out")
 
                 except httpx.NetworkError as e:
-                    last_exception = DataGatewayError(
-                        f"Network error: {e}", is_transient=True
-                    )
+                    last_exception = DataGatewayError(f"Network error: {e}", is_transient=True)
                     logger.warning(f"Attempt {attempt + 1} network error: {e}")
 
                 except Exception as e:
-                    last_exception = DataGatewayError(
-                        f"Unexpected error: {e}", is_transient=False
-                    )
+                    last_exception = DataGatewayError(f"Unexpected error: {e}", is_transient=False)
                     logger.error(f"Attempt {attempt + 1} unexpected error: {e}")
                     break  # Don't retry unexpected errors
 
@@ -254,11 +241,9 @@ class DataGatewayClient:
             if last_exception:
                 raise last_exception
             else:
-                raise DataGatewayError(
-                    f"Failed to fetch asset {asset_id} after {self.max_attempts} attempts"
-                )
+                raise DataGatewayError(f"Failed to fetch asset {asset_id} after {self.max_attempts} attempts")
 
-    async def health_check(self) -> Dict[str, Any]:
+    async def health_check(self) -> dict[str, Any]:
         """
         Check the health of the data gateway.
 
@@ -298,9 +283,7 @@ class DataGatewayClient:
                     "circuit_breaker_state": self.circuit_breaker.state,
                 }
 
-    async def get_asset_by_url(
-        self, asset_url: str, traceparent: Optional[str] = None
-    ) -> AssetMetadata:
+    async def get_asset_by_url(self, asset_url: str, traceparent: str | None = None) -> dict[str, Any]:
         """
         Fetch asset metadata by URL (for thin events with asset_url).
 
@@ -334,13 +317,12 @@ class DataGatewayClient:
 
                     if response.status_code == 200:
                         data = response.json()
-                        asset = AssetMetadata(**data)
 
                         self.circuit_breaker.record_success()
                         span.set_status(Status(StatusCode.OK))
 
                         logger.info(f"Successfully fetched asset from URL {asset_url}")
-                        return asset
+                        return data
 
                     elif response.status_code == 404:
                         span.set_status(Status(StatusCode.ERROR, "Asset not found"))
@@ -373,21 +355,15 @@ class DataGatewayClient:
                         )
 
                 except httpx.TimeoutException as e:
-                    last_exception = DataGatewayError(
-                        f"Request timeout: {e}", is_transient=True
-                    )
+                    last_exception = DataGatewayError(f"Request timeout: {e}", is_transient=True)
                     logger.warning(f"Attempt {attempt + 1} timed out")
 
                 except httpx.NetworkError as e:
-                    last_exception = DataGatewayError(
-                        f"Network error: {e}", is_transient=True
-                    )
+                    last_exception = DataGatewayError(f"Network error: {e}", is_transient=True)
                     logger.warning(f"Attempt {attempt + 1} network error: {e}")
 
                 except Exception as e:
-                    last_exception = DataGatewayError(
-                        f"Unexpected error: {e}", is_transient=False
-                    )
+                    last_exception = DataGatewayError(f"Unexpected error: {e}", is_transient=False)
                     logger.error(f"Attempt {attempt + 1} unexpected error: {e}")
                     break
 
@@ -403,6 +379,4 @@ class DataGatewayClient:
             if last_exception:
                 raise last_exception
             else:
-                raise DataGatewayError(
-                    f"Failed to fetch asset from URL {asset_url} after {self.max_attempts} attempts"
-                )
+                raise DataGatewayError(f"Failed to fetch asset from URL {asset_url} after {self.max_attempts} attempts")
