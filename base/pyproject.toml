@@ -69,6 +69,7 @@ packages = [
     "blueprint.agents.models",
     "blueprint.agents.registry",
     "blueprint.agents.services",
+    "blueprint.agents.services.processing",
 ]
 
 [tool.setuptools.package-dir]
@@ -81,6 +82,7 @@ packages = [
 "blueprint.agents.models" = "src/models"
 "blueprint.agents.registry" = "src/registry"
 "blueprint.agents.services" = "src/services"
+"blueprint.agents.services.processing" = "src/services/processing"
 
 [tool.black]
 line-length = 140

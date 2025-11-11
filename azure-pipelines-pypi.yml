@@ -139,11 +139,17 @@ stages:
             displayName: "Rebuild package for publish"
           - task: TwineAuthenticate@1
             inputs:
-              artifactFeed: PyPi-Local
+              artifactFeed: BIoS
             displayName: "Authenticate with Azure Artifacts"
 
           - script: |
               python -m pip install --upgrade pip
               pip install twine
-              python -m twine upload -r PyPi-Local --config-file $(PYPIRC_PATH) $(Build.SourcesDirectory)/$(packagePath)/dist/*
+              python -m twine upload -r BIoS --config-file $(PYPIRC_PATH) $(Build.SourcesDirectory)/$(packagePath)/dist/*
+            displayName: "Upload package to Azure Artifacts"
+
+          - script: |
+              python -m pip install --upgrade pip
+              pip install twine
+              python -m twine upload -r BIoS --config-file $(PYPIRC_PATH) $(Build.SourcesDirectory)/$(packagePath)/dist/*
             displayName: "Upload package to Azure Artifacts"
