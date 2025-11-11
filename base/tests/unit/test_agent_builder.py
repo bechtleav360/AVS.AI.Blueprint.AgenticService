@@ -8,6 +8,7 @@ from pydantic_ai import Tool
 
 from base.src.agent.agent_builder import AgentBuilder
 from base.src.config import Config
+from base.src.models.config import AIConfig, PromptConfig
 
 
 class TestAgentBuilder:
@@ -17,14 +18,14 @@ class TestAgentBuilder:
     def mock_config(self):
         """Create mock configuration."""
         config = Mock(spec=Config)
-        config.get_ai_config.return_value = {
-            "provider": "openai",
-            "model_name": "gpt-4",
-            "api_key": "test-key",
-        }
-        config.get_prompt_config.return_value = {
-            "system_prompt_name": "test_prompt",
-        }
+        config.get_ai_config.return_value = AIConfig(
+            provider="openai",
+            model_name="gpt-4",
+            api_key="test-key",
+        )
+        config.get_prompt_config.return_value = PromptConfig(
+            system_prompt_name="test_prompt",
+        )
         return config
 
     @pytest.fixture

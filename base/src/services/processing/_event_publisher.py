@@ -35,24 +35,22 @@ class _EventPublisher:
                 return
 
             event_pub_config: EventPublishingConfig = self._settings.get_event_publishing_config()
-            topic_mapping: Dict[str, Any] = {
-                k: v.model_dump() for k, v in event_pub_config.topic_mapping.items()
-            }
+            topic_mapping = event_pub_config.topic_mapping
 
             if result_event.type in topic_mapping:
-                topic = topic_mapping[result_event.type]
+                topic_config = topic_mapping[result_event.type]
                 logger.info(
                     "Publishing result event type '%s' to topic '%s'",
                     result_event.type,
-                    topic,
+                    topic_config.topic,
                 )
 
-                await publishing_service.publish_event(result_event, topic=topic)
+                await publishing_service.publish_event(result_event, topic=topic_config.topic)
 
                 logger.debug(
                     "Successfully published result event %s to topic %s",
                     result_event.id,
-                    topic,
+                    topic_config.topic,
                 )
             else:
                 logger.debug(
@@ -96,7 +94,7 @@ class _EventPublisher:
                 return
 
             event_pub_config = self._settings.get_event_publishing_config()
-            topic_mapping = event_pub_config.get("topic_mapping", {})
+            topic_mapping = event_pub_config.topic_mapping
 
             if event_type not in topic_mapping:
                 logger.warning(
@@ -117,9 +115,9 @@ class _EventPublisher:
             topic_config = topic_mapping[event_type]
 
             logger.info(
-                "Publishing handler event type '%s' with config: %s",
+                "Publishing handler event type '%s' to topic '%s'",
                 event_type,
-                topic_config,
+                topic_config.topic,
                 extra={
                     "event_type": event_type,
                     "event_id": handler_event.id,
@@ -127,7 +125,7 @@ class _EventPublisher:
                 },
             )
 
-            await publishing_service.publish_event(handler_event)
+            await publishing_service.publish_event(handler_event, topic=topic_config.topic)
 
             logger.info(
                 "Successfully published handler event %s (type: %s)",

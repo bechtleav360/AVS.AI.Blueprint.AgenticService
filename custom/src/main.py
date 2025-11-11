@@ -37,7 +37,7 @@ config = Config(settings_files=settings_files, root_path=project_root)
 invoice_agent: Agent = (
     AgentBuilder(config, runtime_name="invoice_analyzer")
     .with_model_from_config("invoice_analyzer")
-    .with_system_prompt_file("invoice_analyzer")
+    .with_system_prompt_file("instruction")
     .with_tools(
         [
             Tool(

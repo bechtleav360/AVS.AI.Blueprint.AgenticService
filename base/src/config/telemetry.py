@@ -41,11 +41,11 @@ class TelemetryManager:
             observability = self.settings.get_observability_config()
 
             # Check if OpenTelemetry is enabled
-            if not observability.get("otel_enabled", False):
+            if not observability.otel_enabled:
                 self.logger.info("OpenTelemetry tracing is disabled")
                 return
 
-            service_name = observability.get("otel_service_name", "agent-service")
+            service_name = observability.otel_service_name
 
             resource = Resource.create({"service.name": service_name})
             tracer_provider = TracerProvider(resource=resource)
@@ -113,10 +113,10 @@ class TelemetryManager:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-    def _build_exporters(self, observability: dict) -> list:
+    def _build_exporters(self, observability) -> list:
         exporters = []
 
-        otlp_endpoint = observability.get("otel_endpoint")
+        otlp_endpoint = observability.otel_endpoint
         if otlp_endpoint:
             try:
                 # Use gRPC exporter for better performance

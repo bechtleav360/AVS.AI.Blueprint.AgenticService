@@ -2,9 +2,12 @@
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Dict
+from typing import TYPE_CHECKING, Any, Dict, Union
 
 from pydantic_ai.models import Model
+
+if TYPE_CHECKING:
+    from ..models.config import AIConfig
 
 logger = logging.getLogger(__name__)
 
@@ -13,11 +16,11 @@ class ModelProviderStrategy(ABC):
     """Abstract strategy for configuring AI model providers."""
 
     @abstractmethod
-    def create_model(self, ai_config: Dict[str, Any]) -> Model:
+    def create_model(self, ai_config: Union[Dict[str, Any], "AIConfig"]) -> Model:
         """Create and configure the AI model based on provider-specific settings.
 
         Args:
-            ai_config: Configuration dictionary containing provider settings.
+            ai_config: Configuration object (dict or AIConfig Pydantic model) containing provider settings.
 
         Returns:
             Configured Model instance.
@@ -80,16 +83,21 @@ class ModelProviderFactory:
         logger.info("Registered custom model provider: %s", provider_name)
 
     @classmethod
-    def create_model(cls, ai_config: Dict[str, Any]) -> Model:
+    def create_model(cls, ai_config: Union[Dict[str, Any], "AIConfig"]) -> Model:
         """Create a model using the appropriate provider strategy.
 
         Args:
-            ai_config: Configuration dictionary with 'provider' key.
+            ai_config: Configuration object (dict or AIConfig Pydantic model) with 'provider' key.
 
         Returns:
             Configured Model instance.
         """
-        provider_name = ai_config.get("provider")
+        # Handle both dict and Pydantic model
+        if isinstance(ai_config, dict):
+            provider_name = ai_config.get("provider")
+        else:
+            provider_name = ai_config.provider
+
         if not provider_name:
             raise ValueError("AI configuration must specify 'provider'")
 

@@ -3,7 +3,10 @@
 import inspect
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+
+if TYPE_CHECKING:
+    from ..models.config import PromptConfig
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +21,7 @@ class PromptLoader:
 
     @staticmethod
     def load_prompt(
-        prompt_name: str, agent_class: type, config: Optional[Dict[str, Any]] = None
+        prompt_name: str, agent_class: type, config: Optional[Union[Dict[str, Any], "PromptConfig"]] = None
     ) -> str:
         """Load a system prompt file based on the agent class location.
 
@@ -32,7 +35,7 @@ class PromptLoader:
         Args:
             prompt_name: Name of the prompt file (without .prompt extension).
             agent_class: The agent class requesting the prompt.
-            config: Optional prompt configuration dict with keys:
+            config: Optional prompt configuration (dict or PromptConfig model) with keys:
                    - custom_path: Custom prompt directory path
                    - search_paths: List of additional search paths
 
@@ -60,14 +63,14 @@ class PromptLoader:
 
     @staticmethod
     def _get_prompt_search_paths(
-        prompt_name: str, agent_class: type, config: Optional[Dict[str, Any]] = None
+        prompt_name: str, agent_class: type, config: Optional[Union[Dict[str, Any], "PromptConfig"]] = None
     ) -> List[Path]:
         """Get list of paths to search for the prompt file.
 
         Args:
             prompt_name: Name of the prompt file (without .prompt extension).
             agent_class: The agent class requesting the prompt.
-            config: Optional prompt configuration dict.
+            config: Optional prompt configuration (dict or PromptConfig model).
 
         Returns:
             List of Path objects to search in order of priority.
@@ -79,41 +82,55 @@ class PromptLoader:
         search_paths: List[Path] = []
 
         # 1. Add custom path from config if provided
-        if config and config.get("custom_path"):
-            custom_path = Path(config["custom_path"])
-            if not custom_path.is_absolute():
-                # Resolve relative paths from module directory
-                custom_path = module_dir / custom_path
-            search_paths.append(custom_path / filename)
-            logger.debug("Added custom prompt path from config: %s", custom_path)
+        if config:
+            # Handle both dict and Pydantic model
+            custom_path_value = None
+            if isinstance(config, dict):
+                custom_path_value = config.get("custom_path")
+            else:
+                custom_path_value = config.custom_path
+
+            if custom_path_value:
+                custom_path = Path(custom_path_value)
+                if not custom_path.is_absolute():
+                    # Resolve relative paths from module directory
+                    custom_path = module_dir / custom_path
+                search_paths.append(custom_path / filename)
+                logger.debug("Added custom prompt path from config: %s", custom_path)
 
         # 2. Add additional search paths from config
-        if config and config.get("search_paths"):
-            search_paths_config = config["search_paths"]
-            
-            # Handle both list and string (for backward compatibility)
-            if isinstance(search_paths_config, str):
-                # Single path as string
-                search_path = Path(search_paths_config)
-                if not search_path.is_absolute():
-                    search_path = module_dir / search_path
-                search_paths.append(search_path / filename)
-                logger.debug("Added search path from config: %s", search_path)
-            elif isinstance(search_paths_config, (list, tuple)):
-                # Multiple paths as list
-                for search_path_str in search_paths_config:
-                    search_path = Path(search_path_str)
+        if config:
+            # Handle both dict and Pydantic model
+            search_paths_config = None
+            if isinstance(config, dict):
+                search_paths_config = config.get("search_paths")
+            else:
+                search_paths_config = config.search_paths
+
+            if search_paths_config:
+                # Handle both list and string (for backward compatibility)
+                if isinstance(search_paths_config, str):
+                    # Single path as string
+                    search_path = Path(search_paths_config)
                     if not search_path.is_absolute():
                         search_path = module_dir / search_path
                     search_paths.append(search_path / filename)
-                logger.debug(
-                    "Added %d additional search paths from config",
-                    len(search_paths_config),
-                )
-            else:
-                logger.warning(
-                    "Invalid search_paths config type: %s", type(search_paths_config)
-                )
+                    logger.debug("Added search path from config: %s", search_path)
+                elif isinstance(search_paths_config, (list, tuple)):
+                    # Multiple paths as list
+                    for search_path_str in search_paths_config:
+                        search_path = Path(search_path_str)
+                        if not search_path.is_absolute():
+                            search_path = module_dir / search_path
+                        search_paths.append(search_path / filename)
+                    logger.debug(
+                        "Added %d additional search paths from config",
+                        len(search_paths_config),
+                    )
+                else:
+                    logger.warning(
+                        "Invalid search_paths config type: %s", type(search_paths_config)
+                    )
 
         # 3. Add default search paths based on agent class location
         default_paths = [
@@ -135,7 +152,7 @@ class PromptLoader:
     def load_instruction_prompt(
         prompt_name: str,
         caller_class: type,
-        config: Optional[Dict[str, Any]] = None,
+        config: Optional[Union[Dict[str, Any], "PromptConfig"]] = None,
         **template_vars: Any,
     ) -> str:
         """Load an instruction prompt file and format it with template variables.
@@ -147,7 +164,7 @@ class PromptLoader:
         Args:
             prompt_name: Name of the prompt file (without .prompt extension).
             caller_class: The class requesting the prompt (for path resolution).
-            config: Optional prompt configuration dict with keys:
+            config: Optional prompt configuration (dict or PromptConfig model) with keys:
                    - custom_path: Custom prompt directory path
                    - search_paths: List of additional search paths
             **template_vars: Variables to use in template formatting.

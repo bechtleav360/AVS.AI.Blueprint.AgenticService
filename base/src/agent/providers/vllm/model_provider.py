@@ -1,7 +1,7 @@
 """vLLM model provider implementation."""
 
 import logging
-from typing import Any, Dict
+from typing import TYPE_CHECKING, Any, Dict, Union
 
 from openai import AsyncOpenAI
 from pydantic_ai.models import Model
@@ -10,6 +10,9 @@ from pydantic_ai.profiles import ModelProfile
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from ...model_provider import ModelProviderStrategy
+
+if TYPE_CHECKING:
+    from ...models.config import AIConfig
 
 logger = logging.getLogger(__name__)
 
@@ -20,11 +23,11 @@ class VLLMModelProvider(ModelProviderStrategy):
     def get_provider_name(self) -> str:
         return "vllm"
 
-    def create_model(self, ai_config: Dict[str, Any]) -> Model:
+    def create_model(self, ai_config: Union[Dict[str, Any], "AIConfig"]) -> Model:
         """Create vLLM model configuration.
 
         Args:
-            ai_config: Must contain 'base_url', 'api_key', 'model_name'.
+            ai_config: Configuration object (dict or AIConfig) with 'base_url', 'api_key', 'model_name'.
                       Optional: 'timeout' (default: 60 seconds).
 
         Returns:
@@ -35,13 +38,22 @@ class VLLMModelProvider(ModelProviderStrategy):
         logging.getLogger("httpx").setLevel(logging.INFO)
         logging.getLogger("pydantic_ai").setLevel(logging.DEBUG)
 
-        # Set a reasonable timeout to prevent indefinite hangs
-        timeout_seconds = ai_config.get("timeout", 60)
+        # Handle both dict and Pydantic model
+        if isinstance(ai_config, dict):
+            timeout_seconds = ai_config.get("timeout", 60)
+            base_url = ai_config["base_url"]
+            api_key = ai_config["api_key"]
+            model_name = ai_config["model_name"]
+        else:
+            timeout_seconds = ai_config.max_tokens if ai_config.max_tokens else 60
+            base_url = ai_config.base_url
+            api_key = ai_config.api_key
+            model_name = ai_config.model_name
 
         client = AsyncOpenAI(
             max_retries=3,
-            base_url=ai_config["base_url"],
-            api_key=ai_config["api_key"],
+            base_url=base_url,
+            api_key=api_key,
             timeout=timeout_seconds,
         )
 
@@ -58,14 +70,14 @@ class VLLMModelProvider(ModelProviderStrategy):
 
         model = OpenAIChatModel(
             provider=provider,
-            model_name=ai_config["model_name"],
+            model_name=model_name,
             profile=vllm_profile,
         )
 
         logger.info(
             "vLLM model configured: %s at %s (timeout: %ds, JSON schema enabled)",
-            ai_config["model_name"],
-            ai_config["base_url"],
+            model_name,
+            base_url,
             timeout_seconds,
         )
 

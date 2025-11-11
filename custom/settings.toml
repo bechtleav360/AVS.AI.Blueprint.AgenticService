@@ -8,6 +8,7 @@ log_format = "json"
 # Prompt Configuration
 # In Kubernetes, prompts are mounted at /etc/agent/prompts from ConfigMap
 # For multiple paths, use comma-separated string or set via environment
+prompt_directory = "src/prompts"
 prompt_search_paths = "/etc/agent/prompts"
 
 # Data Gateway Configuration

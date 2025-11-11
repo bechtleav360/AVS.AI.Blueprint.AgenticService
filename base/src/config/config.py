@@ -2,6 +2,7 @@
 
 import json
 import logging
+from pathlib import Path
 
 from dynaconf import Dynaconf, Validator
 from dynaconf.validator import ValidationError
@@ -34,6 +35,7 @@ class Config:
         logger.setLevel(logging.INFO)
         logger.root.setLevel(logging.INFO)
         self._validation_errors: list[str] = []
+        self._root_path = Path(root_path) if root_path else Path.cwd()
 
         # First pass: load config to get app_environment
         temp_settings = Dynaconf(
@@ -235,7 +237,7 @@ class Config:
         )
 
     def get_prompt_config(self, runtime_name: str = "default") -> PromptConfig:
-        """Get prompt-related configuration for a specific runtime.
+        """Get prompt-related configuration.
 
         Args:
             runtime_name: Name of the runtime to get prompt config for.
@@ -245,9 +247,23 @@ class Config:
         """
         runtime_config = self.get_runtime_config(runtime_name)
 
+        # Handle search_paths - convert string to list if needed
+        search_paths = runtime_config.get("prompt_search_paths", self.get("prompt_search_paths", []))
+        if isinstance(search_paths, str):
+            # Split comma-separated string into list
+            search_paths = [p.strip() for p in search_paths.split(",")]
+
+        # Get custom_path and resolve relative paths
+        custom_path = runtime_config.get("prompt_directory", self.get("prompt_directory"))
+        if custom_path:
+            custom_path_obj = Path(custom_path)
+            # If relative path, resolve it relative to root_path
+            if not custom_path_obj.is_absolute():
+                custom_path = str(self._root_path / custom_path_obj)
+
         return PromptConfig(
-            custom_path=runtime_config.get("prompt_directory", self.get("prompt_directory")),
-            search_paths=runtime_config.get("prompt_search_paths", self.get("prompt_search_paths", [])),
+            custom_path=custom_path,
+            search_paths=search_paths,
             system_prompt_name=runtime_config.get("system_prompt_name", self.get("system_prompt_name", "system")),
             instruction_prompt_name=runtime_config.get(
                 "instruction_prompt_name",

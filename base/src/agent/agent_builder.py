@@ -1,4 +1,5 @@
 """Builder for creating and configuring AI agents without inheritance."""
+
 import inspect
 import logging
 from typing import Any, Callable, List, Optional, Type
@@ -65,14 +66,14 @@ class AgentBuilder:
             Self for chaining
         """
         ai_config = self._config.get_ai_config(self._runtime_name)
-        ai_config["model_name"] = model_name
-        self._model = ModelProviderFactory.create_model(ai_config)
+        # Create a modified copy with the new model_name
+        ai_config_dict = ai_config.model_dump()
+        ai_config_dict["model_name"] = model_name
+        self._model = ModelProviderFactory.create_model(ai_config_dict)
         logger.debug("Configured agent with model: %s", model_name)
         return self
 
-    def with_model_from_config(
-        self, runtime_name: Optional[str] = None
-    ) -> "AgentBuilder":
+    def with_model_from_config(self, runtime_name: Optional[str] = None) -> "AgentBuilder":
         """Configure model from runtime-specific config.
 
         Args:
@@ -87,7 +88,7 @@ class AgentBuilder:
         logger.debug(
             "Configured agent with model from config '%s': %s",
             name,
-            ai_config.get("model_name"),
+            ai_config.model_name,
         )
         return self
 
@@ -104,9 +105,7 @@ class AgentBuilder:
         logger.debug("Configured agent with inline system prompt")
         return self
 
-    def with_system_prompt_file(
-        self, prompt_name: str, runtime_name: Optional[str] = None
-    ) -> "AgentBuilder":
+    def with_system_prompt_file(self, prompt_name: str, runtime_name: Optional[str] = None) -> "AgentBuilder":
         """Configure with a system prompt from file.
 
         Args:
@@ -118,10 +117,28 @@ class AgentBuilder:
         """
         name = runtime_name or self._runtime_name
         prompt_config = self._config.get_prompt_config(name)
-        self._system_prompt = PromptLoader.load_prompt(
-            prompt_name, self.__class__, prompt_config
-        )
+        self._system_prompt = PromptLoader.load_prompt(prompt_name, self.__class__, prompt_config)
         logger.debug("Configured agent with system prompt file: %s", prompt_name)
+        return self
+
+    def with_system_prompt_from_config(self, runtime_name: Optional[str] = None) -> "AgentBuilder":
+        """Configure with system prompt from config-specified file.
+
+        Uses the system_prompt_name from PromptConfig to load the prompt file.
+
+        Args:
+            runtime_name: Runtime name for config lookup, or None to use builder's runtime_name
+
+        Returns:
+            Self for chaining
+        """
+        name = runtime_name or self._runtime_name
+        prompt_config = self._config.get_prompt_config(name)
+        self._system_prompt = PromptLoader.load_prompt(prompt_config.system_prompt_name, self.__class__, prompt_config)
+        logger.debug(
+            "Configured agent with system prompt from config: %s",
+            prompt_config.system_prompt_name,
+        )
         return self
 
     def with_tools(self, tools: List[Tool]) -> "AgentBuilder":
@@ -201,11 +218,7 @@ class AgentBuilder:
             sig = inspect.signature(Agent)
 
             # List of arguments set by builder
-            builder_args = [
-                "model",
-                "system_prompt",
-                "tools"
-            ]
+            builder_args = ["model", "system_prompt", "tools"]
 
             # Check for not allowed kwargs
             for kwarg in kwargs:
@@ -213,11 +226,7 @@ class AgentBuilder:
                     raise ValueError(f"The Agent argument '{kwarg}' is set by the builder and cannot be given for instantiation")
 
             # Remove arguments set by builder
-            filtered_parameters = {
-                name: param
-                for name, param in sig.parameters.items()
-                if name not in builder_args
-            }
+            filtered_parameters = {name: param for name, param in sig.parameters.items() if name not in builder_args}
             for kwarg in kwargs:
                 if kwarg not in filtered_parameters:
                     raise ValueError(f"Unexpected keyword argument for Agent: {kwarg}")
@@ -225,10 +234,7 @@ class AgentBuilder:
         # Create agent with configuration
         # Note: result_type is now a generic parameter, not a constructor argument
         agent = Agent[self._deps_type, self._result_type](
-            model=self._model,
-            system_prompt=self._system_prompt,
-            tools=self._tools if self._tools else [],
-            **kwargs
+            model=self._model, system_prompt=self._system_prompt, tools=self._tools if self._tools else [], **kwargs
         )
 
         logger.info(
