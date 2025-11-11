@@ -141,13 +141,12 @@ stages:
           - script: |
               python -m pip install --upgrade pip
               pip install twine
-            displayName: "Upload dependencies"            
-
+            displayName: "Upload dependencies"
 
           # ---- Upload to PyPi-Local ----
           - task: TwineAuthenticate@1
             inputs:
-              artifactFeed: 'PyPi-Local' # or 'Bechtle-Index-of-Sovereignty/PyPi-Local' if project-scoped
+              artifactFeed: "PyPi-Local" # or 'Bechtle-Index-of-Sovereignty/PyPi-Local' if project-scoped
             displayName: "Authenticate with PyPi-Local"
 
           - script: |
@@ -158,14 +157,16 @@ stages:
             displayName: "Upload to PyPi-Local"
 
           # ---- Upload to BIoS ----
-          - task: TwineAuthenticate@1
-            inputs:
-              artifactFeed: 'Bechtle-Index-of-Sovereignty/BIoS'  # << important
-            displayName: "Authenticate with BIoS"
+          # DISABLED, since PyPi-Local is defined as upstream fir BioS
 
-          - script: |
-              python -m twine upload \
-                -r "BIoS" \
-                --config-file "$(PYPIRC_PATH)" \
-                "$(Build.SourcesDirectory)/$(packagePath)/dist/*"
-            displayName: "Upload to BIoS"
+          # - task: TwineAuthenticate@1
+          #   inputs:
+          #     artifactFeed: 'Bechtle-Index-of-Sovereignty/BIoS'  # << important
+          #   displayName: "Authenticate with BIoS"
+
+          # - script: |
+          #     python -m twine upload \
+          #       -r "BIoS" \
+          #       --config-file "$(PYPIRC_PATH)" \
+          #       "$(Build.SourcesDirectory)/$(packagePath)/dist/*"
+          #   displayName: "Upload to BIoS"

@@ -8,17 +8,17 @@ name: $(BuildDefinitionName)_$(SourceBranchName)_$(Date:yyyyMMdd)_$(Rev:rrrr)
 variables:
   - group: Docker Bios
   - name: buildConfiguration
-    value: 'Release'
+    value: "Release"
   # Helm
   - name: chartPath
     value: deploy/charts
   - name: chartName
-    value: 
+    value:
   # Service
   - name: projectLocation
     value: .
   - name: containerName
-    value: 
+    value:
   - name: versionFilePath
     value: custom/pyproject.toml
 
@@ -40,7 +40,7 @@ stages:
   - stage: Build
     jobs:
       - job: Docker
-        pool: 'Docker'
+        pool: "Docker"
         steps:
           - template: extract-version-info.yml@templates
             parameters:
@@ -49,8 +49,8 @@ stages:
             # build Service
           - template: build-project-container.yaml@templates
             parameters:
-              projectLocation: '$(Build.SourcesDirectory)/$(projectLocation)'
-              containerName: '$(containerRepo)/$(containerName)'
+              projectLocation: "$(Build.SourcesDirectory)/$(projectLocation)"
+              containerName: "$(containerRepo)/$(containerName)"
 
           #   # build Helm
           # - template: build-helm-chart.yaml@templates
