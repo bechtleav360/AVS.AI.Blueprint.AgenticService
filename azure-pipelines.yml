@@ -1,14 +1,9 @@
-# ASP.NET Core
-# Build and test ASP.NET Core projects targeting .NET Core.
-# Add steps that run tests, create a NuGet package, deploy, and more:
-# https://docs.microsoft.com/azure/devops/pipelines/languages/dotnet-core
-
 name: $(BuildDefinitionName)_$(SourceBranchName)_$(Date:yyyyMMdd)_$(Rev:rrrr)
 
 variables:
   - group: Docker Bios
   - name: buildConfiguration
-    value: "Release"
+    value: 'Release'
   # Helm
   - name: chartPath
     value: deploy/charts
@@ -19,13 +14,22 @@ variables:
     value: .
   - name: containerName
     value:
-  - name: versionFilePath
+  - name: projectFile
     value: custom/pyproject.toml
+
+  # Versioning
+  - name: versionFilePath
+    value: $(projectFile)
 
 trigger:
   branches:
     include:
       - master
+      - main
+      - release/*
+  tags:
+    include:
+      - v*
   paths:
     exclude:
       - azure-pipelines.yml
@@ -40,21 +44,27 @@ stages:
   - stage: Build
     jobs:
       - job: Docker
-        pool: "Docker"
+        pool: 'Docker'
         steps:
+          - checkout: self
+            submodules: true
+            persistCredentials: true
+            clean: true
+          
           - template: extract-version-info.yml@templates
             parameters:
               versionFilePath: ${{ variables.versionFilePath }}
 
-            # build Service
-          - template: build-project-container.yaml@templates
+          # build Service
+          - template: build-project-container.yml@templates
             parameters:
-              projectLocation: "$(Build.SourcesDirectory)/$(projectLocation)"
-              containerName: "$(containerRepo)/$(containerName)"
+              projectLocation: '$(Build.SourcesDirectory)/$(projectLocation)'
+              projectFile: $(projectFile)
+              buildContext: $(Build.SourcesDirectory)
+              containerName: $(containerName)
 
-          #   # build Helm
-          # - template: build-helm-chart.yaml@templates
-          #   parameters:
-          #     versionFilePath: '$(Build.SourcesDirectory)/$(projectLocation)/$(projectFile)'
-          #     chartBasePath: $(chartPath)
-          #     chartName: $(chartName)
+          # build Helm
+          - template: build-helm-chart.yml@templates
+            parameters:
+              chartBasePath: $(chartPath)
+              chartName: $(chartName)
