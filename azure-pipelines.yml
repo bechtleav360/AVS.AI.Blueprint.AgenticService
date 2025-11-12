@@ -11,15 +11,15 @@ variables:
     value:
   # Service
   - name: projectLocation
-    value: .
+    value: custom
   - name: containerName
     value:
   - name: projectFile
-    value: custom/pyproject.toml
+    value: pyproject.toml
 
   # Versioning
   - name: versionFilePath
-    value: $(projectFile)
+    value: ${{variables.projectLocation}}/${{variables.projectFile}}
 
 trigger:
   branches:
