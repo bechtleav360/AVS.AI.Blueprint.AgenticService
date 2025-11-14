@@ -11,7 +11,7 @@ variables:
     value: # Pattern: bios-{service-name}, e.g., bios-agents-asset-harmonizer
   # Service
   - name: projectLocation
-    value: custom
+    value: .
   - name: containerName
     value: bechtle-ios/bios-agents-asset-harmonizer # Pattern: bechtle-ios/bios-{service-name}, e.g., bechtle-ios/bios-agents-asset-harmonizer
   - name: projectFile
