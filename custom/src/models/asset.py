@@ -1,6 +1,6 @@
-"""Asset models for harmonizing agent.
+"""Asset-Modelle für den Harmonizing-Agenten.
 
-These models define the canonical Asset schema used by the harmonizing agent.
+Diese Modelle definieren das kanonische Asset-Schema, das vom Harmonizing-Agenten verwendet wird.
 """
 
 from typing import Any, Dict, List, Literal, Optional
@@ -9,14 +9,14 @@ from pydantic import BaseModel, Field
 
 
 class AssetType:
-    """Asset type constants."""
+    """Konstanten für Asset-Typen."""
 
     SOFTWARE = "software"
     HARDWARE = "hardware"
 
 
 class AssetStatus:
-    """Asset status constants."""
+    """Konstanten für Asset-Status."""
 
     DRAFT = "draft"
     UNTAGGED = "untagged"
@@ -25,53 +25,53 @@ class AssetStatus:
 
 
 class Reference(BaseModel):
-    """Reference to another asset."""
+    """Verweis auf ein anderes Asset."""
 
-    id: Optional[str] = Field(None, description="Referenced asset ID")
+    id: Optional[str] = Field(None, description="ID des referenzierten Assets")
     relation: Optional[str] = Field(
-        None, description="Relationship (e.g., dependsOn, providedBy)"
+        None, description="Beziehung (z. B. dependsOn, providedBy)"
     )
 
 
 class HardwareExtension(BaseModel):
-    """Hardware-specific extension fields."""
+    """Hardware-spezifische Erweiterungsfelder."""
 
-    manufacturer: Optional[str] = Field(None, description="name of the manufacturer")
-    model: Optional[str] = Field(None, description="hardware model description")
+    manufacturer: Optional[str] = Field(None, description="Name des Herstellers")
+    model: Optional[str] = Field(None, description="Bezeichnung/Modell der Hardware")
 
 
 class SoftwareExtension(BaseModel):
-    """Software-specific extension fields."""
+    """Software-spezifische Erweiterungsfelder."""
 
-    manufacturer: Optional[str] = Field(None, description="name of the manufacturer")
-    version: Optional[str] = Field(None, description="software version")
+    manufacturer: Optional[str] = Field(None, description="Name des Herstellers")
+    version: Optional[str] = Field(None, description="Softwareversion")
     licenseType: Optional[str] = Field(
-        None, description="software's license type"
+        None, description="Lizenztyp der Software"
     )
 
 
 class AssetHarmonizingOutput(BaseModel):
-    """Canonical Asset schema for harmonized data.
+    """Kanonisches Asset-Schema für harmonisierte Daten.
 
-    This is the unified schema that all source data is harmonized into.
+    Dies ist das einheitliche Schema, in das alle Quelldaten harmonisiert werden.
     """
 
     # Basic fields
-    id: Optional[str] = Field(None, description="the asset's ID")
-    name: Optional[str] = Field(None, description="name of the asset")
+    id: Optional[str] = Field(None, description="ID des Assets")
+    name: Optional[str] = Field(None, description="Name des Assets")
     description: Optional[str] = Field(
-        None, description="further description of the asset"
+        None, description="weiterführende Beschreibung des Assets"
     )
     type: Optional[
         Literal[
             AssetType.SOFTWARE,
             AssetType.HARDWARE,
         ]
-    ] = Field(None, description="overall type of asset")
+    ] = Field(None, description="übergeordneter Asset-Typ")
 
     externalId: Optional[Dict[str, str]] = Field(
         default=None,
-        description="identifiers from source systems (key: source system, value: external ID)",
+        description="Kennungen aus Quellsystemen (Schlüssel: Quellsystem, Wert: externe ID)",
     )
     status: Optional[
         Literal[
@@ -80,19 +80,19 @@ class AssetHarmonizingOutput(BaseModel):
             AssetStatus.UNSCORED,
             AssetStatus.SCORED,
         ]
-    ] = Field(None, description="current status of this asset")
+    ] = Field(None, description="aktueller Status dieses Assets")
 
     # After-harmonizing policy: these must be null
     tags: Optional[List[str]] = Field(
         default=None,
-        description="list of tags associated with this asset (null after harmonizing)",
+        description="Liste von Tags, die diesem Asset zugeordnet sind (nach der Harmonisierung null)",
     )
     references: Optional[List[Reference]] = Field(
         default=None,
-        description="references to other assets (null after harmonizing)",
+        description="Verweise auf andere Assets (nach der Harmonisierung null)",
     )
     additionalProperties: Optional[Dict[str, Any]] = Field(
-        default=None, description="Dictionary of unprocessed source properties"
+        default=None, description="Wörterbuch unverarbeiteter Quell-Eigenschaften"
     )
 
     # Extensions -  for easy handling the different types we just treat them as optional. we then load them to top level when using to_json().
@@ -101,10 +101,10 @@ class AssetHarmonizingOutput(BaseModel):
     software: Optional[SoftwareExtension] = None
 
     def to_json(self) -> Dict[str, Any]:
-        """Return a JSON-ready dict with extension fields flattened to top level.
+        """Gibt ein JSON-bereites Dict zurück, bei dem Erweiterungsfelder auf die oberste Ebene abgeflacht sind.
 
-        - Excludes None values.
-        - Merges fields from `hardware` and `software` into the root level.
+        - Schließt None-Werte aus.
+        - Führt Felder aus `hardware` und `software` auf Root-Ebene zusammen.
         """
         data: Dict[str, Any] = self.model_dump(exclude_none=True)
 
