@@ -60,9 +60,9 @@ class AgentInvokerHandler(EventHandler):
         asset = context.get("asset_fetched")
 
         if not asset or not isinstance(asset, dict):
-            logger.error(f"Asset has wrong format: {asset}")
-            logger.error(f"Type is {type(asset)}")
-            logger.error(f"Trying to convert to dict")
+            logger.debug(f"Asset has wrong format: {asset}")
+            logger.debug(f"Type is {type(asset)}")
+            logger.debug(f"Trying to convert to dict")
             try:
                 asset = json.loads(asset)
             except Exception as e:
