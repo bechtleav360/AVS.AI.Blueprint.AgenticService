@@ -23,6 +23,7 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
 ]
 dependencies = [
     "fastapi>=0.121.0",
@@ -83,6 +84,9 @@ packages = [
 "blueprint.agents.registry" = "src/registry"
 "blueprint.agents.services" = "src/services"
 "blueprint.agents.services.processing" = "src/services/processing"
+
+[tool.setuptools.package-data]
+blueprint.agents = ["py.typed"]
 
 [tool.black]
 line-length = 140
