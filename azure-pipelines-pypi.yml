@@ -1,151 +1,76 @@
+
+name: $(BuildDefinitionName)_$(SourceBranchName)_$(Date:yyyyMMdd)_$(Rev:rrrr)
+
+variables:
+  - name: pythonVersion
+    value: '3.13'
+  - name: packagePath
+    value: 'base'
+  - name: coverageModule
+    value: 'agents.base'
+
 trigger:
   branches:
     include:
       - master
       - dev
-      - feature/pypi
+      - feature/*
+  tags:
+    include:
+      - v*
   paths:
     exclude:
       - azure-pipelines-pypi.yml
+      - '**/*.md'
+      - 'docs/**'
 
-variables:
-  - name: pythonVersion
-    value: "3.13"
-  - name: packagePath
-    value: "."
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: PipelineTemplates
 
 pool:
-  vmImage: "ubuntu-latest"
+  vmImage: 'ubuntu-latest'
 
 stages:
+  # Test Stage - läuft immer auf allen Branches und Tags
   - stage: Test
-    displayName: "Test"
+    displayName: 'Test Package'
     jobs:
       - job: TestPackage
-        displayName: "Run tests"
+        displayName: 'Run Tests and Coverage'
         steps:
           - checkout: self
             persistCredentials: true
             fetchDepth: 0
 
-          - task: UsePythonVersion@0
-            inputs:
-              versionSpec: "$(pythonVersion)"
-              addToPath: true
-            displayName: "Use Python $(pythonVersion)"
+          - template: build-and-publish-pypi.yml@templates
+            parameters:
+              pythonVersion: $(pythonVersion)
+              packagePath: $(packagePath)
+              coverageModule: $(coverageModule)
+              runTests: true
+              publishCoverage: true
+              publishToFeed: false
 
-          - script: |
-              python -m pip install --upgrade pip
-              pip install -e .
-              if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
-              pip install pytest pytest-cov pytest-asyncio build twine semver
-            workingDirectory: "$(packagePath)"
-            displayName: "Install dependencies"
-
-          - script: |
-              python -m pytest tests/unit --cov=blueprint.agents --cov-report=xml --cov-report=html --tb=short
-            workingDirectory: "$(packagePath)"
-            displayName: "Run tests with coverage"
-
-          - task: PublishPipelineArtifact@1
-            condition: and(succeeded(), exists('$(Build.SourcesDirectory)/$(packagePath)/coverage.xml'))
-            inputs:
-              targetPath: "$(Build.SourcesDirectory)/$(packagePath)/coverage.xml"
-              artifact: "CodeCoverageXML"
-              publishLocation: "pipeline"
-            displayName: "Publish coverage XML"
-
-          - task: PublishPipelineArtifact@1
-            condition: and(succeeded(), exists('$(Build.SourcesDirectory)/$(packagePath)/htmlcov'))
-            inputs:
-              targetPath: "$(Build.SourcesDirectory)/$(packagePath)/htmlcov"
-              artifact: "CodeCoverageHTML"
-              publishLocation: "pipeline"
-            displayName: "Publish coverage HTML report"
-
-  - stage: Build
-    displayName: "Build Package"
+  # Build and Publish Stage - läuft nach erfolgreichen Tests
+  # Publiziert Release-Versionen (bei Tags) oder Beta-Versionen (bei Branches)
+  - stage: BuildAndPublish
+    displayName: 'Build and Publish Package'
     dependsOn: Test
     condition: succeeded()
     jobs:
-      - job: BuildPackage
-        displayName: "Build Python package"
-        steps:
-          - checkout: self
-            persistCredentials: true
-            fetchDepth: 0
-
-          - task: UsePythonVersion@0
-            inputs:
-              versionSpec: "$(pythonVersion)"
-              addToPath: true
-            displayName: "Use Python $(pythonVersion)"
-
-          - script: |
-              python -m pip install --upgrade pip
-              pip install build twine semver
-            workingDirectory: "$(packagePath)"
-            displayName: "Install build tools"
-
-          - script: |
-              python -m build
-            workingDirectory: "$(packagePath)"
-            displayName: "Build package"
-
-          - task: CopyFiles@2
-            inputs:
-              SourceFolder: "$(packagePath)/dist"
-              Contents: "*"
-              TargetFolder: "$(Build.ArtifactStagingDirectory)"
-            displayName: "Copy package artifacts"
-
-          - publish: "$(Build.ArtifactStagingDirectory)"
-            artifact: "blueprint-agents-dist"
-            displayName: "Publish package artifacts"
-
-  - stage: Publish
-    displayName: "Publish Package"
-    dependsOn: Build
-    condition: and(succeeded(), or(eq(variables['Build.SourceBranch'], 'refs/heads/master'), eq(variables['Build.SourceBranch'], 'refs/heads/pypi-master')))
-    jobs:
       - job: PublishPackage
-        displayName: "Publish to PyPI"
+        displayName: 'Build and Publish to Azure Artifacts'
         steps:
           - checkout: self
             persistCredentials: true
             fetchDepth: 0
 
-          - task: UsePythonVersion@0
-            inputs:
-              versionSpec: "$(pythonVersion)"
-              addToPath: true
-            displayName: "Use Python $(pythonVersion)"
-
-          - script: |
-              python -m pip install --upgrade pip
-              pip install build twine semver
-            workingDirectory: "$(packagePath)"
-            displayName: "Install publication tooling"
-
-          - script: |
-              git config user.email "ci-bot@bechtle.com"
-              git config user.name "CI Bot"
-              python scripts/bump_version.py
-            workingDirectory: "$(packagePath)"
-            displayName: "Bump version"
-
-          - script: |
-              rm -rf dist
-              python -m build
-            workingDirectory: "$(packagePath)"
-            displayName: "Rebuild package for publish"
-
-          - script: |
-              python -m twine upload dist/* --username __token__ --password $(PyPIApiToken)
-            workingDirectory: "$(packagePath)"
-            displayName: "Upload package to PyPI"
-
-          - script: |
-              git push origin HEAD
-              git push origin --tags
-            displayName: "Push version commit and tags"
+          - template: build-and-publish-pypi.yml@templates
+            parameters:
+              pythonVersion: $(pythonVersion)
+              packagePath: $(packagePath)
+              runTests: false
+              publishToFeed: true
