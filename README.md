@@ -14,22 +14,39 @@ The Agent Blueprint helps you build intelligent agents that process events and m
 
 ## Quick Start
 
+### Option 1: Install from PyPI (Recommended for Using the Framework)
+
+```bash
+# Install the framework
+pip install avs-blueprint-agents
+
+# Then run an example
+cd examples/invoice_analyzer
+pip install -e .
+python -m uvicorn src.main:app --reload --port 8000
+```
+
+### Option 2: Development Setup (for Contributing to the Framework)
+
 ```bash
 # Clone and setup
 git clone https://dev.azure.com/av360/Bechtle-Index-of-Sovereignty/_git/Agents_Blueprint
 cd Agents_Blueprint
 
-# Install dependencies
-uv venv .venv --python 3.13
+# Create virtual environment
+python -m venv .venv
 source .venv/bin/activate
-uv pip install -e "custom/.[dev]"
 
-# Configure
-cp custom/secrets.toml.example custom/secrets.toml
-# Edit secrets.toml with your AI API key
+# Install framework in development mode
+pip install -e ".[dev]"
 
-# Run
-cd custom && uv run uvicorn src.main:app --reload --port 8001
+# Run tests
+pytest tests/ -v
+
+# Run the example
+cd examples/invoice_analyzer
+pip install -e .
+python -m uvicorn src.main:app --reload --port 8000
 ```
 
 **Next:** Follow the [Getting Started Guide](docs/guides/getting-started.md) for detailed instructions.
@@ -81,7 +98,7 @@ Build agents with Pydantic AI:
 class InvoiceAgent(BaseAgent):
     def _get_tools(self):
         return [calculate_invoice, lookup_customer]
-    
+
     def _get_result_type(self):
         return InvoiceAnalysisOutput
 ```
@@ -116,29 +133,38 @@ curl http://localhost:8001/actuators/health
 
 ```
 Agents_Blueprint/
-├── base/                    # Framework (don't modify)
-│   ├── src/
-│   │   ├── agent/          # Base agent classes
-│   │   ├── api/            # API endpoints
-│   │   ├── models/         # Data models
-│   │   └── services/       # Processing services
-│   └── requirements.txt
+├── src/
+│   └── blueprint/
+│       └── agents/              # Framework package (PyPI: avs-blueprint-agents)
+│           ├── agent/          # Base agent classes
+│           ├── api/            # API endpoints
+│           ├── config/         # Configuration management
+│           ├── models/         # Data models
+│           ├── services/       # Processing services
+│           └── py.typed        # PEP 561 type hints marker
 │
-├── custom/                  # Your agent (modify this!)
-│   ├── src/
-│   │   ├── agent/
-│   │   │   ├── handlers.py # Event handlers
-│   │   │   ├── runtime.py  # AI agent runtime
-│   │   │   └── tools.py    # AI tools
-│   │   ├── api/
-│   │   │   └── rest.py     # Custom endpoints
-│   │   ├── models/         # Your data models
-│   │   └── main.py         # Application entry
-│   ├── settings.toml       # Configuration
-│   └── secrets.toml        # Secrets (not in git)
+├── examples/
+│   └── invoice_analyzer/        # Example: Invoice analysis agent
+│       ├── src/
+│       │   ├── api/            # Custom REST API
+│       │   ├── handlers/       # Event handlers
+│       │   ├── models/         # Domain models
+│       │   ├── services/       # Business logic
+│       │   └── main.py         # Application entry
+│       ├── tests/              # Example tests
+│       ├── settings.toml       # Configuration
+│       ├── secrets.toml        # Secrets (not in git)
+│       └── pyproject.toml      # Example dependencies
 │
-└── docs/                    # Documentation
-    └── guides/             # Step-by-step guides
+├── tests/                       # Framework tests
+│   └── unit/                   # Unit tests
+│
+├── docs/                        # Documentation
+│   └── guides/                 # Step-by-step guides
+│
+├── pyproject.toml              # Framework package config
+├── pytest.ini                  # Test configuration
+└── README.md                   # This file
 ```
 
 ## Requirements

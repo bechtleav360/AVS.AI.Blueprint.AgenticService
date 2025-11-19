@@ -1,0 +1,15 @@
+[default]
+# Application settings
+app_name = "REST Microservice"
+app_version = "0.1.0"
+app_description = "A RESTful microservice using Blueprint Agents framework"
+debug = true
+
+[default.server]
+host = "0.0.0.0"
+port = 8000
+reload = true
+
+[default.logging]
+level = "INFO"
+format = "json"

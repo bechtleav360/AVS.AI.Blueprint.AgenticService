@@ -103,7 +103,7 @@ class TestEventHandler:
 
         handler = TestHandler("TestHandler")
 
-        with patch("base.src.handler.event_handler.tracer") as mock_tracer:
+        with patch("blueprint.agents.handler.event_handler.tracer") as mock_tracer:
             mock_span = MagicMock()
             mock_tracer.start_as_current_span.return_value.__enter__.return_value = mock_span
 
@@ -126,7 +126,7 @@ class TestEventHandler:
 
         handler = TestHandler("TestHandler")
 
-        with patch("base.src.handler.event_handler.tracer") as mock_tracer:
+        with patch("blueprint.agents.handler.event_handler.tracer") as mock_tracer:
             mock_span = MagicMock()
             mock_tracer.start_as_current_span.return_value.__enter__.return_value = mock_span
 

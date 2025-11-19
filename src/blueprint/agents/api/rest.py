@@ -3,7 +3,7 @@
 import logging
 from http import HTTPStatus
 from time import perf_counter
-from typing import Any, TypeVar
+from typing import Any, Generic, TypeVar
 from uuid import uuid4
 
 from fastapi import APIRouter, Body, HTTPException, Request, status
@@ -19,18 +19,48 @@ logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
 
 # Define a TypeVar for the generic payload model
-PayloadT = TypeVar('PayloadT', bound=BaseModel)
+PayloadT = TypeVar("PayloadT", bound=BaseModel)
 
-class RestApi:
+
+class RestApi(Generic[PayloadT]):
     """Generic OOP wrapper for the REST API router."""
 
     def __init__(self, payload_type: type[PayloadT], registry: ComponentRegistry) -> None:
         self.router = APIRouter()
         self.payload_type = payload_type
         self._component_registry = registry
+        self._agent: Any = None
         # Create processing service with the component registry
         self._processing_service = ProcessingService(settings=registry.get_settings(), component_registry=registry)
         self._register_routes()
+
+    def with_agent(self, agent: Any) -> "RestApi":
+        """Register an agent with this REST API.
+
+        Args:
+            agent: The agent instance to use in this API
+
+        Returns:
+            Self for chaining
+        """
+        self._agent = agent
+        return self
+
+    def _get_processing_service(self) -> Any:
+        """Get the processing service from component registry.
+
+        Lazily acquires the service when needed (during request handling).
+        This ensures the service is registered by AppBuilder before use.
+
+        Returns:
+            The ProcessingService instance
+
+        Raises:
+            ValueError: If processing service is not registered
+        """
+        if self._component_registry is None:
+            raise ValueError("Component registry not wired into REST API")
+        return self._component_registry.get_processing_service()
 
     def _register_routes(self) -> None:
         @self.router.post(
@@ -88,7 +118,8 @@ class RestApi:
                     "client_ip": request.client.host if request.client else None,
                 }
 
-                result_event = await self._processing_service.process_rest_request(payload, context)
+                processing_service = self._get_processing_service()
+                result_event = await processing_service.process_rest_request(payload, context)
 
                 # Extract result data from CloudEvent
                 result = result_event.data

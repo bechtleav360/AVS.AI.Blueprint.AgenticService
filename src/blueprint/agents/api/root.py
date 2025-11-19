@@ -1,17 +1,23 @@
 """Root endpoints providing service metadata."""
 
-from importlib import metadata as importlib_metadata
 from typing import Any
 
 from fastapi import APIRouter
+
+from ..config import Config
 
 
 class RootApi:
     """OOP wrapper that exposes the root-related FastAPI router."""
 
-    def __init__(self) -> None:
+    def __init__(self, config: Config | None = None) -> None:
+        """Initialize RootApi with optional config.
+
+        Args:
+            config: Configuration object to read service metadata from settings
+        """
         self.router = APIRouter()
-        self._project_metadata = self._load_project_metadata()
+        self.config = config
         self._register_routes()
 
     def _register_routes(self) -> None:
@@ -22,35 +28,35 @@ class RootApi:
         )
         async def root() -> dict[str, Any]:
             """Return basic information about the service and useful links."""
+            # Try to get metadata from config/settings first
+            service_name = None
+            service_version = None
+            service_description = None
+
+            if self.config:
+                service_name = self.config.get("app_name")
+                service_version = self.config.get("app_version")
+                service_description = self.config.get("app_description")
+
+            # Fall back to defaults if not in config
+            if not service_name:
+                service_name = "agent-service"
+            if not service_version:
+                service_version = "0.0.0"
+            if not service_description:
+                service_description = "Generic microservice blueprint for building intelligent agents"
+
             return {
-                "service": self._project_metadata["name"],
-                "version": self._project_metadata["version"],
-                "description": self._project_metadata["description"],
-                "docs": "/docs",
+                "service": service_name,
+                "version": service_version,
+                "description": service_description,
+                "documentation": {
+                    "swagger_ui": "/docs",
+                    "redoc": "/redoc",
+                    "openapi_json": "/openapi.json",
+                },
                 "probes": {"liveness": "/health/live", "readiness": "/health/ready"},
-                # FIXME: Add your custom endpoints
-                # "your-custom-endpoint": "/your-endpoint",
             }
-
-    def _load_project_metadata(self) -> dict[str, str]:
-        """Load distribution metadata exposed from pyproject configuration."""
-        distribution_name = "avs-blueprint-agents"
-        defaults: dict[str, str] = {
-            "name": "agent-service",
-            "version": "0.0.0",
-            "description": "Generic microservice blueprint for building intelligent agents",
-        }
-
-        try:
-            metadata = importlib_metadata.metadata(distribution_name)
-        except importlib_metadata.PackageNotFoundError:
-            return defaults
-
-        return {
-            "name": metadata.get("Name", defaults["name"]),
-            "version": metadata.get("Version", defaults["version"]),
-            "description": metadata.get("Summary", defaults["description"]),
-        }
 
 
 # For backwards compatibility, keep the router instance

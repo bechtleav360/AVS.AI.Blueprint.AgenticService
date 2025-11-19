@@ -41,10 +41,9 @@ source .venv/bin/activate
 
 ### 4. Install Development Dependencies
 
-Install the base package in editable mode with development dependencies:
+Install the framework package in editable mode with development dependencies:
 
 ```bash
-cd base
 pip install -e ".[dev]"
 ```
 
@@ -57,13 +56,13 @@ This installs:
 ### Run All Tests
 
 ```bash
-pytest base/tests
+pytest tests/
 ```
 
 ### Run Tests with Coverage
 
 ```bash
-pytest base/tests --cov=base.src --cov-report=html
+pytest tests/ --cov=blueprint.agents --cov-report=html
 ```
 
 This generates an HTML coverage report in `htmlcov/index.html`.
@@ -71,7 +70,7 @@ This generates an HTML coverage report in `htmlcov/index.html`.
 ### Run Tests for a Specific Module
 
 ```bash
-pytest base/tests/unit/test_agent_builder.py
+pytest tests/unit/test_agent_builder.py
 ```
 
 ### Run Tests in Watch Mode (with pytest-watch)
@@ -85,19 +84,19 @@ pip install pytest-watch
 Then run:
 
 ```bash
-ptw base/tests
+ptw tests/
 ```
 
 ### Run Tests with Verbose Output
 
 ```bash
-pytest base/tests -v
+pytest tests/ -v
 ```
 
 ### Run a Specific Test
 
 ```bash
-pytest base/tests/unit/test_agent_builder.py::TestAgentBuilder::test_with_model_sets_model_name -v
+pytest tests/unit/test_agent_builder.py::TestAgentBuilder::test_with_model_sets_model_name -v
 ```
 
 ## Building the Package Locally
@@ -115,8 +114,7 @@ pip install build setuptools wheel
 Remove old build artifacts to ensure a clean build:
 
 ```bash
-cd base
-rm -rf dist build src/avs_blueprint_agents.egg-info
+rm -rf dist build *.egg-info
 ```
 
 ### 3. Build the Package
@@ -136,7 +134,7 @@ This generates:
 List the contents of the wheel to ensure all modules are correctly packaged under the `blueprint.agents` namespace:
 
 ```bash
-python -m zipfile -l dist/avs_blueprint_agents-*.whl | head -20
+python -m zipfile -l dist/avs_blueprint_agents-*.whl | grep "blueprint/agents" | head -20
 ```
 
 You should see entries like:
@@ -145,6 +143,7 @@ blueprint/agents/__init__.py
 blueprint/agents/agent/__init__.py
 blueprint/agents/agent/agent_builder.py
 blueprint/agents/api/__init__.py
+blueprint/agents/config/__init__.py
 ...
 ```
 
@@ -186,25 +185,25 @@ python -c "from blueprint.agents import AppBuilder; print(AppBuilder)"
 ### Format Code with Black
 
 ```bash
-black base/src base/tests
+black src/ tests/
 ```
 
 ### Check Code with Ruff
 
 ```bash
-ruff check base/src base/tests
+ruff check src/ tests/
 ```
 
 ### Type Check with Mypy
 
 ```bash
-mypy base/src
+mypy src/
 ```
 
 ### Run All Checks
 
 ```bash
-black base/src base/tests && ruff check base/src base/tests && mypy base/src
+black src/ tests/ && ruff check src/ tests/ && mypy src/
 ```
 
 ## Pre-commit Hooks
@@ -246,8 +245,7 @@ pip install -e ".[dev]"
 If the root API returns default metadata, the package may not be installed. Rebuild and reinstall:
 
 ```bash
-cd base
-rm -rf dist build src/avs_blueprint_agents.egg-info
+rm -rf dist build *.egg-info
 python -m build
 pip install --force-reinstall --no-deps dist/avs_blueprint_agents-*.whl
 ```

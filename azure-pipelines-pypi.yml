@@ -12,7 +12,7 @@ variables:
   - name: pythonVersion
     value: "3.13"
   - name: packagePath
-    value: "base"
+    value: "."
   - group: PyPI
 
 pool:
@@ -44,8 +44,7 @@ stages:
             displayName: "Install dependencies"
 
           - script: |
-              export PYTHONPATH="$(Build.SourcesDirectory)/custom/src"
-              python -m pytest --cov=agents.base --cov-report=xml --cov-report=html
+              python -m pytest tests/ --cov=blueprint.agents --cov-report=xml --cov-report=html
             displayName: "Run tests with coverage"
 
           - task: PublishPipelineArtifact@1
@@ -100,7 +99,7 @@ stages:
             displayName: "Copy package artifacts"
 
           - publish: "$(Build.ArtifactStagingDirectory)"
-            artifact: "base-dist"
+            artifact: "blueprint-agents-dist"
             displayName: "Publish package artifacts"
 
   - stage: Publish

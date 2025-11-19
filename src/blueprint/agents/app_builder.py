@@ -3,12 +3,11 @@
 import logging
 import sys
 from contextlib import asynccontextmanager
-from typing import Any
 
 from fastapi import FastAPI
 from pydantic_ai import Agent
 
-from .api import actuators, root
+from .api import actuators, rest, root
 from .config import Config, ConfigError, LoggingManager, TelemetryManager
 from .handler import EventHandler
 from .registry.component_registry import ComponentRegistry
@@ -50,8 +49,7 @@ class AppBuilder:
         # Step 4: Initialize telemetry (will be configured during startup)
         self.telemetry_manager = TelemetryManager(settings=self.config)
 
-        self._custom_routers: list[dict[str, Any]] = []
-        self._rest_api_class: type | None = None
+        self._rest_api: object | None = None
         self._handler_classes: list[type[EventHandler]] = []
 
         # Single unified registry for all components
@@ -67,14 +65,44 @@ class AppBuilder:
         self._component_registry.get_agent_registry().register(name=agent.name, agent=agent)
         return self
 
-    def with_rest_api(self, api_class: type) -> "AppBuilder":
-        """Register a custom REST API class."""
-        self._rest_api_class = api_class
-        return self
+    def with_rest_api(self, api_instance: object) -> "AppBuilder":
+        """Register a custom REST API instance.
 
-    def with_router(self, router: Any, prefix: str = "", tags: list[str] | None = None) -> "AppBuilder":
-        """Add a custom router to the application."""
-        self._custom_routers.append({"router": router, "prefix": prefix, "tags": tags or []})
+        The instance must be a subclass of RestApi. AppBuilder will wire the
+        component registry and any registered agents into the instance.
+
+        Args:
+            api_instance: An instance of a RestApi subclass
+
+        Raises:
+            TypeError: If api_instance is not a RestApi subclass instance
+        """
+        # Validate that the instance is a RestApi subclass
+        if not isinstance(api_instance, rest.RestApi):
+            raise TypeError(f"REST API instance must be a subclass of RestApi, got {type(api_instance).__name__}")
+
+        # Wire the component registry into the API instance
+        api_instance._component_registry = self._component_registry
+
+        # Wire registered agents into the API instance
+        agent_registry = self._component_registry.get_agent_registry()
+        agent_names = agent_registry.list_agents()
+        if agent_names:
+            # If there's a single agent, wire it directly
+            if len(agent_names) == 1:
+                agent = agent_registry.get(agent_names[0])
+                api_instance.with_agent(agent)
+            else:
+                # If multiple agents, wire them as a dict
+                agents_dict = {name: agent_registry.get(name) for name in agent_names}
+                api_instance.with_agent(agents_dict)
+
+        # Initialize the router if not already done
+        if api_instance.router is None:
+            api_instance.router = rest.APIRouter()
+            api_instance._register_routes()
+
+        self._rest_api = api_instance
         return self
 
     def _create_lifespan_manager(self):
@@ -167,22 +195,16 @@ class AppBuilder:
         app.include_router(actuator_api.router, tags=["actuators"])
 
         # Include other base routers
-        app.include_router(root.router, tags=["root"])
-        if dapr is not None:
+        root_api = root.RootApi(config=self.config)
+        app.include_router(root_api.router, tags=["root"])
+
+        # Include Dapr endpoints only if handlers are registered
+        if dapr is not None and self._handler_classes:
             dapr_api = dapr.DaprApi(component_registry=self._component_registry)
             app.include_router(dapr_api.router, tags=["dapr"])
 
-        # Include custom routers
-        for custom_router in self._custom_routers:
-            app.include_router(
-                custom_router["router"],
-                prefix=custom_router["prefix"],
-                tags=custom_router["tags"],
-            )
-
         # Include custom REST API
-        if self._rest_api_class:
-            rest_api = self._rest_api_class(registry=self._component_registry)
-            app.include_router(rest_api.router, prefix="/api", tags=["rest"])
+        if self._rest_api:
+            app.include_router(self._rest_api.router, prefix="/api", tags=["rest"])
 
         return app

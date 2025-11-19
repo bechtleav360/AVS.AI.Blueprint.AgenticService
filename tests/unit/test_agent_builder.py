@@ -45,7 +45,7 @@ class TestAgentBuilder:
 
     def test_with_model_sets_model_name(self, builder, mock_config):
         """Test with_model configures model with specific name."""
-        with patch("base.src.agent.agent_builder.ModelProviderFactory.create_model") as mock_create:
+        with patch("blueprint.agents.agent.agent_builder.ModelProviderFactory.create_model") as mock_create:
             mock_model = Mock()
             mock_create.return_value = mock_model
 
@@ -57,7 +57,7 @@ class TestAgentBuilder:
 
     def test_with_model_from_config_uses_runtime_config(self, builder, mock_config):
         """Test with_model_from_config loads model from configuration."""
-        with patch("base.src.agent.agent_builder.ModelProviderFactory.create_model") as mock_create:
+        with patch("blueprint.agents.agent.agent_builder.ModelProviderFactory.create_model") as mock_create:
             mock_model = Mock()
             mock_create.return_value = mock_model
 
@@ -69,7 +69,7 @@ class TestAgentBuilder:
 
     def test_with_model_from_config_custom_runtime(self, builder, mock_config):
         """Test with_model_from_config can use custom runtime name."""
-        with patch("base.src.agent.agent_builder.ModelProviderFactory.create_model") as mock_create:
+        with patch("blueprint.agents.agent.agent_builder.ModelProviderFactory.create_model") as mock_create:
             mock_model = Mock()
             mock_create.return_value = mock_model
 
@@ -89,7 +89,7 @@ class TestAgentBuilder:
 
     def test_with_system_prompt_file_loads_from_file(self, builder, mock_config):
         """Test with_system_prompt_file loads prompt from file."""
-        with patch("base.src.agent.agent_builder.PromptLoader.load_prompt") as mock_load:
+        with patch("blueprint.agents.agent.agent_builder.PromptLoader.load_prompt") as mock_load:
             mock_load.return_value = "Loaded prompt from file"
 
             result = builder.with_system_prompt_file("test_prompt")
@@ -155,7 +155,7 @@ class TestAgentBuilder:
 
     def test_build_requires_system_prompt(self, builder):
         """Test build raises error if system prompt not configured."""
-        with patch("base.src.agent.agent_builder.ModelProviderFactory.create_model") as mock_create:
+        with patch("blueprint.agents.agent.agent_builder.ModelProviderFactory.create_model") as mock_create:
             mock_create.return_value = Mock()
             builder.with_model("gpt-4")
 
@@ -171,7 +171,7 @@ class TestAgentBuilder:
         class CustomOutput(BaseModel):
             result: str
 
-        with patch("base.src.agent.agent_builder.ModelProviderFactory.create_model") as mock_create:
+        with patch("blueprint.agents.agent.agent_builder.ModelProviderFactory.create_model") as mock_create:
             mock_model = Mock()
             mock_create.return_value = mock_model
 
@@ -182,7 +182,7 @@ class TestAgentBuilder:
             mock_agent_class = Mock(return_value=mock_agent_instance)
 
             # Patch the Agent class and its __getitem__ method
-            with patch("base.src.agent.agent_builder.Agent") as mock_agent:
+            with patch("blueprint.agents.agent.agent_builder.Agent") as mock_agent:
                 # Configure __getitem__ to return our mock class
                 mock_agent.__getitem__.return_value = mock_agent_class
 
@@ -210,10 +210,10 @@ class TestAgentBuilder:
 
     def test_fluent_interface_chaining(self, builder, mock_config):
         """Test builder methods can be chained fluently."""
-        with patch("base.src.agent.agent_builder.ModelProviderFactory.create_model") as mock_create:
+        with patch("blueprint.agents.agent.agent_builder.ModelProviderFactory.create_model") as mock_create:
             mock_create.return_value = Mock()
 
-            with patch("base.src.agent.agent_builder.Agent"):
+            with patch("blueprint.agents.agent.agent_builder.Agent"):
                 # Should not raise error
                 agent = builder.with_model("gpt-4").with_system_prompt_text("Test").with_tools([]).build()
 
@@ -221,7 +221,7 @@ class TestAgentBuilder:
 
     def test_build_with_no_tools(self, builder, mock_config):
         """Test build works with no tools configured."""
-        with patch("base.src.agent.agent_builder.ModelProviderFactory.create_model") as mock_create:
+        with patch("blueprint.agents.agent.agent_builder.ModelProviderFactory.create_model") as mock_create:
             mock_model = Mock()
             mock_create.return_value = mock_model
 
@@ -229,7 +229,7 @@ class TestAgentBuilder:
             mock_agent_instance = Mock()
             mock_agent_class = Mock(return_value=mock_agent_instance)
 
-            with patch("base.src.agent.agent_builder.Agent") as mock_agent:
+            with patch("blueprint.agents.agent.agent_builder.Agent") as mock_agent:
                 # Configure __getitem__ to return our mock class
                 mock_agent.__getitem__.return_value = mock_agent_class
 
@@ -252,7 +252,7 @@ class TestAgentBuilder:
         def tool2():
             return "2"
 
-        with patch("base.src.agent.agent_builder.ModelProviderFactory.create_model") as mock_create:
+        with patch("blueprint.agents.agent.agent_builder.ModelProviderFactory.create_model") as mock_create:
             mock_model = Mock()
             mock_create.return_value = mock_model
 
@@ -260,7 +260,7 @@ class TestAgentBuilder:
             mock_agent_instance = Mock()
             mock_agent_class = Mock(return_value=mock_agent_instance)
 
-            with patch("base.src.agent.agent_builder.Agent") as mock_agent:
+            with patch("blueprint.agents.agent.agent_builder.Agent") as mock_agent:
                 # Configure __getitem__ to return our mock class
                 mock_agent.__getitem__.return_value = mock_agent_class
 
@@ -279,7 +279,7 @@ class TestAgentBuilder:
     def test_build_with_additional_kwargs(self, builder, mock_config):
         """Test build passes additional valid kwargs to Agent constructor."""
         with (
-            patch("base.src.agent.agent_builder.ModelProviderFactory.create_model") as mock_create,
+            patch("blueprint.agents.agent.agent_builder.ModelProviderFactory.create_model") as mock_create,
             patch("inspect.signature") as mock_signature,
         ):
             # Mock the model
@@ -303,7 +303,7 @@ class TestAgentBuilder:
                 "instrument": Mock(),  # Valid parameter
             }
 
-            with patch("base.src.agent.agent_builder.Agent") as mock_agent:
+            with patch("blueprint.agents.agent.agent_builder.Agent") as mock_agent:
                 mock_agent.__getitem__.return_value = mock_agent_class
 
                 # Build with valid additional kwargs
@@ -322,10 +322,10 @@ class TestAgentBuilder:
 
     def test_build_with_invalid_kwargs(self, builder, mock_config):
         """Test build raises error for invalid kwargs."""
-        with patch("base.src.agent.agent_builder.ModelProviderFactory.create_model") as mock_create:
+        with patch("blueprint.agents.agent.agent_builder.ModelProviderFactory.create_model") as mock_create:
             mock_create.return_value = Mock()
 
-            with patch("base.src.agent.agent_builder.Agent") as mock_agent:
+            with patch("blueprint.agents.agent.agent_builder.Agent") as mock_agent:
                 mock_agent.__getitem__.return_value = Mock()
 
                 # Try to build with an invalid kwarg
@@ -335,7 +335,7 @@ class TestAgentBuilder:
     def test_build_with_kwargs_overrides(self, builder, mock_config):
         """Test that explicitly passed kwargs take precedence over builder settings."""
         with (
-            patch("base.src.agent.agent_builder.ModelProviderFactory.create_model") as mock_create,
+            patch("blueprint.agents.agent.agent_builder.ModelProviderFactory.create_model") as mock_create,
             patch("inspect.signature") as mock_signature,
         ):
             # Mock the model
@@ -351,7 +351,7 @@ class TestAgentBuilder:
             mock_signature.return_value = mock_sig
             mock_sig.parameters = {"model": Mock(), "system_prompt": Mock(), "tools": Mock(), "retries": Mock()}  # Valid parameter
 
-            with patch("base.src.agent.agent_builder.Agent") as mock_agent:
+            with patch("blueprint.agents.agent.agent_builder.Agent") as mock_agent:
                 mock_agent.__getitem__.return_value = mock_agent_class
 
                 # Test that trying to override builder-set parameters raises an error
@@ -382,7 +382,7 @@ class TestAgentBuilder:
             result: str
 
         with (
-            patch("base.src.agent.agent_builder.ModelProviderFactory.create_model") as mock_create,
+            patch("blueprint.agents.agent.agent_builder.ModelProviderFactory.create_model") as mock_create,
             patch("inspect.signature") as mock_signature,
         ):
             # Mock the model
@@ -405,7 +405,7 @@ class TestAgentBuilder:
                 "end_strategy": Mock(),
             }
 
-            with patch("base.src.agent.agent_builder.Agent") as mock_agent:
+            with patch("blueprint.agents.agent.agent_builder.Agent") as mock_agent:
                 mock_agent.__getitem__.return_value = mock_agent_class
 
                 # Build with generic types and additional valid kwargs

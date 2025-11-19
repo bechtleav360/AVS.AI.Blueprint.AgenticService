@@ -19,6 +19,9 @@ from .handlers import AgentInvokerHandler, SimpleProcessorHandler
 from .models.results import InvoiceAnalysisOutput
 from .services import InvoiceProcessingLogic
 
+# Optional: Import OpenTelemetry for metrics (uncomment if using OTEL)
+# from opentelemetry import metrics
+
 # Define the project root and paths to your custom settings files
 project_root = Path(__file__).parent.parent
 settings_files = [
@@ -33,9 +36,14 @@ settings_files = [
 # Load configuration
 config = Config(settings_files=settings_files, root_path=project_root)
 
+# Optional: Get OpenTelemetry meter for metrics recording
+# Uncomment if using OpenTelemetry:
+# meter = metrics.get_meter(__name__)
+
 # Build invoice analyzer agent
+# Note: Pass meter=meter to AgentBuilder if using OpenTelemetry
 invoice_agent: Agent = (
-    AgentBuilder(config, runtime_name="invoice_analyzer")
+    AgentBuilder(config, runtime_name="invoice_analyzer")  # Add meter=meter if using OTEL
     .with_model_from_config("invoice_analyzer")
     .with_system_prompt_file("instruction")
     .with_tools(
@@ -66,7 +74,7 @@ app = (
     AppBuilder(settings_files=settings_files, root_path=project_root)
     .with_handler(AgentInvokerHandler)
     .with_handler(SimpleProcessorHandler)
-    .with_rest_api(CustomRestApi)
+    .with_rest_api(CustomRestApi())
     .with_agent(invoice_agent)
     .build()
 )

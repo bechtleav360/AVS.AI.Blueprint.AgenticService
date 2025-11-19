@@ -1,9 +1,17 @@
 [default]
+app_name = "Invoice Analyzer"
+app_version = "0.1.0"
+app_description = "Invoice analysis agent using Blueprint Agents framework"
 app_port = 8000
 app_environment = "development"
 
 log_level = "INFO"
 log_format = "json"
+
+# Observability Configuration
+[default.observability]
+otel_enabled = false              # Usage metrics always logged
+token_metrics_enabled = true      # Enable token usage and latency metrics
 
 # Prompt Configuration
 # In Kubernetes, prompts are mounted at /etc/agent/prompts from ConfigMap
@@ -50,7 +58,7 @@ ai_model_provider = "vllm"
 ai_model_base_url = "https://avs-vllm.q14.net/v1"
 ai_model_name = "default"
 # ai_model_api_key = "" # set in environment variable
-ai_model_max_tokens = 1000
+ai_model_max_tokens = 500          # Reduced for faster response times
 ai_model_temperature = 0.1
 
 # vLLM-specific: Use tool_choice="auto" instead of "required"

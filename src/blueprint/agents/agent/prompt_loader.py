@@ -21,19 +21,22 @@ class PromptLoader:
 
     @staticmethod
     def load_prompt(prompt_name: str, agent_class: type, config: Union[dict[str, Any], "PromptConfig", None] = None) -> str:
-        """Load a system prompt file based on the agent class location.
+        """Load a system prompt file or from config.
 
-        Searches for the prompt file in multiple locations:
-        1. Custom path from config (if provided)
-        2. Additional search paths from config (if provided)
-        3. Primary: `<module_dir>/../prompts/<prompt_name>.prompt`
-        4. Fallback: `<module_dir>/prompts/<prompt_name>.prompt`
-        5. Fallback: `<module_dir>/<prompt_name>.prompt`
+        Searches for the prompt in this order:
+        1. Prompt content defined in config (if provided) - HIGHEST PRIORITY
+        2. Custom path from config (if provided)
+        3. Additional search paths from config (if provided)
+        4. Project src/prompts directory
+        5. Primary: `<module_dir>/../prompts/<prompt_name>.prompt`
+        6. Fallback: `<module_dir>/prompts/<prompt_name>.prompt`
+        7. Fallback: `<module_dir>/<prompt_name>.prompt`
 
         Args:
             prompt_name: Name of the prompt file (without .prompt extension).
             agent_class: The agent class requesting the prompt.
             config: Optional prompt configuration (dict or PromptConfig model) with keys:
+                   - prompts: Dict of prompt names to prompt content (highest priority)
                    - custom_path: Custom prompt directory path
                    - search_paths: List of additional search paths
 
@@ -43,6 +46,21 @@ class PromptLoader:
         Raises:
             FileNotFoundError: If prompt file doesn't exist in any location.
         """
+        # 1. Check if prompt is defined directly in config (highest priority)
+        if config:
+            # Handle both dict and Pydantic model
+            prompts_dict = None
+            if isinstance(config, dict):
+                prompts_dict = config.get("prompts")
+            else:
+                prompts_dict = getattr(config, "prompts", None)
+
+            if prompts_dict and prompt_name in prompts_dict:
+                prompt_content = prompts_dict[prompt_name]
+                logger.debug("Loading prompt from config: %s", prompt_name)
+                return prompt_content.strip() if isinstance(prompt_content, str) else prompt_content
+
+        # 2. Search filesystem for prompt file
         search_paths = PromptLoader._get_prompt_search_paths(prompt_name, agent_class, config)
 
         for prompt_path in search_paths:
@@ -88,8 +106,8 @@ class PromptLoader:
             if custom_path_value:
                 custom_path = Path(custom_path_value)
                 if not custom_path.is_absolute():
-                    # Resolve relative paths from module directory
-                    custom_path = module_dir / custom_path
+                    # Resolve relative paths from current working directory
+                    custom_path = Path.cwd() / custom_path
                 search_paths.append(custom_path / filename)
                 logger.debug("Added custom prompt path from config: %s", custom_path)
 
@@ -108,7 +126,7 @@ class PromptLoader:
                     # Single path as string
                     search_path = Path(search_paths_config)
                     if not search_path.is_absolute():
-                        search_path = module_dir / search_path
+                        search_path = Path.cwd() / search_path
                     search_paths.append(search_path / filename)
                     logger.debug("Added search path from config: %s", search_path)
                 elif isinstance(search_paths_config, (list, tuple)):
@@ -116,7 +134,7 @@ class PromptLoader:
                     for search_path_str in search_paths_config:
                         search_path = Path(search_path_str)
                         if not search_path.is_absolute():
-                            search_path = module_dir / search_path
+                            search_path = Path.cwd() / search_path
                         search_paths.append(search_path / filename)
                     logger.debug(
                         "Added %d additional search paths from config",
@@ -125,7 +143,21 @@ class PromptLoader:
                 else:
                     logger.warning("Invalid search_paths config type: %s", type(search_paths_config))
 
-        # 3. Add default search paths based on agent class location
+        # 3. Add project src/prompts directory (for examples and projects)
+        # Search up the directory tree for a src/prompts directory
+        current = Path.cwd()
+        for _ in range(10):  # Limit search depth to avoid infinite loops
+            project_prompts = current / "src" / "prompts"
+            if project_prompts.exists():
+                search_paths.append(project_prompts / filename)
+                logger.debug("Added project prompts directory: %s", project_prompts)
+                break
+            parent = current.parent
+            if parent == current:  # Reached filesystem root
+                break
+            current = parent
+
+        # 4. Add default search paths based on agent class location
         default_paths = [
             module_dir.parent / "prompts" / filename,  # ../prompts/
             module_dir / "prompts" / filename,  # ./prompts/

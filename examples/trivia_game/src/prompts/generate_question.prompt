@@ -1,0 +1,14 @@
+Generate a {difficulty} trivia question about world knowledge.
+
+Requirements:
+- Difficulty level: {difficulty} (easy, medium, or hard)
+- Question should be interesting and educational
+- Avoid questions that are too obscure or too obvious
+- Return ONLY a valid JSON object with these exact fields:
+  - "question": The trivia question text
+  - "category": The category (e.g., Geography, History, Science, Culture, Sports)
+  - "difficulty": The difficulty level
+  - "correct_answer": The correct answer
+
+Example response format:
+{{"question": "What is the capital of France?", "category": "Geography", "difficulty": "easy", "correct_answer": "Paris"}}

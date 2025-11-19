@@ -19,8 +19,6 @@ from typing import Any
 
 from opentelemetry import trace
 
-from pydantic import BaseModel, ValidationError
-
 from ..config import Config
 from ..models import CloudEvent, HandlerResult
 from ..registry.component_registry import ComponentRegistry
@@ -107,15 +105,13 @@ class EventHandler(ABC):
             span.set_attribute("handler.priority", self.priority)
             result = await self.handle_event(event, context)
 
-            if isinstance(result, BaseModel):
-                try:
-                    HandlerResult.model_validate(result)
-                except ValidationError as exc:
-                    raise ValueError(
-                        "EventHandler.handle_event returned a Pydantic model without the required "
-                        "'event_type' (str) and 'data' (Any) fields"
-                    ) from exc
+            # If result is already a HandlerResult, return it as-is
+            if isinstance(result, HandlerResult):
+                return result
 
+            # If result is a dict or other type, return it as-is
+            # Dicts and other types don't require event_type and data fields
+            # Only HandlerResult requires those fields
             return result
 
     @abstractmethod

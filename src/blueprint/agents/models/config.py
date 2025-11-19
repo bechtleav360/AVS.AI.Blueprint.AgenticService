@@ -128,6 +128,7 @@ class AIConfig(BaseModel):
 class PromptConfig(BaseModel):
     """Prompt configuration."""
 
+    prompts: dict[str, str] = Field(default_factory=dict, description="Prompt content by name (highest priority)")
     custom_path: str | None = Field(None, description="Custom path to prompts")
     search_paths: list[str] = Field(default_factory=list, description="Additional search paths")
     system_prompt_name: str = Field(default="system", description="System prompt file name")
@@ -140,6 +141,7 @@ class ObservabilityConfig(BaseModel):
     otel_enabled: bool = Field(default=False, description="Enable OpenTelemetry")
     otel_endpoint: str | None = Field(None, description="OpenTelemetry endpoint")
     otel_service_name: str = Field(default="agent-service", description="OpenTelemetry service name")
+    token_metrics_enabled: bool = Field(default=True, description="Enable token usage and latency metrics")
     log_level: str = Field(default="INFO", description="Log level")
 
 
