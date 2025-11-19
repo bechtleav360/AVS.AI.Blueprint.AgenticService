@@ -13,7 +13,6 @@ variables:
     value: "3.13"
   - name: packagePath
     value: "."
-  - group: PyPI
 
 pool:
   vmImage: "ubuntu-latest"
@@ -44,21 +43,22 @@ stages:
             displayName: "Install dependencies"
 
           - script: |
-              python -m pytest tests/ --cov=blueprint.agents --cov-report=xml --cov-report=html
+              python -m pytest tests/unit --cov=blueprint.agents --cov-report=xml --cov-report=html --tb=short
+            workingDirectory: "$(packagePath)"
             displayName: "Run tests with coverage"
 
           - task: PublishPipelineArtifact@1
-            condition: and(succeeded(), exists('$(Build.SourcesDirectory)/coverage.xml'))
+            condition: and(succeeded(), exists('$(Build.SourcesDirectory)/$(packagePath)/coverage.xml'))
             inputs:
-              targetPath: "$(Build.SourcesDirectory)/coverage.xml"
+              targetPath: "$(Build.SourcesDirectory)/$(packagePath)/coverage.xml"
               artifact: "CodeCoverageXML"
               publishLocation: "pipeline"
             displayName: "Publish coverage XML"
 
           - task: PublishPipelineArtifact@1
-            condition: and(succeeded(), exists('$(Build.SourcesDirectory)/htmlcov'))
+            condition: and(succeeded(), exists('$(Build.SourcesDirectory)/$(packagePath)/htmlcov'))
             inputs:
-              targetPath: "$(Build.SourcesDirectory)/htmlcov"
+              targetPath: "$(Build.SourcesDirectory)/$(packagePath)/htmlcov"
               artifact: "CodeCoverageHTML"
               publishLocation: "pipeline"
             displayName: "Publish coverage HTML report"
@@ -84,6 +84,7 @@ stages:
           - script: |
               python -m pip install --upgrade pip
               pip install build twine semver
+            workingDirectory: "$(packagePath)"
             displayName: "Install build tools"
 
           - script: |
@@ -123,12 +124,14 @@ stages:
           - script: |
               python -m pip install --upgrade pip
               pip install build twine semver
+            workingDirectory: "$(packagePath)"
             displayName: "Install publication tooling"
 
           - script: |
               git config user.email "ci-bot@bechtle.com"
               git config user.name "CI Bot"
               python scripts/bump_version.py
+            workingDirectory: "$(packagePath)"
             displayName: "Bump version"
 
           - script: |
@@ -138,7 +141,8 @@ stages:
             displayName: "Rebuild package for publish"
 
           - script: |
-              python -m twine upload $(packagePath)/dist/* --username __token__ --password $(PyPIApiToken)
+              python -m twine upload dist/* --username __token__ --password $(PyPIApiToken)
+            workingDirectory: "$(packagePath)"
             displayName: "Upload package to PyPI"
 
           - script: |
