@@ -1,0 +1,158 @@
+parameters:
+  pythonVersion: "3.13"
+  packagePath: "."
+  testPath: "tests"
+  requirementsDevFile: "requirements-dev.txt"
+  runTests: true
+  publishCoverage: true
+  coverageModule: ""
+  publishToFeed: false
+  feedName: "BIoS"
+  organizationName: "av360"
+  projectName: "Bechtle-Index-of-Sovereignty"
+  bumpVersion: false
+  versionFilePath: "pyproject.toml"
+  additionalTestArgs: ""
+  buildArgs: ""
+
+steps:
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: ${{ parameters.pythonVersion }}
+      addToPath: true
+    displayName: "Use Python ${{ parameters.pythonVersion }}"
+
+  - script: |
+      python -m pip install --upgrade pip
+      pip install build twine semver
+    displayName: "Install build tools"
+
+  # Install dependencies
+  - script: |
+      if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      if [ -f ${{ parameters.requirementsDevFile }} ]; then pip install -r ${{ parameters.requirementsDevFile }}; fi
+      if [ -f setup.py ]; then pip install -e .; fi
+      if [ -f pyproject.toml ]; then pip install -e .; fi
+    workingDirectory: ${{ parameters.packagePath }}
+    displayName: "Install package dependencies"
+
+  # Run tests if enabled
+  - ${{ if eq(parameters.runTests, true) }}:
+      - script: |
+          pip install pytest pytest-cov pytest-asyncio
+        workingDirectory: ${{ parameters.packagePath }}
+        displayName: "Install test dependencies"
+
+      - script: |
+          python -m pytest ${{ parameters.testPath }} \
+            ${{ if ne(parameters.coverageModule, '') }}--cov=${{ parameters.coverageModule }}${{ else }}--cov${{ end }} \
+            --cov-report=xml \
+            --cov-report=html \
+            --cov-report=term \
+            ${{ parameters.additionalTestArgs }}
+        workingDirectory: ${{ parameters.packagePath }}
+        displayName: "Run tests with coverage"
+        continueOnError: false
+
+      - ${{ if eq(parameters.publishCoverage, true) }}:
+          - task: PublishCodeCoverageResults@2
+            condition: succeededOrFailed()
+            inputs:
+              summaryFileLocation: ${{ parameters.packagePath }}/coverage.xml
+              pathToSources: ${{ parameters.packagePath }}
+              failIfCoverageEmpty: false
+            displayName: "Publish coverage results"
+
+          - task: PublishPipelineArtifact@1
+            condition: succeededOrFailed()
+            inputs:
+              targetPath: ${{ parameters.packagePath }}/htmlcov
+              artifact: "CodeCoverageHTML-$(System.JobAttempt)"
+              publishLocation: "pipeline"
+            displayName: "Publish coverage HTML report"
+
+  # Bump version if enabled
+  - ${{ if eq(parameters.bumpVersion, true) }}:
+      - script: |
+          git config user.email "$(Build.RequestedForEmail)"
+          git config user.name "$(Build.RequestedFor)"
+        displayName: "Configure git for $(Build.RequestedFor)"
+
+      - task: PythonScript@0
+        inputs:
+          scriptSource: "inline"
+          script: |
+            import re
+            import sys
+            from pathlib import Path
+
+            version_file = Path('${{ parameters.versionFilePath }}')
+            if not version_file.exists():
+                print(f"Version file not found: {version_file}")
+                sys.exit(1)
+
+            content = version_file.read_text()
+
+            # Extract current version
+            match = re.search(r'version\s*=\s*"(\d+)\.(\d+)\.(\d+)"', content)
+            if not match:
+                print("Could not find version in file")
+                sys.exit(1)
+
+            major, minor, patch = map(int, match.groups())
+            new_patch = patch + 1
+            new_version = f"{major}.{minor}.{new_patch}"
+
+            # Replace version
+            new_content = re.sub(
+                r'version\s*=\s*"\d+\.\d+\.\d+"',
+                f'version = "{new_version}"',
+                content
+            )
+
+            version_file.write_text(new_content)
+            print(f"Version bumped: {major}.{minor}.{patch} -> {new_version}")
+            print(f"##vso[task.setvariable variable=NewVersion;isOutput=true]{new_version}")
+        workingDirectory: ${{ parameters.packagePath }}
+        displayName: "Bump patch version"
+
+  # Build package
+  - script: |
+      python -m build ${{ parameters.buildArgs }}
+    workingDirectory: ${{ parameters.packagePath }}
+    displayName: "Build Python package"
+
+  # Publish artifacts
+  - task: PublishPipelineArtifact@1
+    inputs:
+      targetPath: ${{ parameters.packagePath }}/dist
+      artifact: "python-package-$(System.JobAttempt)"
+      publishLocation: "pipeline"
+    displayName: "Publish package artifacts"
+
+  # Publish to Azure Artifacts Feed
+  - ${{ if eq(parameters.publishToFeed, true) }}:
+      - task: TwineAuthenticate@1
+        displayName: "Authenticate with Azure Artifacts"
+        inputs:
+          artifactFeed: ${{ parameters.projectName }}/${{ parameters.feedName }}
+
+      - script: |
+          python -m twine upload -r ${{ parameters.feedName }} \
+            --config-file $(PYPIRC_PATH) \
+            dist/* \
+            --verbose
+        workingDirectory: ${{ parameters.packagePath }}
+        displayName: "Upload to Azure Artifacts Feed"
+
+  # Commit and push version bump
+  - ${{ if eq(parameters.bumpVersion, true) }}:
+      - script: |
+          git add ${{ parameters.versionFilePath }}
+          git commit -m "Bump version to $(NewVersion) [skip ci]"
+          git tag "v$(NewVersion)"
+          git push origin HEAD:$(Build.SourceBranchName)
+          git push origin "v$(NewVersion)"
+        workingDirectory: ${{ parameters.packagePath }}
+        displayName: "Commit and push version bump"
+        condition: succeeded()

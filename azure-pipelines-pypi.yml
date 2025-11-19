@@ -1,13 +1,12 @@
-
 name: $(BuildDefinitionName)_$(SourceBranchName)_$(Date:yyyyMMdd)_$(Rev:rrrr)
 
 variables:
   - name: pythonVersion
-    value: '3.13'
+    value: "3.13"
   - name: packagePath
-    value: 'base'
+    value: "."
   - name: coverageModule
-    value: 'agents.base'
+    value: "blueprint.agents"
 
 trigger:
   branches:
@@ -21,56 +20,51 @@ trigger:
   paths:
     exclude:
       - azure-pipelines-pypi.yml
-      - '**/*.md'
-      - 'docs/**'
-
-resources:
-  repositories:
-    - repository: templates
-      type: git
-      name: PipelineTemplates
+      - "**/*.md"
+      - "docs/**"
 
 pool:
-  vmImage: 'ubuntu-latest'
+  vmImage: "ubuntu-latest"
 
 stages:
-  # Test Stage - läuft immer auf allen Branches und Tags
   - stage: Test
-    displayName: 'Test Package'
+    displayName: "Test Package"
     jobs:
       - job: TestPackage
-        displayName: 'Run Tests and Coverage'
+        displayName: "Run Tests and Coverage"
         steps:
           - checkout: self
             persistCredentials: true
             fetchDepth: 0
 
-          - template: build-and-publish-pypi.yml@templates
+          - template: build-and-publish-pypi.yml
             parameters:
               pythonVersion: $(pythonVersion)
               packagePath: $(packagePath)
               coverageModule: $(coverageModule)
+              testPath: "tests/unit"
               runTests: true
               publishCoverage: true
               publishToFeed: false
 
-  # Build and Publish Stage - läuft nach erfolgreichen Tests
-  # Publiziert Release-Versionen (bei Tags) oder Beta-Versionen (bei Branches)
-  - stage: BuildAndPublish
-    displayName: 'Build and Publish Package'
+  - stage: Build
+    displayName: "Build Package"
     dependsOn: Test
     condition: succeeded()
     jobs:
-      - job: PublishPackage
-        displayName: 'Build and Publish to Azure Artifacts'
+      - job: BuildPackage
+        displayName: "Build Python package"
         steps:
           - checkout: self
             persistCredentials: true
             fetchDepth: 0
 
-          - template: build-and-publish-pypi.yml@templates
+          - template: build-and-publish-pypi.yml
             parameters:
               pythonVersion: $(pythonVersion)
               packagePath: $(packagePath)
               runTests: false
+              publishCoverage: false
               publishToFeed: true
+              feedName: "BIoS"
+              projectName: "Bechtle-Index-of-Sovereignty"
