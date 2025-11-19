@@ -44,12 +44,21 @@ steps:
         displayName: "Install test dependencies"
 
       - script: |
-          python -m pytest ${{ parameters.testPath }} \
-            ${{ if ne(parameters.coverageModule, '') }}--cov=${{ parameters.coverageModule }}${{ else }}--cov${{ end }} \
-            --cov-report=xml \
-            --cov-report=html \
-            --cov-report=term \
-            ${{ parameters.additionalTestArgs }}
+          if [ -z "${{ parameters.coverageModule }}" ]; then
+            python -m pytest ${{ parameters.testPath }} \
+              --cov \
+              --cov-report=xml \
+              --cov-report=html \
+              --cov-report=term \
+              ${{ parameters.additionalTestArgs }}
+          else
+            python -m pytest ${{ parameters.testPath }} \
+              --cov=${{ parameters.coverageModule }} \
+              --cov-report=xml \
+              --cov-report=html \
+              --cov-report=term \
+              ${{ parameters.additionalTestArgs }}
+          fi
         workingDirectory: ${{ parameters.packagePath }}
         displayName: "Run tests with coverage"
         continueOnError: false
