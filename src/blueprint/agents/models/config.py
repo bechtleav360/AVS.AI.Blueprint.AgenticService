@@ -3,7 +3,7 @@
 import ast
 import re
 from typing import Any
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 
 
 class TopicConfig(BaseModel):
@@ -148,6 +148,8 @@ class ObservabilityConfig(BaseModel):
 class RuntimeConfig(BaseModel):
     """Runtime-specific configuration."""
 
+    model_config = ConfigDict(extra="allow")  # Allow additional fields for extensibility
+
     ai_model_provider: str | None = Field(None, description="AI provider override")
     ai_model_name: str | None = Field(None, description="Model name override")
     ai_model_api_key: str | None = Field(None, description="API key override")
@@ -157,8 +159,3 @@ class RuntimeConfig(BaseModel):
     ai_concurrent_requests: int | None = Field(None, description="Concurrency limit override")
     prompt_directory: str | None = Field(None, description="Prompt directory override")
     prompt_search_paths: list[str] | None = Field(None, description="Prompt search paths override")
-
-    class Config:
-        """Pydantic config."""
-
-        extra = "allow"  # Allow additional fields for extensibility

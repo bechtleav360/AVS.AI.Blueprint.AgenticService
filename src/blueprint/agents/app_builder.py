@@ -26,7 +26,19 @@ logger = logging.getLogger(__name__)
 class AppBuilder:
     """Builds the FastAPI application with a fluent interface."""
 
-    def __init__(self, settings_files: list[str] | None = None, root_path: str | None = None):
+    def __init__(
+        self,
+        config: Config | None = None,
+        settings_files: list[str] | None = None,
+        root_path: str | None = None,
+    ):
+        """Initialize the AppBuilder.
+
+        Args:
+            config: Pre-configured Config object. If provided, settings_files and root_path are ignored.
+            settings_files: List of settings file paths (used only if config is None).
+            root_path: Root path for configuration (used only if config is None).
+        """
         # Step 1: Initialize logging with default INFO level
         self.logging_manager = LoggingManager()
         self.logging_manager.configure(
@@ -35,12 +47,16 @@ class AppBuilder:
             suppress_noisy_loggers=True,
         )
 
-        # Step 2: Initialize configuration (may log warnings/errors if required params missing)
-        try:
-            self.config = Config(settings_files=settings_files, root_path=root_path)
-        except ConfigError as exc:
-            logger.error("Configuration error: %s", exc)
-            sys.exit(1)
+        # Step 2: Initialize or use provided configuration
+        if config is not None:
+            self.config = config
+        else:
+            # Backward compatibility: create config from settings_files and root_path
+            try:
+                self.config = Config(settings_files=settings_files, root_path=root_path)
+            except ConfigError as exc:
+                logger.error("Configuration error: %s", exc)
+                sys.exit(1)
 
         # Step 3: Set logging level from configuration
         config_log_level = self.config.get("log_level", "INFO")
@@ -50,14 +66,37 @@ class AppBuilder:
         self.telemetry_manager = TelemetryManager(settings=self.config)
 
         self._rest_api: object | None = None
-        self._handler_classes: list[type[EventHandler]] = []
+        self._handlers: list[EventHandler] = []
 
         # Single unified registry for all components
         self._component_registry = ComponentRegistry(settings=self.config)
 
-    def with_handler(self, handler_class: type[EventHandler]) -> "AppBuilder":
-        """Register a handler class with the startup manager."""
-        self._handler_classes.append(handler_class)
+    def with_handler(self, handler: type[EventHandler] | EventHandler) -> "AppBuilder":
+        """Register a handler class or instance with the startup manager.
+
+        Handler classes are instantiated immediately when registered.
+        Handler instances are stored as-is.
+
+        Args:
+            handler: Either a handler class (type[EventHandler]) or an instance (EventHandler)
+
+        Returns:
+            Self for chaining
+
+        Raises:
+            TypeError: If handler is neither a class nor an instance of EventHandler
+        """
+        if isinstance(handler, type):
+            # It's a class - instantiate it immediately
+            if not issubclass(handler, EventHandler):
+                raise TypeError(f"Handler class must be a subclass of EventHandler, " f"got {handler.__name__}")
+            handler_instance = handler()
+            self._handlers.append(handler_instance)
+        elif isinstance(handler, EventHandler):
+            # It's an instance - store as-is
+            self._handlers.append(handler)
+        else:
+            raise TypeError(f"Handler must be either a class or instance of EventHandler, " f"got {type(handler).__name__}")
         return self
 
     def with_agent(self, agent: Agent) -> "AppBuilder":
@@ -133,11 +172,17 @@ class AppBuilder:
         except Exception as e:
             logger.warning("Failed to configure OpenTelemetry: %s", e)
 
-        # Initialize and register handlers
+        # Configure and register handlers
         try:
-            handlers: list[EventHandler] = [handler_class().with_config(self.config) for handler_class in self._handler_classes]
-            self._component_registry.register_handlers(handlers)
-            logger.info("Successfully registered %d handlers", len(handlers))
+            # Configure all handlers with config
+            for handler in self._handlers:
+                handler.with_config(self.config)
+
+            self._component_registry.register_handlers(self._handlers)
+            logger.info(
+                "Successfully registered %d handlers",
+                len(self._handlers),
+            )
         except Exception as e:
             logger.error("Failed to register handlers: %s", e, exc_info=True)
 
@@ -199,7 +244,7 @@ class AppBuilder:
         app.include_router(root_api.router, tags=["root"])
 
         # Include Dapr endpoints only if handlers are registered
-        if dapr is not None and self._handler_classes:
+        if dapr is not None and self._handlers:
             dapr_api = dapr.DaprApi(component_registry=self._component_registry)
             app.include_router(dapr_api.router, tags=["dapr"])
 

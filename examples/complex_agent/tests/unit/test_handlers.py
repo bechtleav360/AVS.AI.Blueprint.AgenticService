@@ -4,8 +4,8 @@ import pytest
 
 from blueprint.agents.models.events import CloudEvent
 
-from custom.src.handlers import AgentInvokerHandler, SimpleProcessorHandler
-from custom.src.models import CustomPayload
+from examples.complex_agent.src.handlers import AgentInvokerHandler, SimpleProcessorHandler
+from examples.complex_agent.src.models import CustomPayload
 
 
 @pytest.fixture
@@ -34,9 +34,7 @@ class TestAgentInvokerHandler:
         """Ensures handler recognizes invoke_agent action."""
         handler = AgentInvokerHandler()
 
-        payload = CustomPayload(
-            invoice_text="Test invoice", details={"action": "invoke_agent"}
-        )
+        payload = CustomPayload(invoice_text="Test invoice", details={"action": "invoke_agent"})
 
         event = CloudEvent(
             specversion="1.0",
@@ -53,9 +51,7 @@ class TestAgentInvokerHandler:
         """Ensures handler rejects events without invoke_agent action."""
         handler = AgentInvokerHandler()
 
-        payload = CustomPayload(
-            invoice_text="Test invoice", details={"action": "other_action"}
-        )
+        payload = CustomPayload(invoice_text="Test invoice", details={"action": "other_action"})
 
         event = CloudEvent(
             specversion="1.0",
@@ -72,9 +68,7 @@ class TestAgentInvokerHandler:
         """handle should surface error result when registry is not linked."""
         handler = AgentInvokerHandler()
 
-        payload = CustomPayload(
-            invoice_text="Test invoice text", details={"action": "invoke_agent"}
-        )
+        payload = CustomPayload(invoice_text="Test invoice text", details={"action": "invoke_agent"})
 
         event = CloudEvent(
             specversion="1.0",

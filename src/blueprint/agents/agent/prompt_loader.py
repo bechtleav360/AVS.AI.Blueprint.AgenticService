@@ -20,17 +20,23 @@ class PromptLoader:
     """
 
     @staticmethod
-    def load_prompt(prompt_name: str, agent_class: type, config: Union[dict[str, Any], "PromptConfig", None] = None) -> str:
+    def load_prompt(
+        prompt_name: str,
+        agent_class: type,
+        config: Union[dict[str, Any], "PromptConfig", None] = None,
+        package_root: Path | str | None = None,
+    ) -> str:
         """Load a system prompt file or from config.
 
         Searches for the prompt in this order:
         1. Prompt content defined in config (if provided) - HIGHEST PRIORITY
         2. Custom path from config (if provided)
         3. Additional search paths from config (if provided)
-        4. Project src/prompts directory
-        5. Primary: `<module_dir>/../prompts/<prompt_name>.prompt`
-        6. Fallback: `<module_dir>/prompts/<prompt_name>.prompt`
-        7. Fallback: `<module_dir>/<prompt_name>.prompt`
+        4. Package root prompts directory (if package_root is provided)
+        5. Project src/prompts directory
+        6. Primary: `<module_dir>/../prompts/<prompt_name>.prompt`
+        7. Fallback: `<module_dir>/prompts/<prompt_name>.prompt`
+        8. Fallback: `<module_dir>/<prompt_name>.prompt`
 
         Args:
             prompt_name: Name of the prompt file (without .prompt extension).
@@ -39,6 +45,8 @@ class PromptLoader:
                    - prompts: Dict of prompt names to prompt content (highest priority)
                    - custom_path: Custom prompt directory path
                    - search_paths: List of additional search paths
+            package_root: Optional root path for the package (e.g., where main.py resides).
+                         Used to locate prompts in package_root/prompts directory.
 
         Returns:
             Prompt text content.
@@ -61,7 +69,7 @@ class PromptLoader:
                 return prompt_content.strip() if isinstance(prompt_content, str) else prompt_content
 
         # 2. Search filesystem for prompt file
-        search_paths = PromptLoader._get_prompt_search_paths(prompt_name, agent_class, config)
+        search_paths = PromptLoader._get_prompt_search_paths(prompt_name, agent_class, config, package_root)
 
         for prompt_path in search_paths:
             if prompt_path.exists():
@@ -76,7 +84,10 @@ class PromptLoader:
 
     @staticmethod
     def _get_prompt_search_paths(
-        prompt_name: str, agent_class: type, config: Union[dict[str, Any], "PromptConfig", None] = None
+        prompt_name: str,
+        agent_class: type,
+        config: Union[dict[str, Any], "PromptConfig", None] = None,
+        package_root: Path | str | None = None,
     ) -> list[Path]:
         """Get list of paths to search for the prompt file.
 
@@ -84,6 +95,7 @@ class PromptLoader:
             prompt_name: Name of the prompt file (without .prompt extension).
             agent_class: The agent class requesting the prompt.
             config: Optional prompt configuration (dict or PromptConfig model).
+            package_root: Optional root path for the package (e.g., where main.py resides).
 
         Returns:
             List of Path objects to search in order of priority.
@@ -143,7 +155,14 @@ class PromptLoader:
                 else:
                     logger.warning("Invalid search_paths config type: %s", type(search_paths_config))
 
-        # 3. Add project src/prompts directory (for examples and projects)
+        # 3. Add package root prompts directory (if provided)
+        if package_root:
+            package_root_path = Path(package_root)
+            package_prompts = package_root_path / "prompts" / filename
+            search_paths.append(package_prompts)
+            logger.debug("Added package root prompts directory: %s", package_root_path / "prompts")
+
+        # 4. Add project src/prompts directory (for examples and projects)
         # Search up the directory tree for a src/prompts directory
         current = Path.cwd()
         for _ in range(10):  # Limit search depth to avoid infinite loops
@@ -157,7 +176,7 @@ class PromptLoader:
                 break
             current = parent
 
-        # 4. Add default search paths based on agent class location
+        # 5. Add default search paths based on agent class location
         default_paths = [
             module_dir.parent / "prompts" / filename,  # ../prompts/
             module_dir / "prompts" / filename,  # ./prompts/

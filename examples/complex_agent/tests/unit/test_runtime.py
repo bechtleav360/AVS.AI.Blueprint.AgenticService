@@ -5,8 +5,8 @@ from uuid import uuid4
 
 import pytest
 
-from custom.src.models.resource import InvoiceInput, InvoiceLineItem
-from custom.src.services import HealthCheckService, InvoiceProcessingLogic
+from examples.complex_agent.src.models.resource import InvoiceInput, InvoiceLineItem
+from examples.complex_agent.src.services import HealthCheckService, InvoiceProcessingLogic
 
 
 @pytest.mark.asyncio

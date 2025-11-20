@@ -38,6 +38,12 @@ class TriviaService:
 
         Raises:
             ValueError: If agent is not set or prompt not found
+
+        Note:
+            The agent's run() method now supports both:
+            - await agent.run(prompt="raw prompt text")
+            - await agent.run(prompt_name="registered_prompt_name")
+            This method is kept for backward compatibility and for formatting prompts.
         """
         if self.agent is None:
             raise ValueError("Agent not configured")
@@ -88,8 +94,7 @@ class TriviaService:
             raise ValueError(f"Game {game_id} is complete")
 
         # Generate question using LLM agent
-        generate_prompt = self._get_prompt("generate_question")
-        prompt = generate_prompt.format(difficulty=game["difficulty"])
+        prompt = self._get_prompt("generate_question").format(difficulty=game["difficulty"])
         try:
             result: AgentRunResult = await self.agent.run(prompt)
             logger.info("Result object type: %s", type(result).__name__)

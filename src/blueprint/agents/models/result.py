@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class Evidence(BaseModel):
@@ -55,8 +55,9 @@ class AgentOutput(BaseModel):
     correlation_id: UUID | None = Field(None, description="A correlation ID for tracing the request through systems.")
     event_id: UUID | None = Field(None, description="The ID of the event that may have triggered this analysis.")
 
-    @validator("evidence")
-    def sort_evidence_by_confidence(cls, v):
+    @field_validator("evidence")
+    @classmethod
+    def sort_evidence_by_confidence(cls, v: list[Evidence]) -> list[Evidence]:
         """Sorts evidence by confidence in descending order for easier processing."""
         if v:
             return sorted(v, key=lambda e: e.confidence, reverse=True)
@@ -74,14 +75,15 @@ class AnalysisRequest(BaseModel):
         description="If true, forces a re-analysis even if a cached result exists.",
     )
 
-    @validator("resource_id", "resource", pre=True, always=True)
-    def check_resource_or_id_provided(cls, v, values):
+    @model_validator(mode="before")
+    @classmethod
+    def check_resource_or_id_provided(cls, values: dict[str, Any]) -> dict[str, Any]:
         """Ensures that either a resource or its ID is provided, but not both."""
         if not values.get("resource_id") and not values.get("resource"):
             raise ValueError("Either 'resource_id' or 'resource' must be provided.")
         if values.get("resource_id") and values.get("resource"):
             raise ValueError("Provide either 'resource_id' or 'resource', not both.")
-        return v
+        return values
 
 
 class AnalysisResponse(BaseModel):

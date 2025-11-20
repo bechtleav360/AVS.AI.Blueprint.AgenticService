@@ -3,7 +3,7 @@
 import pytest
 from blueprint.agents.models.events import CloudEvent
 
-from src.handlers import SimpleProcessorHandler
+from examples.simple_event_processor.src.handlers import SimpleProcessorHandler
 
 
 @pytest.fixture

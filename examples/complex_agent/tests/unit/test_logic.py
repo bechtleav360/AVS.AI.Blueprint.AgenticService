@@ -4,7 +4,7 @@ from decimal import Decimal
 
 import pytest
 
-from custom.src.services import InvoiceProcessingLogic
+from examples.complex_agent.src.services import InvoiceProcessingLogic
 
 
 @pytest.fixture
@@ -42,4 +42,3 @@ def test_generate_recommendations_produces_guidance(sample_invoice):
 
     assert isinstance(recommendations, list)
     assert all(isinstance(rec, str) for rec in recommendations)
-

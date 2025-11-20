@@ -1,11 +1,12 @@
 """Tool implementations exposed to the agent runtime."""
+
 from __future__ import annotations
 
 from types import SimpleNamespace
 from uuid import UUID
 
-from custom.src.models.resource import InvoiceInput
-from custom.src.services.invoice_services import InvoiceProcessingLogic
+from examples.complex_agent.src.models.resource import InvoiceInput
+from examples.complex_agent.src.services.invoice_services import InvoiceProcessingLogic
 
 
 class AgentTools:
@@ -23,9 +24,11 @@ class AgentTools:
 
         result = await InvoiceProcessingLogic.calculate_invoice_tool(ctx, invoice)
         result.metadata.setdefault("context", {})
-        result.metadata["context"].update({
-            "correlation_id": str(correlation_id) if isinstance(correlation_id, UUID) else correlation_id,
-            "event_id": str(event_id) if isinstance(event_id, UUID) else event_id,
-        })
+        result.metadata["context"].update(
+            {
+                "correlation_id": str(correlation_id) if isinstance(correlation_id, UUID) else correlation_id,
+                "event_id": str(event_id) if isinstance(event_id, UUID) else event_id,
+            }
+        )
 
         return result

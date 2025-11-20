@@ -3,7 +3,7 @@
 from datetime import datetime, UTC
 from typing import Any, Generic, Literal, TypeVar
 
-from pydantic import BaseModel, Field, root_validator, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic.config import ConfigDict
 
 # Generic type for the CloudEvent data payload.
@@ -66,8 +66,9 @@ class CloudEvent(BaseModel, Generic[T]):
         except ValueError as e:
             raise ValueError("Time must be in ISO 8601 format with timezone") from e
 
-    @root_validator(pre=True)
+    @model_validator(mode="before")
     def validate_data_exclusivity(cls, values: dict[str, Any]) -> dict[str, Any]:
+        """Validate that CloudEvent cannot include both 'data' and 'data_base64'."""
         if values.get("data") is not None and values.get("data_base64") is not None:
             raise ValueError("CloudEvent cannot include both 'data' and 'data_base64'")
         return values
