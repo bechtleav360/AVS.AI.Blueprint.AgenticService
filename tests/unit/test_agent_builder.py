@@ -177,16 +177,16 @@ class TestAgentBuilder:
             mock_model = Mock()
             mock_create.return_value = mock_model
 
-            # Create a mock for the agent instance
-            mock_agent_instance = Mock()
+            # Create a mock for the runtime instance
+            mock_runtime_instance = Mock()
 
-            # Create a mock for the Agent class that returns our instance
-            mock_agent_class = Mock(return_value=mock_agent_instance)
+            # Create a mock for the AgentRuntime class that returns our instance
+            mock_runtime_class = Mock(return_value=mock_runtime_instance)
 
-            # Patch the Agent class and its __getitem__ method
-            with patch("blueprint.agents.agent.agent_builder.Agent") as mock_agent:
+            # Patch the AgentRuntime class and its __getitem__ method
+            with patch("blueprint.agents.agent.agent_builder.AgentRuntime") as mock_runtime:
                 # Configure __getitem__ to return our mock class
-                mock_agent.__getitem__.return_value = mock_agent_class
+                mock_runtime.__getitem__.return_value = mock_runtime_class
 
                 agent = (
                     builder.with_model("gpt-4")
@@ -196,26 +196,26 @@ class TestAgentBuilder:
                     .build()
                 )
 
-                # Verify the agent was created with the right parameters
-                mock_agent_class.assert_called_once()
+                # Verify the runtime was created with the right parameters
+                mock_runtime_class.assert_called_once()
 
                 # Get the call arguments
-                args, kwargs = mock_agent_class.call_args
+                args, kwargs = mock_runtime_class.call_args
                 assert kwargs["model"] == mock_model
                 assert kwargs["system_prompt"] == "Test prompt"
                 assert len(kwargs["tools"]) == 1
                 assert kwargs["tools"][0].name == "test_tool"
                 assert kwargs["tools"][0].function == test_tool
 
-                # The agent should be our mock instance
-                assert agent == mock_agent_instance
+                # The runtime should be our mock instance
+                assert agent == mock_runtime_instance
 
     def test_fluent_interface_chaining(self, builder, mock_config):
         """Test builder methods can be chained fluently."""
         with patch("blueprint.agents.agent.agent_builder.ModelProviderFactory.create_model") as mock_create:
             mock_create.return_value = Mock()
 
-            with patch("blueprint.agents.agent.agent_builder.Agent"):
+            with patch("blueprint.agents.agent.agent_builder.AgentRuntime"):
                 # Should not raise error
                 agent = builder.with_model("gpt-4").with_system_prompt_text("Test").with_tools([]).build()
 
@@ -227,23 +227,23 @@ class TestAgentBuilder:
             mock_model = Mock()
             mock_create.return_value = mock_model
 
-            # Create a mock for the agent instance and class
-            mock_agent_instance = Mock()
-            mock_agent_class = Mock(return_value=mock_agent_instance)
+            # Create a mock for the runtime instance and class
+            mock_runtime_instance = Mock()
+            mock_runtime_class = Mock(return_value=mock_runtime_instance)
 
-            with patch("blueprint.agents.agent.agent_builder.Agent") as mock_agent:
+            with patch("blueprint.agents.agent.agent_builder.AgentRuntime") as mock_runtime:
                 # Configure __getitem__ to return our mock class
-                mock_agent.__getitem__.return_value = mock_agent_class
+                mock_runtime.__getitem__.return_value = mock_runtime_class
 
                 agent = builder.with_model("gpt-4").with_system_prompt_text("Test").build()
 
-                # Verify the agent was created with the right parameters
-                mock_agent_class.assert_called_once()
+                # Verify the runtime was created with the right parameters
+                mock_runtime_class.assert_called_once()
 
                 # Get the call arguments
-                args, kwargs = mock_agent_class.call_args
+                args, kwargs = mock_runtime_class.call_args
                 assert kwargs["tools"] == []  # No tools configured
-                assert agent == mock_agent_instance
+                assert agent == mock_runtime_instance
 
     def test_build_with_multiple_tools(self, builder, mock_config):
         """Test build works with multiple tools."""
@@ -258,28 +258,28 @@ class TestAgentBuilder:
             mock_model = Mock()
             mock_create.return_value = mock_model
 
-            # Create a mock for the agent instance and class
-            mock_agent_instance = Mock()
-            mock_agent_class = Mock(return_value=mock_agent_instance)
+            # Create a mock for the runtime instance and class
+            mock_runtime_instance = Mock()
+            mock_runtime_class = Mock(return_value=mock_runtime_instance)
 
-            with patch("blueprint.agents.agent.agent_builder.Agent") as mock_agent:
+            with patch("blueprint.agents.agent.agent_builder.AgentRuntime") as mock_runtime:
                 # Configure __getitem__ to return our mock class
-                mock_agent.__getitem__.return_value = mock_agent_class
+                mock_runtime.__getitem__.return_value = mock_runtime_class
 
                 agent = (
                     builder.with_model("gpt-4").with_system_prompt_text("Test").with_tool("tool1", tool1).with_tool("tool2", tool2).build()
                 )
 
-                # Verify the agent was created with the right parameters
-                mock_agent_class.assert_called_once()
+                # Verify the runtime was created with the right parameters
+                mock_runtime_class.assert_called_once()
 
                 # Get the call arguments
-                args, kwargs = mock_agent_class.call_args
+                args, kwargs = mock_runtime_class.call_args
                 assert len(kwargs["tools"]) == 2
-                assert agent == mock_agent_instance
+                assert agent == mock_runtime_instance
 
     def test_build_with_additional_kwargs(self, builder, mock_config):
-        """Test build passes additional valid kwargs to Agent constructor."""
+        """Test build passes additional valid kwargs to AgentRuntime constructor."""
         with (
             patch("blueprint.agents.agent.agent_builder.ModelProviderFactory.create_model") as mock_create,
             patch("inspect.signature") as mock_signature,
@@ -288,9 +288,9 @@ class TestAgentBuilder:
             mock_model = Mock()
             mock_create.return_value = mock_model
 
-            # Create a mock for the agent instance and class
-            mock_agent_instance = Mock()
-            mock_agent_class = Mock(return_value=mock_agent_instance)
+            # Create a mock for the runtime instance and class
+            mock_runtime_instance = Mock()
+            mock_runtime_class = Mock(return_value=mock_runtime_instance)
 
             # Create a mock for the signature
             mock_sig = Mock()
@@ -305,8 +305,8 @@ class TestAgentBuilder:
                 "instrument": Mock(),  # Valid parameter
             }
 
-            with patch("blueprint.agents.agent.agent_builder.Agent") as mock_agent:
-                mock_agent.__getitem__.return_value = mock_agent_class
+            with patch("blueprint.agents.agent.agent_builder.AgentRuntime") as mock_runtime:
+                mock_runtime.__getitem__.return_value = mock_runtime_class
 
                 # Build with valid additional kwargs
                 built_agent = (
@@ -316,20 +316,20 @@ class TestAgentBuilder:
                 )
 
                 # Verify the mock was called with the right parameters
-                args, kwargs = mock_agent_class.call_args
+                args, kwargs = mock_runtime_class.call_args
                 assert kwargs["name"] == "test_agent"
                 assert kwargs["retries"] == 3
                 assert kwargs["end_strategy"] == "exhaustive"
                 assert kwargs["instrument"] is True
-                assert built_agent == mock_agent_instance
+                assert built_agent == mock_runtime_instance
 
     def test_build_with_invalid_kwargs(self, builder, mock_config):
         """Test build raises error for invalid kwargs."""
         with patch("blueprint.agents.agent.agent_builder.ModelProviderFactory.create_model") as mock_create:
             mock_create.return_value = Mock()
 
-            with patch("blueprint.agents.agent.agent_builder.Agent") as mock_agent:
-                mock_agent.__getitem__.return_value = Mock()
+            with patch("blueprint.agents.agent.agent_builder.AgentRuntime") as mock_runtime:
+                mock_runtime.__getitem__.return_value = Mock()
 
                 # Try to build with an invalid kwarg
                 with pytest.raises(ValueError, match="Unexpected keyword argument for Agent: invalid_param"):
@@ -345,17 +345,22 @@ class TestAgentBuilder:
             mock_model = Mock()
             mock_create.return_value = mock_model
 
-            # Create a mock for the agent instance and class
-            mock_agent_instance = Mock()
-            mock_agent_class = Mock(return_value=mock_agent_instance)
+            # Create a mock for the runtime instance and class
+            mock_runtime_instance = Mock()
+            mock_runtime_class = Mock(return_value=mock_runtime_instance)
 
             # Create a mock for the signature
             mock_sig = Mock()
             mock_signature.return_value = mock_sig
-            mock_sig.parameters = {"model": Mock(), "system_prompt": Mock(), "tools": Mock(), "retries": Mock()}  # Valid parameter
+            mock_sig.parameters = {
+                "model": Mock(),
+                "system_prompt": Mock(),
+                "tools": Mock(),
+                "retries": Mock(),  # Valid parameter
+            }
 
-            with patch("blueprint.agents.agent.agent_builder.Agent") as mock_agent:
-                mock_agent.__getitem__.return_value = mock_agent_class
+            with patch("blueprint.agents.agent.agent_builder.AgentRuntime") as mock_runtime:
+                mock_runtime.__getitem__.return_value = mock_runtime_class
 
                 # Test that trying to override builder-set parameters raises an error
                 with pytest.raises(
@@ -374,10 +379,10 @@ class TestAgentBuilder:
                 )  # This should work
 
                 # Verify the mock was called with the right parameters
-                args, kwargs = mock_agent_class.call_args
+                args, kwargs = mock_runtime_class.call_args
                 assert kwargs["retries"] == 2  # Additional parameter should be passed through
                 assert "test_tool" in [tool.name for tool in kwargs["tools"]]  # Original tools should be preserved
-                assert built_agent == mock_agent_instance
+                assert built_agent == mock_runtime_instance
 
     def test_build_with_kwargs_and_generics(self, builder, mock_config):
         """Test build works with both generic parameters and kwargs."""
@@ -393,9 +398,9 @@ class TestAgentBuilder:
             mock_model = Mock()
             mock_create.return_value = mock_model
 
-            # Create a mock for the agent instance and class
-            mock_agent_instance = Mock()
-            mock_agent_class = Mock(return_value=mock_agent_instance)
+            # Create a mock for the runtime instance and class
+            mock_runtime_instance = Mock()
+            mock_runtime_class = Mock(return_value=mock_runtime_instance)
 
             # Create a mock for the signature
             mock_sig = Mock()
@@ -404,29 +409,27 @@ class TestAgentBuilder:
                 "model": Mock(),
                 "system_prompt": Mock(),
                 "tools": Mock(),
-                "name": Mock(),
-                "retries": Mock(),
-                "end_strategy": Mock(),
+                "name": Mock(),  # Valid parameter
+                "retries": Mock(),  # Valid parameter
+                "end_strategy": Mock(),  # Valid parameter
             }
 
-            with patch("blueprint.agents.agent.agent_builder.Agent") as mock_agent:
-                mock_agent.__getitem__.return_value = mock_agent_class
+            with patch("blueprint.agents.agent.agent_builder.AgentRuntime") as mock_runtime:
+                mock_runtime.__getitem__.return_value = mock_runtime_class
 
-                # Build with generic types and additional valid kwargs
                 agent = (
                     builder.with_model("gpt-4")
                     .with_system_prompt_text("Test prompt")
                     .with_result_type(CustomOutput)
-                    .with_deps_type(dict)
                     .build(name="generic_agent", retries=3, end_strategy="exhaustive")
                 )
 
                 # Verify the mock was called with the right parameters
-                args, kwargs = mock_agent_class.call_args
+                args, kwargs = mock_runtime_class.call_args
                 assert kwargs["name"] == "generic_agent"
                 assert kwargs["retries"] == 3
                 assert kwargs["end_strategy"] == "exhaustive"
-                assert agent == mock_agent_instance
+                assert agent == mock_runtime_instance
 
     def test_build_returns_agent_runtime(self, builder, mock_config):
         """Test that build() returns an AgentRuntime instance."""
