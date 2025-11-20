@@ -12,6 +12,7 @@ from pydantic_ai.models import Model
 from pydantic_ai.run import AgentRunResult
 
 from ..config import Config
+from .agent_runtime import AgentRuntime
 from .model_provider import ModelProviderFactory
 from .prompt_loader import PromptLoader
 
@@ -160,6 +161,7 @@ class AgentBuilder:
         """Register a named prompt from file.
 
         Loads a prompt file and stores it by name for later retrieval.
+        The prompt will be available on the runtime via runtime.prompts[prompt_name].
 
         Args:
             prompt_name: Name of the prompt file (without extension)
@@ -228,14 +230,14 @@ class AgentBuilder:
         logger.debug("Configured agent with deps type: %s", deps_type.__name__)
         return self
 
-    def build(self, **kwargs) -> Agent:
+    def build(self, **kwargs) -> AgentRuntime:
         """Build the configured agent.
 
         Args:
             **kwargs: Additional keyword arguments for instantiating the agent
 
         Returns:
-            Configured Agent instance
+            Configured AgentRuntime instance with prompt handling capabilities
 
         Raises:
             ValueError: If required configuration is missing
@@ -265,20 +267,20 @@ class AgentBuilder:
                 if kwarg not in filtered_parameters:
                     raise ValueError(f"Unexpected keyword argument for Agent: {kwarg}")
 
-        # Create agent with configuration
-        # Note: result_type is now a generic parameter, not a constructor argument
-        agent = Agent[self._deps_type, self._result_type](  # type: ignore[misc]
-            model=self._model, system_prompt=self._system_prompt, tools=self._tools if self._tools else [], **kwargs
+        # Create agent runtime with configuration and registered prompts
+        runtime = AgentRuntime[self._deps_type](  # type: ignore[misc]
+            model=self._model,
+            system_prompt=self._system_prompt,
+            tools=self._tools if self._tools else [],
+            prompts=self._prompts.copy(),
+            config=self._config,
+            runtime_name=self._runtime_name,
+            package_root=self._package_root,
+            **kwargs,
         )
 
-        # Attach prompts to the agent for later retrieval
-        agent.prompts = self._prompts  # type: ignore[attr-defined]
-
-        # Attach metrics recording method to the agent
-        agent.record_metrics = self._create_metrics_recorder()  # type: ignore[attr-defined]
-
-        # Wrap the run method to support prompt_name parameter
-        agent.run = self._create_run_wrapper(agent)  # type: ignore[attr-defined]
+        # Attach metrics recording method to the agent runtime
+        runtime.record_metrics = self._create_metrics_recorder()  # type: ignore[attr-defined]
 
         logger.info(
             "Built agent with model=%s, tools=%d, result_type=%s, prompts=%d",
@@ -288,7 +290,7 @@ class AgentBuilder:
             len(self._prompts),
         )
 
-        return agent
+        return runtime
 
     def _create_metrics_recorder(self) -> Any:
         """Create a metrics recorder function bound to this builder instance.
@@ -312,70 +314,6 @@ class AgentBuilder:
             self.record_metrics(result, duration_ms, model)
 
         return record_metrics_impl
-
-    def _create_run_wrapper(self, agent: Agent) -> Any:
-        """Create a wrapper for the agent's run method that supports prompt_name parameter.
-
-        Returns a callable that wraps the original agent.run() method to support:
-        - prompt_name: Load prompt from agent.prompts dict
-        - prompt: Use raw prompt string (default behavior)
-
-        Args:
-            agent: The Agent instance to wrap
-
-        Returns:
-            A callable that wraps agent.run() with enhanced parameter handling
-        """
-        original_run = agent.run
-
-        async def run_wrapper(
-            prompt: str | None = None,
-            *,
-            prompt_name: str | None = None,
-            **kwargs: Any,
-        ) -> AgentRunResult:
-            """Enhanced run method supporting prompt_name parameter.
-
-            Args:
-                prompt: Raw prompt string to send to the agent
-                prompt_name: Name of a registered prompt to load from agent.prompts
-                **kwargs: Additional arguments passed to the original agent.run()
-
-            Returns:
-                AgentRunResult from the agent execution
-
-            Raises:
-                ValueError: If neither prompt nor prompt_name is provided, or if prompt_name not found
-
-            Example:
-                # Using raw prompt
-                result = await agent.run("Analyze this invoice...")
-
-                # Using registered prompt name
-                result = await agent.run(prompt_name="generate_question")
-
-                # Using prompt with additional kwargs
-                result = await agent.run(
-                    prompt="Analyze this...",
-                    deps={"context": "..."}
-                )
-            """
-            # Determine which prompt to use
-            final_prompt = prompt
-
-            if prompt_name is not None:
-                if not hasattr(agent, "prompts") or prompt_name not in agent.prompts:  # type: ignore[attr-defined]
-                    available = list(agent.prompts.keys()) if hasattr(agent, "prompts") else []  # type: ignore[attr-defined]
-                    raise ValueError(f"Prompt '{prompt_name}' not found in agent.prompts. " f"Available prompts: {available}")
-                final_prompt = agent.prompts[prompt_name]  # type: ignore[attr-defined]
-
-            if final_prompt is None:
-                raise ValueError("Either 'prompt' or 'prompt_name' must be provided")
-
-            # Call the original run method with the resolved prompt
-            return await original_run(final_prompt, **kwargs)
-
-        return run_wrapper
 
     def record_metrics(
         self,

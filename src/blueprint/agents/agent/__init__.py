@@ -1,6 +1,6 @@
 from .agent_builder import AgentBuilder
-from .agent_decorator import AgentDecorator
 from .agent_factory import AgentFactory
+from .agent_runtime import AgentRuntime
 from .model_provider import ModelProviderFactory
 from .prompt_loader import PromptLoader
 from .providers import (
@@ -16,8 +16,8 @@ from .usage_limits import UsageLimitsBuilder
 
 __all__ = [
     "AgentBuilder",
-    "AgentDecorator",
     "AgentFactory",
+    "AgentRuntime",
     "ModelProviderFactory",
     "ResponseHandlerFactory",
     "PromptLoader",

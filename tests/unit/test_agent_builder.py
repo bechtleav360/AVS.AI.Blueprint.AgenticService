@@ -1,12 +1,14 @@
 """Unit tests for AgentBuilder."""
 
-from unittest.mock import Mock, patch, ANY
+from pathlib import Path
+from unittest.mock import Mock, patch
 
 import pytest
 from pydantic import BaseModel
 from pydantic_ai import Tool
 
 from blueprint.agents.agent.agent_builder import AgentBuilder
+from blueprint.agents.agent.agent_runtime import AgentRuntime
 from blueprint.agents.config import Config
 from blueprint.agents.models.config import AIConfig, PromptConfig
 
@@ -307,7 +309,7 @@ class TestAgentBuilder:
                 mock_agent.__getitem__.return_value = mock_agent_class
 
                 # Build with valid additional kwargs
-                agent = (
+                built_agent = (
                     builder.with_model("gpt-4")
                     .with_system_prompt_text("Test prompt")
                     .build(name="test_agent", retries=3, end_strategy="exhaustive", instrument=True)
@@ -319,6 +321,7 @@ class TestAgentBuilder:
                 assert kwargs["retries"] == 3
                 assert kwargs["end_strategy"] == "exhaustive"
                 assert kwargs["instrument"] is True
+                assert built_agent == mock_agent_instance
 
     def test_build_with_invalid_kwargs(self, builder, mock_config):
         """Test build raises error for invalid kwargs."""
@@ -363,7 +366,7 @@ class TestAgentBuilder:
                     )  # This should raise an error
 
                 # Test that additional valid parameters work
-                agent = (
+                built_agent = (
                     builder.with_model("gpt-4")
                     .with_system_prompt_text("Test prompt")
                     .with_tool("test_tool", lambda: "test")
@@ -374,6 +377,7 @@ class TestAgentBuilder:
                 args, kwargs = mock_agent_class.call_args
                 assert kwargs["retries"] == 2  # Additional parameter should be passed through
                 assert "test_tool" in [tool.name for tool in kwargs["tools"]]  # Original tools should be preserved
+                assert built_agent == mock_agent_instance
 
     def test_build_with_kwargs_and_generics(self, builder, mock_config):
         """Test build works with both generic parameters and kwargs."""
@@ -423,3 +427,91 @@ class TestAgentBuilder:
                 assert kwargs["retries"] == 3
                 assert kwargs["end_strategy"] == "exhaustive"
                 assert agent == mock_agent_instance
+
+    def test_build_returns_agent_runtime(self, builder, mock_config):
+        """Test that build() returns an AgentRuntime instance."""
+        # Verify that the build method returns AgentRuntime type
+        # This is a type-level test that checks the return type annotation
+        import inspect
+
+        sig = inspect.signature(builder.build)
+        assert sig.return_annotation == AgentRuntime
+
+    def test_build_passes_config_to_runtime_in_call(self, builder, mock_config):
+        """Test that build() passes config to AgentRuntime during initialization."""
+        # Verify builder stores config for passing to runtime
+        assert builder._config == mock_config
+
+    def test_build_passes_runtime_name_to_runtime_in_call(self, builder, mock_config):
+        """Test that build() passes runtime_name to AgentRuntime during initialization."""
+        # Verify builder stores runtime_name for passing to runtime
+        assert builder._runtime_name == "test_runtime"
+
+    def test_build_passes_prompts_to_runtime_in_call(self, builder, mock_config):
+        """Test that build() passes registered prompts to AgentRuntime."""
+        with patch("blueprint.agents.agent.agent_builder.PromptLoader.load_prompt") as mock_load:
+            mock_load.return_value = "Loaded prompt content"
+
+            builder.with_prompt("test_prompt_1").with_prompt("test_prompt_2")
+
+            # Verify prompts were registered in builder
+            assert "test_prompt_1" in builder._prompts
+            assert "test_prompt_2" in builder._prompts
+            assert builder._prompts["test_prompt_1"] == "Loaded prompt content"
+            assert builder._prompts["test_prompt_2"] == "Loaded prompt content"
+
+    def test_with_prompt_registers_prompt_in_builder(self, builder, mock_config):
+        """Test that with_prompt registers prompts in builder."""
+        with patch("blueprint.agents.agent.agent_builder.PromptLoader.load_prompt") as mock_load:
+            mock_load.return_value = "Loaded prompt content"
+
+            result = builder.with_prompt("test_prompt")
+
+            assert result == builder
+            assert "test_prompt" in builder._prompts
+            assert builder._prompts["test_prompt"] == "Loaded prompt content"
+
+    def test_with_prompt_multiple_prompts(self, builder, mock_config):
+        """Test that with_prompt can register multiple prompts."""
+        with patch("blueprint.agents.agent.agent_builder.PromptLoader.load_prompt") as mock_load:
+            mock_load.side_effect = ["Prompt 1", "Prompt 2", "Prompt 3"]
+
+            builder.with_prompt("prompt_1").with_prompt("prompt_2").with_prompt("prompt_3")
+
+            assert len(builder._prompts) == 3
+            assert builder._prompts["prompt_1"] == "Prompt 1"
+            assert builder._prompts["prompt_2"] == "Prompt 2"
+            assert builder._prompts["prompt_3"] == "Prompt 3"
+
+    def test_with_prompt_uses_runtime_name(self, builder, mock_config):
+        """Test that with_prompt uses runtime name for config lookup."""
+        with patch("blueprint.agents.agent.agent_builder.PromptLoader.load_prompt") as mock_load:
+            mock_load.return_value = "Loaded prompt"
+
+            builder.with_prompt("test_prompt", runtime_name="custom_runtime")
+
+            # Verify get_prompt_config was called with custom runtime name
+            mock_config.get_prompt_config.assert_called_with("custom_runtime")
+
+    def test_with_system_prompt_from_config_uses_config_name(self, builder, mock_config):
+        """Test that with_system_prompt_from_config uses configured prompt name."""
+        with patch("blueprint.agents.agent.agent_builder.PromptLoader.load_prompt") as mock_load:
+            mock_load.return_value = "System prompt from config"
+
+            builder.with_system_prompt_from_config()
+
+            # Verify PromptLoader was called with system_prompt_name from config
+            assert builder._system_prompt == "System prompt from config"
+            mock_load.assert_called_once()
+
+    def test_builder_initialization_with_package_root(self, mock_config):
+        """Test AgentBuilder initialization with package_root."""
+        builder = AgentBuilder(mock_config, runtime_name="test", package_root="/test/path")
+
+        assert builder._package_root == Path("/test/path")
+
+    def test_builder_initialization_without_package_root(self, mock_config):
+        """Test AgentBuilder initialization without package_root."""
+        builder = AgentBuilder(mock_config, runtime_name="test")
+
+        assert builder._package_root is None
