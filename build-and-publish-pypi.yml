@@ -131,13 +131,14 @@ steps:
     workingDirectory: ${{ parameters.packagePath }}
     displayName: "Build Python package"
 
-  # Publish artifacts
-  - task: PublishPipelineArtifact@1
-    inputs:
-      targetPath: ${{ parameters.packagePath }}/dist
-      artifact: "python-package-$(System.JobAttempt)"
-      publishLocation: "pipeline"
-    displayName: "Publish package artifacts"
+  # Publish artifacts (only if not publishing to feed)
+  - ${{ if eq(parameters.publishToFeed, false) }}:
+      - task: PublishPipelineArtifact@1
+        inputs:
+          targetPath: ${{ parameters.packagePath }}/dist
+          artifact: "python-package-$(System.JobAttempt)"
+          publishLocation: "pipeline"
+        displayName: "Publish package artifacts"
 
   # Publish to Azure Artifacts Feed
   - ${{ if eq(parameters.publishToFeed, true) }}:
