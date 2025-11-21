@@ -36,6 +36,7 @@ class VLLMModelProvider(ModelProviderStrategy):
         # Enable debug logging for troubleshooting
         logging.getLogger("openai").setLevel(logging.DEBUG)
         logging.getLogger("httpx").setLevel(logging.INFO)
+        logging.getLogger("httpcore").setLevel(logging.INFO)
         logging.getLogger("pydantic_ai").setLevel(logging.DEBUG)
 
         # Handle both dict and Pydantic model

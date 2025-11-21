@@ -211,8 +211,8 @@ class AppBuilder:
         """Create and configure the FastAPI application."""
 
         app = FastAPI(
-            title=self.config.get("app_name"),
-            description="Generic microservice blueprint for building intelligent agents",
+            title=self.config.get("app_name", "bios-agent"),
+            description=self.config.get("app_description", "Generic microservice blueprint for building intelligent agents"),
             version="0.1.0",
             lifespan=self._create_lifespan_manager(),
             docs_url="/docs",
@@ -227,29 +227,34 @@ class AppBuilder:
         #     CORSMiddleware,
         #     allow_origins=security_config["cors_origins"],
         #     allow_credentials=True,
-        #     allow_methods=["GET", "POST", "PUT", "DELETE"],
-        #     allow_headers=["*"],
-        # )
 
-        # Instantiate and include actuator routes with dependencies
-        health_dependencies = {
-            "ai_provider": AIProviderHealthChecker(self.config),
-            "rabbitmq": DaprPubSubHealthChecker(self.config),
-        }
-        actuator_api = actuators.ActuatorApi(config=self.config, **health_dependencies)
-        app.include_router(actuator_api.router, tags=["actuators"])
-
-        # Include other base routers
+        # Include root endpoints
         root_api = root.RootApi(config=self.config)
         app.include_router(root_api.router, tags=["root"])
+
+        # Include custom REST API
+        if self._rest_api:
+            app.include_router(self._rest_api.router, prefix="/api", tags=["rest"])
 
         # Include Dapr endpoints only if handlers are registered
         if dapr is not None and self._handlers:
             dapr_api = dapr.DaprApi(component_registry=self._component_registry)
             app.include_router(dapr_api.router, tags=["dapr"])
 
-        # Include custom REST API
-        if self._rest_api:
-            app.include_router(self._rest_api.router, prefix="/api", tags=["rest"])
+        # Instantiate and include actuator routes with dependencies
+        agent_registry = self._component_registry.get_agent_registry()
+        registered_agents = agent_registry.list_agents()
+        event_pub_config = self.config.get_event_publishing_config()
+
+        health_dependencies: dict[str, actuators.HealthCheckProvider] = {}
+
+        if self._handlers or event_pub_config.topic_mapping:
+            health_dependencies["rabbitmq"] = DaprPubSubHealthChecker(self.config)
+
+        if registered_agents:
+            health_dependencies["ai_provider"] = AIProviderHealthChecker(self.config)
+
+        actuator_api = actuators.ActuatorApi(config=self.config, **health_dependencies)
+        app.include_router(actuator_api.router, tags=["actuators"])
 
         return app
