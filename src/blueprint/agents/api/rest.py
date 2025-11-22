@@ -13,7 +13,6 @@ from pydantic import BaseModel
 
 from ..models import ProcessResourceResponse
 from ..registry.component_registry import ComponentRegistry
-from ..services.processing_service import ProcessingService
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -25,14 +24,27 @@ PayloadT = TypeVar("PayloadT", bound=BaseModel)
 class RestApi(Generic[PayloadT]):
     """Generic OOP wrapper for the REST API router."""
 
-    def __init__(self, payload_type: type[PayloadT], registry: ComponentRegistry) -> None:
+    def __init__(self, payload_type: type[PayloadT]) -> None:
         self.router = APIRouter()
         self.payload_type = payload_type
-        self._component_registry = registry
+        self._component_registry: ComponentRegistry | None = None
         self._agent: Any = None
-        # Create processing service with the component registry
-        self._processing_service = ProcessingService(settings=registry.get_settings(), component_registry=registry)
         self._register_routes()
+
+    def with_component_registry(self, registry: ComponentRegistry) -> "RestApi":
+        """Wire the component registry into this REST API.
+
+        This method is called by AppBuilder to inject the component registry
+        after the REST API instance is created.
+
+        Args:
+            registry: The ComponentRegistry instance to wire
+
+        Returns:
+            Self for chaining
+        """
+        self._component_registry = registry
+        return self
 
     def with_agent(self, agent: Any) -> "RestApi":
         """Register an agent with this REST API.

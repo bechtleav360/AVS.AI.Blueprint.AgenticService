@@ -1,5 +1,6 @@
 """Generic Dapr pub/sub endpoints for the agent service (framework-level)."""
 
+import json
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -66,9 +67,27 @@ class DaprApi:
                         data=payload,
                     )
 
+                original_event_type = cloud_event.type
+                cloud_event, was_unwrapped = self._unwrap_nested_cloudevent(cloud_event)
+
+                context = {
+                    "dapr_topic": topic,
+                    "dapr_original_event_type": original_event_type,
+                    "dapr_inner_event_type": cloud_event.type,
+                }
+
+                span.set_attribute("dapr.original_event_type", original_event_type)
+                if was_unwrapped:
+                    logger.debug(
+                        "Unwrapped nested CloudEvent of type %s from Dapr envelope",
+                        cloud_event.type,
+                    )
+                    context["dapr_unwrapped"] = True
+                    span.set_attribute("dapr.unwrapped", True)
+                    span.set_attribute("dapr.inner_event_type", cloud_event.type)
+
                 # Process through the unified service
                 processing_service = self._component_registry.get_processing_service()
-                context = {"dapr_topic": topic}
                 result_event = await processing_service.process_event(cloud_event, context)
 
                 # Return Dapr-compatible response based on result event
@@ -99,3 +118,28 @@ class DaprApi:
         # CloudEvents 1.0 required fields
         required_fields = {"specversion", "id", "source", "type"}
         return required_fields.issubset(payload.keys())
+
+    def _unwrap_nested_cloudevent(self, event: CloudEvent) -> tuple[CloudEvent, bool]:
+        """Return inner CloudEvent when wrapped by Dapr envelope."""
+
+        if event.type != "com.dapr.event.sent":
+            return event, False
+
+        nested_payload: Any = event.data
+
+        if isinstance(nested_payload, str):
+            try:
+                nested_payload = json.loads(nested_payload)
+            except json.JSONDecodeError:
+                logger.debug("Nested payload is not valid JSON, skipping unwrap")
+                return event, False
+
+        if isinstance(nested_payload, dict) and self._is_cloudevent(nested_payload):
+            try:
+                return CloudEvent(**nested_payload), True
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.warning("Failed to parse nested CloudEvent: %s", exc, exc_info=True)
+                return event, False
+
+        logger.debug("No nested CloudEvent detected inside Dapr envelope")
+        return event, False

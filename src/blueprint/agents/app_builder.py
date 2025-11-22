@@ -121,7 +121,7 @@ class AppBuilder:
             raise TypeError(f"REST API instance must be a subclass of RestApi, got {type(api_instance).__name__}")
 
         # Wire the component registry into the API instance
-        api_instance._component_registry = self._component_registry
+        api_instance.with_component_registry(self._component_registry)
 
         # Wire registered agents into the API instance
         agent_registry = self._component_registry.get_agent_registry()
