@@ -79,7 +79,14 @@ GenericCloudEvent = CloudEvent[dict[str, Any]]
 
 
 class HandlerResult(BaseModel):
-    """Standardized result emitted by event handlers."""
+    """Standardized result emitted by event handlers.
+
+    Handlers can return:
+    - A single HandlerResult to publish one event
+    - A list of HandlerResult objects to publish multiple events
+    - None to pass control to the next handler
+    - Any other value for internal chaining (no event publication)
+    """
 
     event_type: str | None = None
     subject: str | None = None

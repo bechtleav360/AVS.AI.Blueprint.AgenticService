@@ -7,7 +7,7 @@ import pytest
 
 from blueprint.agents.config import Config
 from blueprint.agents.handler.event_handler import EventHandler
-from blueprint.agents.models import CloudEvent
+from blueprint.agents.models import CloudEvent, HandlerResult
 from blueprint.agents.registry.component_registry import ComponentRegistry
 from blueprint.agents.services.processing_service import ProcessingService
 
@@ -280,3 +280,107 @@ class TestProcessingService:
         assert result.type == "agent.output.test.event"
         assert result.id is not None
         assert "request_id" in result.data
+
+    @pytest.mark.asyncio
+    async def test_process_event_with_handler_returning_list_of_results(self, processing_service, component_registry, cloud_event):
+        """Test processing event with handler that returns list of HandlerResults."""
+        handler_results = [
+            HandlerResult(event_type="event.type.one", data={"result": "first"}, metadata={"source": "handler"}),
+            HandlerResult(event_type="event.type.two", data={"result": "second"}, metadata={"source": "handler"}),
+        ]
+
+        handler = ConcreteHandler("MultiHandler", priority=10, should_handle=True, result=handler_results)
+        component_registry.register_handler(handler)
+
+        result = await processing_service.process_event(cloud_event)
+
+        assert result.type == "agent.output.test.event"
+        assert result.data["status"] == "processed"
+        # Result should contain list of data from all results
+        assert isinstance(result.data["result"], list)
+        assert len(result.data["result"]) == 2
+        assert result.data["result"][0] == {"result": "first"}
+        assert result.data["result"][1] == {"result": "second"}
+
+    @pytest.mark.asyncio
+    async def test_process_event_with_multiple_results_publishes_each_event(self, processing_service, component_registry, cloud_event):
+        """Test that each result with event_type in list is published."""
+        handler_results = [
+            HandlerResult(event_type="event.published.one", data={"id": 1}, metadata={"index": 0}),
+            HandlerResult(event_type="event.published.two", data={"id": 2}, metadata={"index": 1}),
+            HandlerResult(event_type=None, data={"id": 3}, metadata={"index": 2}),  # This one should not be published
+        ]
+
+        handler = ConcreteHandler("MultiHandler", priority=10, should_handle=True, result=handler_results)
+        component_registry.register_handler(handler)
+
+        # Mock the event publisher to track calls
+        from unittest.mock import AsyncMock, patch
+
+        with patch.object(processing_service._event_publisher, "publish_handler_event", new_callable=AsyncMock) as mock_publish:
+            result = await processing_service.process_event(cloud_event)
+
+            # Should publish exactly 2 events (the ones with event_type)
+            assert mock_publish.call_count == 2
+
+            # Verify the calls
+            calls = mock_publish.call_args_list
+            assert calls[0][1]["event_type"] == "event.published.one"
+            assert calls[0][1]["data"] == {"id": 1}
+            assert calls[1][1]["event_type"] == "event.published.two"
+            assert calls[1][1]["data"] == {"id": 2}
+
+    @pytest.mark.asyncio
+    async def test_process_event_with_empty_list_result(self, processing_service, component_registry, cloud_event):
+        """Test processing event with handler that returns empty list."""
+        handler = ConcreteHandler("EmptyHandler", priority=10, should_handle=True, result=[])
+        component_registry.register_handler(handler)
+
+        result = await processing_service.process_event(cloud_event)
+
+        assert result.type == "agent.output.test.event"
+        assert result.data["status"] == "processed"
+        assert result.data["result"] == []
+
+    @pytest.mark.asyncio
+    async def test_process_event_with_mixed_handler_results(self, processing_service, component_registry, cloud_event):
+        """Test handler returning list with some results having event_type and some not."""
+        handler_results = [
+            HandlerResult(event_type="event.success", data={"status": "success"}, metadata={"type": "success"}),
+            HandlerResult(event_type=None, data={"internal": "data"}, metadata={"type": "internal"}),
+            HandlerResult(event_type="event.notification", data={"message": "notification"}, metadata={"type": "notification"}),
+        ]
+
+        handler = ConcreteHandler("MixedHandler", priority=10, should_handle=True, result=handler_results)
+        component_registry.register_handler(handler)
+
+        from unittest.mock import AsyncMock, patch
+
+        with patch.object(processing_service._event_publisher, "publish_handler_event", new_callable=AsyncMock) as mock_publish:
+            result = await processing_service.process_event(cloud_event)
+
+            # Should publish exactly 2 events (skip the one with event_type=None)
+            assert mock_publish.call_count == 2
+
+            # Verify the published events
+            calls = mock_publish.call_args_list
+            assert calls[0][1]["event_type"] == "event.success"
+            assert calls[1][1]["event_type"] == "event.notification"
+
+    @pytest.mark.asyncio
+    async def test_process_event_single_result_still_works(self, processing_service, component_registry, cloud_event):
+        """Test that single HandlerResult still works (backward compatibility)."""
+        single_result = HandlerResult(event_type="event.single", data={"single": "result"}, metadata={"type": "single"})
+
+        handler = ConcreteHandler("SingleHandler", priority=10, should_handle=True, result=single_result)
+        component_registry.register_handler(handler)
+
+        from unittest.mock import AsyncMock, patch
+
+        with patch.object(processing_service._event_publisher, "publish_handler_event", new_callable=AsyncMock) as mock_publish:
+            result = await processing_service.process_event(cloud_event)
+
+            # Should publish exactly 1 event
+            assert mock_publish.call_count == 1
+            assert mock_publish.call_args[1]["event_type"] == "event.single"
+            assert mock_publish.call_args[1]["data"] == {"single": "result"}

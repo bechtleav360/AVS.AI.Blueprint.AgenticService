@@ -90,31 +90,66 @@ class ProcessingService:
                 handler_result = await self._handler_chain.process(event, context)
 
                 # Extract handler result components
-                event_type_to_publish, result_data_dict, result_metadata = self._result_builder.extract_handler_result(handler_result)
+                extracted = self._result_builder.extract_handler_result(handler_result)
 
-                # Build result data
-                result_data = self._result_builder.build_result_data(request_id, result_data_dict, event_type_to_publish)
+                # Check if we have multiple results (list of tuples) or single result
+                if isinstance(extracted[0], list):
+                    # Multiple results case
+                    results_list = extracted[0]
 
-                logger.debug(
-                    "Event processing completed for request %s",
-                    request_id,
-                    extra={
-                        "request_id": request_id,
-                        "status": result_data["status"],
-                        "has_result": handler_result is not None,
-                        "event_type_to_publish": event_type_to_publish,
-                    },
-                )
-
-                # Publish handler event if specified
-                if event_type_to_publish:
-                    await self._event_publisher.publish_handler_event(
-                        event_type=event_type_to_publish,
-                        data=result_data_dict,
-                        metadata=result_metadata,
-                        source_event=event,
-                        new_subject=new_subject,
+                    logger.debug(
+                        "Event processing completed for request %s with %d results",
+                        request_id,
+                        len(results_list),
+                        extra={
+                            "request_id": request_id,
+                            "result_count": len(results_list),
+                            "has_result": handler_result is not None,
+                        },
                     )
+
+                    # Publish each handler event that has an event_type
+                    for event_type_to_publish, result_data_dict, result_metadata in results_list:
+                        if event_type_to_publish:
+                            await self._event_publisher.publish_handler_event(
+                                event_type=event_type_to_publish,
+                                data=result_data_dict,
+                                metadata=result_metadata,
+                                source_event=event,
+                                new_subject=new_subject,
+                            )
+
+                    # Build result data with all results
+                    result_data = self._result_builder.build_result_data(
+                        request_id, [item[1] for item in results_list], "multiple_results"  # Extract just the data
+                    )
+                else:
+                    # Single result case
+                    event_type_to_publish, result_data_dict, result_metadata = extracted
+
+                    # Build result data
+                    result_data = self._result_builder.build_result_data(request_id, result_data_dict, event_type_to_publish)
+
+                    logger.debug(
+                        "Event processing completed for request %s",
+                        request_id,
+                        extra={
+                            "request_id": request_id,
+                            "status": result_data["status"],
+                            "has_result": handler_result is not None,
+                            "event_type_to_publish": event_type_to_publish,
+                        },
+                    )
+
+                    # Publish handler event if specified
+                    if event_type_to_publish:
+                        await self._event_publisher.publish_handler_event(
+                            event_type=event_type_to_publish,
+                            data=result_data_dict,
+                            metadata=result_metadata,
+                            source_event=event,
+                            new_subject=new_subject,
+                        )
 
                 # Create and publish result CloudEvent
                 result_event = CloudEvent(

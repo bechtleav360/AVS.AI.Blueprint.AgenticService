@@ -94,7 +94,7 @@ class EventHandler(ABC):
             span.set_attribute("handler.priority", self.priority)
             return await self.can_handle_event(event, context)
 
-    async def handle(self, event: CloudEvent, context: dict[str, Any]) -> Any | HandlerResult | None:
+    async def handle(self, event: CloudEvent, context: dict[str, Any]) -> Any | HandlerResult | list[HandlerResult] | None:
         """Framework method that adds tracing around handler execution.
 
         Do not override this method. Override handle_event() instead.
@@ -105,8 +105,12 @@ class EventHandler(ABC):
             span.set_attribute("handler.priority", self.priority)
             result = await self.handle_event(event, context)
 
-            # If result is already a HandlerResult, return it as-is
+            # If result is already a HandlerResult or list of HandlerResults, return it as-is
             if isinstance(result, HandlerResult):
+                return result
+
+            if isinstance(result, list) and all(isinstance(item, HandlerResult) for item in result):
+                span.set_attribute("handler.result_count", len(result))
                 return result
 
             # If result is a dict or other type, return it as-is
@@ -131,7 +135,7 @@ class EventHandler(ABC):
         pass
 
     @abstractmethod
-    async def handle_event(self, event: CloudEvent, context: dict[str, Any]) -> Any | HandlerResult | None:
+    async def handle_event(self, event: CloudEvent, context: dict[str, Any]) -> Any | HandlerResult | list[HandlerResult] | None:
         """Process the event and optionally return a result.
 
         Override this method in your handler implementation.
@@ -147,6 +151,8 @@ class EventHandler(ABC):
             * Any plain Python object for internal chaining.
             * A :class:`HandlerResult` Pydantic model that includes ``event_type``
               (str) and ``data`` (Any) fields for downstream event publication.
+            * A ``list[HandlerResult]`` to publish multiple events. Each result
+              with an ``event_type`` will be published as a separate event.
         """
 
         pass

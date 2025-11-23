@@ -7,16 +7,32 @@ class _ResultBuilder:
     """Builds processing result data structures."""
 
     @staticmethod
-    def extract_handler_result(handler_result: Any) -> tuple[str | None, Any | None, dict[str, Any]]:
+    def extract_handler_result(
+        handler_result: Any,
+    ) -> tuple[str | None, Any | None, dict[str, Any]] | tuple[list[tuple[str | None, Any | None, dict[str, Any]]], None, None]:
         """
         Extract event_type, data, and metadata from handler result.
 
+        Supports both single HandlerResult and list of HandlerResults.
+
         Args:
-            handler_result: Result from handler execution
+            handler_result: Result from handler execution (single result, list of results, or other)
 
         Returns:
-            Tuple of (event_type, data, metadata)
+            For single result: Tuple of (event_type, data, metadata)
+            For multiple results: Tuple of (list_of_tuples, None, None) where each tuple is (event_type, data, metadata)
         """
+        # Handle list of HandlerResults
+        if isinstance(handler_result, list) and handler_result and all(hasattr(item, "event_type") for item in handler_result):
+            results = []
+            for item in handler_result:
+                event_type = item.event_type if hasattr(item, "event_type") else None
+                data = item.data if hasattr(item, "data") else None
+                metadata = (item.metadata or {}) if hasattr(item, "metadata") else {}
+                results.append((event_type, data, metadata))
+            return results, None, None
+
+        # Handle single HandlerResult
         event_type_to_publish = None
         result_data_dict = None
         result_metadata = {}

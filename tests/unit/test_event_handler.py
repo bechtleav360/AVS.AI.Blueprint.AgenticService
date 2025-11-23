@@ -439,3 +439,32 @@ class TestChainOfResponsibility:
         mock_agent.run.assert_awaited_once_with("test instruction")
         assert result == {"agent_result": mock.ANY}
         assert result["agent_result"].data == "agent_output"
+
+    @pytest.mark.asyncio
+    async def test_handler_can_return_list_of_results(self, mock_cloud_event, mock_context):
+        """Test handler can return a list of HandlerResults."""
+        from blueprint.agents.models import HandlerResult
+
+        class MultiResultHandler(EventHandler):
+            async def can_handle_event(self, event, context):
+                return True
+
+            async def handle_event(self, event, context):
+                return [
+                    HandlerResult(event_type="event.type.one", data={"result": "first"}, metadata={"source": "handler"}),
+                    HandlerResult(event_type="event.type.two", data={"result": "second"}, metadata={"source": "handler"}),
+                ]
+
+        handler = MultiResultHandler("MultiResult")
+
+        with patch("blueprint.agents.handler.event_handler.tracer") as mock_tracer:
+            mock_span = MagicMock()
+            mock_tracer.start_as_current_span.return_value.__enter__.return_value = mock_span
+
+            result = await handler.handle(mock_cloud_event, mock_context)
+
+            assert isinstance(result, list)
+            assert len(result) == 2
+            assert result[0].event_type == "event.type.one"
+            assert result[1].event_type == "event.type.two"
+            mock_span.set_attribute.assert_any_call("handler.result_count", 2)
