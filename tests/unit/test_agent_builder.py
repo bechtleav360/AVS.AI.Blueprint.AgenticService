@@ -80,26 +80,6 @@ class TestAgentBuilder:
             assert result == builder
             mock_config.get_ai_config.assert_called_with("custom_runtime")
 
-    def test_with_system_prompt_text_sets_prompt(self, builder):
-        """Test with_system_prompt_text sets prompt directly."""
-        prompt = "You are a helpful assistant"
-
-        result = builder.with_system_prompt_text(prompt)
-
-        assert result == builder
-        assert builder._system_prompt == prompt
-
-    def test_with_system_prompt_file_loads_from_file(self, builder, mock_config):
-        """Test with_system_prompt_file loads prompt from file."""
-        with patch("blueprint.agents.agent.agent_builder.PromptLoader.load_prompt") as mock_load:
-            mock_load.return_value = "Loaded prompt from file"
-
-            result = builder.with_system_prompt_file("test_prompt")
-
-            assert result == builder
-            assert builder._system_prompt == "Loaded prompt from file"
-            mock_load.assert_called_once()
-
     def test_with_tools_sets_tool_list(self, builder):
         """Test with_tools sets list of tools."""
 
@@ -150,7 +130,7 @@ class TestAgentBuilder:
 
     def test_build_requires_model(self, builder):
         """Test build raises error if model not configured."""
-        builder.with_system_prompt_text("Test prompt")
+        builder.with_system_prompt("Test prompt")
 
         with pytest.raises(ValueError, match="Model must be configured"):
             builder.build()
@@ -190,7 +170,7 @@ class TestAgentBuilder:
 
                 agent = (
                     builder.with_model("gpt-4")
-                    .with_system_prompt_text("Test prompt")
+                    .with_system_prompt("Test prompt")
                     .with_tool("test_tool", test_tool)
                     .with_result_type(CustomOutput)
                     .build()
@@ -217,7 +197,7 @@ class TestAgentBuilder:
 
             with patch("blueprint.agents.agent.agent_builder.AgentRuntime"):
                 # Should not raise error
-                agent = builder.with_model("gpt-4").with_system_prompt_text("Test").with_tools([]).build()
+                agent = builder.with_model("gpt-4").with_system_prompt("Test").with_tools([]).build()
 
                 assert agent is not None
 
@@ -235,7 +215,7 @@ class TestAgentBuilder:
                 # Configure __getitem__ to return our mock class
                 mock_runtime.__getitem__.return_value = mock_runtime_class
 
-                agent = builder.with_model("gpt-4").with_system_prompt_text("Test").build()
+                agent = builder.with_model("gpt-4").with_system_prompt("Test").build()
 
                 # Verify the runtime was created with the right parameters
                 mock_runtime_class.assert_called_once()
@@ -266,9 +246,7 @@ class TestAgentBuilder:
                 # Configure __getitem__ to return our mock class
                 mock_runtime.__getitem__.return_value = mock_runtime_class
 
-                agent = (
-                    builder.with_model("gpt-4").with_system_prompt_text("Test").with_tool("tool1", tool1).with_tool("tool2", tool2).build()
-                )
+                agent = builder.with_model("gpt-4").with_system_prompt("Test").with_tool("tool1", tool1).with_tool("tool2", tool2).build()
 
                 # Verify the runtime was created with the right parameters
                 mock_runtime_class.assert_called_once()
@@ -311,7 +289,7 @@ class TestAgentBuilder:
                 # Build with valid additional kwargs
                 built_agent = (
                     builder.with_model("gpt-4")
-                    .with_system_prompt_text("Test prompt")
+                    .with_system_prompt("Test prompt")
                     .build(name="test_agent", retries=3, end_strategy="exhaustive", instrument=True)
                 )
 
@@ -333,7 +311,7 @@ class TestAgentBuilder:
 
                 # Try to build with an invalid kwarg
                 with pytest.raises(ValueError, match="Unexpected keyword argument for Agent: invalid_param"):
-                    (builder.with_model("gpt-4").with_system_prompt_text("Test prompt").build(invalid_param="should-fail"))
+                    (builder.with_model("gpt-4").with_system_prompt("Test prompt").build(invalid_param="should-fail"))
 
     def test_build_with_kwargs_overrides(self, builder, mock_config):
         """Test that explicitly passed kwargs take precedence over builder settings."""
@@ -366,16 +344,13 @@ class TestAgentBuilder:
                 with pytest.raises(
                     ValueError, match="The Agent argument 'tools' is set by the builder and cannot be given for instantiation"
                 ):
-                    builder.with_model("gpt-4").with_system_prompt_text("Test prompt").with_tool("test_tool", lambda: "test").build(
+                    builder.with_model("gpt-4").with_system_prompt("Test prompt").with_tool("test_tool", lambda: "test").build(
                         tools=[]
                     )  # This should raise an error
 
                 # Test that additional valid parameters work
                 built_agent = (
-                    builder.with_model("gpt-4")
-                    .with_system_prompt_text("Test prompt")
-                    .with_tool("test_tool", lambda: "test")
-                    .build(retries=2)
+                    builder.with_model("gpt-4").with_system_prompt("Test prompt").with_tool("test_tool", lambda: "test").build(retries=2)
                 )  # This should work
 
                 # Verify the mock was called with the right parameters
@@ -419,7 +394,7 @@ class TestAgentBuilder:
 
                 agent = (
                     builder.with_model("gpt-4")
-                    .with_system_prompt_text("Test prompt")
+                    .with_system_prompt("Test prompt")
                     .with_result_type(CustomOutput)
                     .build(name="generic_agent", retries=3, end_strategy="exhaustive")
                 )
@@ -449,63 +424,6 @@ class TestAgentBuilder:
         """Test that build() passes runtime_name to AgentRuntime during initialization."""
         # Verify builder stores runtime_name for passing to runtime
         assert builder._runtime_name == "test_runtime"
-
-    def test_build_passes_prompts_to_runtime_in_call(self, builder, mock_config):
-        """Test that build() passes registered prompts to AgentRuntime."""
-        with patch("blueprint.agents.agent.agent_builder.PromptLoader.load_prompt") as mock_load:
-            mock_load.return_value = "Loaded prompt content"
-
-            builder.with_prompt("test_prompt_1").with_prompt("test_prompt_2")
-
-            # Verify prompts were registered in builder
-            assert "test_prompt_1" in builder._prompts
-            assert "test_prompt_2" in builder._prompts
-            assert builder._prompts["test_prompt_1"] == "Loaded prompt content"
-            assert builder._prompts["test_prompt_2"] == "Loaded prompt content"
-
-    def test_with_prompt_registers_prompt_in_builder(self, builder, mock_config):
-        """Test that with_prompt registers prompts in builder."""
-        with patch("blueprint.agents.agent.agent_builder.PromptLoader.load_prompt") as mock_load:
-            mock_load.return_value = "Loaded prompt content"
-
-            result = builder.with_prompt("test_prompt")
-
-            assert result == builder
-            assert "test_prompt" in builder._prompts
-            assert builder._prompts["test_prompt"] == "Loaded prompt content"
-
-    def test_with_prompt_multiple_prompts(self, builder, mock_config):
-        """Test that with_prompt can register multiple prompts."""
-        with patch("blueprint.agents.agent.agent_builder.PromptLoader.load_prompt") as mock_load:
-            mock_load.side_effect = ["Prompt 1", "Prompt 2", "Prompt 3"]
-
-            builder.with_prompt("prompt_1").with_prompt("prompt_2").with_prompt("prompt_3")
-
-            assert len(builder._prompts) == 3
-            assert builder._prompts["prompt_1"] == "Prompt 1"
-            assert builder._prompts["prompt_2"] == "Prompt 2"
-            assert builder._prompts["prompt_3"] == "Prompt 3"
-
-    def test_with_prompt_uses_runtime_name(self, builder, mock_config):
-        """Test that with_prompt uses runtime name for config lookup."""
-        with patch("blueprint.agents.agent.agent_builder.PromptLoader.load_prompt") as mock_load:
-            mock_load.return_value = "Loaded prompt"
-
-            builder.with_prompt("test_prompt", runtime_name="custom_runtime")
-
-            # Verify get_prompt_config was called with custom runtime name
-            mock_config.get_prompt_config.assert_called_with("custom_runtime")
-
-    def test_with_system_prompt_from_config_uses_config_name(self, builder, mock_config):
-        """Test that with_system_prompt_from_config uses configured prompt name."""
-        with patch("blueprint.agents.agent.agent_builder.PromptLoader.load_prompt") as mock_load:
-            mock_load.return_value = "System prompt from config"
-
-            builder.with_system_prompt_from_config()
-
-            # Verify PromptLoader was called with system_prompt_name from config
-            assert builder._system_prompt == "System prompt from config"
-            mock_load.assert_called_once()
 
     def test_builder_initialization_with_package_root(self, mock_config):
         """Test AgentBuilder initialization with package_root."""

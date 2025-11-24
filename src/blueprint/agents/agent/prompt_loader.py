@@ -73,7 +73,7 @@ class PromptLoader:
 
         for prompt_path in search_paths:
             if prompt_path.exists():
-                logger.debug("Loading prompt from: %s", prompt_path)
+                logger.info("Loaded prompt '%s' from: %s", prompt_name, prompt_path)
                 return prompt_path.read_text().strip()
 
         # If not found in any location, raise error with all attempted paths

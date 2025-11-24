@@ -1,4 +1,9 @@
-"""OpenAI agent factory implementation."""
+"""OpenAI agent factory implementation.
+
+.. deprecated::
+    This module is not used. AgentBuilder creates agents directly.
+    Kept for potential future use but not exported from public API.
+"""
 
 import logging
 from typing import Any
@@ -8,7 +13,7 @@ from pydantic_ai import Agent, Tool
 from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModelSettings
 
-from ...agent_factory import AgentFactoryStrategy
+from ...agent_factory import AgentFactoryStrategy  # type: ignore[import-not-found]
 
 logger = logging.getLogger(__name__)
 

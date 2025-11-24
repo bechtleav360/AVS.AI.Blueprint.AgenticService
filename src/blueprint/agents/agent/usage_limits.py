@@ -1,4 +1,9 @@
-"""Utility for building usage limits from configuration."""
+"""Utility for building usage limits from configuration.
+
+.. deprecated::
+    This module is not used anywhere in the codebase.
+    Kept for potential future use but not exported from public API.
+"""
 
 import logging
 from typing import Any

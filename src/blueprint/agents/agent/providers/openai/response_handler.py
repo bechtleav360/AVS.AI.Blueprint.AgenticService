@@ -1,10 +1,15 @@
-"""OpenAI response handler implementation."""
+"""OpenAI response handler implementation.
+
+.. deprecated::
+    This module is not integrated into the agent creation flow.
+    Kept for potential future use but not exported from public API.
+"""
 
 import json
 import logging
 from typing import Any
 
-from ...response_handler import ResponseHandlerStrategy, T
+from ...response_handler import ResponseHandlerStrategy, T  # type: ignore[import-not-found]
 
 logger = logging.getLogger(__name__)
 

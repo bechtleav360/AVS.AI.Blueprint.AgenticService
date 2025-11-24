@@ -82,11 +82,13 @@ class LoggingManager:
         """Suppress noisy third-party loggers."""
         noisy_loggers = {
             "httpx": logging.WARNING,
+            "httpcore": logging.WARNING,
             "uvicorn": logging.INFO,
             "uvicorn.access": logging.WARNING,
             "opentelemetry": logging.WARNING,
+            "openai": logging.INFO,
         }
-
+        # Suppress verbose output from httpcore without touching vendored packages.
         for logger_name, level in noisy_loggers.items():
             logging.getLogger(logger_name).setLevel(level)
 

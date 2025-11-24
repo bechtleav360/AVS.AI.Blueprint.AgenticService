@@ -1,6 +1,5 @@
 """Event routing configuration models."""
 
-
 from pydantic import BaseModel, Field
 
 

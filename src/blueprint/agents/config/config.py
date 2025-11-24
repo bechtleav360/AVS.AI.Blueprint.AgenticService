@@ -16,6 +16,8 @@ from ..models.config import (
     PromptConfig,
     UsageLimits,
 )
+from .custom_logging import LoggingManager
+
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +32,6 @@ class Config:
     def __init__(self, settings_files=None, root_path=None):
         """Initialize the configuration manager."""
 
-        # Temporarily set logger to INFO, before configuring logging
-        logger.setLevel(logging.INFO)
-        logger.root.setLevel(logging.INFO)
         self._validation_errors: list[str] = []
         self._root_path = Path(root_path) if root_path else Path.cwd()
 
@@ -68,6 +67,22 @@ class Config:
                 self.settings[key] = value
 
         self.validate()
+
+        # Initialize logging after config is fully loaded
+        self._initialize_logging()
+
+    def _initialize_logging(self) -> None:
+        """Initialize logging based on configuration.
+
+        Called automatically at the end of Config initialization.
+        Sets up logging with the configured log level and format from settings.
+        """
+        log_level = self.settings.get("log_level", "INFO")
+        log_format = self.settings.get("log_format", "text")
+        suppress_noisy = self.settings.get("suppress_noisy_loggers", True)
+
+        manager = LoggingManager()
+        manager.configure(log_level=log_level, log_format=log_format, suppress_noisy_loggers=suppress_noisy)
 
     def _process_dynabox(self, box, placeholder, replacement):
         """Recursively process a DynaBox to replace placeholders in keys and convert to lowercase.

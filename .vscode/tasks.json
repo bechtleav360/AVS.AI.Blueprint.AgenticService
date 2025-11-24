@@ -9,8 +9,7 @@
                 "-m",
                 "ruff",
                 "check",
-                "base",
-                "custom"
+                "src",
             ],
             "presentation": {
                 "reveal": "always",
@@ -28,8 +27,7 @@
             "args": [
                 "-m",
                 "black",
-                "base",
-                "custom"
+                "src",
             ],
             "presentation": {
                 "reveal": "always",
@@ -46,8 +44,7 @@
             "args": [
                 "-m",
                 "isort",
-                "base",
-                "custom"
+                "src"
             ],
             "presentation": {
                 "reveal": "always",
@@ -62,8 +59,7 @@
                 "-m",
                 "black",
                 "--check",
-                "base",
-                "custom"
+                "src"
             ],
             "presentation": {
                 "reveal": "always",
@@ -75,18 +71,37 @@
             }
         },
         {
-            "label": "dapr:check-running",
+            "label": "Ruff: Fix",
             "type": "shell",
-            "command": "echo",
+            "command": "uv",
             "args": [
-                "⚠️  Make sure Dapr sidecar is running externally (e.g., via start_with_dapr.sh or 'dapr run' command)"
+                "run",
+                "ruff",
+                "check",
+                "--fix",
+                "src/",
+                "tests/"
             ],
-            "presentation": {
-                "reveal": "always",
-                "panel": "shared",
-                "focus": false
-            },
-            "problemMatcher": []
-        }
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": false
+            }
+        },
+        {
+            "label": "Mypy: Type Check",
+            "type": "shell",
+            "command": "uv",
+            "args": [
+                "run",
+                "mypy",
+                "src/"
+            ],
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": false
+            }
+        },
     ]
 }

@@ -28,7 +28,7 @@ class TriviaService:
         self.agent: Agent | None = agent
 
     def _get_prompt(self, prompt_name: str) -> str:
-        """Get a prompt from the agent.
+        """Get a prompt from the agent using lazy loading.
 
         Args:
             prompt_name: Name of the prompt to retrieve
@@ -37,22 +37,14 @@ class TriviaService:
             The prompt content
 
         Raises:
-            ValueError: If agent is not set or prompt not found
-
-        Note:
-            The agent's run() method now supports both:
-            - await agent.run(prompt="raw prompt text")
-            - await agent.run(prompt_name="registered_prompt_name")
-            This method is kept for backward compatibility and for formatting prompts.
+            ValueError: If agent is not set
+            FileNotFoundError: If prompt not found
         """
         if self.agent is None:
             raise ValueError("Agent not configured")
 
-        prompts = getattr(self.agent, "prompts", {})
-        if prompt_name not in prompts:
-            raise ValueError(f"Prompt '{prompt_name}' not found in agent")
-
-        return prompts[prompt_name]
+        # Use lazy loading with caching
+        return self.agent.get_prompt(prompt_name)
 
     def start_game(self, difficulty: str = "medium", num_questions: int = 5) -> str:
         """Start a new trivia game.
