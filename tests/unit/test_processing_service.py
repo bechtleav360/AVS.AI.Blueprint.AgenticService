@@ -6,7 +6,7 @@ from uuid import uuid4
 import pytest
 
 from blueprint.agents.config import Config
-from blueprint.agents.handler.event_handler import EventHandler
+from blueprint.agents.base import EventHandler
 from blueprint.agents.models import CloudEvent, HandlerResult
 from blueprint.agents.registry.component_registry import ComponentRegistry
 from blueprint.agents.services.processing_service import ProcessingService
@@ -130,7 +130,7 @@ class TestProcessingService:
                 self.order_list = order_list
 
             async def handle_event(self, event: CloudEvent, context: Dict[str, Any]) -> Optional[Any]:
-                self.order_list.append(self.name)
+                self.order_list.append(self._name)
                 return await super().handle_event(event, context)
 
         high = TrackingHandler("High", priority=100, order_list=execution_order)

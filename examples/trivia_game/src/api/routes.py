@@ -1,9 +1,8 @@
 """REST API for the trivia game."""
 
 import logging
-from typing import Any
 
-from blueprint.agents.api.rest import RestApi
+from blueprint.agents.base import RestApi
 from fastapi import HTTPException
 
 from ..models import AnswerRequest, AnswerResult, GameQuestion, GameStartRequest
@@ -20,26 +19,11 @@ class TriviaGameRestApi(RestApi):
 
         The component registry and agent will be wired in by AppBuilder.
         """
-        self._component_registry: Any = None
-        self._agent: Any = None
-        self.trivia_service: Any = None
-        self.router = None
-        self.payload_type = GameStartRequest
+        super().__init__(payload_type=GameStartRequest, name="TriviaGameRestApi")
 
-    def with_agent(self, agent: Any) -> "TriviaGameRestApi":
-        """Register an agent with this REST API.
-
-        Args:
-            agent: The agent instance to use (with prompts attached)
-
-        Returns:
-            Self for chaining
-        """
-        self._agent = agent
-        # Initialize the service with the agent
-        # Prompts are retrieved from agent.prompts by the service
-        self.trivia_service = TriviaService(agent=agent)
-        return self
+    async def on_startup(self) -> None:
+        """Initialize the REST API by getting the trivia service from the registry."""
+        self._trivia_service: TriviaService = self.get_registry().get_service("trivia_service")
 
     def _register_routes(self) -> None:
         """Register trivia game routes."""
@@ -55,7 +39,8 @@ class TriviaGameRestApi(RestApi):
                 Game session ID
             """
             try:
-                game_id = self.trivia_service.start_game(
+
+                game_id = self._trivia_service.start_game(
                     difficulty=request.difficulty,
                     num_questions=request.num_questions,
                 )
@@ -75,7 +60,7 @@ class TriviaGameRestApi(RestApi):
                 Trivia question
             """
             try:
-                question = await self.trivia_service.get_next_question(game_id)
+                question = await self._trivia_service.get_next_question(game_id)
                 return GameQuestion(**question)
             except ValueError as e:
                 logger.error(f"Error getting question: {e}")
@@ -95,7 +80,7 @@ class TriviaGameRestApi(RestApi):
                 Answer evaluation result
             """
             try:
-                result = await self.trivia_service.evaluate_answer(
+                result = await self._trivia_service.evaluate_answer(
                     request.game_id,
                     request.question_id,
                     request.answer,
@@ -119,7 +104,7 @@ class TriviaGameRestApi(RestApi):
                 Score information
             """
             try:
-                score = self.trivia_service.get_score(game_id)
+                score = self._trivia_service.get_score(game_id)
                 return score
             except ValueError as e:
                 logger.error(f"Error getting score: {e}")

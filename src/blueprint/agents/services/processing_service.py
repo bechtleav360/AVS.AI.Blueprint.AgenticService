@@ -26,6 +26,12 @@ class ProcessingService:
     This service provides a consistent interface for all API endpoints
     (REST, Events, Dapr) to process requests using the registered handlers
     and agent runtimes.
+
+    Implements the ComponentInterface:
+    - name: str - Component name
+    - get_registry() -> ComponentRegistry - Access component registry
+    - on_startup() - Optional initialization
+    - on_shutdown() - Optional cleanup
     """
 
     def __init__(
@@ -39,6 +45,34 @@ class ProcessingService:
         self._event_publisher: _EventPublisher = _EventPublisher(component_registry, settings)
         self._health_checker: _HealthChecker = _HealthChecker(component_registry)
         self._result_builder: _ResultBuilder = _ResultBuilder()
+        self.name = self.__class__.__name__
+
+    def get_registry(self) -> "ComponentRegistry":
+        """Get the component registry for accessing other components.
+
+        Returns:
+            The ComponentRegistry instance
+
+        Raises:
+            RuntimeError: If registry is not wired
+        """
+        if self._component_registry is None:
+            raise RuntimeError(f"Component registry not wired to service '{self.name}'")
+        return self._component_registry
+
+    async def on_startup(self) -> None:
+        """Called when service is registered and wired.
+
+        Override to perform initialization tasks.
+        """
+        pass
+
+    async def on_shutdown(self) -> None:
+        """Called when application is shutting down.
+
+        Override to perform cleanup tasks.
+        """
+        pass
 
     async def process_event(
         self,

@@ -43,7 +43,7 @@ Best practices:
 import logging
 from typing import Any
 
-from blueprint.agents.handler import EventHandler
+from blueprint.agents.base import EventHandler
 from blueprint.agents.models import CloudEvent
 
 from ..models import CustomPayload

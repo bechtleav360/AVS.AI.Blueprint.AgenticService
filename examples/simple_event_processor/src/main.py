@@ -24,4 +24,4 @@ config = Config(settings_files=settings_files, root_path=project_root)
 # Step 2: Build App with Handler
 # ============================================================================
 
-app = AppBuilder(settings_files=settings_files, root_path=project_root).with_handler(SimpleProcessorHandler).build()
+app = AppBuilder(config=config).with_handler(SimpleProcessorHandler).build()

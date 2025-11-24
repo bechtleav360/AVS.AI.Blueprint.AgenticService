@@ -12,7 +12,7 @@ from pydantic_ai.models import Model
 from pydantic_ai.run import AgentRunResult
 
 from ..config import Config
-from .agent_runtime import AgentRuntime
+from ..base import AgentRuntime
 from .metrics import MetricsExtractor, MetricsRecorder
 from .model_provider import ModelProviderFactory
 from .prompt_loader import PromptLoader
@@ -259,7 +259,6 @@ class AgentBuilder:
             tools=self._tools if self._tools else [],
             config=self._config,
             runtime_name=self._runtime_name,
-            package_root=self._package_root,
             **kwargs,
         )
 

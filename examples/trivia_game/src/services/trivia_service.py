@@ -8,43 +8,22 @@ from typing import Any
 from blueprint.agents.agent import AgentBuilder
 from pydantic_ai import Agent, AgentRunResult
 
+from blueprint.agents.base import BusinessService
+
 logger: logging.Logger = logging.getLogger(__name__)
 
 
-class TriviaService:
+class TriviaService(BusinessService):
     """Service for managing trivia games with LLM-powered questions and evaluation."""
 
     games: dict[str, dict[str, Any]]
     agent: Agent
 
-    def __init__(self, agent: Agent = None) -> None:
-        """Initialize the trivia service.
+    def __init__(self) -> None:
+        """Initialize the trivia service."""
+        super().__init__("trivia_service")
 
-        Args:
-            agent: The LLM agent to use for question generation and evaluation.
-                   Prompts are retrieved from agent.prompts dict.
-        """
         self.games: dict[str, dict[str, Any]] = {}
-        self.agent: Agent | None = agent
-
-    def _get_prompt(self, prompt_name: str) -> str:
-        """Get a prompt from the agent using lazy loading.
-
-        Args:
-            prompt_name: Name of the prompt to retrieve
-
-        Returns:
-            The prompt content
-
-        Raises:
-            ValueError: If agent is not set
-            FileNotFoundError: If prompt not found
-        """
-        if self.agent is None:
-            raise ValueError("Agent not configured")
-
-        # Use lazy loading with caching
-        return self.agent.get_prompt(prompt_name)
 
     def start_game(self, difficulty: str = "medium", num_questions: int = 5) -> str:
         """Start a new trivia game.
@@ -86,9 +65,10 @@ class TriviaService:
             raise ValueError(f"Game {game_id} is complete")
 
         # Generate question using LLM agent
-        prompt = self._get_prompt("generate_question").format(difficulty=game["difficulty"])
+        prompt = self.get_registry().get_agent("trivia_master").get_prompt("generate_question").format(difficulty=game["difficulty"])
         try:
-            result: AgentRunResult = await self.agent.run(prompt)
+            result: AgentRunResult = await self.get_registry().get_agent("trivia_master").run(prompt)
+
             logger.info("Result object type: %s", type(result).__name__)
             # Extract response text using framework utility
             response_text = AgentBuilder.extract_response_text(result)
@@ -154,14 +134,18 @@ class TriviaService:
         question = game["questions"][question_id]
 
         # Use LLM to evaluate answer
-        evaluate_prompt = self._get_prompt("evaluate_answer")
-        prompt = evaluate_prompt.format(
-            question=question["question"],
-            correct_answer=question.get("correct_answer", "Unknown"),
-            player_answer=answer,
+        prompt = (
+            self.get_registry()
+            .get_agent("trivia_master")
+            .get_prompt("evaluate_answer")
+            .format(
+                question=question["question"],
+                correct_answer=question.get("correct_answer", "Unknown"),
+                player_answer=answer,
+            )
         )
         try:
-            result = await self.agent.run(prompt)
+            result = await self.get_registry().get_agent("trivia_master").run(prompt)
             # Extract response text using framework utility
             response_text = AgentBuilder.extract_response_text(result)
             # Log usage information

@@ -9,7 +9,8 @@ from src.main import app
 @pytest.fixture
 def client() -> TestClient:
     """Create a test client."""
-    return TestClient(app)
+    with TestClient(app) as test_client:
+        yield test_client
 
 
 class TestCalculateRoutes:

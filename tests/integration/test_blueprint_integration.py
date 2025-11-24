@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from blueprint.agents.agent import AgentBuilder
 from blueprint.agents.app_builder import AppBuilder
 from blueprint.agents.config import Config
-from blueprint.agents.handler import EventHandler
+from blueprint.agents.base import EventHandler
 from blueprint.agents.models.events import CloudEvent
 from blueprint.agents.models.result import AgentOutput, Evidence
 
@@ -60,22 +60,21 @@ class TestAgentIntegration:
         builder = AgentBuilder(config, runtime_name="test_agent")
         assert builder._config == config
         assert builder._runtime_name == "test_agent"
-        assert builder._prompts == {}
         assert builder._tools == []
 
     def test_agent_builder_with_system_prompt(self, config):
         """Test AgentBuilder can set system prompt."""
         builder = AgentBuilder(config)
-        builder.with_system_prompt_text("You are a helpful assistant")
+        builder.with_system_prompt("You are a helpful assistant")
         assert builder._system_prompt == "You are a helpful assistant"
 
     def test_agent_builder_with_prompt_text(self, config):
         """Test AgentBuilder can register prompts via text."""
         builder = AgentBuilder(config)
-        # Use with_prompt_text instead of with_prompt to avoid file loading
-        builder._prompts["test_prompt"] = "This is a test prompt"
-        assert "test_prompt" in builder._prompts
-        assert builder._prompts["test_prompt"] == "This is a test prompt"
+        # Prompts are now loaded on-demand via get_prompt() method
+        # This test verifies the builder can be configured
+        builder.with_system_prompt("You are a helpful assistant")
+        assert builder._system_prompt == "You are a helpful assistant"
 
     def test_agent_builder_with_result_type(self, config):
         """Test AgentBuilder can set result type."""
@@ -85,7 +84,7 @@ class TestAgentIntegration:
 
     def test_agent_builder_chaining(self, config):
         """Test AgentBuilder supports method chaining."""
-        builder = AgentBuilder(config).with_system_prompt_text("You are helpful").with_result_type(MockLLMResponse)
+        builder = AgentBuilder(config).with_system_prompt("You are helpful").with_result_type(MockLLMResponse)
         assert builder._system_prompt == "You are helpful"
         assert builder._result_type == MockLLMResponse
 
@@ -104,21 +103,18 @@ class TestAppBuilderIntegration:
     def test_app_builder_with_config(self, config):
         """Test AppBuilder can be initialized with config."""
         app_builder = AppBuilder(config=config)
-        assert app_builder.config == config
+        assert app_builder._config == config
 
-    def test_app_builder_backward_compatibility(self):
-        """Test AppBuilder still works with settings_files and root_path."""
-        app_builder = AppBuilder(settings_files=[], root_path=".")
-        assert app_builder.config is not None
+    def test_app_builder_requires_config(self):
+        """Test AppBuilder requires config parameter."""
+        config = Config(settings_files=[], root_path=".")
+        app_builder = AppBuilder(config=config)
+        assert app_builder._config is not None
 
-    def test_app_builder_config_takes_precedence(self, config):
-        """Test that config parameter takes precedence over settings_files."""
-        app_builder = AppBuilder(
-            config=config,
-            settings_files=["ignored.toml"],
-            root_path="ignored",
-        )
-        assert app_builder.config == config
+    def test_app_builder_config_stored(self, config):
+        """Test that config is properly stored in AppBuilder."""
+        app_builder = AppBuilder(config=config)
+        assert app_builder._config == config
 
     def test_app_builder_with_handler(self, config):
         """Test AppBuilder can register event handlers."""
@@ -134,8 +130,9 @@ class TestAppBuilderIntegration:
                 return None
 
         app_builder.with_handler(TestHandler)
-        assert len(app_builder._handlers) == 1
-        assert isinstance(app_builder._handlers[0], TestHandler)
+        handlers = app_builder._component_registry.get_handlers()
+        assert len(handlers) == 1
+        assert isinstance(handlers[0], TestHandler)
 
     def test_app_builder_with_handler_instance(self, config):
         """Test AppBuilder can register handler instances."""
@@ -152,8 +149,9 @@ class TestAppBuilderIntegration:
 
         handler_instance = TestHandler()
         app_builder.with_handler(handler_instance)
-        assert len(app_builder._handlers) == 1
-        assert app_builder._handlers[0] is handler_instance
+        handlers = app_builder._component_registry.get_handlers()
+        assert len(handlers) == 1
+        assert handlers[0] is handler_instance
 
     def test_app_builder_handler_chaining(self, config):
         """Test AppBuilder supports handler chaining."""
@@ -174,7 +172,8 @@ class TestAppBuilderIntegration:
                 return None
 
         app_builder.with_handler(Handler1).with_handler(Handler2)
-        assert len(app_builder._handlers) == 2
+        handlers = app_builder._component_registry.get_handlers()
+        assert len(handlers) == 2
 
 
 class TestEventHandling:
@@ -318,8 +317,9 @@ class TestEndToEndWorkflow:
         app_builder.with_handler(SimpleHandler)
 
         # Verify setup
-        assert len(app_builder._handlers) == 1
-        assert isinstance(app_builder._handlers[0], SimpleHandler)
+        handlers = app_builder._component_registry.get_handlers()
+        assert len(handlers) == 1
+        assert isinstance(handlers[0], SimpleHandler)
 
     @pytest.mark.asyncio
     async def test_handler_event_processing(self):
@@ -382,5 +382,6 @@ class TestEndToEndWorkflow:
 
         app_builder.with_handler(Handler1).with_handler(Handler2).with_handler(Handler3)
 
-        assert len(app_builder._handlers) == 3
-        assert all(isinstance(h, EventHandler) for h in app_builder._handlers)
+        handlers = app_builder._component_registry.get_handlers()
+        assert len(handlers) == 3
+        assert all(isinstance(h, EventHandler) for h in handlers)

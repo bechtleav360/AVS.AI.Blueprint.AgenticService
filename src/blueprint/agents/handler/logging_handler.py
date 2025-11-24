@@ -9,7 +9,7 @@ import logging
 from typing import Any
 
 from ..models import CloudEvent
-from .event_handler import EventHandler
+from ..base import EventHandler
 
 logger = logging.getLogger(__name__)
 

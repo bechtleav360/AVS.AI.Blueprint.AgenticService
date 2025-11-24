@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from opentelemetry import trace
 from pydantic import BaseModel
 
+from ..config import Config
 from ..models import ProcessResourceResponse
 from ..registry.component_registry import ComponentRegistry
 
@@ -22,57 +23,83 @@ PayloadT = TypeVar("PayloadT", bound=BaseModel)
 
 
 class RestApi(Generic[PayloadT]):
-    """Generic OOP wrapper for the REST API router."""
+    """Generic OOP wrapper for the REST API router.
 
-    def __init__(self, payload_type: type[PayloadT]) -> None:
+    Implements the ComponentInterface:
+    - name: str - Component name
+    - get_registry() -> ComponentRegistry - Access component registry
+    - on_startup() - Optional initialization
+    - on_shutdown() - Optional cleanup
+    """
+
+    def __init__(self, payload_type: type[PayloadT], name: str = "RestAPI") -> None:
         self.router = APIRouter()
-        self.payload_type = payload_type
+        self._payload_type = payload_type
         self._component_registry: ComponentRegistry | None = None
-        self._agent: Any = None
+        self._name = name
         self._register_routes()
 
-    def with_component_registry(self, registry: ComponentRegistry) -> "RestApi":
-        """Wire the component registry into this REST API.
-
-        This method is called by AppBuilder to inject the component registry
-        after the REST API instance is created.
-
-        Args:
-            registry: The ComponentRegistry instance to wire
+    def get_name(self) -> str:
+        """Get the component name.
 
         Returns:
-            Self for chaining
+            The component name set during initialization
         """
-        self._component_registry = registry
-        return self
+        return self._name
 
-    def with_agent(self, agent: Any) -> "RestApi":
-        """Register an agent with this REST API.
-
-        Args:
-            agent: The agent instance to use in this API
+    def get_registry(self) -> "ComponentRegistry":
+        """Get the component registry for accessing other components.
 
         Returns:
-            Self for chaining
-        """
-        self._agent = agent
-        return self
-
-    def _get_processing_service(self) -> Any:
-        """Get the processing service from component registry.
-
-        Lazily acquires the service when needed (during request handling).
-        This ensures the service is registered by AppBuilder before use.
-
-        Returns:
-            The ProcessingService instance
+            The ComponentRegistry instance
 
         Raises:
-            ValueError: If processing service is not registered
+            RuntimeError: If registry is not wired
         """
-        if self._component_registry is None:
-            raise ValueError("Component registry not wired into REST API")
-        return self._component_registry.get_processing_service()
+        if not hasattr(self, "_component_registry") or self._component_registry is None:
+            raise RuntimeError(f"Component registry not linked to service '{self._name}'")
+        return self._component_registry
+
+    def link_component_registry(self, registry: "ComponentRegistry") -> None:
+        """Link the component registry to the service.
+
+        This allows services to access other components via the registry.
+
+        Args:
+            registry: The ComponentRegistry instance
+        """
+        self._component_registry = registry
+
+    def link_config(self, config: Config) -> None:
+        """Link configuration to the service via dependency injection.
+
+        This allows services to access environment variables and configuration
+        during runtime.
+
+        Args:
+            config: The Config instance
+        """
+        self._config = config
+
+    async def on_startup(self) -> None:
+        """Called when service is registered and wired.
+
+        Override to perform initialization tasks such as:
+        - Connecting to external services
+        - Loading configuration
+        - Initializing resources
+        """
+        pass
+
+    async def on_shutdown(self) -> None:
+        """Called when application is shutting down.
+
+        Override to perform cleanup tasks such as:
+        - Closing connections
+        - Releasing resources
+        - Flushing buffers
+        """
+        pass
 
     def _register_routes(self) -> None:
         @self.router.post(
@@ -130,7 +157,7 @@ class RestApi(Generic[PayloadT]):
                     "client_ip": request.client.host if request.client else None,
                 }
 
-                processing_service = self._get_processing_service()
+                processing_service = self.get_registry().get_processing_service()
                 result_event = await processing_service.process_rest_request(payload, context)
 
                 # Extract result data from CloudEvent

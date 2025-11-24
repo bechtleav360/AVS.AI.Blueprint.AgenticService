@@ -3,7 +3,7 @@
 import logging
 from typing import Any
 
-from blueprint.agents.handler import EventHandler
+from blueprint.agents.base import EventHandler
 from blueprint.agents.models.events import CloudEvent
 
 from ..models.events import ProcessedResult

@@ -6,6 +6,8 @@ from blueprint.agents.agent import AgentBuilder
 from blueprint.agents.app_builder import AppBuilder
 from blueprint.agents.config import Config
 from pydantic_ai import Agent
+
+from .services.trivia_service import TriviaService
 from .api import TriviaGameRestApi
 
 
@@ -24,11 +26,9 @@ config = Config(
 
 # Build trivia master agent with package_root for prompt discovery
 trivia_agent: Agent = (
-    AgentBuilder(config, runtime_name="trivia_master", package_root=Path(__file__).parent)
+    AgentBuilder(config, runtime_name="trivia_master")
     .with_model_from_config("trivia_master")
-    .with_system_prompt_file("system")
-    .with_prompt("evaluate_answer")
-    .with_prompt("generate_question")
+    .with_system_prompt("system")
     .build(name="trivia_master")
 )
 
@@ -36,7 +36,4 @@ trivia_agent: Agent = (
 # Step 2: Build App and Register Agent
 # ============================================================================
 
-# Create the Trivia Game REST API instance
-trivia_api = TriviaGameRestApi()
-
-app = AppBuilder(config=config).with_agent(trivia_agent).with_rest_api(trivia_api).build()
+app = AppBuilder(config=config).with_agent(trivia_agent).with_service(TriviaService()).with_rest_api(TriviaGameRestApi()).build()

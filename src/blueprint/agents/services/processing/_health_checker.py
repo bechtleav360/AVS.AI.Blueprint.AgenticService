@@ -57,5 +57,5 @@ class _HealthChecker:
         return {
             "status": "healthy" if handlers else "unhealthy",
             "count": len(handlers),
-            "handlers": [{"name": h.name, "priority": h.priority} for h in handlers],
+            "handlers": [{"name": h._name, "priority": h._priority} for h in handlers],
         }

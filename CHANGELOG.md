@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.3.0] - 2025-11-24
+
+### Changed
+- **BREAKING:** Refactored `AppBuilder` constructor - now requires `Config` object instead of `settings_files` and `root_path` parameters
+- **BREAKING:** Moved base classes to unified `blueprint.agents.base` module: `EventHandler`, `AgentRuntime`, `RestApi`, `BusinessService`
+- Handler storage refactored from dict to list to support multiple handlers with identical names
+- All components now use async `on_startup()` lifecycle hooks to retrieve dependencies from registry
+
+### Added
+- `AppBuilder.with_service()` method to register business services
+- Async lifecycle management for all components via `on_startup()` and `on_shutdown()` hooks
+
+### Removed
+- `AgentRuntime` from `blueprint.agents.agent` module (moved to `blueprint.agents.base`)
+- `EventHandler` from `blueprint.agents.handler` module (moved to `blueprint.agents.base`)
+- `RestApi` from `blueprint.agents.api.rest` module (moved to `blueprint.agents.base`)
+- `package_root` parameter from `AgentBuilder` - no longer needed with new prompt loading
+
+### Fixed
+- All integration and unit tests updated for new architecture
+- FastAPI `TestClient` fixtures now properly manage lifespan to run startup hooks
+- Example applications refactored to use new `AppBuilder(config=Config(...))` pattern
+
 ## [0.2.8] - 2025-11-24
 
 ### Added

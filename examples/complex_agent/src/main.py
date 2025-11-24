@@ -71,7 +71,7 @@ invoice_agent: Agent = (
 # ============================================================================
 
 app = (
-    AppBuilder(settings_files=settings_files, root_path=project_root)
+    AppBuilder(config=config)
     .with_handler(AgentInvokerHandler)
     .with_handler(SimpleProcessorHandler)
     .with_rest_api(CustomRestApi())

@@ -16,7 +16,8 @@ from examples.trivia_game.src.main import app, trivia_agent
 @pytest.fixture
 def client() -> TestClient:
     """Create a test client for the trivia game API."""
-    return TestClient(app)
+    with TestClient(app) as test_client:
+        yield test_client
 
 
 class TestTriviaGameIntegration:

@@ -17,7 +17,7 @@ import logging
 from typing import Any, Optional
 
 from blueprint.agents.agent import PromptLoader
-from blueprint.agents.handler import EventHandler
+from blueprint.agents.base import EventHandler
 from blueprint.agents.models import CloudEvent
 
 from ..models import CustomPayload, HandlerResult, InvoiceAnalysisOutput
@@ -35,9 +35,7 @@ class AgentInvokerHandler(EventHandler):
     def __init__(self) -> None:
         super().__init__("AgentInvokerHandler", priority=10)
 
-    async def can_handle_event(
-        self, event: CloudEvent, context: dict[str, Any]
-    ) -> bool:
+    async def can_handle_event(self, event: CloudEvent, context: dict[str, Any]) -> bool:
         """Handle events with 'invoke_agent' action."""
         if not event.data:
             return False
@@ -51,9 +49,7 @@ class AgentInvokerHandler(EventHandler):
 
         return False
 
-    async def handle_event(
-        self, event: CloudEvent, context: dict[str, Any]
-    ) -> Optional[HandlerResult]:
+    async def handle_event(self, event: CloudEvent, context: dict[str, Any]) -> Optional[HandlerResult]:
         """Validate the payload, invoke the agent, and return structured result.
 
         Returns:
@@ -89,20 +85,11 @@ class AgentInvokerHandler(EventHandler):
 
         # Get pre-configured agent and process
         try:
-            # Get agent from registry (configured at startup)
-            agent = self._get_agent("invoice_analyzer")
-
-            # Load instruction prompt from file with template variables
-            instruction = PromptLoader.load_instruction_prompt(
-                "instruction",
-                self.__class__,
-                config=None,  # Uses default search paths
-                invoice_text=invoice_text,
-                metadata=metadata,
-            )
+            agent = self.get_registry().get_agent("invoice_analyzer")
+            prompt = agent.get_name("instruction").format(invoice_text=invoice_text)
 
             # Run agent - expects InvoiceAnalysisOutput
-            result = await agent.run(instruction)
+            result = await agent.run(prompt)
             analysis: InvoiceAnalysisOutput = result.data
 
             logger.info(
@@ -117,9 +104,7 @@ class AgentInvokerHandler(EventHandler):
                 logger.info("Invoice %s is VALID", analysis.invoice_id)
             elif analysis.status.lower() in ["invalid", "incomplete"]:
                 event_type = "invoice.invalidated"
-                logger.warning(
-                    "Invoice %s is INVALID: %s", analysis.invoice_id, analysis.notes
-                )
+                logger.warning("Invoice %s is INVALID: %s", analysis.invoice_id, analysis.notes)
             else:
                 # Unknown status - treat as invalid
                 event_type = "invoice.invalidated"

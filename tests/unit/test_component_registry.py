@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import pytest
 
 from blueprint.agents.config.config import Config
-from blueprint.agents.handler.event_handler import EventHandler
+from blueprint.agents.base import EventHandler
 from blueprint.agents.models.events import CloudEvent
 from blueprint.agents.registry.component_registry import ComponentRegistry
 
@@ -36,7 +36,7 @@ class EchoHandler(EventHandler):
         return True
 
     async def handle_event(self, event: CloudEvent, context: dict) -> dict:
-        return {"handled_by": self.name, "source": event.source}
+        return {"handled_by": self._name, "source": event.source}
 
 
 class ComponentRegistryRuntime:
@@ -44,11 +44,21 @@ class ComponentRegistryRuntime:
 
     def __init__(self, config: Config) -> None:
         self.config = config
-        self._service_registry: ComponentRegistry | None = None
+        self._name = self.__class__.__name__
+        self._component_registry: ComponentRegistry | None = None
         self._processed_payloads: list[str] = []
 
-    def link_service_registry(self, registry: ComponentRegistry) -> None:
-        self._service_registry = registry
+    def get_name(self) -> str:
+        """Get the component name."""
+        return self._name
+
+    def link_component_registry(self, registry: ComponentRegistry) -> None:
+        """Link the component registry."""
+        self._component_registry = registry
+
+    def link_config(self, config: Config) -> None:
+        """Link configuration."""
+        self.config = config
 
     async def process_request(self, event: CloudEvent, context: dict | None = None) -> dict:
         payload = event.data or {}
@@ -92,19 +102,15 @@ class TestComponentRegistry:
 
         handlers = registry.get_handlers()
         assert len(handlers) == 1
-        assert handlers[0].name == "echo"
-        assert handlers[0].priority == 5
+        assert handlers[0]._name == "echo"
+        assert handlers[0]._priority == 5
 
     def test_handlers_are_sorted_by_priority(self, registry: ComponentRegistry) -> None:
-        registry.register_handlers(
-            [
-                EchoHandler(name="slow", priority=30),
-                EchoHandler(name="fast", priority=10),
-                EchoHandler(name="medium", priority=20),
-            ]
-        )
+        registry.register_handler(EchoHandler(name="slow", priority=30))
+        registry.register_handler(EchoHandler(name="fast", priority=10))
+        registry.register_handler(EchoHandler(name="medium", priority=20))
 
-        priorities = [handler.priority for handler in registry.get_handlers()]
+        priorities = [handler._priority for handler in registry.get_handlers()]
         assert priorities == [10, 20, 30]
 
     def test_get_handlers_returns_copy(self, registry: ComponentRegistry) -> None:
@@ -118,7 +124,8 @@ class TestComponentRegistry:
         assert first is not second
 
     def test_clear_handlers(self, registry: ComponentRegistry) -> None:
-        registry.register_handlers([EchoHandler(name="a"), EchoHandler(name="b")])
+        registry.register_handler(EchoHandler(name="a"))
+        registry.register_handler(EchoHandler(name="b"))
         assert registry.get_handlers()
 
         registry.clear_handlers()
@@ -126,9 +133,9 @@ class TestComponentRegistry:
 
     def test_register_runtime_and_retrieve(self, registry: ComponentRegistry, config: Config) -> None:
         runtime = ComponentRegistryRuntime(config)
-        registry._agent_registry.register("runtime", runtime)  # type: ignore[attr-defined]
+        registry.register_agent(runtime)
 
-        assert registry.get_agent_registry().get("runtime") is runtime
+        assert registry.get_agent("ComponentRegistryRuntime") is runtime
 
     def test_processing_service_registration(self, registry: ComponentRegistry) -> None:
         processing = DummyProcessingService()
@@ -142,12 +149,12 @@ class TestComponentRegistry:
 
     def test_clear_registry_resets_state(self, registry: ComponentRegistry) -> None:
         registry.register_handler(EchoHandler(name="cleanup"))
-        registry.get_agent_registry().register("cleanup-runtime", ComponentRegistryRuntime(registry.get_settings()))
+        registry.register_agent(ComponentRegistryRuntime(registry.get_settings()))
 
         registry.clear()
 
         assert registry.get_handlers() == []
-        assert registry.get_agent_registry().list_agents() == []
+        assert registry.list_agents() == []
 
     def test_handler_links_component_registry(self, registry: ComponentRegistry) -> None:
         handler = EchoHandler(name="link")

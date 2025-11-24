@@ -2,14 +2,19 @@
 
 import logging
 
+from blueprint.agents.base.business_service import BusinessService
+
 logger = logging.getLogger(__name__)
 
 
-class CalculatorService:
+class CalculatorService(BusinessService):
     """Service for performing calculations."""
 
-    @staticmethod
-    def calculate(a: float, b: float, operation: str) -> tuple[float, str | None]:
+    def __init__(self) -> None:
+        """Initialize the calculator service."""
+        super().__init__("calculator_service")
+
+    def calculate(self, a: float, b: float, operation: str) -> tuple[float, str | None]:
         """Perform a calculation.
 
         Args:

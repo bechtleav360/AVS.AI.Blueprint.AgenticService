@@ -24,6 +24,12 @@ class EventPublishingService:
     - Mapping event types to topics based on configuration
     - Error handling and retries
     - Observability (logging and tracing)
+
+    Implements the ComponentInterface:
+    - name: str - Component name
+    - get_registry() -> ComponentRegistry - Access component registry
+    - on_startup() - Optional initialization
+    - on_shutdown() - Optional cleanup
     """
 
     def __init__(self, config: Config) -> None:
@@ -36,27 +42,52 @@ class EventPublishingService:
         self.config: Config = config
         self._dapr_http_port: int = self.config.get("dapr_http_port", 3500)
         self._dapr_base_url: str = f"http://localhost:{self._dapr_http_port}"
+        self.name = self.__class__.__name__
+        self._registry: Any = None
 
         # Load event publishing configuration
         self._pub_config: EventPublishingConfig = self.config.get_event_publishing_config()
         self._default_pubsub_name: str = self._pub_config.default_pubsub_name
         self._topic_mapping: dict[str, TopicConfig] = self._pub_config.topic_mapping
 
-        logger.info(
-            "EventPublishingService initialized with pubsub '%s' and %d topic mappings",
-            self._default_pubsub_name,
-            len(self._topic_mapping),
-        )
+    def get_registry(self) -> Any:
+        """Get the component registry for accessing other components.
 
-        if logger.isEnabledFor(logging.DEBUG):
-            if self._topic_mapping:
-                formatted_mappings = "\n".join(
-                    f"  - {event_type}: topic='{cfg.topic}'" + (f", routing_key='{cfg.routing_key}'" if cfg.routing_key else "")
-                    for event_type, cfg in self._topic_mapping.items()
-                )
-            else:
-                formatted_mappings = "  (no topic mappings configured)"
-            logger.debug("Topic mappings:\n%s", formatted_mappings)
+        Returns:
+            The ComponentRegistry instance
+
+        Raises:
+            RuntimeError: If registry is not wired
+        """
+        if self._registry is None:
+            raise RuntimeError(f"Component registry not wired to service '{self.name}'")
+        return self._registry
+
+    def with_registry(self, registry: Any) -> "EventPublishingService":
+        """Wire the component registry into this service.
+
+        Args:
+            registry: The ComponentRegistry instance
+
+        Returns:
+            Self for chaining
+        """
+        self._registry = registry
+        return self
+
+    async def on_startup(self) -> None:
+        """Called when service is registered and wired.
+
+        Override to perform initialization tasks.
+        """
+        pass
+
+    async def on_shutdown(self) -> None:
+        """Called when application is shutting down.
+
+        Override to perform cleanup tasks.
+        """
+        pass
 
     async def publish_event(
         self, event: CloudEvent, pubsub_name: str | None = None, topic: str | None = None, routing_key: str | None = None

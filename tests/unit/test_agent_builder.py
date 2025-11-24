@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from pydantic_ai import Tool
 
 from blueprint.agents.agent.agent_builder import AgentBuilder
-from blueprint.agents.agent.agent_runtime import AgentRuntime
+from blueprint.agents.base import AgentRuntime
 from blueprint.agents.config import Config
 from blueprint.agents.models.config import AIConfig, PromptConfig
 

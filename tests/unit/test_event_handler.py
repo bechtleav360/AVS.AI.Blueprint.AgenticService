@@ -7,7 +7,7 @@ import pytest
 from unittest.mock import MagicMock, Mock, patch, AsyncMock
 
 # Import directly to avoid circular import during testing
-from blueprint.agents.handler.event_handler import EventHandler
+from blueprint.agents.base import EventHandler
 from blueprint.agents.models import CloudEvent
 
 
@@ -42,8 +42,8 @@ class TestEventHandler:
 
         handler = TestHandler("TestHandler", priority=50)
 
-        assert handler.name == "TestHandler"
-        assert handler.priority == 50
+        assert handler._name == "TestHandler"
+        assert handler._priority == 50
 
     def test_handler_comparison_by_priority(self):
         """Test handlers are sorted by priority (lower first)."""
@@ -86,9 +86,9 @@ class TestEventHandler:
 
         sorted_handlers = sorted(handlers)
 
-        assert sorted_handlers[0].name == "First"
-        assert sorted_handlers[1].name == "Second"
-        assert sorted_handlers[2].name == "Third"
+        assert sorted_handlers[0]._name == "First"
+        assert sorted_handlers[1]._name == "Second"
+        assert sorted_handlers[2]._name == "Third"
 
     @pytest.mark.asyncio
     async def test_can_handle_wrapper_adds_tracing(self, mock_cloud_event, mock_context):
@@ -103,7 +103,7 @@ class TestEventHandler:
 
         handler = TestHandler("TestHandler")
 
-        with patch("blueprint.agents.handler.event_handler.tracer") as mock_tracer:
+        with patch("blueprint.agents.base.event_handler.tracer") as mock_tracer:
             mock_span = MagicMock()
             mock_tracer.start_as_current_span.return_value.__enter__.return_value = mock_span
 
@@ -126,7 +126,7 @@ class TestEventHandler:
 
         handler = TestHandler("TestHandler")
 
-        with patch("blueprint.agents.handler.event_handler.tracer") as mock_tracer:
+        with patch("blueprint.agents.base.event_handler.tracer") as mock_tracer:
             mock_span = MagicMock()
             mock_tracer.start_as_current_span.return_value.__enter__.return_value = mock_span
 
@@ -134,6 +134,7 @@ class TestEventHandler:
 
             assert result == {"result": "success"}
             mock_tracer.start_as_current_span.assert_called_once()
+            mock_span.set_attribute.assert_any_call("handler.name", "TestHandler")
 
     def test_link_service_registry(self):
         """Test service registry can be linked to handler."""
@@ -148,9 +149,9 @@ class TestEventHandler:
         handler = TestHandler("TestHandler")
         mock_registry = Mock()
 
-        handler.link_service_registry(mock_registry)
+        handler.link_component_registry(mock_registry)
 
-        assert handler._registry == mock_registry
+        assert handler._component_registry == mock_registry
 
     def test_link_component_registry(self):
         """Test component registry can be linked to handler."""
@@ -196,19 +197,16 @@ class TestEventHandler:
 
         handler = TestHandler("TestHandler")
         mock_component_registry = Mock()
-        mock_agent_registry = Mock()
         mock_agent = Mock()
 
-        mock_component_registry.get_agent_registry.return_value = mock_agent_registry
-        mock_agent_registry.get.return_value = mock_agent
+        mock_component_registry.get_agent.return_value = mock_agent
 
         handler.link_component_registry(mock_component_registry)
 
         result = handler._get_agent("test_agent")
 
         assert result == mock_agent
-        mock_component_registry.get_agent_registry.assert_called_once()
-        mock_agent_registry.get.assert_called_once_with("test_agent")
+        mock_component_registry.get_agent.assert_called_once_with("test_agent")
 
     def test_get_published_event_types_default_none(self):
         """Test get_published_event_types returns None by default."""
@@ -416,12 +414,10 @@ class TestChainOfResponsibility:
 
         # Mock component registry and agent
         mock_component_registry = Mock()
-        mock_agent_registry = Mock()
         mock_agent = Mock()
         mock_agent.run = AsyncMock(return_value=Mock(data="agent_output"))
 
-        mock_component_registry.get_agent_registry.return_value = mock_agent_registry
-        mock_agent_registry.get.return_value = mock_agent
+        mock_component_registry.get_agent.return_value = mock_agent
 
         handler.link_component_registry(mock_component_registry)
 
@@ -457,7 +453,7 @@ class TestChainOfResponsibility:
 
         handler = MultiResultHandler("MultiResult")
 
-        with patch("blueprint.agents.handler.event_handler.tracer") as mock_tracer:
+        with patch("blueprint.agents.base.event_handler.tracer") as mock_tracer:
             mock_span = MagicMock()
             mock_tracer.start_as_current_span.return_value.__enter__.return_value = mock_span
 

@@ -6,7 +6,7 @@ from typing import Any
 from opentelemetry import trace
 
 from ..models import CloudEvent
-from .event_handler import EventHandler
+from ..base import EventHandler
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -23,7 +23,7 @@ class DecisionEngine:
             handlers: A list of event handlers to use for processing.
         """
         self.handlers = sorted(handlers)
-        logger.info("Initialized with handlers: %s", [h.name for h in self.handlers])
+        logger.info("Initialized with handlers: %s", [h._name for h in self.handlers])
 
     async def process_event(self, event: CloudEvent) -> Any | None:
         """
@@ -42,15 +42,15 @@ class DecisionEngine:
 
             for handler in self.handlers:
                 if await handler.can_handle(event, context):
-                    span.add_event(f"Executing handler: {handler.name}")
+                    span.add_event(f"Executing handler: {handler._name}")
                     try:
                         result = await handler.handle(event, context)
                         if result is not None:
-                            span.set_attribute("handled_by", handler.name)
-                            logger.info("Event handled by %s.", handler.name)
+                            span.set_attribute("handled_by", handler._name)
+                            logger.info("Event handled by %s.", handler._name)
                             return result
                     except Exception as e:
-                        logger.exception("Handler %s failed.", handler.name)
+                        logger.exception("Handler %s failed.", handler._name)
                         span.record_exception(e)
                         break  # Stop processing on error
 

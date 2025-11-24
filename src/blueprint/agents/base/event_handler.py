@@ -6,7 +6,6 @@ should extend.
 Custom implementations MUST override the abstract methods:
 - `can_handle_event()` - Determine if handler should process the event
 - `handle_event()` - Process the event and return a result
-- `get_runtime_name()` - Optionally specify which agent runtime to use
 
 Handlers can also declare published event types by overriding:
 - `get_published_event_types()` - Return (success_event_type, error_event_type)
@@ -15,15 +14,18 @@ The framework provides automatic OpenTelemetry tracing for all handlers.
 """
 
 from abc import ABC, abstractmethod
+import logging
 from typing import Any
 
 from opentelemetry import trace
 
+from .agent_runtime import AgentRuntime
 from ..config import Config
 from ..models import CloudEvent, HandlerResult
 from ..registry.component_registry import ComponentRegistry
 
 tracer = trace.get_tracer(__name__)
+logger = logging.getLogger(__name__)
 
 
 class EventHandler(ABC):
@@ -57,23 +59,57 @@ class EventHandler(ABC):
             priority: Execution priority (lower numbers run first).
         """
 
-        self.name = name
-        self.priority = priority
-        self.config: Config | None = None
+        self._name = name
+        self._priority = priority
+        self._config: Config | None = None
 
-        self._registry: ComponentRegistry | None = None
         self._component_registry: ComponentRegistry | None = None
 
-    def with_config(self, config: Config) -> "EventHandler":
-        """Adds config via dependency injection, so that handlers can access environment variables during runtime"""
+    def get_name(self) -> str:
+        """Get the component name.
 
-        self.config = config
-        return self
+        Returns:
+            The component name set during initialization
+        """
+        return self._name
 
-    def link_service_registry(self, registry: "ComponentRegistry") -> None:
-        """Link the component registry to the handler."""
+    def get_registry(self) -> ComponentRegistry:
+        """Get the component registry for accessing other components.
 
-        self._registry = registry
+        Returns:
+            The ComponentRegistry instance
+
+        Raises:
+            RuntimeError: If registry is not wired
+        """
+        if not hasattr(self, "_component_registry") or self._component_registry is None:
+            raise RuntimeError(f"Component registry not linked to handler '{self._name}'")
+        return self._component_registry
+
+    async def on_startup(self) -> None:
+        """Called when handler is registered and wired.
+
+        Override to perform initialization tasks.
+        """
+        pass
+
+    async def on_shutdown(self) -> None:
+        """Called when application is shutting down.
+
+        Override to perform cleanup tasks.
+        """
+        pass
+
+    def link_config(self, config: Config) -> None:
+        """Link configuration to the service via dependency injection.
+
+        This allows services to access environment variables and configuration
+        during runtime.
+
+        Args:
+            config: The Config instance
+        """
+        self._config = config
 
     def link_component_registry(self, registry: "ComponentRegistry") -> None:
         """Link the component registry to the handler.
@@ -89,9 +125,9 @@ class EventHandler(ABC):
         Do not override this method. Override can_handle_event() instead.
         """
 
-        with tracer.start_as_current_span(f"handler.{self.name}.can_handle") as span:
-            span.set_attribute("handler.name", self.name)
-            span.set_attribute("handler.priority", self.priority)
+        with tracer.start_as_current_span(f"handler.{self._name}.can_handle") as span:
+            span.set_attribute("handler.name", self._name)
+            span.set_attribute("handler.priority", self._priority)
             return await self.can_handle_event(event, context)
 
     async def handle(self, event: CloudEvent, context: dict[str, Any]) -> Any | HandlerResult | list[HandlerResult] | None:
@@ -100,9 +136,9 @@ class EventHandler(ABC):
         Do not override this method. Override handle_event() instead.
         """
 
-        with tracer.start_as_current_span(f"handler.{self.name}.handle") as span:
-            span.set_attribute("handler.name", self.name)
-            span.set_attribute("handler.priority", self.priority)
+        with tracer.start_as_current_span(f"handler.{self._name}.handle") as span:
+            span.set_attribute("handler.name", self._name)
+            span.set_attribute("handler.priority", self._priority)
             result = await self.handle_event(event, context)
 
             # If result is already a HandlerResult or list of HandlerResults, return it as-is
@@ -132,8 +168,6 @@ class EventHandler(ABC):
             True if this handler can process the event, False otherwise.
         """
 
-        pass
-
     @abstractmethod
     async def handle_event(self, event: CloudEvent, context: dict[str, Any]) -> Any | HandlerResult | list[HandlerResult] | None:
         """Process the event and optionally return a result.
@@ -155,9 +189,7 @@ class EventHandler(ABC):
               with an ``event_type`` will be published as a separate event.
         """
 
-        pass
-
-    def _get_agent(self, agent_name: str):
+    def get_agent(self, agent_name: str) -> AgentRuntime:
         """Get a pre-configured agent from the agent registry.
 
         This is the recommended way to get agents using the builder pattern.
@@ -185,10 +217,13 @@ class EventHandler(ABC):
         """
 
         if not hasattr(self, "_component_registry") or self._component_registry is None:
-            raise RuntimeError(f"Component registry not linked to handler '{self.name}'. " "This is a framework initialization error.")
+            raise RuntimeError(f"Component registry not linked to handler '{self._name}'. " "This is a framework initialization error.")
 
-        agent_registry = self._component_registry.get_agent_registry()
-        return agent_registry.get(agent_name)
+        return self._component_registry.get_agent(agent_name)
+
+    def _get_agent(self, agent_name: str):
+        logger.warning("Handler '%s' is using deprecated _get_agent() method. Use get_agent() instead.", self._name)
+        return self.get_agent(agent_name)
 
     def get_published_event_types(self) -> tuple[str, str] | None:
         """Declare the event types this handler publishes.
@@ -215,4 +250,4 @@ class EventHandler(ABC):
     def __lt__(self, other: "EventHandler") -> bool:
         """Support sorting by priority."""
 
-        return self.priority < other.priority
+        return self._priority < other._priority

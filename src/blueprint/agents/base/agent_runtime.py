@@ -10,8 +10,10 @@ from pydantic_ai import Agent
 from pydantic_ai.run import AgentRunResult
 from pydantic_ai.tools import AgentDepsT
 
+from blueprint.agents.registry.component_registry import ComponentRegistry
+
 from ..config import Config
-from .prompt_loader import PromptLoader
+from ..agent.prompt_loader import PromptLoader
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -21,30 +23,94 @@ class AgentRuntime(Agent[AgentDepsT, Any]):
 
     Handles all prompt-related operations including loading, registering, and executing
     prompts from files or configuration.
+
+    Implements the ComponentInterface:
+    - name: str - Component name
+    - get_registry() -> ComponentRegistry - Access component registry
+    - on_startup() - Optional initialization
+    - on_shutdown() - Optional cleanup
     """
 
     def __init__(
         self,
-        *args: Any,
         config: Config | None = None,
         runtime_name: str = "default",
-        package_root: Path | str | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the agent runtime.
 
         Args:
-            *args: Positional arguments for Agent
             config: Application configuration for prompt loading
             runtime_name: Name for runtime-specific config lookup
-            package_root: Optional root path for the package (e.g., where main.py resides)
             **kwargs: Keyword arguments for Agent
         """
-        super().__init__(*args, **kwargs)
+        super().__init__(**kwargs)
         self._prompt_cache: Dict[str, str] = {}
         self._config = config
-        self._runtime_name = runtime_name
-        self._package_root = Path(package_root) if package_root else None
+        self._name = runtime_name
+        self._component_registry: Any = None
+
+    def get_name(self) -> str:
+        """Get the component name.
+
+        Returns:
+            The component name set during initialization
+        """
+        return self._name
+
+    def get_registry(self) -> ComponentRegistry:
+        """Get the component registry for accessing other components.
+
+        Returns:
+            The ComponentRegistry instance
+
+        Raises:
+            RuntimeError: If registry is not wired
+        """
+        if not hasattr(self, "_component_registry") or self._component_registry is None:
+            raise RuntimeError(f"Component registry not linked to service '{self.name}'")
+        return self._component_registry
+
+    def link_component_registry(self, registry: "ComponentRegistry") -> None:
+        """Link the component registry to the service.
+
+        This allows services to access other components via the registry.
+
+        Args:
+            registry: The ComponentRegistry instance
+        """
+        self._component_registry = registry
+
+    def link_config(self, config: Config) -> None:
+        """Link configuration to the service via dependency injection.
+
+        This allows services to access environment variables and configuration
+        during runtime.
+
+        Args:
+            config: The Config instance
+        """
+        self.config = config
+
+    async def on_startup(self) -> None:
+        """Called when service is registered and wired.
+
+        Override to perform initialization tasks such as:
+        - Connecting to external services
+        - Loading configuration
+        - Initializing resources
+        """
+        pass
+
+    async def on_shutdown(self) -> None:
+        """Called when application is shutting down.
+
+        Override to perform cleanup tasks such as:
+        - Closing connections
+        - Releasing resources
+        - Flushing buffers
+        """
+        pass
 
     def get_prompt(self, prompt_name: str, runtime_name: str | None = None) -> str:
         """Load instruction prompt by name (lazy loading with caching).
