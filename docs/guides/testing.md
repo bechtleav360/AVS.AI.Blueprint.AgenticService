@@ -101,26 +101,22 @@ async def test_score_backup_with_explicit_tags():
 ### Integration Test Example
 ```python
 @pytest.mark.asyncio
-async def test_thin_event_processing_with_gateway_success():
-    """Test complete thin event processing flow."""
+async def test_event_processing_success():
+    """Test complete event processing flow."""
     # Arrange
-    asset = AssetMetadata(...)  # Test asset data
-    event = create_thin_event(EventType.ASSET_CREATED, asset.id)
+    event = create_event(EventType.ASSET_CREATED, "test-asset-1")
 
-    with patch('src.gateways.data_gateway.DataGatewayClient.get_asset') as mock_get:
-        with patch('src.agent.runtime.BackupAgent.run_check') as mock_check:
-            # Configure mocks
-            mock_get.return_value = asset
-            mock_check.return_value = AgentOutput(...)
+    with patch('blueprint.agents.services.processing_service.ProcessingService.process_event') as mock_process:
+        # Configure mocks
+        mock_process.return_value = {"status": "processed", "event_id": "test-event-1"}
 
-            # Act
-            response = client.post("/events/assets", json=event.dict())
+        # Act
+        response = client.post("/events", json=event.dict())
 
-            # Assert
-            assert response.status_code == 200
-            assert response.json()["status"] == "processed"
-            mock_get.assert_called_once()
-            mock_check.assert_called_once()
+        # Assert
+        assert response.status_code == 200
+        assert response.json()["status"] == "processed"
+        mock_process.assert_called_once()
 ```
 
 ## 🔄 Test Data Management
@@ -180,11 +176,11 @@ with patch('httpx.AsyncClient.get') as mock_get:
 
 ### External Service Mocking
 ```python
-# Mock the data gateway client
-with patch('src.gateways.data_gateway.DataGatewayClient') as mock_gateway:
-    mock_gateway.return_value.get_asset = AsyncMock(return_value=test_asset)
+# Mock external service calls
+with patch('blueprint.agents.services.processing_service.ProcessingService.process_event') as mock_process:
+    mock_process.return_value = {"status": "processed", "result": "success"}
 
-    # Test code that uses the gateway
+    # Test code that uses the processing service
     result = await event_processor.process_event(test_event)
 ```
 

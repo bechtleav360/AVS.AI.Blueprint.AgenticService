@@ -63,7 +63,6 @@ packages = [
     "blueprint.agents.agent.providers.vllm",
     "blueprint.agents.api",
     "blueprint.agents.config",
-    "blueprint.agents.gateways",
     "blueprint.agents.handler",
     "blueprint.agents.models",
     "blueprint.agents.registry",
@@ -78,7 +77,6 @@ packages = [
 "blueprint.agents.agent" = "src/blueprint/agents/agent"
 "blueprint.agents.api" = "src/blueprint/agents/api"
 "blueprint.agents.config" = "src/blueprint/agents/config"
-"blueprint.agents.gateways" = "src/blueprint/agents/gateways"
 "blueprint.agents.handler" = "src/blueprint/agents/handler"
 "blueprint.agents.models" = "src/blueprint/agents/models"
 "blueprint.agents.registry" = "src/blueprint/agents/registry"
