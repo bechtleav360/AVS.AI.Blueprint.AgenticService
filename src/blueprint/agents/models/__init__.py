@@ -14,7 +14,7 @@ from .config import AIConfig, EventPublishingConfig, ObservabilityConfig, Prompt
 from .errors import HandlerError
 from .events import CloudEvent, HandlerResult, GenericCloudEvent
 from .result import AgentOutput, Evidence
-from .status import BuildStatus, EnvironmentStatus, LLMStatus, VLLMInfo
+from .status import BuildStatus, EnvironmentStatus, LLMStatus, ServiceInfo, VLLMInfo
 
 __all__ = [
     "AgentHealthDependencies",
@@ -39,6 +39,7 @@ __all__ = [
     "ProcessResourceResponse",
     "PromptConfig",
     "RuntimeConfig",
+    "ServiceInfo",
     "TopicConfig",
     "UsageLimits",
     "VLLMInfo",

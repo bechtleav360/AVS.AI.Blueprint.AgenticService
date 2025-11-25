@@ -56,6 +56,12 @@ class RootApi:
                     "openapi_json": "/openapi.json",
                 },
                 "probes": {"liveness": "/health/live", "readiness": "/health/ready"},
+                "actuators": {
+                    "info": "/info",
+                    "environment": "/status/env",
+                    "llm": "/status/llm",
+                    "build": "/status/build",
+                },
             }
 
 

@@ -57,6 +57,7 @@ dev = [
 packages = [
     "blueprint",
     "blueprint.agents",
+    "blueprint.agents.base",
     "blueprint.agents.agent",
     "blueprint.agents.agent.providers",
     "blueprint.agents.agent.providers.openai",

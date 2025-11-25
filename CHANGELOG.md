@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.3.1] - 2025-11-25
+
+### Added
+- New `/info` actuator endpoint exposing app name, version, and all dependency versions.
+- [ServiceInfo](/src/blueprint/agents/models/status.py:8:0-25:5) model for structured `/info` responses.
+- Actuator links (`/info`, `/status/env`, `/status/llm`, `/status/build`) in root `/` metadata.
+
+### Changed
+- `blueprint.__version__` now resolved dynamically from installed package metadata (`avs-blueprint-agents`).
+
 ## [0.3.0] - 2025-11-24
 
 ### Changed

@@ -6,6 +6,26 @@ from pydantic import BaseModel, Field
 from pydantic.config import ConfigDict
 
 
+class ServiceInfo(BaseModel):
+    """Service information including dependencies."""
+
+    name: str = Field(
+        ...,
+        description="Application name.",
+        examples=["agent-service"],
+    )
+    version: str = Field(
+        ...,
+        description="Application version.",
+        examples=["1.0.0"],
+    )
+    dependencies: dict[str, str] = Field(
+        ...,
+        description="Installed dependencies and their versions.",
+        examples=[{"fastapi": "0.109.0", "pydantic": "2.6.0"}],
+    )
+
+
 class EnvironmentStatus(BaseModel):
     """Environment configuration status."""
 

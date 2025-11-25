@@ -13,7 +13,7 @@ from opentelemetry import trace
 
 from ..config import Config
 from ..models.api import ComponentHealth, LivenessResponse, ReadinessResponse
-from ..models.status import BuildStatus, EnvironmentStatus, LLMStatus, VLLMInfo
+from ..models.status import BuildStatus, EnvironmentStatus, LLMStatus, ServiceInfo, VLLMInfo
 
 # FIXME: Import your dependencies here.
 # from ..dependencies import get_your_agent, get_data_gateway
@@ -40,6 +40,14 @@ class ActuatorApi:
         self._register_routes()
 
     def _register_routes(self):
+        self.router.add_api_route(
+            "/info",
+            self.info,
+            methods=["GET"],
+            summary="Returns service information and dependencies.",
+            tags=["Status"],
+            response_model=ServiceInfo,
+        )
         self.router.add_api_route(
             "/health/live",
             self.liveness_probe,
@@ -84,6 +92,18 @@ class ActuatorApi:
             tags=["Status"],
             response_model=BuildStatus,
             include_in_schema=False,
+        )
+
+    async def info(self) -> ServiceInfo:
+        """Expose service information and dependencies."""
+        config = self._ensure_config()
+
+        dependencies = {dist.metadata["Name"]: dist.version for dist in metadata.distributions()}
+
+        return ServiceInfo(
+            name=config.get("app_name", "unknown"),
+            version=config.get("app_version", "unknown"),
+            dependencies=dependencies,
         )
 
     async def readiness_probe(self) -> ReadinessResponse:
