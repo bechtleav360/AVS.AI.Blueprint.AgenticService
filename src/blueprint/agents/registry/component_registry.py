@@ -403,8 +403,31 @@ class ComponentRegistry:
             if isinstance(service, name):
                 return service
 
+        # Fallback: match by class name to support reloaded modules or duplicate class definitions
+        requested_type_name = getattr(name, "__name__", str(name))
+        matching_services = [service for service in self._business_services.values() if type(service).__name__ == requested_type_name]
+
+        if len(matching_services) == 1:
+            logger.warning(
+                "Business service lookup for type '%s' matched by class name. "
+                "Ensure services share a single class definition to avoid ambiguity.",
+                requested_type_name,
+            )
+            return matching_services[0]
+        if len(matching_services) > 1:
+            logger.error(
+                "Multiple business services share the class name '%s'. Available matches: %s",
+                requested_type_name,
+                ", ".join(service.get_name() for service in matching_services),
+            )
+            conflicts = ", ".join(service.get_name() for service in matching_services)
+            raise ValueError(
+                "Multiple business services share the requested type name. "
+                f"Please disambiguate by passing the service name. Conflicts: {conflicts}"
+            )
+
         available = ", ".join(type(s).__name__ for s in self._business_services.values()) if self._business_services else "none"
-        raise ValueError(f"Business service of type '{name.__name__}' not found. Available types: {available}")
+        raise ValueError(f"Business service of type '{requested_type_name}' not found. Available types: {available}")
 
     def has_service(self, name: str) -> bool:
         """Check if a business service is registered.

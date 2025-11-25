@@ -230,32 +230,6 @@ class TestProcessingService:
         assert result.data["result"]["has_custom_key"] is True
 
     @pytest.mark.asyncio
-    async def test_health_check_with_no_handlers(self, processing_service):
-        """Test health check with no handlers."""
-        result = await processing_service.health_check()
-
-        # Health check may fail if runtimes are not available, but should have status
-        assert "status" in result
-        assert result["status"] in ["healthy", "unhealthy"]
-
-    @pytest.mark.asyncio
-    async def test_health_check_with_handlers(self, processing_service, component_registry):
-        """Test health check includes registered handlers."""
-        handler1 = ConcreteHandler("Handler1", priority=10)
-        handler2 = ConcreteHandler("Handler2", priority=20)
-
-        component_registry.register_handler(handler1)
-        component_registry.register_handler(handler2)
-
-        result = await processing_service.health_check()
-
-        # Health check should have status
-        assert "status" in result
-        # If health check succeeded, verify handlers are included
-        if "handlers" in result:
-            assert result["handlers"]["count"] == 2
-
-    @pytest.mark.asyncio
     async def test_process_rest_request(self, processing_service, component_registry):
         """Test process_rest_request converts payload to CloudEvent."""
         handler = ConcreteHandler("TestHandler", priority=10, should_handle=True, result={"processed": True})

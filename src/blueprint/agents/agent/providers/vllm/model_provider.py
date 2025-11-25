@@ -1,7 +1,7 @@
 """vLLM model provider implementation."""
 
 import logging
-from typing import TYPE_CHECKING, Any, Union
+from typing import Any, Union
 
 from openai import AsyncOpenAI
 from pydantic_ai.models import Model
@@ -9,10 +9,10 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.profiles import ModelProfile
 from pydantic_ai.providers.openai import OpenAIProvider
 
+from ....models.config import AIConfig
+
 from ...model_provider import ModelProviderStrategy
 
-if TYPE_CHECKING:
-    from ...models.config import AIConfig
 
 logger = logging.getLogger(__name__)
 

@@ -2,7 +2,7 @@
 
 import pytest
 
-from src.services import CalculatorService
+from examples.rest_microservice.src.services import CalculatorService
 
 
 @pytest.fixture

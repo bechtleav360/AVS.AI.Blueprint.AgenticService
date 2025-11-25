@@ -44,7 +44,11 @@ class AgentRuntime(Agent[AgentDepsT, Any]):
             runtime_name: Name for runtime-specific config lookup
             **kwargs: Keyword arguments for Agent
         """
-        super().__init__(name=runtime_name, **kwargs)
+        if "name" in kwargs:
+            super().__init__(**kwargs)
+        else:
+            super().__init__(name=runtime_name, **kwargs)
+
         self._prompt_cache: Dict[str, str] = {}
         self._config = config
         self._component_registry: Any = None

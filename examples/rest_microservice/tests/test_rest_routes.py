@@ -3,7 +3,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from src.main import app
+from examples.rest_microservice.src.main import app
 
 
 @pytest.fixture

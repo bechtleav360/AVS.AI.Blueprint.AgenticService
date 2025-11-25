@@ -188,6 +188,9 @@ class ProcessingService:
                 # Create and publish result CloudEvent
                 result_event = CloudEvent(
                     specversion="1.0",
+                    datacontenttype="application/json",
+                    dataschema=None,
+                    data_base64=None,
                     id=str(uuid4()),
                     source=self._settings.get("app_name", "agent-service"),
                     type=f"agent.output.{event.type}",
@@ -230,103 +233,14 @@ class ProcessingService:
         # Convert REST payload to CloudEvent format
         event = CloudEvent(
             specversion="1.0",
+            datacontenttype="application/json",
+            dataschema=None,
+            data_base64=None,
             id=str(uuid4()),
             source="/api/rest",
             type="rest.request",
             data=payload,
+            subject="rest.request",
         )
 
         return await self.process_event(event, context, runtime_name)
-
-    async def health_check(self) -> dict[str, Any]:
-        """
-        Perform a comprehensive health check of the processing service.
-
-        Returns:
-            Health check results for handlers and runtimes
-        """
-        with tracer.start_as_current_span("processing_service.health_check") as span:
-            try:
-                runtime_health = await self._health_checker.check_runtimes()
-                handler_health = self._health_checker.check_handlers()
-
-                overall_healthy = handler_health["status"] == "healthy" and any(
-                    r.get("status") == "healthy" for r in runtime_health.values()
-                )
-
-                result = {
-                    "status": "healthy" if overall_healthy else "unhealthy",
-                    "handlers": handler_health,
-                    "runtimes": runtime_health,
-                }
-
-                span.set_attribute("health.status", result["status"])
-                span.set_attribute("handlers.count", handler_health["count"])
-                span.set_attribute("runtimes.count", len(runtime_health))
-
-                return result
-
-            except Exception as e:
-                logger.error("Health check failed: %s", str(e), exc_info=True)
-                span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
-                return {"status": "unhealthy", "error": str(e)}
-
-    async def _process_with_runtime(self, runtime_name: str | None = None, context: Any = None, **kwargs) -> Any:
-        """
-        Process a request using the specified runtime or default runtime.
-
-        Args:
-            runtime_name: Name of the runtime to use, or None for default
-            context: Processing context to pass to the runtime
-            **kwargs: Additional keyword arguments to pass to the runtime's process_request
-
-        Returns:
-            The result from the runtime's process_request method
-
-        Raises:
-            ValueError: If no runtime is available or runtime not found
-        """
-        with tracer.start_as_current_span("processing_service.runtime_execution") as span:
-            runtime = self._component_registry.get_runtime(runtime_name)
-
-            if runtime is None:
-                error_msg = f"No runtime available (requested: {runtime_name})"
-                logger.error(error_msg)
-                span.set_status(trace.Status(trace.StatusCode.ERROR, error_msg))
-                raise ValueError(error_msg)
-
-            actual_name = runtime_name or self._component_registry.get_default_runtime_name()
-            span.set_attribute("runtime.name", actual_name)
-
-            logger.info(
-                "Processing request with runtime %s",
-                actual_name,
-                extra={
-                    "runtime_name": actual_name,
-                    "has_context": context is not None,
-                    "additional_kwargs": list(kwargs.keys()) if kwargs else [],
-                },
-            )
-
-            try:
-                result = await runtime.process_request(context=context, **kwargs)
-                logger.info(
-                    "Runtime %s processed request successfully",
-                    actual_name,
-                    extra={
-                        "runtime_name": actual_name,
-                        "has_result": result is not None,
-                    },
-                )
-                return result
-
-            except Exception as e:
-                logger.error(
-                    "Runtime %s failed to process request: %s",
-                    actual_name,
-                    str(e),
-                    extra={"runtime_name": actual_name, "error": str(e)},
-                    exc_info=True,
-                )
-                span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
-                raise
