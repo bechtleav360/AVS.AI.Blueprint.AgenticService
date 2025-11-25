@@ -123,6 +123,11 @@ class TestAppBuilderIntegration:
         class TestHandler(EventHandler):
             """Test event handler."""
 
+            def __init__(self):
+                super().__init__()
+
+            
+
             async def can_handle_event(self, event: CloudEvent, context: dict) -> bool:
                 return True
 

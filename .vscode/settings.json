@@ -29,11 +29,7 @@
     },
     "python.testing.pytestEnabled": true,
     "python.testing.pytestArgs": [
-        "tests",
-        "examples/complex_agent/tests",
-        "examples/rest_microservice/tests",
-        "examples/simple_event_processor/tests",
-        "examples/trivia_game/tests",
+        "tests"
     ],
     "python.analysis.typeCheckingMode": "basic",
     "ruff.importStrategy": "fromEnvironment",
@@ -51,5 +47,6 @@
     },
     "[python]": {
         "editor.defaultFormatter": "ms-python.black-formatter"
-    }
+    },
+    "python.testing.unittestEnabled": false
 }

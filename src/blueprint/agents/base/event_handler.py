@@ -13,19 +13,23 @@ Handlers can also declare published event types by overriding:
 The framework provides automatic OpenTelemetry tracing for all handlers.
 """
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from opentelemetry import trace
 
 from .agent_runtime import AgentRuntime
 from ..config import Config
 from ..models import CloudEvent, HandlerResult
-from ..registry.component_registry import ComponentRegistry
 
 tracer = trace.get_tracer(__name__)
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from blueprint.agents.registry.component_registry import ComponentRegistry
 
 
 class EventHandler(ABC):
@@ -125,7 +129,7 @@ class EventHandler(ABC):
         """
         self._config = config
 
-    def link_component_registry(self, registry: "ComponentRegistry") -> None:
+    def link_component_registry(self, registry: ComponentRegistry) -> None:
         """Link the component registry to the handler.
 
         This allows handlers to access agent runtimes and other components.

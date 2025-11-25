@@ -1,18 +1,16 @@
 """Generic FastAPI application setup and configuration."""
 
 import logging
-import sys
 from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, FastAPI
-from pydantic_ai import Agent
 
 from blueprint.agents.base.agent_runtime import AgentRuntime
 from blueprint.agents.base.business_service import BusinessService
 
 from .api import actuators, root
 from .base import EventHandler, RestApi
-from .config import Config, ConfigError, LoggingManager, TelemetryManager
+from .config import Config, TelemetryManager
 from .registry.component_registry import ComponentRegistry
 from .services import AIProviderHealthChecker, DaprPubSubHealthChecker, EventPublishingService
 from .services.processing_service import ProcessingService

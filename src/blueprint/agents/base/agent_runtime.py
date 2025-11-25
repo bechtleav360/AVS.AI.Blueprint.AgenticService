@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
-from typing import Any, Dict
+from typing import TYPE_CHECKING, Any
 
 from pydantic_ai import Agent
 from pydantic_ai.run import AgentRunResult
 from pydantic_ai.tools import AgentDepsT
 
-from blueprint.agents.registry.component_registry import ComponentRegistry
-
 from ..config import Config
 from ..agent.prompt_loader import PromptLoader
+
+if TYPE_CHECKING:
+    from blueprint.agents.registry.component_registry import ComponentRegistry
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ class AgentRuntime(Agent[AgentDepsT, Any]):
         else:
             super().__init__(name=runtime_name, **kwargs)
 
-        self._prompt_cache: Dict[str, str] = {}
+        self._prompt_cache: dict[str, str] = {}
         self._config = config
         self._component_registry: Any = None
 
@@ -88,7 +88,7 @@ class AgentRuntime(Agent[AgentDepsT, Any]):
             raise RuntimeError(f"Config not linked to agent runtime '{self._name}'")
         return self._config
 
-    def link_component_registry(self, registry: "ComponentRegistry") -> None:
+    def link_component_registry(self, registry: ComponentRegistry) -> None:
         """Link the component registry to the service.
 
         This allows services to access other components via the registry.

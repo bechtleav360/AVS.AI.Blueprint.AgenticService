@@ -91,7 +91,7 @@ class PromptLoader:
             prompt_path = prompt_directory / f"{prompt_name}.prompt"
             searched_locations.append(prompt_path)
             if prompt_path.exists():
-                with open(prompt_path, "r") as f:
+                with open(prompt_path) as f:
                     return f.read().strip()
 
         # If not found in any location, raise error with all attempted paths

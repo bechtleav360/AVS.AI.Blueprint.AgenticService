@@ -136,13 +136,20 @@ class TestAgentBuilder:
             builder.build()
 
     def test_build_requires_system_prompt(self, builder):
-        """Test build raises error if system prompt not configured."""
+        """Test build works even without system prompt configured."""
         with patch("blueprint.agents.agent.agent_builder.ModelProviderFactory.create_model") as mock_create:
-            mock_create.return_value = Mock()
-            builder.with_model("gpt-4")
-
-        with pytest.raises(ValueError, match="System prompt must be configured"):
-            builder.build()
+            with patch("blueprint.agents.agent.agent_builder.AgentRuntime") as mock_runtime:
+                mock_model = Mock()
+                mock_create.return_value = mock_model
+                mock_runtime_instance = Mock()
+                mock_runtime.__getitem__.return_value = Mock(return_value=mock_runtime_instance)
+                
+                builder.with_model("gpt-4")
+                agent = builder.build()
+                
+                # Verify system_prompt was None
+                args, kwargs = mock_runtime.__getitem__.return_value.call_args
+                assert kwargs["system_prompt"] is None
 
     def test_build_creates_agent_with_all_config(self, builder, mock_config):
         """Test build creates agent with all configuration."""

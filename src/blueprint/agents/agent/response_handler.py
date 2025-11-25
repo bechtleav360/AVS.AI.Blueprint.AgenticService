@@ -10,15 +10,14 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Generic, TypeVar
-
+from typing import Any, TypeVar
 
 T = TypeVar("T")
 
 
-class ResponseHandlerStrategy(Generic[T], ABC):
+class ResponseHandlerStrategy[T](ABC):
     """Legacy strategy base class for extracting structured results."""
 
     @abstractmethod
     def extract_result(self, agent_response: Any, result_type: type[T]) -> T:
-        """Extract the provider result and cast it into ``result_type``."""
+        """Extract the provider result and cast it into result_type."""

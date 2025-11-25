@@ -109,7 +109,7 @@ class AgentBuilder:
         )
         return self
 
-    def with_system_prompt(self, prompt: str | None = None) -> "AgentBuilder":
+    def with_system_prompt(self, name: str | None = None) -> "AgentBuilder":
         """Configure the system prompt.
 
         Can be used in two ways:
@@ -117,21 +117,18 @@ class AgentBuilder:
         2. Load from config: .with_system_prompt() or .with_system_prompt(None)
 
         Args:
-            prompt: System prompt text, or None to load from config
+            name: Name of the system prompt, or None to load from config
 
         Returns:
             Self for chaining
         """
-        if prompt is None:
+        if name is None:
             # Load from config
-            prompt_config = self._config.get_prompt_config(self._runtime_name)
-            prompt_name = prompt_config.system_prompt_name
-            self._system_prompt = PromptLoader.load_prompt(prompt_name, self._config)
-            logger.info("Configured agent with system prompt from config: %s", prompt_name)
-        else:
-            # Use provided text
-            self._system_prompt = prompt
-            logger.info("Configured agent with system prompt (inline text)")
+            logger.warning("System prompt name is None, using default 'system'")
+            name = "system"
+
+        self._system_prompt = name
+        logger.info("Configured agent with system prompt: '%s'", name)
         return self
 
     def with_tools(self, tools: list[Tool]) -> "AgentBuilder":
@@ -221,12 +218,10 @@ class AgentBuilder:
             raise ValueError("Model must be configured before building agent")
 
         # Auto-load system prompt from config if not already set
-        if self._system_prompt is None:
+        if self._system_prompt is not None:
             try:
-                prompt_config = self._config.get_prompt_config(self._runtime_name)
-                prompt_name = prompt_config.system_prompt_name
-                self._system_prompt = PromptLoader.load_prompt(prompt_name, self.__class__, prompt_config, self._package_root)
-                logger.info("Auto-loaded system prompt from config: %s", prompt_name)
+                self._system_prompt = PromptLoader.load_prompt(self._system_prompt, self._config, self._package_root)
+                logger.info("Auto-loaded system prompt from config: %s", self._system_prompt)
             except Exception as e:
                 raise ValueError(
                     f"System prompt must be configured before building agent. "

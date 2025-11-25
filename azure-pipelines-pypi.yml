@@ -42,7 +42,7 @@ stages:
               pythonVersion: $(pythonVersion)
               packagePath: $(packagePath)
               coverageModule: $(coverageModule)
-              testPath: "tests/unit"
+              testPath: "tests"
               runTests: true
               publishCoverage: true
               publishToFeed: false

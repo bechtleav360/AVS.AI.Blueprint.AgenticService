@@ -21,6 +21,16 @@ class ConcreteHandler(EventHandler):
         self.result = result
         self.handle_called = False
         self.can_handle_called = False
+        self.on_startup_called = False
+        self.on_shutdown_called = False
+
+    async def on_startup(self):
+        """Startup hook."""
+        self.on_startup_called = True
+
+    async def on_shutdown(self):
+        """Shutdown hook."""
+        self.on_shutdown_called = True
 
     async def can_handle_event(self, event: CloudEvent, context: Dict[str, Any]) -> bool:
         """Determine if handler should process the event."""

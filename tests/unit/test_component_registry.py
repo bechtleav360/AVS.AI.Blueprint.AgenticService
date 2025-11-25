@@ -39,6 +39,14 @@ class EchoHandler(EventHandler):
     async def handle_event(self, event: CloudEvent, context: dict) -> dict:
         return {"handled_by": self._name, "source": event.source}
 
+    async def on_startup(self) -> None:
+        """Perform startup actions."""
+        print(f"Starting up {self._name}")
+
+    async def on_shutdown(self) -> None:
+        """Perform shutdown actions."""
+        print(f"Shutting down {self._name}")
+
 
 class ComponentRegistryRuntime:
     """Minimal runtime exposing configuration for registry interaction tests."""
@@ -175,7 +183,11 @@ class TestComponentRegistry:
         """Test retrieving a service by its class type."""
 
         class MockService(BusinessService):
-            pass
+            async def on_startup(self) -> None:
+                print("MockService started")
+
+            async def on_shutdown(self) -> None:
+                print("MockService stopped")
 
         service = MockService(name="my_service")
         registry.register_service(service)
@@ -187,7 +199,11 @@ class TestComponentRegistry:
         """Test retrieving a missing service by class type raises ValueError."""
 
         class MockService(BusinessService):
-            pass
+            async def on_startup(self) -> None:
+                print("MockService started")
+
+            async def on_shutdown(self) -> None:
+                print("MockService stopped")
 
         with pytest.raises(ValueError, match="Business service of type 'MockService' not found"):
             registry.get_service(MockService)
@@ -229,7 +245,11 @@ class TestComponentRegistry:
         """Test that string-based service retrieval still works."""
 
         class MockService(BusinessService):
-            pass
+            async def on_startup(self) -> None:
+                print("MockService started")
+
+            async def on_shutdown(self) -> None:
+                print("MockService stopped")
 
         service = MockService(name="my_service")
         registry.register_service(service)

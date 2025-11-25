@@ -11,6 +11,18 @@ from blueprint.agents.base import EventHandler
 from blueprint.agents.models import CloudEvent
 
 
+class _BaseTestHandler(EventHandler):
+    """Base class for test handlers with required lifecycle methods."""
+
+    async def on_startup(self) -> None:
+        """Called when handler is registered."""
+        pass
+
+    async def on_shutdown(self) -> None:
+        """Called when application is shutting down."""
+        pass
+
+
 class TestEventHandler:
     """Test suite for EventHandler base class."""
 
@@ -40,6 +52,12 @@ class TestEventHandler:
             async def handle_event(self, event, context):
                 return {"result": "test"}
 
+            async def on_startup(self):
+                pass
+
+            async def on_shutdown(self):
+                pass
+
         handler = TestHandler("TestHandler", priority=50)
 
         assert handler._name == "TestHandler"
@@ -55,12 +73,24 @@ class TestEventHandler:
             async def handle_event(self, event, context):
                 return None
 
+            async def on_startup(self):
+                pass
+
+            async def on_shutdown(self):
+                pass
+
         class HandlerB(EventHandler):
             async def can_handle_event(self, event, context):
                 return True
 
             async def handle_event(self, event, context):
                 return None
+
+            async def on_startup(self):
+                pass
+
+            async def on_shutdown(self):
+                pass
 
         handler_high = HandlerA("High", priority=100)
         handler_low = HandlerB("Low", priority=10)
@@ -77,6 +107,12 @@ class TestEventHandler:
 
             async def handle_event(self, event, context):
                 return None
+
+            async def on_startup(self):
+                pass
+
+            async def on_shutdown(self):
+                pass
 
         handlers = [
             TestHandler("Third", priority=30),
@@ -101,6 +137,12 @@ class TestEventHandler:
             async def handle_event(self, event, context):
                 return None
 
+            async def on_startup(self):
+                pass
+
+            async def on_shutdown(self):
+                pass
+
         handler = TestHandler("TestHandler")
 
         with patch("blueprint.agents.base.event_handler.tracer") as mock_tracer:
@@ -124,6 +166,12 @@ class TestEventHandler:
             async def handle_event(self, event, context):
                 return {"result": "success"}
 
+            async def on_startup(self):
+                pass
+
+            async def on_shutdown(self):
+                pass
+
         handler = TestHandler("TestHandler")
 
         with patch("blueprint.agents.base.event_handler.tracer") as mock_tracer:
@@ -146,6 +194,12 @@ class TestEventHandler:
             async def handle_event(self, event, context):
                 return None
 
+            async def on_startup(self):
+                pass
+
+            async def on_shutdown(self):
+                pass
+
         handler = TestHandler("TestHandler")
         mock_registry = Mock()
 
@@ -162,6 +216,12 @@ class TestEventHandler:
 
             async def handle_event(self, event, context):
                 return None
+
+            async def on_startup(self):
+                pass
+
+            async def on_shutdown(self):
+                pass
 
         handler = TestHandler("TestHandler")
         mock_registry = Mock()
@@ -180,6 +240,12 @@ class TestEventHandler:
             async def handle_event(self, event, context):
                 return None
 
+            async def on_startup(self):
+                pass
+
+            async def on_shutdown(self):
+                pass
+
         handler = TestHandler("TestHandler")
 
         with pytest.raises(RuntimeError, match="Component registry not linked"):
@@ -194,6 +260,12 @@ class TestEventHandler:
 
             async def handle_event(self, event, context):
                 return None
+
+            async def on_startup(self):
+                pass
+
+            async def on_shutdown(self):
+                pass
 
         handler = TestHandler("TestHandler")
         mock_component_registry = Mock()
@@ -218,6 +290,12 @@ class TestEventHandler:
             async def handle_event(self, event, context):
                 return None
 
+            async def on_startup(self):
+                pass
+
+            async def on_shutdown(self):
+                pass
+
         handler = TestHandler("TestHandler")
 
         result = handler.get_published_event_types()
@@ -233,6 +311,12 @@ class TestEventHandler:
 
             async def handle_event(self, event, context):
                 return None
+
+            async def on_startup(self):
+                pass
+
+            async def on_shutdown(self):
+                pass
 
             def get_published_event_types(self):
                 return ("success.event", "error.event")
@@ -273,7 +357,13 @@ class TestChainOfResponsibility:
             async def handle_event(self, event, context):
                 return {"processed_by": "Handler1"}
 
-        class Handler2(EventHandler):
+            async def on_startup(self):
+                pass
+
+            async def on_shutdown(self):
+                pass
+
+        class Handler2(_BaseTestHandler):
             async def can_handle_event(self, event, context):
                 return True
 
@@ -289,7 +379,7 @@ class TestChainOfResponsibility:
     def test_handler_returns_none_continues_chain(self):
         """Test handler returning None continues to next handler."""
 
-        class Handler1(EventHandler):
+        class Handler1(_BaseTestHandler):
             async def can_handle_event(self, event, context):
                 return True
 
@@ -297,7 +387,7 @@ class TestChainOfResponsibility:
                 context["handler1_called"] = True
                 return None  # Continue to next handler
 
-        class Handler2(EventHandler):
+        class Handler2(_BaseTestHandler):
             async def can_handle_event(self, event, context):
                 return True
 
@@ -313,7 +403,7 @@ class TestChainOfResponsibility:
     def test_handler_can_modify_context(self):
         """Test handlers can modify shared context."""
 
-        class EnrichmentHandler(EventHandler):
+        class EnrichmentHandler(_BaseTestHandler):
             async def can_handle_event(self, event, context):
                 return True
 
@@ -322,7 +412,7 @@ class TestChainOfResponsibility:
                 context["data"] = "enriched_data"
                 return None  # Continue
 
-        class ProcessingHandler(EventHandler):
+        class ProcessingHandler(_BaseTestHandler):
             async def can_handle_event(self, event, context):
                 return context.get("enriched") is True
 
@@ -337,7 +427,7 @@ class TestChainOfResponsibility:
     def test_handler_can_skip_based_on_context(self):
         """Test handler can skip processing based on context."""
 
-        class ConditionalHandler(EventHandler):
+        class ConditionalHandler(_BaseTestHandler):
             async def can_handle_event(self, event, context):
                 # Only handle if specific condition in context
                 return context.get("should_process") is True
@@ -354,7 +444,7 @@ class TestChainOfResponsibility:
         """Test handlers are executed in priority order."""
         execution_order = []
 
-        class Handler1(EventHandler):
+        class Handler1(_BaseTestHandler):
             async def can_handle_event(self, event, context):
                 return True
 
@@ -362,7 +452,7 @@ class TestChainOfResponsibility:
                 execution_order.append("Handler1")
                 return None
 
-        class Handler2(EventHandler):
+        class Handler2(_BaseTestHandler):
             async def can_handle_event(self, event, context):
                 return True
 
@@ -370,7 +460,7 @@ class TestChainOfResponsibility:
                 execution_order.append("Handler2")
                 return None
 
-        class Handler3(EventHandler):
+        class Handler3(_BaseTestHandler):
             async def can_handle_event(self, event, context):
                 return True
 
@@ -400,7 +490,7 @@ class TestChainOfResponsibility:
     async def test_handler_can_call_agent(self):
         """Test handler can call agent using _get_agent."""
 
-        class AgentInvokerHandler(EventHandler):
+        class AgentInvokerHandler(_BaseTestHandler):
             async def can_handle_event(self, event, context):
                 return True
 
@@ -441,7 +531,7 @@ class TestChainOfResponsibility:
         """Test handler can return a list of HandlerResults."""
         from blueprint.agents.models import HandlerResult
 
-        class MultiResultHandler(EventHandler):
+        class MultiResultHandler(_BaseTestHandler):
             async def can_handle_event(self, event, context):
                 return True
 

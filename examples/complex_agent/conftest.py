@@ -3,12 +3,22 @@
 import sys
 from pathlib import Path
 
-# Add the workspace root to the path so 'examples' module can be imported
-workspace_root = Path(__file__).parent.parent.parent
-if str(workspace_root) not in sys.path:
-    sys.path.insert(0, str(workspace_root))
 
-# Add the example's src directory to the path
-example_src = Path(__file__).parent / "src"
-if str(example_src) not in sys.path:
-    sys.path.insert(0, str(example_src))
+def _add_path(path: Path) -> None:
+    resolved = path.resolve()
+    path_str = str(resolved)
+    if path_str not in sys.path:
+        sys.path.insert(0, path_str)
+
+
+EXAMPLE_DIR = Path(__file__).resolve().parent
+WORKSPACE_ROOT = EXAMPLE_DIR.parent.parent
+WORKSPACE_SRC = WORKSPACE_ROOT / "src"
+
+# Add workspace root and src so `blueprint.*` imports succeed in CI
+_add_path(WORKSPACE_ROOT)
+_add_path(WORKSPACE_SRC)
+
+# Add the example's src directory to the path for local modules
+EXAMPLE_SRC = EXAMPLE_DIR / "src"
+_add_path(EXAMPLE_SRC)

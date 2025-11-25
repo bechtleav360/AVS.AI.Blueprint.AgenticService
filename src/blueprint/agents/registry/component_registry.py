@@ -6,15 +6,17 @@ ProcessingService.
 """
 
 import logging
-from typing import TYPE_CHECKING, Any, TypeVar, overload
+from typing import Any, TypeVar, overload
 
 from blueprint.agents.services.event_publishing_service import EventPublishingService
 from blueprint.agents.services.processing_service import ProcessingService
 
-from ..config import Config
+from blueprint.agents.base.agent_runtime import AgentRuntime
+from blueprint.agents.base.business_service import BusinessService
+from blueprint.agents.base.event_handler import EventHandler
+from blueprint.agents.base.rest_api import RestApi
+from blueprint.agents.config import Config
 
-if TYPE_CHECKING:  # pragma: no cover
-    from ..base import AgentRuntime, BusinessService, EventHandler, RestApi
 
 logger = logging.getLogger(__name__)
 
@@ -44,10 +46,10 @@ class ComponentRegistry:
 
         self._processing_service: Any | None = None
         self._event_publishing_service: Any | None = None
-        self._agents: dict[str, "AgentRuntime"] = {}
-        self._rest_apis: dict[str, "RestApi"] = {}
-        self._business_services: dict[str, "BusinessService"] = {}
-        self._handlers: list["EventHandler"] = []
+        self._agents: dict[str, AgentRuntime] = {}
+        self._rest_apis: dict[str, RestApi] = {}
+        self._business_services: dict[str, BusinessService] = {}
+        self._handlers: list[EventHandler] = []
 
         logger.info("ComponentRegistry initialized")
 

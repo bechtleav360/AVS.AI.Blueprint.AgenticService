@@ -1,9 +1,11 @@
 """Generic RESTful API routes for the agent service (framework-level)."""
 
+from __future__ import annotations
+
 import logging
 from http import HTTPStatus
 from time import perf_counter
-from typing import Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 from uuid import uuid4
 
 from fastapi import APIRouter, Body, HTTPException, Request, status
@@ -13,7 +15,9 @@ from pydantic import BaseModel
 
 from ..config import Config
 from ..models import ProcessResourceResponse
-from ..registry.component_registry import ComponentRegistry
+
+if TYPE_CHECKING:
+    from blueprint.agents.registry.component_registry import ComponentRegistry
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
