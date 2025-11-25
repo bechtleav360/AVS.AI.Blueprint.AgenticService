@@ -88,14 +88,32 @@ class DaprApi:
 
                 # Process through the unified service
                 processing_service = self._component_registry.get_processing_service()
-                result_event = await processing_service.process_event(cloud_event, context)
+                try:
+                    result_event = await processing_service.process_event(cloud_event, context)
+                except Exception as exc:  # pragma: no cover - integration behaviour
+                    logger.error(
+                        "Processing service failed for Dapr topic %s: %s",
+                        topic,
+                        str(exc),
+                        exc_info=True,
+                    )
+                    span.set_status(trace.Status(trace.StatusCode.ERROR, str(exc)))
+                    return {"status": "RETRY", "reason": "processing_failed"}
 
-                # Return Dapr-compatible response based on result event
-                if result_event.data.get("status") == "processed":
+                # Return Dapr-compatible response based on result event data
+                result_status = None
+                if isinstance(result_event.data, dict):
+                    result_status = result_event.data.get("status")
+
+                if result_status == "processed":
                     return {"status": "SUCCESS"}
-                else:
-                    logger.warning("No processor handled Dapr event on topic %s", topic)
-                    return {"status": "SUCCESS"}  # Still return SUCCESS to avoid retries
+
+                logger.warning(
+                    "Processing service returned non-success status %s for topic %s",
+                    result_status,
+                    topic,
+                )
+                return {"status": "RETRY", "reason": result_status or "unknown_status"}
 
             except Exception as e:
                 span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))

@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.3.2]- 2025-11-25
+## [0.3.3]- 2025-11-25
 
 ### Added
 - New `/info` actuator endpoint exposing app name, version, and all dependency versions.
@@ -10,9 +10,17 @@
 - Fetching an unregistered component now throws an exception
 - Added get_config() to all base classes
 
+### New Feature: Dapr Retry Flow
+We are strictly avoiding the DROP status for errors because Dapr deletes DROP messages immediately.
 
-### Changed
-- `blueprint.__version__` now resolved dynamically from installed package metadata (`avs-blueprint-agents`).
+To ensure failed messages eventually reach the Dead Letter Queue (DLQ), we use the following flow:
+
+- Application Error: Your code throws an exception (e.g., 500 Internal Error).
+- Return RETRY: We catch this and tell Dapr to RETRY.
+- Dapr Retries: Dapr will retry the message N times based on your configured Resiliency Policy.
+- Move to DLQ: Once the max retries are exhausted, Dapr automatically moves the message to the configured Dead Letter Topic.
+
+
 
 ## [0.3.0] - 2025-11-24
 
