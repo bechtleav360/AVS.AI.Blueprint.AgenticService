@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.3.3]- 2025-11-25
+## [0.3.4]- 2025-11-25
 
 ### Added
 - New `/info` actuator endpoint exposing app name, version, and all dependency versions.
@@ -9,6 +9,7 @@
 - Supporting classes in component registry in addition to names
 - Fetching an unregistered component now throws an exception
 - Added get_config() to all base classes
+- Simplied Prompt Loading, removed the need to give package root and config path to AgentBuilder
 
 ### New Feature: Dapr Retry Flow
 We are strictly avoiding the DROP status for errors because Dapr deletes DROP messages immediately.

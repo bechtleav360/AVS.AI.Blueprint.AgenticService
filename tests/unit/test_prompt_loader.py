@@ -1,244 +1,106 @@
-"""Unit tests for PromptLoader."""
+"""Unit tests for the PromptLoader utility."""
 
 from pathlib import Path
-from unittest.mock import Mock, mock_open, patch
+from unittest.mock import Mock
 
 import pytest
 
 from blueprint.agents.agent.prompt_loader import PromptLoader
+from blueprint.agents.config import Config
 
 
 class TestPromptLoader:
-    """Test suite for PromptLoader."""
+    """Test suite for PromptLoader search and path handling."""
 
-    @pytest.fixture
-    def mock_agent_class(self):
-        """Create a mock agent class."""
-        mock_class = Mock()
-        mock_class.__name__ = "TestAgent"
-        return mock_class
+    @staticmethod
+    def _config_with_values(
+        *,
+        prompt_search_paths: list[str] | None = None,
+        package_root: Path | None = None,
+    ) -> Config:
+        """Create a config mock returning the supplied path values."""
 
-    def test_load_prompt_from_file(self, mock_agent_class, tmp_path):
-        """Test loading prompt from file."""
-        # Create test prompt file
-        prompt_dir = tmp_path / "prompts"
+        config = Mock(spec=Config)
+
+        def get_side_effect(key: str, default=None):
+            if key == "prompt_search_paths":
+                return prompt_search_paths if prompt_search_paths is not None else default
+            return default
+
+        config.get.side_effect = get_side_effect
+        config.get_package_root.return_value = package_root
+        return config
+
+    def test_load_prompt_from_config_search_paths(self, tmp_path: Path) -> None:
+        """PromptLoader should load using search paths supplied via config.get."""
+
+        prompt_dir = tmp_path / "custom"
         prompt_dir.mkdir()
-        prompt_file = prompt_dir / "test.prompt"
-        prompt_file.write_text("Test system prompt")
+        (prompt_dir / "system.prompt").write_text("Hello world\n")
 
-        with patch("inspect.getfile") as mock_getfile:
-            mock_getfile.return_value = str(tmp_path / "agent.py")
+        config = self._config_with_values(prompt_search_paths=[str(prompt_dir)])
 
-            result = PromptLoader.load_prompt("test", mock_agent_class)
+        result = PromptLoader.load_prompt("system", config)
 
-            assert result == "Test system prompt"
+        assert result == "Hello world"
 
-    def test_load_prompt_strips_whitespace(self, mock_agent_class, tmp_path):
-        """Test loaded prompt has whitespace stripped."""
-        prompt_dir = tmp_path / "prompts"
-        prompt_dir.mkdir()
-        prompt_file = prompt_dir / "test.prompt"
-        prompt_file.write_text("  Test prompt with spaces  \n")
+    def test_load_prompt_uses_absolute_path_argument(self, tmp_path: Path) -> None:
+        """An explicit absolute path argument should be honored when valid."""
 
-        with patch("inspect.getfile") as mock_getfile:
-            mock_getfile.return_value = str(tmp_path / "agent.py")
+        explicit_dir = tmp_path / "explicit"
+        explicit_dir.mkdir()
+        (explicit_dir / "greeting.prompt").write_text("Hi there")
 
-            result = PromptLoader.load_prompt("test", mock_agent_class)
+        config = self._config_with_values(prompt_search_paths=[])
 
-            assert result == "Test prompt with spaces"
+        result = PromptLoader.load_prompt("greeting", config, path=str(explicit_dir))
 
-    def test_load_prompt_file_not_found_raises_error(self, mock_agent_class, tmp_path):
-        """Test loading non-existent prompt raises FileNotFoundError."""
-        with patch("inspect.getfile") as mock_getfile:
-            mock_getfile.return_value = str(tmp_path / "agent.py")
+        assert result == "Hi there"
 
-            with pytest.raises(FileNotFoundError, match="not found"):
-                PromptLoader.load_prompt("nonexistent", mock_agent_class)
+    def test_load_prompt_uses_package_root_prompts_directory(self, tmp_path: Path) -> None:
+        """Package root /prompts directory referenced via config should be searched."""
 
-    def test_load_prompt_searches_multiple_paths(self, mock_agent_class, tmp_path):
-        """Test prompt loader searches multiple paths."""
-        # Create prompt in fallback location
-        prompt_file = tmp_path / "test.prompt"
-        prompt_file.write_text("Found in fallback")
+        package_root = tmp_path / "package_root"
+        prompts_dir = package_root / "prompts"
+        prompts_dir.mkdir(parents=True)
+        (prompts_dir / "instruction.prompt").write_text("package prompt")
 
-        with patch("inspect.getfile") as mock_getfile:
-            mock_getfile.return_value = str(tmp_path / "agent.py")
+        config = self._config_with_values(package_root=package_root)
 
-            result = PromptLoader.load_prompt("test", mock_agent_class)
+        result = PromptLoader.load_prompt("instruction", config)
 
-            assert result == "Found in fallback"
+        assert result == "package prompt"
 
-    def test_load_prompt_with_custom_path(self, mock_agent_class, tmp_path):
-        """Test loading prompt from custom path in config."""
-        custom_dir = tmp_path / "custom_prompts"
-        custom_dir.mkdir()
-        prompt_file = custom_dir / "test.prompt"
-        prompt_file.write_text("Custom prompt")
+    def test_load_prompt_logs_warning_for_relative_path(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        """Relative explicit paths should warn and fall back to configured search paths."""
 
-        config = {"custom_path": str(custom_dir)}
+        fallback_dir = tmp_path / "fallback"
+        fallback_dir.mkdir()
+        (fallback_dir / "tool.prompt").write_text("chain result")
 
-        with patch("inspect.getfile") as mock_getfile:
-            mock_getfile.return_value = str(tmp_path / "agent.py")
+        config = self._config_with_values(prompt_search_paths=[str(fallback_dir)])
 
-            result = PromptLoader.load_prompt("test", mock_agent_class, config)
+        with caplog.at_level("WARNING"):
+            result = PromptLoader.load_prompt("tool", config, path="relative/path")
 
-            assert result == "Custom prompt"
+        assert "not absolute" in caplog.text
+        assert result == "chain result"
 
-    def test_load_instruction_prompt_formats_template(self, mock_agent_class, tmp_path):
-        """Test load_instruction_prompt formats template with variables."""
-        prompt_dir = tmp_path / "prompts"
-        prompt_dir.mkdir()
-        prompt_file = prompt_dir / "instruction.prompt"
-        prompt_file.write_text("Process this: {data}\nWith context: {context}")
+    def test_load_prompt_raises_file_not_found_when_missing(self) -> None:
+        """A helpful FileNotFoundError should be raised when prompt is missing."""
 
-        with patch("inspect.getfile") as mock_getfile:
-            mock_getfile.return_value = str(tmp_path / "agent.py")
+        config = self._config_with_values(prompt_search_paths=[])
 
-            result = PromptLoader.load_instruction_prompt(
-                "instruction",
-                mock_agent_class,
-                config=None,
-                data="test_data",
-                context="test_context",
-            )
+        with pytest.raises(FileNotFoundError) as exc:
+            PromptLoader.load_prompt("missing", config)
 
-            assert result == "Process this: test_data\nWith context: test_context"
+        assert "missing.prompt" in str(exc.value)
 
-    def test_load_instruction_prompt_missing_variable_raises_error(self, mock_agent_class, tmp_path):
-        """Test load_instruction_prompt raises error for missing variable."""
-        prompt_dir = tmp_path / "prompts"
-        prompt_dir.mkdir()
-        prompt_file = prompt_dir / "instruction.prompt"
-        prompt_file.write_text("Process this: {data}\nWith context: {missing}")
+    def test_ensure_path_converts_relative_to_absolute(self) -> None:
+        """_ensure_path should resolve relative strings into absolute paths."""
 
-        with patch("inspect.getfile") as mock_getfile:
-            mock_getfile.return_value = str(tmp_path / "agent.py")
+        relative_path = "some/relative/path"
 
-            with pytest.raises(KeyError, match="Missing template variable"):
-                PromptLoader.load_instruction_prompt(
-                    "instruction",
-                    mock_agent_class,
-                    config=None,
-                    data="test_data",
-                )
+        resolved = PromptLoader._ensure_path(relative_path)
 
-    def test_load_instruction_prompt_with_no_variables(self, mock_agent_class, tmp_path):
-        """Test load_instruction_prompt works with no template variables."""
-        prompt_dir = tmp_path / "prompts"
-        prompt_dir.mkdir()
-        prompt_file = prompt_dir / "instruction.prompt"
-        prompt_file.write_text("Static instruction with no variables")
-
-        with patch("inspect.getfile") as mock_getfile:
-            mock_getfile.return_value = str(tmp_path / "agent.py")
-
-            result = PromptLoader.load_instruction_prompt("instruction", mock_agent_class, config=None)
-
-            assert result == "Static instruction with no variables"
-
-    def test_load_instruction_prompt_with_multiple_variables(self, mock_agent_class, tmp_path):
-        """Test load_instruction_prompt with multiple template variables."""
-        prompt_dir = tmp_path / "prompts"
-        prompt_dir.mkdir()
-        prompt_file = prompt_dir / "instruction.prompt"
-        prompt_file.write_text("User: {user}\nAction: {action}\nData: {data}\nPriority: {priority}")
-
-        with patch("inspect.getfile") as mock_getfile:
-            mock_getfile.return_value = str(tmp_path / "agent.py")
-
-            result = PromptLoader.load_instruction_prompt(
-                "instruction",
-                mock_agent_class,
-                config=None,
-                user="john",
-                action="process",
-                data="invoice",
-                priority="high",
-            )
-
-            expected = "User: john\nAction: process\nData: invoice\nPriority: high"
-            assert result == expected
-
-    def test_load_instruction_prompt_with_dict_variable(self, mock_agent_class, tmp_path):
-        """Test load_instruction_prompt can format dict variables."""
-        prompt_dir = tmp_path / "prompts"
-        prompt_dir.mkdir()
-        prompt_file = prompt_dir / "instruction.prompt"
-        prompt_file.write_text("Metadata: {metadata}")
-
-        with patch("inspect.getfile") as mock_getfile:
-            mock_getfile.return_value = str(tmp_path / "agent.py")
-
-            result = PromptLoader.load_instruction_prompt(
-                "instruction",
-                mock_agent_class,
-                config=None,
-                metadata={"key": "value", "count": 42},
-            )
-
-            assert "key" in result
-            assert "value" in result
-
-    def test_get_prompt_dir_returns_correct_path(self, mock_agent_class, tmp_path):
-        """Test get_prompt_dir returns correct prompts directory."""
-        agent_file = tmp_path / "agent" / "runtime.py"
-        agent_file.parent.mkdir(parents=True)
-
-        with patch("inspect.getfile") as mock_getfile:
-            mock_getfile.return_value = str(agent_file)
-
-            result = PromptLoader.get_prompt_dir(mock_agent_class)
-
-            expected = tmp_path / "prompts"
-            assert result == expected
-
-    def test_load_prompt_with_search_paths(self, mock_agent_class, tmp_path):
-        """Test loading prompt from additional search paths."""
-        search_dir = tmp_path / "search_path"
-        search_dir.mkdir()
-        prompt_file = search_dir / "test.prompt"
-        prompt_file.write_text("Found in search path")
-
-        config = {"search_paths": [str(search_dir)]}
-
-        with patch("inspect.getfile") as mock_getfile:
-            mock_getfile.return_value = str(tmp_path / "agent.py")
-
-            result = PromptLoader.load_prompt("test", mock_agent_class, config)
-
-            assert result == "Found in search path"
-
-    def test_load_instruction_prompt_uses_custom_config(self, mock_agent_class, tmp_path):
-        """Test load_instruction_prompt respects custom config."""
-        custom_dir = tmp_path / "custom"
-        custom_dir.mkdir()
-        prompt_file = custom_dir / "instruction.prompt"
-        prompt_file.write_text("Custom: {value}")
-
-        config = {"custom_path": str(custom_dir)}
-
-        with patch("inspect.getfile") as mock_getfile:
-            mock_getfile.return_value = str(tmp_path / "agent.py")
-
-            result = PromptLoader.load_instruction_prompt("instruction", mock_agent_class, config=config, value="test")
-
-            assert result == "Custom: test"
-
-    def test_load_instruction_prompt_error_shows_available_vars(self, mock_agent_class, tmp_path):
-        """Test error message shows available template variables."""
-        prompt_dir = tmp_path / "prompts"
-        prompt_dir.mkdir()
-        prompt_file = prompt_dir / "instruction.prompt"
-        prompt_file.write_text("Need: {missing}")
-
-        with patch("inspect.getfile") as mock_getfile:
-            mock_getfile.return_value = str(tmp_path / "agent.py")
-
-            with pytest.raises(KeyError, match="Available variables"):
-                PromptLoader.load_instruction_prompt(
-                    "instruction",
-                    mock_agent_class,
-                    config=None,
-                    var1="value1",
-                    var2="value2",
-                )
+        assert resolved == Path.cwd() / relative_path

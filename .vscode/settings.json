@@ -29,7 +29,11 @@
     },
     "python.testing.pytestEnabled": true,
     "python.testing.pytestArgs": [
-        "custom/tests"
+        "tests",
+        "examples/complex_agent/tests",
+        "examples/rest_microservice/tests",
+        "examples/simple_event_processor/tests",
+        "examples/trivia_game/tests",
     ],
     "python.analysis.typeCheckingMode": "basic",
     "ruff.importStrategy": "fromEnvironment",

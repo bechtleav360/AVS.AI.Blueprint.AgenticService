@@ -44,10 +44,9 @@ class AgentRuntime(Agent[AgentDepsT, Any]):
             runtime_name: Name for runtime-specific config lookup
             **kwargs: Keyword arguments for Agent
         """
-        super().__init__(**kwargs)
+        super().__init__(name=runtime_name, **kwargs)
         self._prompt_cache: Dict[str, str] = {}
         self._config = config
-        self._name = runtime_name
         self._component_registry: Any = None
 
     def get_name(self) -> str:
@@ -104,7 +103,7 @@ class AgentRuntime(Agent[AgentDepsT, Any]):
         Args:
             config: The Config instance
         """
-        self.config = config
+        self._config = config
 
     async def on_startup(self) -> None:
         """Called when service is registered and wired.
@@ -126,14 +125,14 @@ class AgentRuntime(Agent[AgentDepsT, Any]):
         """
         pass
 
-    def get_prompt(self, prompt_name: str, runtime_name: str | None = None) -> str:
+    def get_prompt(self, prompt_name: str, path: str = None) -> str:
         """Load instruction prompt by name (lazy loading with caching).
 
         Prompts are loaded on-demand and cached to avoid repeated file I/O.
 
         Args:
             prompt_name: Name of the prompt to load (without extension)
-            runtime_name: Optional runtime name for config lookup (uses runtime's runtime_name if not provided)
+            path: Optional path to load the prompt from
 
         Returns:
             Prompt content as string
@@ -142,8 +141,6 @@ class AgentRuntime(Agent[AgentDepsT, Any]):
             ValueError: If config is not available
             FileNotFoundError: If prompt file not found
         """
-        if self._config is None:
-            raise ValueError("Config must be provided to load prompts")
 
         # Check cache first
         if prompt_name in self._prompt_cache:
@@ -151,9 +148,7 @@ class AgentRuntime(Agent[AgentDepsT, Any]):
             return self._prompt_cache[prompt_name]
 
         # Load and cache
-        name = runtime_name or self._runtime_name
-        prompt_config = self._config.get_prompt_config(name)
-        prompt_content = PromptLoader.load_prompt(prompt_name, self.__class__, prompt_config, self._package_root)
+        prompt_content = PromptLoader.load_prompt(prompt_name, self.config, path)
         self._prompt_cache[prompt_name] = prompt_content
         logger.info("Loaded and cached prompt: %s", prompt_name)
         return prompt_content
@@ -172,8 +167,8 @@ class AgentRuntime(Agent[AgentDepsT, Any]):
             ValueError: If config is not available
             FileNotFoundError: If prompt not found
         """
-        prompt = self.get_prompt(prompt_name)
-        return await self.run(prompt, **kwargs)
+        logger.warning("run_with_prompt has been deprecated, since we need to typically resolve variables anyway.")
+        raise NotImplementedError
 
     def run_with_prompt_sync(self, prompt_name: str, **kwargs: Any) -> AgentRunResult:
         """Execute the agent synchronously using the prompt identified by ``prompt_name``.
@@ -189,5 +184,5 @@ class AgentRuntime(Agent[AgentDepsT, Any]):
             ValueError: If config is not available
             FileNotFoundError: If prompt not found
         """
-        prompt = self.get_prompt(prompt_name)
-        return self.run_sync(prompt, **kwargs)
+        logger.warning("run_with_prompt_sync has been deprecated, since we need to typically resolve variables anyway.")
+        raise NotImplementedError

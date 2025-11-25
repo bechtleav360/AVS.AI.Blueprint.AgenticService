@@ -71,6 +71,11 @@ class Config:
         # Initialize logging after config is fully loaded
         self._initialize_logging()
 
+    def get_package_root(self) -> Path:
+        """Return the root path where configuration files are located."""
+
+        return self._root_path
+
     def _initialize_logging(self) -> None:
         """Initialize logging based on configuration.
 
@@ -250,7 +255,7 @@ class Config:
             ),
         )
 
-    def get_prompt_config(self, runtime_name: str = "default") -> PromptConfig:
+    def get_prompt_config(self, runtime_name: str = None) -> PromptConfig:
         """Get prompt-related configuration for a specific runtime.
 
         Args:
