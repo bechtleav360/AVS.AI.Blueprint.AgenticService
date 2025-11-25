@@ -126,7 +126,7 @@ class AgentBuilder:
             # Load from config
             prompt_config = self._config.get_prompt_config(self._runtime_name)
             prompt_name = prompt_config.system_prompt_name
-            self._system_prompt = PromptLoader.load_prompt(prompt_name, self.__class__, prompt_config, self._package_root)
+            self._system_prompt = PromptLoader.load_prompt(prompt_name, self._config)
             logger.info("Configured agent with system prompt from config: %s", prompt_name)
         else:
             # Use provided text

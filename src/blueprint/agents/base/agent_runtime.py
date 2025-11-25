@@ -152,7 +152,7 @@ class AgentRuntime(Agent[AgentDepsT, Any]):
             return self._prompt_cache[prompt_name]
 
         # Load and cache
-        prompt_content = PromptLoader.load_prompt(prompt_name, self.config, path)
+        prompt_content = PromptLoader.load_prompt(prompt_name, self.get_config(), path)
         self._prompt_cache[prompt_name] = prompt_content
         logger.info("Loaded and cached prompt: %s", prompt_name)
         return prompt_content
