@@ -60,6 +60,20 @@ class RestApi(Generic[PayloadT]):
             raise RuntimeError(f"Component registry not linked to service '{self._name}'")
         return self._component_registry
 
+    def get_config(self) -> Config:
+        """Get the configuration linked to this REST API.
+
+        Returns:
+            The Config instance linked via dependency injection
+
+        Raises:
+            RuntimeError: If config is not wired
+        """
+
+        if not hasattr(self, "_config") or self._config is None:
+            raise RuntimeError(f"Config not linked to REST API '{self._name}'")
+        return self._config
+
     def link_component_registry(self, registry: "ComponentRegistry") -> None:
         """Link the component registry to the service.
 

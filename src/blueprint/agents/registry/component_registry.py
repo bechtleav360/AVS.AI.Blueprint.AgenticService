@@ -6,9 +6,10 @@ ProcessingService.
 """
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar, overload
 
 from blueprint.agents.services.event_publishing_service import EventPublishingService
+from blueprint.agents.services.processing_service import ProcessingService
 
 from ..config import Config
 
@@ -16,6 +17,8 @@ if TYPE_CHECKING:  # pragma: no cover
     from ..base import AgentRuntime, BusinessService, EventHandler, RestApi
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 
 class ComponentRegistry:
@@ -71,7 +74,7 @@ class ComponentRegistry:
         Get all registered handlers, sorted by priority.
 
         Returns:
-            List of handler instances sorted by priority
+            List of handler instances sorted by priority (may be empty)
         """
         handlers = sorted(self._handlers, key=lambda x: x._priority)
         return handlers
@@ -124,7 +127,7 @@ class ComponentRegistry:
     # ProcessingService Management
     # ========================================================================
 
-    def register_processing_service(self, processing_service: Any) -> None:
+    def register_processing_service(self, processing_service: ProcessingService) -> None:
         """
         Register the processing service instance.
 
@@ -134,7 +137,7 @@ class ComponentRegistry:
         logger.info("Registering processing service")
         self._processing_service = processing_service
 
-    def get_processing_service(self) -> Any:
+    def get_processing_service(self) -> ProcessingService:
         """
         Get the registered processing service.
 
@@ -203,23 +206,37 @@ class ComponentRegistry:
         self._agents[agent.get_name()] = agent
         logger.info("Registered agent: %s", agent.get_name())
 
-    def get_agent(self, name: str) -> "AgentRuntime":
-        """Get a registered agent by name.
+    @overload
+    def get_agent(self, name: str) -> "AgentRuntime": ...
+
+    @overload
+    def get_agent(self, name: type[T]) -> T: ...
+
+    def get_agent(self, name: str | type[T]) -> "AgentRuntime | T":
+        """Get a registered agent by name or class type.
 
         Args:
-            name: Name of the agent to retrieve
+            name: Name of the agent (str) or the agent class (type)
 
         Returns:
-            The registered Agent instance
+            The registered Agent instance.
+            If a class is provided, returns the instance of that class with correct type hint.
 
         Raises:
             ValueError: If agent not found
         """
-        if name not in self._agents:
-            available = ", ".join(self._agents.keys()) if self._agents else "none"
-            raise ValueError(f"Agent '{name}' not found. Available agents: {available}")
+        if isinstance(name, str):
+            if name not in self._agents:
+                available = ", ".join(self._agents.keys()) if self._agents else "none"
+                raise ValueError(f"Agent '{name}' not found. Available agents: {available}")
+            return self._agents[name]
 
-        return self._agents[name]
+        for agent in self._agents.values():
+            if isinstance(agent, name):
+                return agent
+
+        available = ", ".join(type(a).__name__ for a in self._agents.values()) if self._agents else "none"
+        raise ValueError(f"Agent of type '{name.__name__}' not found. Available types: {available}")
 
     def has_agent(self, name: str = None) -> bool:
         """Check if an agent is registered.
@@ -273,23 +290,37 @@ class ComponentRegistry:
         self._rest_apis[api.get_name()] = api
         logger.info("Registered REST API: %s", api.get_name())
 
-    def get_rest_api(self, name: str) -> "RestApi":
-        """Get a registered REST API by name.
+    @overload
+    def get_rest_api(self, name: str) -> "RestApi": ...
+
+    @overload
+    def get_rest_api(self, name: type[T]) -> T: ...
+
+    def get_rest_api(self, name: str | type[T]) -> "RestApi | T":
+        """Get a registered REST API by name or class type.
 
         Args:
-            name: Name of the REST API to retrieve
+            name: Name of the REST API (str) or the REST API class (type)
 
         Returns:
-            The registered RestApi instance
+            The registered RestApi instance.
+            If a class is provided, returns the instance of that class with correct type hint.
 
         Raises:
             ValueError: If REST API not found
         """
-        if name not in self._rest_apis:
-            available = ", ".join(self._rest_apis.keys()) if self._rest_apis else "none"
-            raise ValueError(f"REST API '{name}' not found. Available APIs: {available}")
+        if isinstance(name, str):
+            if name not in self._rest_apis:
+                available = ", ".join(self._rest_apis.keys()) if self._rest_apis else "none"
+                raise ValueError(f"REST API '{name}' not found. Available APIs: {available}")
+            return self._rest_apis[name]
 
-        return self._rest_apis[name]
+        for api in self._rest_apis.values():
+            if isinstance(api, name):
+                return api
+
+        available = ", ".join(type(a).__name__ for a in self._rest_apis.values()) if self._rest_apis else "none"
+        raise ValueError(f"REST API of type '{name.__name__}' not found. Available types: {available}")
 
     def has_rest_api(self, name: str = None) -> bool:
         """Check if a REST API is registered.
@@ -317,7 +348,7 @@ class ComponentRegistry:
         """Get all registered REST APIs.
 
         Returns:
-            Copy of the REST APIs list
+            Copy of the REST APIs list (may be empty)
         """
         return list(self._rest_apis.values())
 
@@ -343,23 +374,37 @@ class ComponentRegistry:
         self._business_services[service.get_name()] = service
         logger.info("Registered business service: %s", service.get_name())
 
-    def get_service(self, name: str) -> "BusinessService":
-        """Get a registered business service by name.
+    @overload
+    def get_service(self, name: str) -> "BusinessService": ...
+
+    @overload
+    def get_service(self, name: type[T]) -> T: ...
+
+    def get_service(self, name: str | type[T]) -> "BusinessService | T":
+        """Get a registered business service by name or class type.
 
         Args:
-            name: Name of the business service to retrieve
+            name: Name of the business service (str) or the service class (type)
 
         Returns:
-            The registered BusinessService instance
+            The registered BusinessService instance.
+            If a class is provided, returns the instance of that class with correct type hint.
 
         Raises:
             ValueError: If business service not found
         """
-        if name not in self._business_services:
-            available = ", ".join(self._business_services.keys()) if self._business_services else "none"
-            raise ValueError(f"Business service '{name}' not found. Available services: {available}")
+        if isinstance(name, str):
+            if name not in self._business_services:
+                available = ", ".join(self._business_services.keys()) if self._business_services else "none"
+                raise ValueError(f"Business service '{name}' not found. Available services: {available}")
+            return self._business_services[name]
 
-        return self._business_services[name]
+        for service in self._business_services.values():
+            if isinstance(service, name):
+                return service
+
+        available = ", ".join(type(s).__name__ for s in self._business_services.values()) if self._business_services else "none"
+        raise ValueError(f"Business service of type '{name.__name__}' not found. Available types: {available}")
 
     def has_service(self, name: str) -> bool:
         """Check if a business service is registered.
@@ -379,6 +424,6 @@ class ComponentRegistry:
         """Get all registered business services.
 
         Returns:
-            Copy of the business services list
+            Copy of the business services list (may be empty)
         """
         return list(self._business_services.values())

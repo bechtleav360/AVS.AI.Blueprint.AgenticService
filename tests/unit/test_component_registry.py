@@ -5,9 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import pytest
+from pydantic import BaseModel
 
 from blueprint.agents.config.config import Config
-from blueprint.agents.base import EventHandler
+from blueprint.agents.base import EventHandler, BusinessService, RestApi, AgentRuntime
 from blueprint.agents.models.events import CloudEvent
 from blueprint.agents.registry.component_registry import ComponentRegistry
 
@@ -169,3 +170,81 @@ class TestComponentRegistry:
     def test_event_publishing_service_missing_raises(self, registry: ComponentRegistry) -> None:
         with pytest.raises(ValueError):
             registry.get_event_publishing_service()
+
+    def test_get_service_by_class(self, registry: ComponentRegistry) -> None:
+        """Test retrieving a service by its class type."""
+
+        class MockService(BusinessService):
+            pass
+
+        service = MockService(name="my_service")
+        registry.register_service(service)
+
+        retrieved = registry.get_service(MockService)
+        assert retrieved is service
+
+    def test_get_service_by_class_missing_raises(self, registry: ComponentRegistry) -> None:
+        """Test retrieving a missing service by class type raises ValueError."""
+
+        class MockService(BusinessService):
+            pass
+
+        with pytest.raises(ValueError, match="Business service of type 'MockService' not found"):
+            registry.get_service(MockService)
+
+    def test_get_agent_by_class(self, registry: ComponentRegistry, config: Config) -> None:
+        """Test retrieving an agent by its class type."""
+
+        class MockAgent(AgentRuntime):
+            pass
+
+        agent = MockAgent(config=config, runtime_name="MockAgent")
+        registry.register_agent(agent)
+
+        retrieved = registry.get_agent(MockAgent)
+        assert retrieved is agent
+
+    def test_get_agent_by_class_missing_raises(self, registry: ComponentRegistry) -> None:
+        """Test retrieving a missing agent by class type raises ValueError."""
+
+        class MockAgent(AgentRuntime):
+            pass
+
+        with pytest.raises(ValueError, match="Agent of type 'MockAgent' not found"):
+            registry.get_agent(MockAgent)
+
+    def test_get_rest_api_by_class_missing_raises(self, registry: ComponentRegistry) -> None:
+        """Test retrieving a missing REST API by class type raises ValueError."""
+
+        class MockPayload(BaseModel):
+            pass
+
+        class MockRestApi(RestApi[MockPayload]):
+            pass
+
+        with pytest.raises(ValueError, match="REST API of type 'MockRestApi' not found"):
+            registry.get_rest_api(MockRestApi)
+
+    def test_get_service_by_name_still_works(self, registry: ComponentRegistry) -> None:
+        """Test that string-based service retrieval still works."""
+
+        class MockService(BusinessService):
+            pass
+
+        service = MockService(name="my_service")
+        registry.register_service(service)
+
+        retrieved = registry.get_service("my_service")
+        assert retrieved is service
+
+    def test_get_agent_by_name_still_works(self, registry: ComponentRegistry, config: Config) -> None:
+        """Test that string-based agent retrieval still works."""
+
+        class MockAgent(AgentRuntime):
+            pass
+
+        agent = MockAgent(config=config, runtime_name="my_agent")
+        registry.register_agent(agent)
+
+        retrieved = registry.get_agent("my_agent")
+        assert retrieved is agent

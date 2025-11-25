@@ -37,6 +37,18 @@ class ComponentInterface(Protocol):
         """
         ...
 
+    def get_config(self) -> Config:
+        """Get the component configuration.
+
+        Returns:
+            The Config instance linked to this component
+
+        Raises:
+            RuntimeError: If config is not wired
+        """
+
+        ...
+
     def get_registry(self) -> "ComponentRegistry":
         """Get the component registry for accessing other components.
 

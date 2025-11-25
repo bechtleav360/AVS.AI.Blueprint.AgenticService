@@ -86,6 +86,20 @@ class EventHandler(ABC):
             raise RuntimeError(f"Component registry not linked to handler '{self._name}'")
         return self._component_registry
 
+    def get_config(self) -> Config:
+        """Get the configuration linked to this handler.
+
+        Returns:
+            The Config instance linked via dependency injection
+
+        Raises:
+            RuntimeError: If config is not wired
+        """
+
+        if self._config is None:
+            raise RuntimeError(f"Config not linked to handler '{self._name}'")
+        return self._config
+
     async def on_startup(self) -> None:
         """Called when handler is registered and wired.
 
