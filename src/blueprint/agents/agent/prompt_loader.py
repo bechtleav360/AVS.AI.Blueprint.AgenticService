@@ -76,6 +76,7 @@ class PromptLoader:
         if package_root:
             package_root_path = PromptLoader._ensure_path(package_root)
             search_roots.append(package_root_path / "prompts")
+            search_roots.append(package_root_path / "src/prompts")
             logger.debug("Added package root prompts directory: %s", package_root_path / "prompts")
 
         for prompt_directory in search_roots:
@@ -92,7 +93,10 @@ class PromptLoader:
             searched_locations.append(prompt_path)
             if prompt_path.exists():
                 with open(prompt_path) as f:
-                    return f.read().strip()
+                    content = f.read().strip()
+
+                logger.info("Loaded prompt '%s' from %s", prompt_name, prompt_path)
+                return content
 
         # If not found in any location, raise error with all attempted paths
         if not searched_locations and search_paths:

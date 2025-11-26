@@ -103,5 +103,21 @@
                 "isDefault": false
             }
         },
+        {
+            "label": "pip:install",
+            "type": "shell",
+            "command": "${workspaceFolder}/.venv/bin/python",
+            "args": [
+                "-m",
+                "pip",
+                "install",
+                "."
+            ],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        }
     ]
 }

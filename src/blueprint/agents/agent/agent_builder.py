@@ -220,8 +220,11 @@ class AgentBuilder:
         # Auto-load system prompt from config if not already set
         if self._system_prompt is not None:
             try:
-                self._system_prompt = PromptLoader.load_prompt(self._system_prompt, self._config, self._package_root)
-                logger.info("Auto-loaded system prompt from config: %s", self._system_prompt)
+                self._system_prompt = PromptLoader.load_prompt(
+                    self._system_prompt,
+                    self._config,
+                    self._package_root,
+                )
             except Exception as e:
                 raise ValueError(
                     f"System prompt must be configured before building agent. "
