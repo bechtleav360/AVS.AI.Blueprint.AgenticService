@@ -10,7 +10,7 @@ from .api import (
     ProcessResourceRequest,
     ProcessResourceResponse,
 )
-from .config import AIConfig, EventPublishingConfig, ObservabilityConfig, PromptConfig, RuntimeConfig, TopicConfig, UsageLimits
+from .config import AIConfig, CacheConfig, EventPublishingConfig, ObservabilityConfig, PromptConfig, RuntimeConfig, TopicConfig, UsageLimits
 from .errors import HandlerError
 from .events import CloudEvent, HandlerResult, GenericCloudEvent
 from .result import AgentOutput, Evidence
@@ -23,6 +23,7 @@ __all__ = [
     "AIConfig",
     "AIModelHealth",
     "BuildStatus",
+    "CacheConfig",
     "CloudEvent",
     "CloudEventDataPayload",
     "CloudEventResponse",

@@ -11,6 +11,7 @@ from typing import Any
 
 from ..models.config import (
     AIConfig,
+    CacheConfig,
     EventPublishingConfig,
     ObservabilityConfig,
     PromptConfig,
@@ -295,6 +296,20 @@ class Config:
         return EventPublishingConfig(
             default_pubsub_name=self.get("event_publishing.default_pubsub_name", "pubsub"),
             topic_mapping=self.get("event_publishing.topic_mapping", {}),
+        )
+
+    def get_cache_config(self) -> CacheConfig:
+        """Get cache-related configuration.
+
+        Returns:
+            CacheConfig model with cache configuration.
+        """
+
+        return CacheConfig(
+            cache_dir=self.get("cache.cache_dir", ".cache/blueprint"),
+            size_limit=self.get("cache.size_limit", 1_000_000_000),
+            eviction_policy=self.get("cache.eviction_policy", "least-recently-used"),
+            default_ttl=self.get("cache.default_ttl", 3600),
         )
 
     def validate(self):

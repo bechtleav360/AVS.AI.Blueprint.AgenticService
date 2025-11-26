@@ -11,6 +11,11 @@ from ..models.config import AIConfig
 
 logger = logging.getLogger(__name__)
 
+# Suppress httpx and httpcore INFO logs during health checks
+# These loggers emit HTTP request/response details that clutter logs
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 
 class AIProviderHealthChecker:
     """Health check provider for the configured AI model."""
@@ -54,8 +59,7 @@ class AIProviderHealthChecker:
 
             try:
                 headers = {"Authorization": f"Bearer {api_key}"}
-                # Suppress httpx INFO logs for health checks
-                async with httpx.AsyncClient(event_hooks={"request": [], "response": []}) as client:
+                async with httpx.AsyncClient() as client:
                     # vLLM servers have a /health endpoint at the root, not under /v1
                     # Remove /v1 suffix if present
                     health_url = base_url.rstrip("/").removesuffix("/v1") + "/health"
@@ -125,8 +129,7 @@ class DaprPubSubHealthChecker:
             )
 
         try:
-            # Suppress httpx INFO logs for health checks
-            async with httpx.AsyncClient(timeout=5.0, event_hooks={"request": [], "response": []}) as client:
+            async with httpx.AsyncClient(timeout=5.0) as client:
                 # Step 1: Check Dapr sidecar health
                 try:
                     dapr_health_response = await client.get(f"{self.dapr_base_url}/v1.0/healthz")

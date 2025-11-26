@@ -11,8 +11,9 @@ from blueprint.agents.base.business_service import BusinessService
 from .api import actuators, root
 from .base import EventHandler, RestApi
 from .config import Config, TelemetryManager
+from .models import CacheConfig
 from .registry.component_registry import ComponentRegistry
-from .services import AIProviderHealthChecker, DaprPubSubHealthChecker, EventPublishingService
+from .services import AIProviderHealthChecker, DaprPubSubHealthChecker, EventPublishingService, DiskCacheService
 from .services.processing_service import ProcessingService
 
 # Dapr generic endpoints
@@ -139,6 +140,28 @@ class AppBuilder:
             api_instance._register_routes()
 
         self._component_registry.register_rest_api(api=api_instance)
+        return self
+
+    def with_cache(self, enabled: bool = True) -> "AppBuilder":
+        """Enable persistent caching using DiskCache.
+
+        Args:
+            enabled: Whether to enable caching (default: True)
+
+        Returns:
+            Self for chaining
+        """
+        if enabled:
+            cache_config = self._config.get_cache_config()
+            cache_service = DiskCacheService(
+                cache_dir=cache_config.cache_dir,
+                size_limit=cache_config.size_limit,
+                eviction_policy=cache_config.eviction_policy,
+            )
+            self._component_registry.register_cache(cache_service)
+            logger.info("Registered DiskCacheService with cache_dir=%s", cache_config.cache_dir)
+        else:
+            logger.info("Caching disabled")
         return self
 
     def _create_lifespan_manager(self):

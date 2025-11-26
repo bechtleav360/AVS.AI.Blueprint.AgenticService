@@ -145,6 +145,17 @@ class ObservabilityConfig(BaseModel):
     log_level: str = Field(default="INFO", description="Log level")
 
 
+class CacheConfig(BaseModel):
+    """Cache configuration."""
+
+    cache_dir: str = Field(default=".cache/blueprint", description="Cache directory path")
+    size_limit: int = Field(default=1_000_000_000, description="Maximum cache size in bytes (default: 1GB)")
+    eviction_policy: str = Field(
+        default="least-recently-used", description="Eviction policy (least-recently-used or least-frequently-used)"
+    )
+    default_ttl: int = Field(default=3600, description="Default TTL in seconds")
+
+
 class RuntimeConfig(BaseModel):
     """Runtime-specific configuration."""
 

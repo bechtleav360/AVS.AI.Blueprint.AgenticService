@@ -8,6 +8,7 @@ ProcessingService.
 import logging
 from typing import Any, TypeVar, overload
 
+from blueprint.agents.services.cache_service import CacheService
 from blueprint.agents.services.event_publishing_service import EventPublishingService
 from blueprint.agents.services.processing_service import ProcessingService
 
@@ -46,6 +47,7 @@ class ComponentRegistry:
 
         self._processing_service: Any | None = None
         self._event_publishing_service: Any | None = None
+        self._cache_service: CacheService | None = None
         self._agents: dict[str, AgentRuntime] = {}
         self._rest_apis: dict[str, RestApi] = {}
         self._business_services: dict[str, BusinessService] = {}
@@ -101,6 +103,40 @@ class ComponentRegistry:
         self._handlers.clear()
 
     # ========================================================================
+    # Cache Management
+    # ========================================================================
+
+    def register_cache(self, cache_service: CacheService) -> None:
+        """Register a cache service.
+
+        Args:
+            cache_service: The cache service instance to register
+        """
+        logger.info("Registering cache service: %s", type(cache_service).__name__)
+        self._cache_service = cache_service
+
+    def get_cache(self) -> CacheService:
+        """Get the registered cache service.
+
+        Returns:
+            The cache service instance
+
+        Raises:
+            ValueError: If no cache service is registered
+        """
+        if self._cache_service is None:
+            raise ValueError("Cache service not registered. Call register_cache() first.")
+        return self._cache_service
+
+    def has_cache(self) -> bool:
+        """Check if a cache service is registered.
+
+        Returns:
+            True if cache service is registered, False otherwise
+        """
+        return self._cache_service is not None
+
+    # ========================================================================
     # General Management
     # ========================================================================
 
@@ -115,6 +151,9 @@ class ComponentRegistry:
         self._agents.clear()
         self._rest_apis.clear()
         self._business_services.clear()
+        if self._cache_service is not None:
+            self._cache_service.close()
+            self._cache_service = None
 
     def get_settings(self) -> Config:
         """
