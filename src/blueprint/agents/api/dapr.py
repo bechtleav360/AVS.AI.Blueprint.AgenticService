@@ -23,6 +23,7 @@ class DaprApi:
         self._component_registry = component_registry
         self.router = APIRouter()
         self._register_routes()
+        self.required_cloud_event_fields = {"specversion", "id", "source", "type"}
 
     def _register_routes(self):
         self.router.add_api_route("/dapr/subscribe", self.dapr_subscribe, methods=["GET"])
@@ -35,6 +36,7 @@ class DaprApi:
         Implementations can override this by adding their own router with the same
         path to provide real topics and routes.
         """
+
         # Framework default: no subscriptions declared.
         # Example structure:
         # return [
@@ -42,33 +44,18 @@ class DaprApi:
         # ]
         return []
 
-    async def handle_dapr_event(self, topic: str, request: Request) -> dict[str, Any]:
+    async def handle_dapr_event(self, topic: str, cloud_event: CloudEvent) -> dict[str, Any]:
         """
         Generic Dapr event handler that processes events through the unified service.
         """
+
         with tracer.start_as_current_span("dapr.handle_event") as span:
             span.set_attribute("dapr.topic", topic)
             try:
-                payload = await request.json()
                 logger.debug("Received Dapr event on topic %s", topic)
 
-                # Check if payload is already a CloudEvent
-                if self._is_cloudevent(payload):
-                    logger.debug("Payload is already a CloudEvent, using as-is")
-                    cloud_event = CloudEvent(**payload)
-                else:
-                    # Wrap non-CloudEvent payload in CloudEvent format
-                    logger.debug("Wrapping payload in CloudEvent format")
-                    cloud_event = CloudEvent(
-                        specversion="1.0",
-                        id=payload.get("id", f"dapr-{topic}"),
-                        source=f"/dapr/topic/{topic}",
-                        type=f"dapr.{topic}",
-                        data=payload,
-                    )
-
                 original_event_type = cloud_event.type
-                cloud_event, was_unwrapped = self._unwrap_nested_cloudevent(cloud_event)
+                cloud_event, was_unwrapped = self._unwrap_nested_cloud_event(cloud_event)
 
                 context = {
                     "dapr_topic": topic,
@@ -123,21 +110,7 @@ class DaprApi:
                     detail="Dapr event handling failed",
                 ) from e
 
-    def _is_cloudevent(self, payload: dict[str, Any]) -> bool:
-        """
-        Check if a payload is already a CloudEvent.
-
-        Args:
-            payload: The payload to check
-
-        Returns:
-            True if payload contains CloudEvent required fields
-        """
-        # CloudEvents 1.0 required fields
-        required_fields = {"specversion", "id", "source", "type"}
-        return required_fields.issubset(payload.keys())
-
-    def _unwrap_nested_cloudevent(self, event: CloudEvent) -> tuple[CloudEvent, bool]:
+    def _unwrap_nested_cloud_event(self, event: CloudEvent) -> tuple[CloudEvent, bool]:
         """Return inner CloudEvent when wrapped by Dapr envelope."""
 
         if event.type != "com.dapr.event.sent":
@@ -152,7 +125,7 @@ class DaprApi:
                 logger.debug("Nested payload is not valid JSON, skipping unwrap")
                 return event, False
 
-        if isinstance(nested_payload, dict) and self._is_cloudevent(nested_payload):
+        if isinstance(nested_payload, dict) and self.required_cloud_event_fields.issubset(nested_payload.keys()):
             try:
                 return CloudEvent(**nested_payload), True
             except Exception as exc:  # pragma: no cover - defensive logging

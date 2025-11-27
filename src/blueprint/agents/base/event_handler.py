@@ -185,6 +185,7 @@ class EventHandler(ABC):
         Returns:
             True if this handler can process the event, False otherwise.
         """
+        raise NotImplementedError
 
     @abstractmethod
     async def handle_event(self, event: CloudEvent, context: dict[str, Any]) -> Any | HandlerResult | list[HandlerResult] | None:
@@ -206,6 +207,7 @@ class EventHandler(ABC):
             * A ``list[HandlerResult]`` to publish multiple events. Each result
               with an ``event_type`` will be published as a separate event.
         """
+        raise NotImplementedError
 
     def get_agent(self, agent_name: str) -> AgentRuntime:
         """Get a pre-configured agent from the agent registry.
