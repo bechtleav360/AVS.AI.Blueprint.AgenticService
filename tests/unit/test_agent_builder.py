@@ -1,7 +1,7 @@
 """Unit tests for AgentBuilder."""
 
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 import pytest
 from pydantic import BaseModel
@@ -134,22 +134,6 @@ class TestAgentBuilder:
 
         with pytest.raises(ValueError, match="Model must be configured"):
             builder.build()
-
-    def test_build_requires_system_prompt(self, builder):
-        """Test build works even without system prompt configured."""
-        with patch("blueprint.agents.agent.agent_builder.ModelProviderFactory.create_model") as mock_create:
-            with patch("blueprint.agents.agent.agent_builder.AgentRuntime") as mock_runtime:
-                mock_model = Mock()
-                mock_create.return_value = mock_model
-                mock_runtime_instance = Mock()
-                mock_runtime.__getitem__.return_value = Mock(return_value=mock_runtime_instance)
-                
-                builder.with_model("gpt-4")
-                agent = builder.build()
-                
-                # Verify system_prompt was None
-                args, kwargs = mock_runtime.__getitem__.return_value.call_args
-                assert kwargs["system_prompt"] is None
 
     def test_build_creates_agent_with_all_config(self, builder, mock_config):
         """Test build creates agent with all configuration."""

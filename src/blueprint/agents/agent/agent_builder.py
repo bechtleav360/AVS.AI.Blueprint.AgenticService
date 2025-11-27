@@ -217,19 +217,36 @@ class AgentBuilder:
         if self._model is None:
             raise ValueError("Model must be configured before building agent")
 
-        # Auto-load system prompt from config if not already set
-        if self._system_prompt is not None:
+        # Resolve system prompt either from explicit configuration or runtime config defaults
+        prompt_name = self._system_prompt
+        if prompt_name is None:
             try:
-                self._system_prompt = PromptLoader.load_prompt(
-                    self._system_prompt,
-                    self._config,
-                    self._package_root,
-                )
-            except Exception as e:
+                prompt_config = self._config.get_prompt_config(self._runtime_name)
+                prompt_name = prompt_config.system_prompt_name
+            except Exception as exc:
                 raise ValueError(
-                    f"System prompt must be configured before building agent. "
-                    f"Either call with_system_prompt() or ensure system_prompt_name is configured. Error: {e}"
-                ) from e
+                    "System prompt must be configured before building agent. "
+                    "Either call with_system_prompt() or configure system_prompt_name in settings."
+                ) from exc
+
+        if not prompt_name:
+            raise ValueError(
+                "System prompt must be configured before building agent. "
+                "Either call with_system_prompt() or configure system_prompt_name in settings."
+            )
+
+        try:
+            self._system_prompt = PromptLoader.load_prompt(
+                prompt_name,
+                self._config,
+                self._package_root,
+            )
+        except Exception as e:
+            raise ValueError(
+                "Failed to load system prompt '{prompt}' – ensure the prompt file exists or call with_system_prompt().".format(
+                    prompt=prompt_name
+                )
+            ) from e
 
         # Check for unexpected kwargs
         if kwargs:

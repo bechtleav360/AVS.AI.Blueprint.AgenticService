@@ -303,10 +303,14 @@ class DiskCacheService(CacheService):
     def _normalize_for_hash(self, value: str | list[str] | dict[str, Any]) -> Any:
         """Normalize input value for consistent hashing.
 
+        - None: Not supported (raises ValueError)
         - Strings: Attempts JSON parsing, returns parsed dict/list or original string
-        - Lists: Sorts and returns
-        - Dicts: Sorts by keys and returns
+        - Lists: Removes ``None`` entries, sorts, and returns
+        - Dicts: Sorted by keys before returning
         """
+        if value is None:
+            raise ValueError("Cache key value cannot be None")
+
         if isinstance(value, str):
             try:
                 parsed = json.loads(value)
@@ -316,7 +320,9 @@ class DiskCacheService(CacheService):
                 # Not JSON: return as-is
                 return value
         elif isinstance(value, list):
-            return sorted(value)
+            # Remove null values before sorting for consistency
+            filtered_list = [item for item in value if item is not None]
+            return sorted(filtered_list)
         elif isinstance(value, dict):
             return dict(sorted(value.items()))
         else:

@@ -7,8 +7,15 @@ from unittest.mock import patch
 @pytest.fixture(autouse=True)
 def mock_prompt_loader(request):
     """Mock PromptLoader.load_prompt to avoid file I/O in tests, except for PromptLoader tests and test_build_requires_system_prompt."""
-    # Don't mock for PromptLoader tests and test_build_requires_system_prompt
-    if "test_prompt_loader" in request.node.nodeid or "test_build_requires_system_prompt" in request.node.nodeid:
+    skip_nodes = (
+        "test_prompt_loader",
+        "test_build_requires_system_prompt",
+        "test_build_resolves_prompt_from_config",
+        "test_build_constructs_runtime_with_full_configuration",
+    )
+
+    # Don't mock for specific tests that provide their own patching behavior
+    if any(marker in request.node.nodeid for marker in skip_nodes):
         yield None
         return
 

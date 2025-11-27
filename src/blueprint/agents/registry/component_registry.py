@@ -253,7 +253,7 @@ class ComponentRegistry:
     @overload
     def get_agent(self, name: type[T]) -> T: ...
 
-    def get_agent(self, name: str | type[T]) -> "AgentRuntime | T":
+    def get_agent(self, name: str | type[T], reset: bool = False) -> "AgentRuntime | T":
         """Get a registered agent by name or class type.
 
         Args:
@@ -266,6 +266,8 @@ class ComponentRegistry:
         Raises:
             ValueError: If agent not found
         """
+        agent: AgentRuntime = None
+
         if isinstance(name, str):
             if name not in self._agents:
                 available = ", ".join(self._agents.keys()) if self._agents else "none"
