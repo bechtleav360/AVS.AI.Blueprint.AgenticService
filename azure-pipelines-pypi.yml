@@ -12,7 +12,7 @@ trigger:
   branches:
     include:
       - master
-      - dev
+      - develop
       - feature/*
   tags:
     include:
@@ -50,7 +50,7 @@ stages:
   - stage: Build
     displayName: "Build Package"
     dependsOn: Test
-    condition: succeeded()
+    condition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/tags/v'))
     jobs:
       - job: BuildPackage
         displayName: "Build Python package"
