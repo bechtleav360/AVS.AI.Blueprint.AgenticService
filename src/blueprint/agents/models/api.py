@@ -239,6 +239,29 @@ class CustomCheckHealth(BaseModel):
     )
 
 
+class CacheStatsResponse(BaseModel):
+    """Cache statistics response model."""
+
+    size: int
+    cache_dir: str
+    ttl_tracked_keys: int
+    size_limit: int
+    eviction_policy: str
+
+
+class CacheNamespacesResponse(BaseModel):
+    """List of cache namespaces response model."""
+
+    namespaces: list[str]
+    count: int
+
+
+class CacheEvictRequest(BaseModel):
+    """Request to evict (clear) cache contents."""
+
+    namespace: str | None = None
+
+
 class AgentHealthDependencies(BaseModel):
     """Dependencies checked during agent health check."""
 

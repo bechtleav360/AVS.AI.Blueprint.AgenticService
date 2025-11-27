@@ -68,6 +68,102 @@
             "jinja": true,
             "justMyCode": false,
             "console": "integratedTerminal"
+        },
+        {
+            "name": "FastAPI: examples/rest_microservice",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "uvicorn",
+            "args": [
+                "examples.rest_microservice.src.main:app",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "8002",
+                "--reload"
+            ],
+            "jinja": true,
+            "justMyCode": false,
+            "console": "integratedTerminal",
+            "env": {
+                "APP_NAME": "rest-microservice",
+                "LOG_LEVEL": "INFO",
+                "LOG_FORMAT": "json",
+                "DYNACONF_APP_ENVIRONMENT": "development"
+            },
+            "preLaunchTask": "pip:install"
+        },
+        {
+            "name": "FastAPI: examples/simple_event_processor",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "uvicorn",
+            "args": [
+                "examples.simple_event_processor.src.main:app",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "8003",
+                "--reload"
+            ],
+            "jinja": true,
+            "justMyCode": false,
+            "console": "integratedTerminal",
+            "env": {
+                "APP_NAME": "simple-event-processor",
+                "LOG_LEVEL": "INFO",
+                "LOG_FORMAT": "json",
+                "DYNACONF_APP_ENVIRONMENT": "development"
+            },
+            "preLaunchTask": "pip:install"
+        },
+        {
+            "name": "FastAPI: examples/trivia_game",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "uvicorn",
+            "args": [
+                "examples.trivia_game.src.main:app",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "8004",
+                "--reload"
+            ],
+            "jinja": true,
+            "justMyCode": false,
+            "console": "integratedTerminal",
+            "env": {
+                "APP_NAME": "trivia-game",
+                "LOG_LEVEL": "INFO",
+                "LOG_FORMAT": "json",
+                "DYNACONF_APP_ENVIRONMENT": "development"
+            },
+            "preLaunchTask": "pip:install"
+        },
+        {
+            "name": "FastAPI: examples/complex_agent",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "uvicorn",
+            "args": [
+                "examples.complex_agent.src.main:app",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "8005",
+                "--reload"
+            ],
+            "jinja": true,
+            "justMyCode": false,
+            "console": "integratedTerminal",
+            "env": {
+                "APP_NAME": "complex-agent",
+                "LOG_LEVEL": "INFO",
+                "LOG_FORMAT": "json",
+                "DYNACONF_APP_ENVIRONMENT": "development"
+            },
+            "preLaunchTask": "pip:install"
         }
     ],
     "compounds": [

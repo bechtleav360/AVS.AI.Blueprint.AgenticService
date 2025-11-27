@@ -9,6 +9,8 @@ from .api import (
     CustomCheckHealth,
     ProcessResourceRequest,
     ProcessResourceResponse,
+    CacheStatsResponse,
+    CacheEvictRequest,
 )
 from .config import AIConfig, CacheConfig, EventPublishingConfig, ObservabilityConfig, PromptConfig, RuntimeConfig, TopicConfig, UsageLimits
 from .errors import HandlerError
@@ -44,4 +46,6 @@ __all__ = [
     "TopicConfig",
     "UsageLimits",
     "VLLMInfo",
+    "CacheStatsResponse",
+    "CacheEvictRequest",
 ]

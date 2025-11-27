@@ -4,6 +4,7 @@ import logging
 from opentelemetry import trace
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
+from pydantic import ValidationError
 
 from ..config import Config
 from ..models.events import CloudEvent
@@ -46,33 +47,6 @@ class ProcessingService:
         self._health_checker: _HealthChecker = _HealthChecker(component_registry)
         self._result_builder: _ResultBuilder = _ResultBuilder()
         self.name = self.__class__.__name__
-
-    def get_registry(self) -> "ComponentRegistry":
-        """Get the component registry for accessing other components.
-
-        Returns:
-            The ComponentRegistry instance
-
-        Raises:
-            RuntimeError: If registry is not wired
-        """
-        if self._component_registry is None:
-            raise RuntimeError(f"Component registry not wired to service '{self.name}'")
-        return self._component_registry
-
-    async def on_startup(self) -> None:
-        """Called when service is registered and wired.
-
-        Override to perform initialization tasks.
-        """
-        pass
-
-    async def on_shutdown(self) -> None:
-        """Called when application is shutting down.
-
-        Override to perform cleanup tasks.
-        """
-        pass
 
     async def process_event(
         self,
@@ -118,6 +92,9 @@ class ProcessingService:
                     "runtime_name": runtime_name,
                 },
             )
+
+            # Unwrap Dapr-wrapped events if necessary
+            event = self._unwrap_dapr_event(event)
 
             try:
                 # Process through handler chain
@@ -244,3 +221,48 @@ class ProcessingService:
         )
 
         return await self.process_event(event, context, runtime_name)
+
+    def _unwrap_dapr_event(self, event: CloudEvent) -> CloudEvent:
+        """
+        Unwrap Dapr-wrapped events.
+
+        Dapr sometimes wraps events in a 'com.dapr.event.sent' envelope.
+        This method extracts the inner event if present.
+
+        Args:
+            event: The CloudEvent that may be wrapped
+
+        Returns:
+            The unwrapped CloudEvent, or the original if not wrapped
+
+        Raises:
+            RuntimeError: If the inner event is malformed or unsupported
+        """
+        if event.type == "com.dapr.event.sent":
+            logger.warning(
+                "Event from topic %s is of type 'com.dapr.event.sent', unwrapping inner event.",
+                getattr(event, "topic", "unknown"),
+            )
+            inner_event = event.data
+
+            if isinstance(inner_event, CloudEvent):
+                return inner_event
+
+            if isinstance(inner_event, dict):
+                if "type" not in inner_event:
+                    logger.error(
+                        "Inner Dapr event is missing required 'type' field: %s",
+                        inner_event,
+                    )
+                    raise RuntimeError("Inner Dapr event is missing required 'type' field")
+
+                try:
+                    return CloudEvent.model_validate(inner_event)
+                except ValidationError as exc:
+                    logger.error("Failed to validate inner Dapr event as CloudEvent: %s", exc)
+                    raise RuntimeError("Inner Dapr event could not be parsed as CloudEvent") from exc
+
+            logger.error("Unexpected inner event type: %s", type(inner_event))
+            raise RuntimeError("Unsupported inner Dapr event payload type")
+
+        return event

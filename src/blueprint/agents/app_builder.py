@@ -7,13 +7,13 @@ from fastapi import APIRouter, FastAPI
 
 from blueprint.agents.base.agent_runtime import AgentRuntime
 from blueprint.agents.base.business_service import BusinessService
+from blueprint.agents.services.cache_service import DiskCacheService
 
-from .api import actuators, root
+from .api import actuators, root, cache
 from .base import EventHandler, RestApi
 from .config import Config, TelemetryManager
-from .models import CacheConfig
 from .registry.component_registry import ComponentRegistry
-from .services import AIProviderHealthChecker, DaprPubSubHealthChecker, EventPublishingService, DiskCacheService
+from .services import AIProviderHealthChecker, DaprPubSubHealthChecker, EventPublishingService
 from .services.processing_service import ProcessingService
 
 # Dapr generic endpoints
@@ -60,19 +60,7 @@ class AppBuilder:
             openapi_url="/openapi.json",
         )
 
-        # Include root endpoints
-        root_api = root.RootApi(config=self._config)
-        app.include_router(root_api.router, tags=["root"])
-
-        # Include custom REST API if registered
-        rest_apis = self._component_registry.get_rest_apis()
-        for rest_api in rest_apis:
-            app.include_router(rest_api.router, prefix="/api", tags=["rest"])
-
-        # Include Dapr endpoints if handlers are registered
-        if dapr is not None and self._component_registry.get_handlers():
-            dapr_api = dapr.DaprApi(component_registry=self._component_registry)
-            app.include_router(dapr_api.router, tags=["dapr"])
+        self._build_rest_endpoints(app)
 
         # Configure health checks based on registered components
 
@@ -88,6 +76,30 @@ class AppBuilder:
         app.include_router(actuator_api.router, tags=["actuators"])
 
         return app
+
+    def _build_rest_endpoints(self, app: FastAPI) -> None:
+        """Build REST endpoints for the application."""
+        # Include root endpoints
+        root_api = root.RootApi(config=self._config)
+        app.include_router(root_api.router, tags=["root"])
+
+        # Include custom REST API if registered
+        rest_apis = self._component_registry.get_rest_apis()
+        for rest_api in rest_apis:
+            if rest_api.router is None:
+                rest_api.router = APIRouter()
+                rest_api._register_routes()
+            app.include_router(rest_api.router, prefix="/api", tags=["rest"])
+
+        # Include Dapr endpoints if handlers are registered
+        if dapr is not None and self._component_registry.get_handlers():
+            dapr_api = dapr.DaprApi(component_registry=self._component_registry)
+            app.include_router(dapr_api.router, tags=["dapr"])
+
+        # Include cache management endpoints if cache is registered
+        if self._component_registry.has_cache():
+            cache_api = cache.CacheManagementApi(component_registry=self._component_registry)
+            app.include_router(cache_api.router, prefix="/api", tags=["cache"])
 
     def with_handler(self, handler: type[EventHandler] | EventHandler) -> "AppBuilder":
         """Register a handler class or instance with the startup manager.
@@ -135,9 +147,6 @@ class AppBuilder:
         Raises:
             TypeError: If api_instance is not a RestApi subclass instance
         """
-        if api_instance.router is None:
-            api_instance.router = APIRouter()
-            api_instance._register_routes()
 
         self._component_registry.register_rest_api(api=api_instance)
         return self

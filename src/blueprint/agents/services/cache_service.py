@@ -115,6 +115,11 @@ class CacheService(ABC):
         """
         pass
 
+    @abstractmethod
+    def list_namespaces(self) -> list[str]:
+        """List all namespaces currently present in the cache."""
+        pass
+
 
 class DiskCacheService(CacheService):
     """Persistent disk-based cache implementation using diskcache-rs.
@@ -333,6 +338,21 @@ class DiskCacheService(CacheService):
         except Exception as e:
             logger.warning("Error getting cache stats: %s", e)
             return {}
+
+    def list_namespaces(self) -> list[str]:
+        """List all namespaces currently present in the cache."""
+        try:
+            namespaces: set[str] = set()
+            for key in self._cache.keys():
+                if ":" in key:
+                    namespace = key.split(":", 1)[0]
+                    namespaces.add(namespace)
+            result = sorted(namespaces)
+            logger.debug("Cache namespaces: %s", result)
+            return result
+        except Exception as e:
+            logger.warning("Error listing cache namespaces: %s", e)
+            return []
 
     def close(self) -> None:
         """Close the cache and flush to disk."""

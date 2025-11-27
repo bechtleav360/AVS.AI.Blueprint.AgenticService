@@ -1,29 +1,27 @@
 # Changelog
 
-## [0.4.0] - 2025-11-26
+## [0.4.0] - Planned
+
+
+
+## [0.3.8] - 2025-11-26
 
 ### Added
-- **Persistent Caching Layer**: New `CacheService` and `DiskCacheService` for high-performance disk-based caching
-  - Uses `diskcache-rs` for Rust-backed performance and reliability
-  - TTL (time-to-live) support with automatic expiration
-  - Namespace isolation for organizing cache entries
-  - Flexible key types: strings, lists, and dicts with order-independent hashing
-  - JSON-aware hashing: automatically detects and normalizes JSON strings
-  - Thread-safe operations
-- `CacheConfig` Pydantic model for cache configuration
-- `AppBuilder.with_cache()` method to enable caching with fluent interface
-- `ComponentRegistry.register_cache()`, `get_cache()`, `has_cache()` methods for cache management
-- `Config.get_cache_config()` method to retrieve cache configuration
-- Comprehensive caching guide in `docs/guides/caching.md`
+- DAPR events are now automatically unwrapped
 
-### Features
+### New Cache introduced
+- **Persistent Caching Layer**: New `CacheService` and `DiskCacheService` for high-performance disk-based caching
+- `AppBuilder.with_cache()` method to enable caching with fluent interface
+- `ComponentRegistry.get_cache()`, `has_cache()` methods for cache management
+
+#### Features
 - **Order-independent key hashing**: `{"a":1,"b":2}` and `{"b":2,"a":1}` produce identical hashes
 - **JSON string normalization**: JSON strings are automatically parsed and sorted for consistent hashing
 - **Recursive JSON handling**: Nested JSON structures are properly normalized
 - **Lazy TTL cleanup**: Expired entries are cleaned up only when accessed
 - **Cache statistics**: `get_stats()` method for monitoring cache usage
 
-### Configuration
+#### Configuration
 New cache settings in `settings.toml`:
 ```toml
 [cache]
@@ -33,7 +31,7 @@ eviction_policy = "least-recently-used"  # LRU eviction
 default_ttl = 3600                       # 1 hour default TTL
 ```
 
-### Dependencies
+#### Dependencies
 - Added `diskcache-rs>=0.4.4` for high-performance persistent caching
 
 ## [0.3.4]- 2025-11-25

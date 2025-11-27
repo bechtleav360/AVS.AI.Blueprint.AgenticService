@@ -36,4 +36,6 @@ trivia_agent: Agent = (
 # Step 2: Build App and Register Agent
 # ============================================================================
 
-app = AppBuilder(config=config).with_agent(trivia_agent).with_service(TriviaService()).with_rest_api(TriviaGameRestApi()).build()
+app = (
+    AppBuilder(config=config).with_cache().with_agent(trivia_agent).with_service(TriviaService()).with_rest_api(TriviaGameRestApi()).build()
+)
