@@ -21,7 +21,7 @@ class TestDaprApi:
     def test_unwrap_noop_when_not_dapr_event(self) -> None:
         event = CloudEvent(id="1", type="example.event", source="/example", data={"foo": "bar"})
 
-        result_event, was_unwrapped = self.api._unwrap_nested_cloudevent(event)
+        result_event, was_unwrapped = self.api._unwrap_nested_cloud_event(event)
 
         assert result_event is event
         assert was_unwrapped is False
@@ -41,7 +41,7 @@ class TestDaprApi:
             data=json.dumps(inner_event),
         )
 
-        result_event, was_unwrapped = self.api._unwrap_nested_cloudevent(event)
+        result_event, was_unwrapped = self.api._unwrap_nested_cloud_event(event)
 
         assert was_unwrapped is True
         assert result_event.id == inner_event["id"]
@@ -63,7 +63,7 @@ class TestDaprApi:
             data=inner_event,
         )
 
-        result_event, was_unwrapped = self.api._unwrap_nested_cloudevent(event)
+        result_event, was_unwrapped = self.api._unwrap_nested_cloud_event(event)
 
         assert was_unwrapped is True
         assert result_event.id == inner_event["id"]
