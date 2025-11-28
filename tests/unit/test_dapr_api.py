@@ -3,7 +3,6 @@
 import json
 from unittest.mock import MagicMock, AsyncMock
 import pytest
-from fastapi import Request
 
 from blueprint.agents.api.dapr import DaprApi
 from blueprint.agents.models.events import CloudEvent
@@ -72,55 +71,37 @@ class TestDaprApi:
 
     @pytest.mark.asyncio
     async def test_handle_dapr_event_success(self) -> None:
-        """Test that successful processing returns SUCCESS status."""
-        # Setup
-        payload = {"specversion": "1.0", "id": "evt-1", "type": "test.event", "source": "test", "data": {"foo": "bar"}}
-        request = AsyncMock(spec=Request)
-        request.json.return_value = payload
+        """Successful processing returns SUCCESS status."""
+        event = CloudEvent(id="evt-1", type="test.event", source="test", data={"foo": "bar"})
 
-        # Mock processing result
         result_event = CloudEvent(id="res-1", type="agent.output.test", source="agent", data={"status": "processed", "result": "ok"})
         self.processing_service.process_event.return_value = result_event
 
-        # Execute
-        response = await self.api.handle_dapr_event("test-topic", request)
+        response = await self.api.handle_dapr_event("test-topic", event)
 
-        # Assert
         assert response == {"status": "SUCCESS"}
-        self.processing_service.process_event.assert_called_once()
+        self.processing_service.process_event.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_handle_dapr_event_exception_returns_retry(self) -> None:
-        """Test that exceptions during processing return RETRY status."""
-        # Setup
-        payload = {"specversion": "1.0", "id": "evt-1", "type": "test.event", "source": "test", "data": {"foo": "bar"}}
-        request = AsyncMock(spec=Request)
-        request.json.return_value = payload
+        """Exceptions during processing return RETRY status."""
+        event = CloudEvent(id="evt-1", type="test.event", source="test", data={"foo": "bar"})
 
-        # Mock exception
         self.processing_service.process_event.side_effect = ValueError("Processing failed")
 
-        # Execute
-        response = await self.api.handle_dapr_event("test-topic", request)
+        response = await self.api.handle_dapr_event("test-topic", event)
 
-        # Assert
         assert response == {"status": "RETRY", "reason": "processing_failed"}
 
     @pytest.mark.asyncio
     async def test_handle_dapr_event_failure_status_returns_retry(self) -> None:
-        """Test that non-processed status returns RETRY status."""
-        # Setup
-        payload = {"specversion": "1.0", "id": "evt-1", "type": "test.event", "source": "test", "data": {"foo": "bar"}}
-        request = AsyncMock(spec=Request)
-        request.json.return_value = payload
+        """Non-success processing status returns RETRY."""
+        event = CloudEvent(id="evt-1", type="test.event", source="test", data={"foo": "bar"})
 
-        # Mock processing result with failure status
         result_event = CloudEvent(id="res-1", type="agent.output.test", source="agent", data={"status": "failed", "error": "some error"})
         self.processing_service.process_event.return_value = result_event
 
-        # Execute
-        response = await self.api.handle_dapr_event("test-topic", request)
+        response = await self.api.handle_dapr_event("test-topic", event)
 
-        # Assert
         assert response["status"] == "RETRY"
         assert response["reason"] == "failed"
