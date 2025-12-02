@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 from opentelemetry import trace
 
-from ...models.events import CloudEvent
+from ...models.events import CloudEvent, HandlerResult
 
 if TYPE_CHECKING:  # pragma: no cover
     from ...registry.component_registry import ComponentRegistry
@@ -20,7 +20,7 @@ class _HandlerChainProcessor:
     def __init__(self, component_registry: "ComponentRegistry") -> None:
         self._component_registry: ComponentRegistry = component_registry
 
-    async def process(self, event: CloudEvent, context: dict[str, Any]) -> Any | None:
+    async def process(self, event: CloudEvent, context: dict[str, Any]) -> Any | HandlerResult | list[HandlerResult] | None:
         """
         Process event through all registered handlers in priority order.
 
@@ -108,7 +108,7 @@ class _HandlerChainProcessor:
                     )
                     span.record_exception(e)
                     span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
-                    raise
+                    raise e
 
             logger.warning(
                 "No handler processed event %s",

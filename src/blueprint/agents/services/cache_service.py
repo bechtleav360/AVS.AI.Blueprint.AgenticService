@@ -6,7 +6,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from diskcache_rs import Cache
 
@@ -24,7 +24,7 @@ class CacheService(ABC):
     """
 
     @abstractmethod
-    def get(self, key: str | list[str] | dict[str, Any], namespace: str = "default") -> Optional[Any]:
+    def get(self, key: str | list[str] | dict[str, Any], namespace: str = "default") -> Any | None:
         """Retrieve a value from cache.
 
         Args:
@@ -42,7 +42,7 @@ class CacheService(ABC):
         key: str | list[str] | dict[str, Any],
         value: Any,
         namespace: str = "default",
-        ttl: Optional[int] = None,
+        ttl: int | None = None,
     ) -> None:
         """Store a value in cache.
 
@@ -68,7 +68,7 @@ class CacheService(ABC):
         pass
 
     @abstractmethod
-    def clear(self, namespace: Optional[str] = None) -> None:
+    def clear(self, namespace: str | None = None) -> None:
         """Clear cache entries.
 
         Args:
@@ -185,7 +185,7 @@ class DiskCacheService(CacheService):
         key_hash = self.hash(key)
         return f"{namespace}:{key_hash}"
 
-    def get(self, key: str | list[str] | dict[str, Any], namespace: str = "default") -> Optional[Any]:
+    def get(self, key: str | list[str] | dict[str, Any], namespace: str = "default") -> Any | None:
         """Retrieve a value from cache."""
         try:
             namespaced_key = self._make_key(key, namespace)
@@ -210,7 +210,7 @@ class DiskCacheService(CacheService):
         key: str | list[str] | dict[str, Any],
         value: Any,
         namespace: str = "default",
-        ttl: Optional[int] = None,
+        ttl: int | None = None,
     ) -> None:
         """Store a value in cache."""
         try:
@@ -241,7 +241,7 @@ class DiskCacheService(CacheService):
             logger.warning("Error deleting from cache: %s", e)
             return False
 
-    def clear(self, namespace: Optional[str] = None) -> None:
+    def clear(self, namespace: str | None = None) -> None:
         """Clear cache entries."""
         try:
             if namespace is None:

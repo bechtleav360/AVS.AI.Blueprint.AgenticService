@@ -1,6 +1,6 @@
 """Pydantic models for CloudEvents v1.0 specification."""
 
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from typing import Any, Generic, Literal, TypeVar
 
 from pydantic import BaseModel, Field, field_validator, model_validator

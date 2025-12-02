@@ -15,15 +15,15 @@ The framework provides automatic OpenTelemetry tracing for all handlers.
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 import logging
+from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
 from opentelemetry import trace
 
-from .agent_runtime import AgentRuntime
 from ..config import Config
 from ..models import CloudEvent, HandlerResult
+from .agent_runtime import AgentRuntime
 
 tracer = trace.get_tracer(__name__)
 logger = logging.getLogger(__name__)

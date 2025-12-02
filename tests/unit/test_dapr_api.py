@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, AsyncMock
 import pytest
 
 from blueprint.agents.api.dapr import DaprApi
+from blueprint.agents.models import ProcessingResult, ProcessingStatus
 from blueprint.agents.models.events import CloudEvent
 
 
@@ -74,8 +75,14 @@ class TestDaprApi:
         """Successful processing returns SUCCESS status."""
         event = CloudEvent(id="evt-1", type="test.event", source="test", data={"foo": "bar"})
 
-        result_event = CloudEvent(id="res-1", type="agent.output.test", source="agent", data={"status": "processed", "result": "ok"})
-        self.processing_service.process_event.return_value = result_event
+        processing_result = ProcessingResult(
+            request_id="res-1",
+            status=ProcessingStatus.PROCESSED,
+            result=[],
+            metadata={},
+            message="Message acknowledged",
+        )
+        self.processing_service.process_event.return_value = processing_result
 
         response = await self.api.handle_dapr_event("test-topic", event)
 
@@ -98,8 +105,14 @@ class TestDaprApi:
         """Non-success processing status returns RETRY."""
         event = CloudEvent(id="evt-1", type="test.event", source="test", data={"foo": "bar"})
 
-        result_event = CloudEvent(id="res-1", type="agent.output.test", source="agent", data={"status": "failed", "error": "some error"})
-        self.processing_service.process_event.return_value = result_event
+        processing_result = ProcessingResult(
+            request_id="res-2",
+            status=ProcessingStatus.NO_HANDLER_FOUND,
+            result=[],
+            metadata={},
+            message="failed",
+        )
+        self.processing_service.process_event.return_value = processing_result
 
         response = await self.api.handle_dapr_event("test-topic", event)
 

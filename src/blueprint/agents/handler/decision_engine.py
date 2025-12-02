@@ -5,8 +5,8 @@ from typing import Any
 
 from opentelemetry import trace
 
-from ..models import CloudEvent
 from ..base import EventHandler
+from ..models import CloudEvent
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)

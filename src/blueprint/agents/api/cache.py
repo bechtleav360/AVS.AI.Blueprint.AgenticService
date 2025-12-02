@@ -5,7 +5,9 @@ from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException
 
-from blueprint.agents.models.api import CacheStatsResponse, CacheNamespacesResponse, CacheEvictRequest
+from blueprint.agents.models.api import (CacheEvictRequest,
+                                         CacheNamespacesResponse,
+                                         CacheStatsResponse)
 
 if TYPE_CHECKING:
     from ..registry.component_registry import ComponentRegistry

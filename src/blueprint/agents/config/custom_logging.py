@@ -1,16 +1,74 @@
-"""Logging configuration management."""
+"""Logging configuration management and correlation ID utilities."""
 
+from __future__ import annotations
+
+import contextvars
 import logging
 import sys
+
+
+class CorrelationContext:
+    """Tracks correlation IDs via context variables."""
+
+    def __init__(self) -> None:
+        self._var: contextvars.ContextVar[str] = contextvars.ContextVar("correlation_id", default="n/a")
+
+    def set(self, value: str | None) -> contextvars.Token[str]:
+        """Set the correlation ID for current context and return token."""
+
+        normalized = value or ""
+        return self._var.set(normalized)
+
+    def reset(self, token: contextvars.Token[str] | None) -> None:
+        """Reset correlation ID to previous value using provided token."""
+
+        if token is None:
+            return
+        self._var.reset(token)
+
+    def get(self) -> str:
+        """Return correlation ID for current context."""
+
+        return self._var.get()
+
+    def build_filter(self) -> logging.Filter:
+        """Return a logging filter bound to this context."""
+
+        context = self
+
+        class _CorrelationIdFilter(logging.Filter):
+            def filter(self, record: logging.LogRecord) -> bool:  # noqa: D401
+                record.correlation_id = context.get()
+                return True
+
+        return _CorrelationIdFilter()
+
+
+class CorrelationContextProvider:
+    """Lazily provides a shared CorrelationContext instance."""
+
+    _instance: CorrelationContext | None = None
+
+    @classmethod
+    def get_instance(cls) -> CorrelationContext:
+        if cls._instance is None:
+            cls._instance = CorrelationContext()
+        return cls._instance
+
+    @classmethod
+    def set_instance(cls, context: CorrelationContext) -> None:
+        cls._instance = context
 
 
 class LoggingManager:
     """Manages logging configuration for the application."""
 
-    def __init__(self) -> None:
+    def __init__(self, correlation: CorrelationContext | None = None) -> None:
         """Initialize the logging manager."""
         self.logger = logging.getLogger(self.__class__.__name__)
         self._configured = False
+        self._correlation_context = correlation or CorrelationContextProvider.get_instance()
+        self._correlation_filter = self._correlation_context.build_filter()
 
     def configure(self, log_level: str = "INFO", log_format: str = "text", suppress_noisy_loggers: bool = True) -> None:
         """Configure logging for the application.
@@ -31,6 +89,9 @@ class LoggingManager:
             # Only configure if no handlers exist
             if not root_logger.handlers:
                 self._setup_basic_config(log_level, log_format)
+
+            # Attach correlation-id filter to all root handlers
+            self._attach_correlation_filter()
 
             # Suppress noisy loggers
             if suppress_noisy_loggers:
@@ -69,14 +130,16 @@ class LoggingManager:
             The format string for logging.
         """
         if log_format == "text":
-            return "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+            return "%(asctime)s - %(name)s - %(levelname)s - %(correlation_id)s - %(message)s"
         elif log_format == "json":
-            # For JSON format, we use a simple format and rely on
-            # structured logging libraries or log processors
-            return "%(message)s"
+            # For JSON format, emit key-value line that downstream processors can parse
+            return (
+                '{"timestamp":"%(asctime)s","level":"%(levelname)s","name":"%(name)s",'
+                '"correlation_id":"%(correlation_id)s","message":"%(message)s"}'
+            )
         else:
             # Default to text format
-            return "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+            return "%(asctime)s - %(name)s - %(levelname)s - %(correlation_id)s - %(message)s"
 
     def _suppress_noisy_loggers(self) -> None:
         """Suppress noisy third-party loggers."""
@@ -93,6 +156,17 @@ class LoggingManager:
             logging.getLogger(logger_name).setLevel(level)
 
         self.logger.debug("Suppressed noisy loggers")
+
+    def _attach_correlation_filter(self) -> None:
+        """Attach the correlation-id filter to root logger and handlers."""
+
+        root_logger = logging.getLogger()
+        if self._correlation_filter not in root_logger.filters:
+            root_logger.addFilter(self._correlation_filter)
+
+        for handler in root_logger.handlers:
+            if self._correlation_filter not in handler.filters:
+                handler.addFilter(self._correlation_filter)
 
     def set_level(self, log_level: str) -> None:
         """Change the logging level dynamically.

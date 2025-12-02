@@ -1,22 +1,18 @@
 """Data models for the agent service."""
 
-from .api import (
-    AgentHealthDependencies,
-    AgentHealthResponse,
-    AIModelHealth,
-    CloudEventDataPayload,
-    CloudEventResponse,
-    CustomCheckHealth,
-    ProcessResourceRequest,
-    ProcessResourceResponse,
-    CacheStatsResponse,
-    CacheEvictRequest,
-)
-from .config import AIConfig, CacheConfig, EventPublishingConfig, ObservabilityConfig, PromptConfig, RuntimeConfig, TopicConfig, UsageLimits
-from .errors import HandlerError
-from .events import CloudEvent, HandlerResult, GenericCloudEvent
-from .result import AgentOutput, Evidence
-from .status import BuildStatus, EnvironmentStatus, LLMStatus, ServiceInfo, VLLMInfo
+from .api import (AgentHealthDependencies, AgentHealthResponse, AIModelHealth,
+                  CacheEvictRequest, CacheStatsResponse, CloudEventDataPayload,
+                  CloudEventResponse, CustomCheckHealth,
+                  ProcessResourceRequest, ProcessResourceResponse)
+from .config import (AIConfig, CacheConfig, EventPublishingConfig,
+                     ObservabilityConfig, PromptConfig, RuntimeConfig,
+                     TopicConfig, UsageLimits)
+from .errors import (CriticalHandlerError, HandlerError, InvalidEventError,
+                     RetryableHandlerError)
+from .events import CloudEvent, GenericCloudEvent, HandlerResult
+from .result import AgentOutput, Evidence, ProcessingResult, ProcessingStatus
+from .status import (BuildStatus, EnvironmentStatus, LLMStatus, ServiceInfo,
+                     VLLMInfo)
 
 __all__ = [
     "AgentHealthDependencies",
@@ -33,9 +29,14 @@ __all__ = [
     "EnvironmentStatus",
     "EventPublishingConfig",
     "Evidence",
+    "ProcessingResult",
+    "ProcessingStatus",
     "HandlerResult",
     "GenericCloudEvent",
     "HandlerError",
+    "InvalidEventError",
+    "RetryableHandlerError",
+    "CriticalHandlerError",
     "LLMStatus",
     "ObservabilityConfig",
     "ProcessResourceRequest",

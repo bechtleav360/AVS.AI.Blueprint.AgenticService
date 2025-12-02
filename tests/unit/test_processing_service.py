@@ -7,7 +7,13 @@ import pytest
 
 from blueprint.agents.config import Config
 from blueprint.agents.base import EventHandler
-from blueprint.agents.models import CloudEvent, HandlerResult
+from blueprint.agents.models import (
+    CloudEvent,
+    HandlerResult,
+    ProcessingResult,
+    ProcessingStatus,
+)
+from blueprint.agents.models.errors import CriticalHandlerError, InvalidEventError, RetryableHandlerError
 from blueprint.agents.registry.component_registry import ComponentRegistry
 from blueprint.agents.services.processing_service import ProcessingService
 
@@ -77,11 +83,10 @@ class TestProcessingService:
         """Test processing event when no handlers are registered."""
         result = await processing_service.process_event(cloud_event)
 
-        assert result.type == "agent.output.test.event"
-        assert result.data["status"] == "no_handler_found"
-        assert result.data["result"] is None
-
-        # FIXME: make sure the service returns an 4XX result in this case, dapr should not acknowledge the packages
+        assert isinstance(result, ProcessingResult)
+        assert result.status == ProcessingStatus.NO_HANDLER_FOUND
+        assert result.result == []
+        assert result.message == "No handler processed this event"
 
     @pytest.mark.asyncio
     async def test_process_event_with_handler_that_processes(self, processing_service, component_registry, cloud_event):
@@ -91,13 +96,12 @@ class TestProcessingService:
 
         result = await processing_service.process_event(cloud_event)
 
-        assert result.type == "agent.output.test.event"
-        assert result.data["status"] == "processed"
-        assert result.data["result"]["processed"] is True
+        assert result.status == ProcessingStatus.PROCESSED
+        assert len(result.result) == 1
+        assert result.result[0].data == {"processed": True}
+        assert result.message == "Message acknowledged"
         assert handler.can_handle_called
         assert handler.handle_called
-
-        # FIXME: make sure the service returns an 2XX result in this case, dapr should acknowledge the packages
 
     @pytest.mark.asyncio
     async def test_process_event_chain_stops_at_first_result(self, processing_service, component_registry, cloud_event):
@@ -110,7 +114,8 @@ class TestProcessingService:
 
         result = await processing_service.process_event(cloud_event)
 
-        assert result.data["result"]["processed_by"] == "Handler1"
+        assert result.status == ProcessingStatus.PROCESSED
+        assert result.result[0].data == {"processed_by": "Handler1"}
         assert handler1.handle_called
         assert not handler2.handle_called  # Handler2 should not be called
 
@@ -127,7 +132,8 @@ class TestProcessingService:
 
         assert handler1.handle_called
         assert handler2.handle_called
-        assert result.data["result"]["processed_by"] == "Handler2"
+        assert result.status == ProcessingStatus.PROCESSED
+        assert result.result[0].data == {"processed_by": "Handler2"}
 
     @pytest.mark.asyncio
     async def test_process_event_respects_handler_priority(self, processing_service, component_registry, cloud_event):
@@ -149,10 +155,11 @@ class TestProcessingService:
         component_registry.register_handler(high)
         component_registry.register_handler(low)
 
-        await processing_service.process_event(cloud_event)
+        result = await processing_service.process_event(cloud_event)
 
         # Low priority (10) should execute before high priority (100)
         assert execution_order == ["Low", "High"]
+        assert result.status == ProcessingStatus.NO_HANDLER_FOUND
 
     @pytest.mark.asyncio
     async def test_process_event_handler_can_skip(self, processing_service, component_registry, cloud_event):
@@ -167,7 +174,8 @@ class TestProcessingService:
 
         assert not handler1.handle_called  # Skipped
         assert handler2.handle_called  # Processed
-        assert result.data["result"]["processed"] is True
+        assert result.status == ProcessingStatus.PROCESSED
+        assert result.result[0].data == {"processed": True}
 
     @pytest.mark.asyncio
     async def test_process_event_context_shared_between_handlers(self, processing_service, component_registry, cloud_event):
@@ -197,8 +205,8 @@ class TestProcessingService:
 
         result = await processing_service.process_event(cloud_event)
 
-        assert result.data["result"]["processed"] is True
-        assert result.data["result"]["data"] == "test_data"
+        assert result.status == ProcessingStatus.PROCESSED
+        assert result.result[0].data == {"processed": True, "data": "test_data"}
 
     @pytest.mark.asyncio
     async def test_process_event_handler_exception_propagates(self, processing_service, component_registry, cloud_event):
@@ -216,12 +224,51 @@ class TestProcessingService:
             await processing_service.process_event(cloud_event)
 
     @pytest.mark.asyncio
+    async def test_process_event_retryable_handler_error(self, processing_service, component_registry, cloud_event):
+        """Retryable handler errors propagate for upstream handling."""
+
+        class RetryableFailingHandler(ConcreteHandler):
+            async def handle_event(self, event: CloudEvent, context: Dict[str, Any]) -> Optional[Any]:
+                raise RetryableHandlerError(status="retry", reason="transient")
+
+        component_registry.register_handler(RetryableFailingHandler("Retry", priority=10))
+
+        with pytest.raises(RetryableHandlerError):
+            await processing_service.process_event(cloud_event)
+
+    @pytest.mark.asyncio
+    async def test_process_event_invalid_handler_error(self, processing_service, component_registry, cloud_event):
+        """Invalid handler errors propagate for upstream handling."""
+
+        class InvalidFailingHandler(ConcreteHandler):
+            async def handle_event(self, event: CloudEvent, context: Dict[str, Any]) -> Optional[Any]:
+                raise InvalidEventError(status="bad", reason="invalid")
+
+        component_registry.register_handler(InvalidFailingHandler("Invalid", priority=10))
+
+        with pytest.raises(InvalidEventError):
+            await processing_service.process_event(cloud_event)
+
+    @pytest.mark.asyncio
+    async def test_process_event_critical_handler_error(self, processing_service, component_registry, cloud_event):
+        """Critical handler errors propagate for upstream handling."""
+
+        class CriticalFailingHandler(ConcreteHandler):
+            async def handle_event(self, event: CloudEvent, context: Dict[str, Any]) -> Optional[Any]:
+                raise CriticalHandlerError(status="critical", reason="fatal")
+
+        component_registry.register_handler(CriticalFailingHandler("Critical", priority=10))
+
+        with pytest.raises(CriticalHandlerError):
+            await processing_service.process_event(cloud_event)
+
+    @pytest.mark.asyncio
     async def test_process_event_adds_request_id(self, processing_service, cloud_event):
         """Test process_event adds request_id to result."""
         result = await processing_service.process_event(cloud_event)
 
-        assert "request_id" in result.data
-        assert result.data["request_id"] is not None
+        assert result.request_id is not None
+        assert isinstance(result.request_id, str)
 
     @pytest.mark.asyncio
     async def test_process_event_with_context(self, processing_service, component_registry, cloud_event):
@@ -237,7 +284,8 @@ class TestProcessingService:
 
         result = await processing_service.process_event(cloud_event, context={"custom_key": "custom_value"})
 
-        assert result.data["result"]["has_custom_key"] is True
+        assert result.status == ProcessingStatus.PROCESSED
+        assert result.result[0].data == {"has_custom_key": True}
 
     @pytest.mark.asyncio
     async def test_process_rest_request(self, processing_service, component_registry):
@@ -248,9 +296,8 @@ class TestProcessingService:
         payload = {"user_id": 123, "action": "test"}
         result = await processing_service.process_rest_request(payload)
 
-        assert result.type == "agent.output.rest.request"
-        assert result.data["status"] == "processed"
-        assert result.data["result"]["processed"] is True
+        assert result.status == ProcessingStatus.PROCESSED
+        assert result.result[0].data == {"processed": True}
 
     @pytest.mark.asyncio
     async def test_process_event_creates_output_event(self, processing_service, component_registry, cloud_event):
@@ -260,10 +307,9 @@ class TestProcessingService:
 
         result = await processing_service.process_event(cloud_event)
 
-        assert result.specversion == "1.0"
-        assert result.type == "agent.output.test.event"
-        assert result.id is not None
-        assert "request_id" in result.data
+        assert isinstance(result, ProcessingResult)
+        assert result.request_id is not None
+        assert result.status == ProcessingStatus.PROCESSED
 
     @pytest.mark.asyncio
     async def test_process_event_with_handler_returning_list_of_results(self, processing_service, component_registry, cloud_event):
@@ -278,13 +324,10 @@ class TestProcessingService:
 
         result = await processing_service.process_event(cloud_event)
 
-        assert result.type == "agent.output.test.event"
-        assert result.data["status"] == "processed"
-        # Result should contain list of data from all results
-        assert isinstance(result.data["result"], list)
-        assert len(result.data["result"]) == 2
-        assert result.data["result"][0] == {"result": "first"}
-        assert result.data["result"][1] == {"result": "second"}
+        assert result.status == ProcessingStatus.PROCESSED
+        assert len(result.result) == 2
+        assert result.result[0].data == {"result": "first"}
+        assert result.result[1].data == {"result": "second"}
 
     @pytest.mark.asyncio
     async def test_process_event_with_multiple_results_publishes_each_event(self, processing_service, component_registry, cloud_event):
@@ -313,6 +356,8 @@ class TestProcessingService:
             assert calls[0][1]["data"] == {"id": 1}
             assert calls[1][1]["event_type"] == "event.published.two"
             assert calls[1][1]["data"] == {"id": 2}
+            assert result.status == ProcessingStatus.PROCESSED
+            assert len(result.result) == 3
 
     @pytest.mark.asyncio
     async def test_process_event_with_empty_list_result(self, processing_service, component_registry, cloud_event):
@@ -322,9 +367,8 @@ class TestProcessingService:
 
         result = await processing_service.process_event(cloud_event)
 
-        assert result.type == "agent.output.test.event"
-        assert result.data["status"] == "processed"
-        assert result.data["result"] == []
+        assert result.status == ProcessingStatus.PROCESSED
+        assert result.result == []
 
     @pytest.mark.asyncio
     async def test_process_event_with_mixed_handler_results(self, processing_service, component_registry, cloud_event):
@@ -350,6 +394,8 @@ class TestProcessingService:
             calls = mock_publish.call_args_list
             assert calls[0][1]["event_type"] == "event.success"
             assert calls[1][1]["event_type"] == "event.notification"
+            assert result.status == ProcessingStatus.PROCESSED
+            assert len(result.result) == 3
 
     @pytest.mark.asyncio
     async def test_process_event_single_result_still_works(self, processing_service, component_registry, cloud_event):
@@ -368,3 +414,5 @@ class TestProcessingService:
             assert mock_publish.call_count == 1
             assert mock_publish.call_args[1]["event_type"] == "event.single"
             assert mock_publish.call_args[1]["data"] == {"single": "result"}
+            assert result.status == ProcessingStatus.PROCESSED
+            assert result.result[0].data == {"single": "result"}

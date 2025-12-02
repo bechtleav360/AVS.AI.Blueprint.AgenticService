@@ -1,15 +1,15 @@
 """Event publishing service for publishing CloudEvents via Dapr pub/sub."""
 
 import logging
-import httpx
-
 from typing import Any
-from opentelemetry import trace
 from uuid import uuid4
 
-from ..models import GenericCloudEvent, CloudEvent
-from ..models.config import EventPublishingConfig, TopicConfig
+import httpx
+from opentelemetry import trace
+
 from ..config import Config
+from ..models import CloudEvent, GenericCloudEvent
+from ..models.config import EventPublishingConfig, TopicConfig
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)

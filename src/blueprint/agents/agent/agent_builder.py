@@ -11,8 +11,8 @@ from pydantic_ai import Agent, Tool
 from pydantic_ai.models import Model
 from pydantic_ai.run import AgentRunResult
 
-from ..config import Config
 from ..base import AgentRuntime
+from ..config import Config
 from .metrics import MetricsExtractor, MetricsRecorder
 from .model_provider import ModelProviderFactory
 from .prompt_loader import PromptLoader
@@ -243,9 +243,7 @@ class AgentBuilder:
             )
         except Exception as e:
             raise ValueError(
-                "Failed to load system prompt '{prompt}' – ensure the prompt file exists or call with_system_prompt().".format(
-                    prompt=prompt_name
-                )
+                f"Failed to load system prompt '{prompt_name}' – ensure the prompt file exists or call with_system_prompt()."
             ) from e
 
         # Check for unexpected kwargs

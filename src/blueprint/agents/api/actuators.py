@@ -13,7 +13,8 @@ from opentelemetry import trace
 
 from ..config import Config
 from ..models.api import ComponentHealth, LivenessResponse, ReadinessResponse
-from ..models.status import BuildStatus, EnvironmentStatus, LLMStatus, ServiceInfo, VLLMInfo
+from ..models.status import (BuildStatus, EnvironmentStatus, LLMStatus,
+                             ServiceInfo, VLLMInfo)
 
 # FIXME: Import your dependencies here.
 # from ..dependencies import get_your_agent, get_data_gateway

@@ -14,8 +14,8 @@ All components must implement:
 from .agent_runtime import AgentRuntime
 from .business_service import BusinessService
 from .event_handler import EventHandler
-from .rest_api import RestApi
 from .interfaces import ComponentInterface
+from .rest_api import RestApi
 
 __all__ = [
     "AgentRuntime",

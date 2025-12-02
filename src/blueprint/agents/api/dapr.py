@@ -4,9 +4,12 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, status
 from opentelemetry import trace
 
+from blueprint.agents.models.errors import CriticalHandlerError, InvalidEventError, RetryableHandlerError
+
+from ..models import ProcessingResult, ProcessingStatus
 from ..models.events import CloudEvent
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -19,8 +22,9 @@ tracer = trace.get_tracer(__name__)
 class DaprApi:
     """Encapsulates all Dapr-related endpoints and logic."""
 
-    def __init__(self, component_registry: "ComponentRegistry"):
+    def __init__(self, component_registry: "ComponentRegistry") -> None:
         self._component_registry = component_registry
+        self._correlation_context = component_registry.get_correlation_context()
         self.router = APIRouter()
         self._register_routes()
         self.required_cloud_event_fields = {"specversion", "id", "source", "type"}
@@ -35,6 +39,10 @@ class DaprApi:
 
         Implementations can override this by adding their own router with the same
         path to provide real topics and routes.
+
+        Note: this complements subscription resources defined in kubernetes
+        (you can choose your approach)
+
         """
 
         # Framework default: no subscriptions declared.
@@ -50,12 +58,17 @@ class DaprApi:
         """
 
         with tracer.start_as_current_span("dapr.handle_event") as span:
+            correlation_token = None
             span.set_attribute("dapr.topic", topic)
             try:
                 logger.debug("Received Dapr event on topic %s", topic)
 
                 original_event_type = cloud_event.type
+                correlation_token = self._correlation_context.set(getattr(cloud_event, "id", None))
                 cloud_event, was_unwrapped = self._unwrap_nested_cloud_event(cloud_event)
+                if was_unwrapped:
+                    self._correlation_context.reset(correlation_token)
+                    correlation_token = self._correlation_context.set(getattr(cloud_event, "id", None))
 
                 context = {
                     "dapr_topic": topic,
@@ -76,7 +89,38 @@ class DaprApi:
                 # Process through the unified service
                 processing_service = self._component_registry.get_processing_service()
                 try:
-                    result_event = await processing_service.process_event(cloud_event, context)
+                    processing_result = await processing_service.process_event(cloud_event, context)
+
+                except RetryableHandlerError as exc:
+                    logger.error(
+                        "Retrying message for topic %s: %s",
+                        topic,
+                        str(exc),
+                        exc_info=True,
+                    )
+                    span.set_status(trace.Status(trace.StatusCode.ERROR, str(exc)))
+                    return {"status": "RETRY", "reason": exc.reason}
+
+                except InvalidEventError as exc:
+                    logger.error(
+                        "Dropping message for topic %s: %s",
+                        topic,
+                        str(exc),
+                        exc_info=True,
+                    )
+                    span.set_status(trace.Status(trace.StatusCode.ERROR, str(exc)))
+                    return {"status": "DROP", "reason": exc.reason}
+
+                except CriticalHandlerError as exc:
+                    logger.error(
+                        "Critical error for topic %s: %s",
+                        topic,
+                        str(exc),
+                        exc_info=True,
+                    )
+                    span.set_status(trace.Status(trace.StatusCode.ERROR, str(exc)))
+                    return {"status": "RETRY", "reason": exc.reason}
+
                 except Exception as exc:  # pragma: no cover - integration behaviour
                     logger.error(
                         "Processing service failed for Dapr topic %s: %s",
@@ -87,20 +131,26 @@ class DaprApi:
                     span.set_status(trace.Status(trace.StatusCode.ERROR, str(exc)))
                     return {"status": "RETRY", "reason": "processing_failed"}
 
-                # Return Dapr-compatible response based on result event data
-                result_status = None
-                if isinstance(result_event.data, dict):
-                    result_status = result_event.data.get("status")
+                if not isinstance(processing_result, ProcessingResult):
+                    logger.error(
+                        "Processing service returned unexpected result type %s",
+                        type(processing_result),
+                    )
+                    return {"status": "RETRY", "reason": "invalid_processing_result"}
 
-                if result_status == "processed":
+                # Return Dapr-compatible response based on result status
+                result_status = processing_result.status
+
+                if result_status is ProcessingStatus.PROCESSED:
                     return {"status": "SUCCESS"}
 
                 logger.warning(
                     "Processing service returned non-success status %s for topic %s",
-                    result_status,
+                    result_status.value,
                     topic,
                 )
-                return {"status": "RETRY", "reason": result_status or "unknown_status"}
+                failure_reason = processing_result.message or result_status.value or "unknown_status"
+                return {"status": "RETRY", "reason": failure_reason}
 
             except Exception as e:
                 span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
@@ -109,6 +159,8 @@ class DaprApi:
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail="Dapr event handling failed",
                 ) from e
+            finally:
+                self._correlation_context.reset(correlation_token)
 
     def _unwrap_nested_cloud_event(self, event: CloudEvent) -> tuple[CloudEvent, bool]:
         """Return inner CloudEvent when wrapped by Dapr envelope."""

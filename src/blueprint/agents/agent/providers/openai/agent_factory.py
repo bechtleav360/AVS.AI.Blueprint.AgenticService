@@ -13,7 +13,8 @@ from pydantic_ai import Agent, Tool
 from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModelSettings
 
-from ...agent_factory import AgentFactoryStrategy  # type: ignore[import-not-found]
+from ...agent_factory import \
+    AgentFactoryStrategy  # type: ignore[import-not-found]
 
 logger = logging.getLogger(__name__)
 

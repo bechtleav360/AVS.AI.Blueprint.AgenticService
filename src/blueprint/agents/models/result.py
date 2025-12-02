@@ -1,10 +1,13 @@
 """Generic result models for agent processing outcomes."""
 
 from datetime import datetime
+from enum import Enum
 from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+from .events import HandlerResult
 
 
 class Evidence(BaseModel):
@@ -92,3 +95,20 @@ class AnalysisResponse(BaseModel):
     success: bool = Field(..., description="Indicates whether the analysis was successfully completed.")
     result: AgentOutput | None = Field(None, description="The output of the analysis if successful.")
     error: str | None = Field(None, description="An error message if the analysis failed.")
+
+
+class ProcessingStatus(str, Enum):
+    """Enumeration of processing outcomes."""
+
+    PROCESSED = "processed"
+    NO_HANDLER_FOUND = "no_handler_found"
+
+
+class ProcessingResult(BaseModel):
+    """Structured result emitted by the processing service."""
+
+    request_id: str = Field(..., description="Unique identifier for the processing request.")
+    status: ProcessingStatus = Field(..., description="Processing status (e.g., 'processed', 'no_handler_found').")
+    result: list[HandlerResult] = Field(default_factory=list, description="Handler results produced during processing.")
+    metadata: dict[str, Any] = Field(default_factory=dict, description="Additional metadata about the processing run.")
+    message: str | None = Field(None, description="Optional explanatory message for the processing outcome.")

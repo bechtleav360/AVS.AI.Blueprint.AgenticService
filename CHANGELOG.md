@@ -2,6 +2,11 @@
 
 ## [0.4.0] - Planned
 
+## [0.3.10] - 2025-11-27
+
+- [ ] Make the status of the Handler Result an Enum
+- [ ]  Improve logging for parallel event consumption. Configure the logging formatter to always print the current event ID
+- [ ]  Add endpoint to receive logs identified either bei span id or event id
 
 
 ## [0.3.9] - 2025-11-27

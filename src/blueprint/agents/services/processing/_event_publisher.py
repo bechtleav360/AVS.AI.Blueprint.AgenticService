@@ -5,8 +5,8 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from ...config import Config
-from ...models.events import CloudEvent, GenericCloudEvent
 from ...models.config import EventPublishingConfig
+from ...models.events import CloudEvent, GenericCloudEvent
 
 if TYPE_CHECKING:  # pragma: no cover
     from ...registry.component_registry import ComponentRegistry

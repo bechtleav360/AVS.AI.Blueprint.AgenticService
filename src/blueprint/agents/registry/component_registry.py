@@ -8,16 +8,17 @@ ProcessingService.
 import logging
 from typing import Any, TypeVar, overload
 
-from blueprint.agents.services.cache_service import CacheService
-from blueprint.agents.services.event_publishing_service import EventPublishingService
-from blueprint.agents.services.processing_service import ProcessingService
-
 from blueprint.agents.base.agent_runtime import AgentRuntime
 from blueprint.agents.base.business_service import BusinessService
 from blueprint.agents.base.event_handler import EventHandler
 from blueprint.agents.base.rest_api import RestApi
 from blueprint.agents.config import Config
-
+from blueprint.agents.config.custom_logging import (CorrelationContext,
+                                                    CorrelationContextProvider)
+from blueprint.agents.services.cache_service import CacheService
+from blueprint.agents.services.event_publishing_service import \
+    EventPublishingService
+from blueprint.agents.services.processing_service import ProcessingService
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,7 @@ class ComponentRegistry:
             settings: Application configuration
         """
         self._settings = settings
+        self._correlation_context = CorrelationContextProvider.get_instance()
 
         self._processing_service: Any | None = None
         self._event_publishing_service: Any | None = None
@@ -163,6 +165,11 @@ class ComponentRegistry:
             Application configuration
         """
         return self._settings
+
+    def get_correlation_context(self) -> CorrelationContext:
+        """Return the correlation context used for logging."""
+
+        return self._correlation_context
 
     # ========================================================================
     # ProcessingService Management

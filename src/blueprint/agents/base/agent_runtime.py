@@ -9,8 +9,8 @@ from pydantic_ai import Agent
 from pydantic_ai.run import AgentRunResult
 from pydantic_ai.tools import AgentDepsT
 
-from ..config import Config
 from ..agent.prompt_loader import PromptLoader
+from ..config import Config
 
 if TYPE_CHECKING:
     from blueprint.agents.registry.component_registry import ComponentRegistry

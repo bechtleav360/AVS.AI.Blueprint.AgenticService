@@ -2,75 +2,85 @@
 
 from typing import Any
 
+from ...models import ProcessingResult, ProcessingStatus
+from ...models.events import HandlerResult
+
 
 class _ResultBuilder:
     """Builds processing result data structures."""
 
     @staticmethod
-    def extract_handler_result(
-        handler_result: Any,
-    ) -> tuple[str | None, Any | None, dict[str, Any]] | tuple[list[tuple[str | None, Any | None, dict[str, Any]]], None, None]:
+    def extract_handler_result(handler_result: Any) -> list[HandlerResult]:
         """
-        Extract event_type, data, and metadata from handler result.
-
-        Supports both single HandlerResult and list of HandlerResults.
+        Normalize handler outputs to a list of HandlerResult objects.
 
         Args:
             handler_result: Result from handler execution (single result, list of results, or other)
 
         Returns:
-            For single result: Tuple of (event_type, data, metadata)
-            For multiple results: Tuple of (list_of_tuples, None, None) where each tuple is (event_type, data, metadata)
+            List of HandlerResult objects
         """
-        # Handle list of HandlerResults
-        if isinstance(handler_result, list) and handler_result and all(hasattr(item, "event_type") for item in handler_result):
-            results = []
-            for item in handler_result:
-                event_type = item.event_type if hasattr(item, "event_type") else None
-                data = item.data if hasattr(item, "data") else None
-                metadata = (item.metadata or {}) if hasattr(item, "metadata") else {}
-                results.append((event_type, data, metadata))
-            return results, None, None
 
-        # Handle single HandlerResult
-        event_type_to_publish = None
-        result_data_dict = None
-        result_metadata = {}
+        def _to_handler_result(value: Any) -> HandlerResult:
+            if isinstance(value, HandlerResult):
+                return value
 
-        if handler_result is not None:
-            if hasattr(handler_result, "event_type") and hasattr(handler_result, "data"):
-                event_type_to_publish = handler_result.event_type
-                result_data_dict = handler_result.data
-                if hasattr(handler_result, "metadata"):
-                    result_metadata = handler_result.metadata or {}
-            else:
-                result_data_dict = handler_result
+            if isinstance(value, dict):
+                event_type = value.get("event_type") or None
+                raw_metadata = value.get("metadata")
+                metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
 
-        return event_type_to_publish, result_data_dict, result_metadata
+                data = value.get("data")
+                if not isinstance(data, dict):
+                    if event_type is None and not metadata:
+                        # Arbitrary dict payload without special keys – treat entire dict as data
+                        data = value
+                    else:
+                        data = {"value": data}
+
+                return HandlerResult(
+                    event_type=event_type,
+                    data=data,
+                    metadata=metadata,
+                )
+
+            return HandlerResult(event_type=None, data=value, metadata={})
+
+        if handler_result is None:
+            return []
+
+        # Handler returned a list of results
+        if isinstance(handler_result, list):
+            return [_to_handler_result(item) for item in handler_result]
+
+        # Single result (HandlerResult, dict, or other)
+        return [_to_handler_result(handler_result)]
 
     @staticmethod
-    def build_result_data(request_id: str, handler_result: Any, event_type_to_publish: str | None) -> dict[str, Any]:
+    def build_result_data(
+        request_id: str,
+        handler_results: list[HandlerResult],
+        status: ProcessingStatus,
+    ) -> ProcessingResult:
         """
         Build result data dictionary.
 
         Args:
             request_id: Request identifier
-            handler_result: Result from handler
-            event_type_to_publish: Event type if publishing
+            handler_results: List of handler results
+            status: Processing status indicator
 
         Returns:
-            Result data dictionary
+            ProcessingResult model
         """
-        status = "processed" if handler_result is not None else "no_handler_found"
+        message = "Message acknowledged"
+        if status == ProcessingStatus.NO_HANDLER_FOUND:
+            message = "No handler processed this event"
 
-        result_data = {
-            "request_id": request_id,
-            "status": status,
-            "result": handler_result,
-            "metadata": {},
-        }
-
-        if handler_result is None:
-            result_data["message"] = "No handler processed this event"
-
-        return result_data
+        return ProcessingResult(
+            request_id=request_id,
+            status=status,
+            result=handler_results,
+            metadata={},
+            message=message,
+        )

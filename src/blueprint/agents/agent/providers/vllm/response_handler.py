@@ -9,7 +9,8 @@ import json
 import logging
 from typing import Any
 
-from ...response_handler import ResponseHandlerStrategy, T  # type: ignore[import-not-found]
+from ...response_handler import (  # type: ignore[import-not-found]
+    ResponseHandlerStrategy, T)
 
 logger = logging.getLogger(__name__)
 
