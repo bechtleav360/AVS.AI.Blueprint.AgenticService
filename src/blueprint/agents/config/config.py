@@ -196,8 +196,11 @@ class Config:
                 config[key] = value
 
         # Override with runtime-specific config if it exists
-        runtime_key = f"runtime.{runtime_name}"
-        runtime_config = self.settings.get(runtime_key, {})
+        # Try both 'runtimes.<name>' (new) and 'runtime.<name>' (old) patterns
+        runtime_config = self.settings.get(f"runtimes.{runtime_name}", {})
+        if not runtime_config:
+            runtime_config = self.settings.get(f"runtime.{runtime_name}", {})
+
         if runtime_config:
             config.update(runtime_config)
             logger.debug(
@@ -216,6 +219,9 @@ class Config:
     def get_ai_config(self, runtime_name: str = "default") -> AIConfig:
         """Get AI-related configuration for a specific runtime.
 
+        Supports both old (ai_model_*) and new (model_*) configuration patterns.
+        The new pattern is preferred for runtime-specific configs.
+
         Args:
             runtime_name: Name of the runtime to get AI config for.
 
@@ -224,27 +230,41 @@ class Config:
         """
         runtime_config = self.get_runtime_config(runtime_name)
 
+        # Helper to get config value with fallback from new to old pattern
+        def get_with_fallback(new_key: str, old_key: str) -> Any:
+            """Get config value, trying new pattern first, then old pattern."""
+            # Try runtime-specific new pattern first
+            value = runtime_config.get(new_key)
+            if value is not None:
+                return value
+            # Try runtime-specific old pattern
+            value = runtime_config.get(old_key)
+            if value is not None:
+                return value
+            # Fall back to global old pattern
+            return self.get(old_key)
+
         return AIConfig(
-            provider=runtime_config.get("ai_model_provider", self.get("ai_model_provider")),
-            model_name=runtime_config.get("ai_model_name", self.get("ai_model_name")),
-            api_key=runtime_config.get("ai_model_api_key", self.get("ai_model_api_key")),
-            base_url=runtime_config.get("ai_model_base_url", self.get("ai_model_base_url")),
-            max_tokens=runtime_config.get("ai_model_max_tokens", self.get("ai_model_max_tokens")),
-            temperature=runtime_config.get("ai_model_temperature", self.get("ai_model_temperature")),
-            concurrency_limit=runtime_config.get("ai_concurrent_requests", self.get("ai_concurrent_requests")),
+            provider=get_with_fallback("model_provider", "ai_model_provider"),
+            model_name=get_with_fallback("model_name", "ai_model_name"),
+            api_key=get_with_fallback("model_api_key", "ai_model_api_key"),
+            base_url=get_with_fallback("model_base_url", "ai_model_base_url"),
+            max_tokens=get_with_fallback("model_max_tokens", "ai_model_max_tokens"),
+            temperature=get_with_fallback("model_temperature", "ai_model_temperature"),
+            concurrency_limit=runtime_config.get("concurrent_requests", runtime_config.get("ai_concurrent_requests", self.get("ai_concurrent_requests"))),
             usage_limits=UsageLimits(
-                request_limit=runtime_config.get("ai_usage_request_limit", self.get("ai_usage_request_limit")),
+                request_limit=runtime_config.get("usage_request_limit", runtime_config.get("ai_usage_request_limit", self.get("ai_usage_request_limit"))),
                 input_tokens_limit=runtime_config.get(
-                    "ai_usage_input_tokens_limit",
-                    self.get("ai_usage_input_tokens_limit"),
+                    "usage_input_tokens_limit",
+                    runtime_config.get("ai_usage_input_tokens_limit", self.get("ai_usage_input_tokens_limit")),
                 ),
                 output_tokens_limit=runtime_config.get(
-                    "ai_usage_output_tokens_limit",
-                    self.get("ai_usage_output_tokens_limit"),
+                    "usage_output_tokens_limit",
+                    runtime_config.get("ai_usage_output_tokens_limit", self.get("ai_usage_output_tokens_limit")),
                 ),
                 total_tokens_limit=runtime_config.get(
-                    "ai_usage_total_tokens_limit",
-                    self.get("ai_usage_total_tokens_limit"),
+                    "usage_total_tokens_limit",
+                    runtime_config.get("ai_usage_total_tokens_limit", self.get("ai_usage_total_tokens_limit")),
                 ),
             ),
         )

@@ -33,8 +33,10 @@ class _HealthChecker:
                 try:
                     health_result = await runtime.health_check()
                     results[name] = health_result
-                    logger.info("Health check passed for runtime %s", name)
+                    # Only log successful health checks at debug level
+                    logger.debug("Health check passed for runtime %s", name)
                 except Exception as e:
+                    # Log failures at error level
                     logger.error("Health check failed for runtime %s: %s", name, str(e))
                     results[name] = {"status": "unhealthy", "error": str(e)}
 

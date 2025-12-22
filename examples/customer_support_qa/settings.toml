@@ -1,0 +1,36 @@
+[default]
+app_name = "Customer Support Q&A"
+app_version = "0.1.0"
+app_description = "A customer support Q&A system with senior-junior agent collaboration using Blueprint Agents framework"
+debug = true
+
+[default.server]
+host = "0.0.0.0"
+port = 8001
+reload = true
+
+[default.logging]
+level = "DEBUG"
+format = "json"
+
+[default.observability]
+otel_enabled = false
+token_metrics_enabled = true
+
+[default.runtimes.junior_support]
+model_provider = "vllm"
+model_base_url = "https://avs-vllm.q14.net/v1"
+model_name = "default"
+model_max_tokens = 2000
+model_temperature = 0.7
+prompt_directory = "src/prompts"
+system_prompt_name = "junior_system"
+
+[default.runtimes.senior_support]
+model_provider = "vllm"
+model_base_url = "https://avs-vllm.q14.net/v1"
+model_name = "default"
+model_max_tokens = 200
+model_temperature = 0.2
+prompt_directory = "src/prompts"
+system_prompt_name = "senior_system"

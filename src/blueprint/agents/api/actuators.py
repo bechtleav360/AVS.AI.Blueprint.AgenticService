@@ -121,6 +121,10 @@ class ActuatorApi:
 
                 span.set_attribute("health_status", overall_status)
 
+                # Only log if health check fails
+                if overall_status != "UP":
+                    logger.warning("Readiness probe failed: %s", components)
+
                 return ReadinessResponse(status=overall_status, components=components)
 
             except Exception as exc:  # pragma: no cover - defensive logging
@@ -135,7 +139,7 @@ class ActuatorApi:
         """Liveness probe to indicate the service is running."""
         if self.config and self.config.has_validation_errors():
             logger.error(
-                "Configuration validation errors detected: %s",
+                "Liveness probe failed - configuration validation errors: %s",
                 self.config.get_validation_errors(),
             )
             raise HTTPException(
@@ -146,6 +150,7 @@ class ActuatorApi:
                 },
             )
 
+        # Only log failures - successful liveness checks are not logged
         return LivenessResponse(status="UP")
 
     async def env_status(self) -> EnvironmentStatus:

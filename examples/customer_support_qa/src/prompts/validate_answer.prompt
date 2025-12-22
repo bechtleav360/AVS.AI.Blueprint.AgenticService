@@ -1,0 +1,17 @@
+Validate the following customer support answer:
+
+Customer Question: {question}
+
+Junior Agent's Answer:
+{answer}
+
+Junior Agent's Confidence: {confidence}
+
+Quickly validate if this answer is:
+1. Factually accurate
+2. Addresses the customer's question
+3. Professional and appropriate
+4. Free from misinformation
+
+Remember to respond in JSON format with "status" and "reason" fields.
+Be BRIEF - just 1-2 sentences explaining your decision.

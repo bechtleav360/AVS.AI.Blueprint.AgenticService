@@ -7,6 +7,27 @@ import logging
 import sys
 
 
+class HealthCheckFilter(logging.Filter):
+    """Filter to suppress successful health check requests from logs."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Filter out successful health check requests.
+
+        Only logs health checks if they fail (status >= 400).
+        """
+        message = record.getMessage()
+
+        # Check if this is a uvicorn access log for health endpoints
+        if hasattr(record, 'name') and record.name == 'uvicorn.access':
+            # Filter out successful health check requests (status 200)
+            if '/health/live' in message or '/health/ready' in message:
+                # Only log if it's an error (status >= 400)
+                if ' 200 ' in message or ' 204 ' in message:
+                    return False
+
+        return True
+
+
 class CorrelationContext:
     """Tracks correlation IDs via context variables."""
 
@@ -69,6 +90,7 @@ class LoggingManager:
         self._configured = False
         self._correlation_context = correlation or CorrelationContextProvider.get_instance()
         self._correlation_filter = self._correlation_context.build_filter()
+        self._health_check_filter = HealthCheckFilter()
 
     def configure(self, log_level: str = "INFO", log_format: str = "text", suppress_noisy_loggers: bool = True) -> None:
         """Configure logging for the application.
@@ -92,6 +114,9 @@ class LoggingManager:
 
             # Attach correlation-id filter to all root handlers
             self._attach_correlation_filter()
+
+            # Attach health check filter to uvicorn.access logger
+            self._attach_health_check_filter()
 
             # Suppress noisy loggers
             if suppress_noisy_loggers:
@@ -167,6 +192,14 @@ class LoggingManager:
         for handler in root_logger.handlers:
             if self._correlation_filter not in handler.filters:
                 handler.addFilter(self._correlation_filter)
+
+    def _attach_health_check_filter(self) -> None:
+        """Attach the health check filter to uvicorn.access logger."""
+
+        uvicorn_access_logger = logging.getLogger('uvicorn.access')
+        if self._health_check_filter not in uvicorn_access_logger.filters:
+            uvicorn_access_logger.addFilter(self._health_check_filter)
+            self.logger.debug("Attached health check filter to uvicorn.access logger")
 
     def set_level(self, log_level: str) -> None:
         """Change the logging level dynamically.

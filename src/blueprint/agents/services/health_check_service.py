@@ -65,11 +65,14 @@ class AIProviderHealthChecker:
                     health_url = base_url.rstrip("/").removesuffix("/v1") + "/health"
                     response = await client.get(health_url, headers=headers)
                     response.raise_for_status()
+                    # Only log successful health checks at debug level
+                    logger.debug("vLLM health check passed: %s", base_url)
                     return ComponentHealth(
                         status="healthy",
                         message=f"vLLM reachable at {base_url}",
                     )
             except httpx.RequestError as e:
+                # Log failures at warning level
                 logger.warning("vLLM health check failed: %s", e)
                 return ComponentHealth(
                     status="unhealthy",

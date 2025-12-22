@@ -164,6 +164,30 @@
                 "DYNACONF_APP_ENVIRONMENT": "development"
             },
             "preLaunchTask": "pip:install"
+        },
+        {
+            "name": "FastAPI: examples/customer_support_qa",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "uvicorn",
+            "args": [
+                "examples.customer_support_qa.src.main:app",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "5000",
+                "--reload"
+            ],
+            "jinja": true,
+            "justMyCode": false,
+            "console": "integratedTerminal",
+            "env": {
+                "APP_NAME": "customer-support-qa",
+                "LOG_LEVEL": "DEBUG",
+                "LOG_FORMAT": "json",
+                "DYNACONF_APP_ENVIRONMENT": "development"
+            },
+            "preLaunchTask": "pip:install"
         }
     ],
     "compounds": [

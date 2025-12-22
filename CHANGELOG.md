@@ -1,6 +1,12 @@
 # Changelog
-
 ## [0.4.0] - Planned
+
+## [0.3.11] - 2025-12-22
+
+### Highlights
+- Added a  two-agent **Customer Support Q&A** example app and documented the new workflow, configuration guide, and config validation script.
+- `Config.get_ai_config()` now understands both `model_*` and legacy `ai_model_*` keys plus plural/singular runtime sections.
+- Health check logging is quiet unless something fails (new filter, toned-down actuator + provider logs).
 
 ## [0.3.10] - 2025-11-27
 
