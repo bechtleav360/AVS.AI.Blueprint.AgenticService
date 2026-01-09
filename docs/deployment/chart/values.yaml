@@ -221,6 +221,7 @@ readinessProbe:
   periodSeconds: 5
   timeoutSeconds: 3
   failureThreshold: 3
+  successThreshold: 1  # Only 1 successful probe needed to mark ready again
 
 # Pod annotations
 podAnnotations: {}
