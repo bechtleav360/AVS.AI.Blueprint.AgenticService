@@ -13,7 +13,7 @@ from ..agent.prompt_loader import PromptLoader
 from ..config import Config
 
 if TYPE_CHECKING:
-    from blueprint.agents.registry.component_registry import ComponentRegistry
+    from ..registry.component_registry import ComponentRegistry
 
 logger: logging.Logger = logging.getLogger(__name__)
 

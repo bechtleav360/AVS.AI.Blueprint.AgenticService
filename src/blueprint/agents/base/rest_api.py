@@ -17,7 +17,7 @@ from ..config import Config
 from ..models import ProcessResourceResponse
 
 if TYPE_CHECKING:
-    from blueprint.agents.registry.component_registry import ComponentRegistry
+    from ..registry.component_registry import ComponentRegistry
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)

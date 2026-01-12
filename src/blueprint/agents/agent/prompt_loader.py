@@ -3,7 +3,7 @@
 import logging
 from pathlib import Path
 
-from blueprint.agents.config.config import Config
+from ..config import Config
 
 logger = logging.getLogger(__name__)
 

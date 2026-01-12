@@ -5,10 +5,10 @@ from pathlib import Path
 from blueprint.agents.agent import AgentBuilder
 from blueprint.agents.app_builder import AppBuilder
 from blueprint.agents.config import Config
-from pydantic_ai import Agent
+from blueprint.agents.base import AgentRuntime
 
-from .api import SupportQARestApi
-from .services import SupportQAService
+from examples.customer_support_qa.src.api import SupportQARestApi
+from examples.customer_support_qa.src.services import SupportQAService
 
 config = Config(
     settings_files=[
@@ -18,14 +18,14 @@ config = Config(
     root_path=Path(__file__).parent.parent,
 )
 
-junior_agent: Agent = (
+junior_agent: AgentRuntime = (
     AgentBuilder(config, runtime_name="junior_support")
     .with_model_from_config("junior_support")
     .with_system_prompt("junior_system")
     .build(name="junior_support")
 )
 
-senior_agent: Agent = (
+senior_agent: AgentRuntime = (
     AgentBuilder(config, runtime_name="senior_support")
     .with_model_from_config("senior_support")
     .with_system_prompt("senior_system")

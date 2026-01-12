@@ -7,7 +7,7 @@ without enforcing inheritance.
 
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from blueprint.agents.config.config import Config
+from ..config import Config
 
 if TYPE_CHECKING:
     from ..registry.component_registry import ComponentRegistry

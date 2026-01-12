@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, HTTPException, status
 from opentelemetry import trace
 
-from blueprint.agents.models.errors import CriticalHandlerError, InvalidEventError, RetryableHandlerError
+from ..models.errors import CriticalHandlerError, InvalidEventError, RetryableHandlerError
 
 from ..models import ProcessingResult, ProcessingStatus
 from ..models.events import CloudEvent

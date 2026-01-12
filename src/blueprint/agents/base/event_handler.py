@@ -29,7 +29,7 @@ tracer = trace.get_tracer(__name__)
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from blueprint.agents.registry.component_registry import ComponentRegistry
+    from ..registry.component_registry import ComponentRegistry
 
 
 class EventHandler(ABC):
@@ -75,6 +75,7 @@ class EventHandler(ABC):
         Returns:
             The component name set during initialization
         """
+
         return self._name
 
     def get_registry(self) -> ComponentRegistry:
@@ -86,6 +87,7 @@ class EventHandler(ABC):
         Raises:
             RuntimeError: If registry is not wired
         """
+
         if not hasattr(self, "_component_registry") or self._component_registry is None:
             raise RuntimeError(f"Component registry not linked to handler '{self._name}'")
         return self._component_registry
@@ -109,6 +111,7 @@ class EventHandler(ABC):
 
         Override to perform initialization tasks.
         """
+
         pass
 
     async def on_shutdown(self) -> None:
@@ -116,6 +119,7 @@ class EventHandler(ABC):
 
         Override to perform cleanup tasks.
         """
+
         pass
 
     def link_config(self, config: Config) -> None:
@@ -127,6 +131,7 @@ class EventHandler(ABC):
         Args:
             config: The Config instance
         """
+
         self._config = config
 
     def link_component_registry(self, registry: ComponentRegistry) -> None:
@@ -185,6 +190,7 @@ class EventHandler(ABC):
         Returns:
             True if this handler can process the event, False otherwise.
         """
+
         raise NotImplementedError
 
     @abstractmethod
@@ -207,6 +213,7 @@ class EventHandler(ABC):
             * A ``list[HandlerResult]`` to publish multiple events. Each result
               with an ``event_type`` will be published as a separate event.
         """
+
         raise NotImplementedError
 
     def get_agent(self, agent_name: str) -> AgentRuntime:
