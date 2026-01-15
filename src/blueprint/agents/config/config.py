@@ -196,16 +196,29 @@ class Config:
 
         # Override with runtime-specific config if it exists
         # Try both 'runtimes.<name>' (new) and 'runtime.<name>' (old) patterns
-        runtime_config = self.settings.get(f"runtimes.{runtime_name}", {})
-        if not runtime_config:
-            runtime_config = self.settings.get(f"runtime.{runtime_name}", {})
+        # Note: Dynaconf stores keys in uppercase, so we need to check both cases
+        runtime_config = self.settings.get(f"runtimes.{runtime_name}")
+        if runtime_config is None:
+            runtime_config = self.settings.get(f"runtimes.{runtime_name.upper()}")
+        if runtime_config is None:
+            runtime_config = self.settings.get(f"runtime.{runtime_name}")
+        if runtime_config is None:
+            runtime_config = self.settings.get(f"runtime.{runtime_name.upper()}")
+
+        if runtime_config is None:
+            runtime_config = {}
 
         if runtime_config:
-            config.update(runtime_config)
+            # Convert uppercase keys to lowercase for consistency
+            normalized_config = {}
+            for key, value in runtime_config.items():
+                normalized_key = key.lower() if isinstance(key, str) else key
+                normalized_config[normalized_key] = value
+            config.update(normalized_config)
             logger.debug(
                 "Loaded runtime-specific config for '%s': %d settings",
                 runtime_name,
-                len(runtime_config),
+                len(normalized_config),
             )
         else:
             logger.debug(
