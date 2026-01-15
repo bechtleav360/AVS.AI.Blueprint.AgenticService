@@ -9,8 +9,7 @@ from dynaconf import Dynaconf, Validator
 from dynaconf.utils.boxing import DynaBox
 from dynaconf.validator import ValidationError
 
-from ..models.config import (AIConfig, CacheConfig, EventPublishingConfig,
-                             ObservabilityConfig, PromptConfig, UsageLimits)
+from ..models.config import AIConfig, CacheConfig, EventPublishingConfig, ObservabilityConfig, PromptConfig, UsageLimits
 from .custom_logging import LoggingManager
 
 logger = logging.getLogger(__name__)
@@ -230,42 +229,49 @@ class Config:
         """
         runtime_config = self.get_runtime_config(runtime_name)
 
-        # Helper to get config value with fallback from new to old pattern
-        def get_with_fallback(new_key: str, old_key: str) -> Any:
-            """Get config value, trying new pattern first, then old pattern."""
-            # Try runtime-specific new pattern first
-            value = runtime_config.get(new_key)
+        # Helper to get config value with fallback from runtime-specific to global
+        def get_with_fallback(key: str) -> Any:
+            """Get config value, trying runtime-specific first, then global.
+
+            Priority order:
+            1. Runtime-specific (e.g., model_api_key in runtimes.evaluator)
+            2. Global (e.g., model_api_key at root level)
+            """
+            # Try runtime-specific first
+            value = runtime_config.get(key)
             if value is not None:
                 return value
-            # Try runtime-specific old pattern
-            value = runtime_config.get(old_key)
-            if value is not None:
-                return value
-            # Fall back to global old pattern
-            return self.get(old_key)
+            # Fall back to global
+            return self.get(key)
+
+        provider = get_with_fallback("model_provider")
+        model_name = get_with_fallback("model_name")
+        api_key = get_with_fallback("model_api_key")
+        base_url = get_with_fallback("model_base_url")
+
+        # Log configuration resolution for debugging
+        logger.debug(
+            "AI config for runtime '%s': provider=%s, model=%s, has_api_key=%s, base_url=%s",
+            runtime_name,
+            provider,
+            model_name,
+            "yes" if api_key else "no",
+            base_url,
+        )
 
         return AIConfig(
-            provider=get_with_fallback("model_provider", "ai_model_provider"),
-            model_name=get_with_fallback("model_name", "ai_model_name"),
-            api_key=get_with_fallback("model_api_key", "ai_model_api_key"),
-            base_url=get_with_fallback("model_base_url", "ai_model_base_url"),
-            max_tokens=get_with_fallback("model_max_tokens", "ai_model_max_tokens"),
-            temperature=get_with_fallback("model_temperature", "ai_model_temperature"),
-            concurrency_limit=runtime_config.get("concurrent_requests", runtime_config.get("ai_concurrent_requests", self.get("ai_concurrent_requests"))),
+            provider=provider,
+            model_name=model_name,
+            api_key=api_key,
+            base_url=base_url,
+            max_tokens=get_with_fallback("model_max_tokens"),
+            temperature=get_with_fallback("model_temperature"),
+            concurrency_limit=get_with_fallback("concurrent_requests"),
             usage_limits=UsageLimits(
-                request_limit=runtime_config.get("usage_request_limit", runtime_config.get("ai_usage_request_limit", self.get("ai_usage_request_limit"))),
-                input_tokens_limit=runtime_config.get(
-                    "usage_input_tokens_limit",
-                    runtime_config.get("ai_usage_input_tokens_limit", self.get("ai_usage_input_tokens_limit")),
-                ),
-                output_tokens_limit=runtime_config.get(
-                    "usage_output_tokens_limit",
-                    runtime_config.get("ai_usage_output_tokens_limit", self.get("ai_usage_output_tokens_limit")),
-                ),
-                total_tokens_limit=runtime_config.get(
-                    "usage_total_tokens_limit",
-                    runtime_config.get("ai_usage_total_tokens_limit", self.get("ai_usage_total_tokens_limit")),
-                ),
+                request_limit=get_with_fallback("usage_request_limit"),
+                input_tokens_limit=get_with_fallback("usage_input_tokens_limit"),
+                output_tokens_limit=get_with_fallback("usage_output_tokens_limit"),
+                total_tokens_limit=get_with_fallback("usage_total_tokens_limit"),
             ),
         )
 
