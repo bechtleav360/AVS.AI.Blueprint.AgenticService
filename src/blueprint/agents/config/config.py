@@ -195,25 +195,29 @@ class Config:
                 config[key] = value
 
         # Override with runtime-specific config if it exists
-        # Try both 'runtimes.<name>' (new) and 'runtime.<name>' (old) patterns
-        # Note: Dynaconf stores keys in uppercase, so we need to check both cases
+        runtime_config = None
+
+        # Try to find runtime-specific config
         runtime_config = self.settings.get(f"runtimes.{runtime_name}")
-        if runtime_config is None:
+        if not runtime_config:
             runtime_config = self.settings.get(f"runtimes.{runtime_name.upper()}")
-        if runtime_config is None:
+        if not runtime_config:
+            runtimes = self.settings.get("runtimes")
+            if runtimes and hasattr(runtimes, "get"):
+                runtime_config = runtimes.get(runtime_name) or runtimes.get(runtime_name.upper())
+        if not runtime_config:
             runtime_config = self.settings.get(f"runtime.{runtime_name}")
-        if runtime_config is None:
+        if not runtime_config:
             runtime_config = self.settings.get(f"runtime.{runtime_name.upper()}")
 
-        if runtime_config is None:
-            runtime_config = {}
-
+        # Process runtime-specific config if found
         if runtime_config:
             # Convert uppercase keys to lowercase for consistency
             normalized_config = {}
             for key, value in runtime_config.items():
                 normalized_key = key.lower() if isinstance(key, str) else key
                 normalized_config[normalized_key] = value
+
             config.update(normalized_config)
             logger.debug(
                 "Loaded runtime-specific config for '%s': %d settings",
@@ -225,7 +229,6 @@ class Config:
                 "No runtime-specific config found for '%s', using global defaults",
                 runtime_name,
             )
-
         return config
 
     def get_ai_config(self, runtime_name: str = "default") -> AIConfig:
@@ -240,7 +243,10 @@ class Config:
         Returns:
             AIConfig model with runtime-specific overrides.
         """
-        runtime_config = self.get_runtime_config(runtime_name)
+        # Get runtime-specific settings directly from settings
+        runtime_settings = self.settings.get(f"runtimes.{runtime_name}")
+        if not runtime_settings:
+            runtime_settings = {}
 
         # Helper to get config value with fallback from runtime-specific to global
         def get_with_fallback(key: str) -> Any:
@@ -251,7 +257,7 @@ class Config:
             2. Global (e.g., model_api_key at root level)
             """
             # Try runtime-specific first
-            value = runtime_config.get(key)
+            value = runtime_settings.get(key)
             if value is not None:
                 return value
             # Fall back to global
