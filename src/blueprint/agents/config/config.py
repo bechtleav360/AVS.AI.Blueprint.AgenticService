@@ -177,14 +177,14 @@ class Config:
         # Start with empty config
         config = {}
 
-        # Add global defaults for common keys
+        # Add global defaults for common keys (using new model_* pattern)
         global_keys = [
-            "ai_model_provider",
-            "ai_model_base_url",
-            "ai_model_api_key",
-            "ai_model_max_tokens",
-            "ai_model_temperature",
-            "ai_concurrent_requests",
+            "model_provider",
+            "model_base_url",
+            "model_api_key",
+            "model_max_tokens",
+            "model_temperature",
+            "concurrent_requests",
             "prompt_directory",
             "prompt_search_paths",
         ]
