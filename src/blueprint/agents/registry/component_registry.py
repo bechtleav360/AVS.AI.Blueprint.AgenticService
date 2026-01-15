@@ -8,17 +8,17 @@ ProcessingService.
 import logging
 from typing import Any, TypeVar, overload
 
-from blueprint.agents.base.agent_runtime import AgentRuntime
-from blueprint.agents.base.business_service import BusinessService
-from blueprint.agents.base.event_handler import EventHandler
-from blueprint.agents.base.rest_api import RestApi
-from blueprint.agents.config import Config
-from blueprint.agents.config.custom_logging import (CorrelationContext,
+from ..base.agent_runtime import AgentRuntime
+from ..base.business_service import BusinessService
+from ..base.event_handler import EventHandler
+from ..base.rest_api import RestApi
+from ..config import Config
+from ..config.custom_logging import (CorrelationContext,
                                                     CorrelationContextProvider)
-from blueprint.agents.services.cache_service import CacheService
-from blueprint.agents.services.event_publishing_service import \
+from ..services.cache_service import CacheService
+from ..services.event_publishing_service import \
     EventPublishingService
-from blueprint.agents.services.processing_service import ProcessingService
+from ..services.processing_service import ProcessingService
 
 logger = logging.getLogger(__name__)
 

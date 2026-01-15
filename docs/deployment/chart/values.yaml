@@ -5,7 +5,7 @@
 replicaCount: 1
 
 image:
-  repository: registry.harbor.av360.org/bechtle-ios/bios-invoiceprocessor-agent
+  repository: registry.harbor.av360.org/bechtle-ios/bios-harmonizing-agent
   pullPolicy: Always
   tag: "latest"
 
@@ -16,7 +16,7 @@ fullnameOverride: ""
 # Dapr configuration (using Dapr operator for automatic sidecar injection)
 dapr:
   enabled: true
-  appId: agent-invoiceprocessor
+  appId: bios-harmonizing-agent
   appPort: 8000
   logLevel: info
   enableApiLogging: true
@@ -36,7 +36,7 @@ dapr:
 # Application settings - will be converted to DYNACONF_ prefixed environment variables
 appSettings:
   # Application
-  app_name: "agent-invoiceprocessor"
+  app_name: "bios-harmonizing-agent"
   app_port: 8000
   log_level: "DEBUG"
   app_environment: "development"
@@ -54,7 +54,7 @@ appSettings:
   # Observability
   otel_enabled: true
   otel_endpoint: "http://otel-collector.dev-bios-bechtle.svc:4317"
-  otel_service_name: "agent-invoiceprocessor"
+  otel_service_name: "bios-harmonizing-agent"
 
   # Data Gateway
   data_gateway_enabled: false
@@ -78,8 +78,8 @@ appSettings:
 # Agent configurations - each agent built with AgentBuilder in main.py
 # These settings map to [runtime.{agent_name}] in settings.toml
 agents:
-  # Invoice analyzer agent
-  invoice_analyzer:
+  # harmonizing analyzer agent
+  asset_harmonizing:
     model_name: "default"
     temperature: 0.1
     max_tokens: 2000
@@ -90,57 +90,81 @@ agents:
 # System prompts define the agent's role (used with .with_system_prompt_file())
 # Instruction prompts are templates for specific tasks (used with PromptLoader.load_instruction_prompt())
 prompts:
-  # System prompt for invoice_analyzer agent
-  # Referenced in main.py: .with_system_prompt_file("invoice_analyzer")
-  invoice_analyzer: |
-    You are an AI assistant specialized in invoice processing.
-    Your task is to extract structured information from unstructured invoice text.
+  # System prompt for harmonizing_analyzer agent
+  # Referenced in main.py: .with_system_prompt_file("harmonizing_analyzer")
+  asset_harmonizing: |
+    You are an expert in asset data harmonization.
 
-    Key responsibilities:
-    - Extract invoice numbers, dates, and amounts accurately
-    - Identify customer and vendor information
-    - Parse line items with quantities and prices
-    - Calculate totals and verify tax amounts
-    - Flag any inconsistencies or missing information
+    Your task is to map the provided input JSON to the canonical Asset schema.
 
-    Be precise with numbers and dates. If information is unclear, indicate uncertainty.
+    STRICT RULES (must follow without exception):
 
-  # Instruction prompt template for invoice processing
-  # Used in handlers: PromptLoader.load_instruction_prompt("invoice_instruction", ...)
-  invoice_instruction: |
-    Analyze this invoice and extract the information:
+    1. Type constraints:
+      - Only accept assets of type 'hardware' or 'software'
+      - Do not output other types
+      - If unsure about the type, leave it null
 
-    {invoice_text}
+    2. Mandatory null fields (per after-harmonizing specification):
+      - id: MUST be null
+      - externalId: MUST be null
+      - tags: MUST be null
+      - references: MUST be null
 
-    Please extract all relevant invoice details including:
-    - Invoice number and date
-    - Customer information (name, address, contact)
-    - Vendor information
-    - Line items with:
-      * Description
-      * Quantity
-      * Unit price
-      * Total price
-    - Subtotal, tax amount, and total
-    - Payment terms and due date
-    - Any special notes or conditions
+    3. Status field:
+      - MUST always be set to 'draft'
 
-    Use the calculate_invoice tool to verify the calculations.
+    4. Schema compliance:
+      - Use only the schema fields defined by the Asset model
+      - No extra fields allowed
+      - Do not hallucinate values
+      - If data is missing, leave fields null
+
+    5. Type-specific rules:
+      - If input indicates 'Hardware':
+        * Set Asset.type = 'hardware'
+        * Populate the 'hardware' extension
+        * Leave 'software' extension null
+      - If input indicates 'Software':
+        * Set Asset.type = 'software'
+        * Populate the 'software' extension
+        * Leave 'hardware' extension null
+
+    6. Field mapping:
+      - name: Populate with meaningful name from input
+      - description: Create concise, informative description (no marketing fluff)
+      - hardware extension: Extract manufacturer and model
+      - software extension: Extract manufacturer, version, and licenseType
+
+    7. Additional properties:
+      - Do NOT use 'additionalProperties'
+      - If something cannot be mapped, omit it
+
+    8. Output format:
+      - Output ONLY a pure JSON object compatible with the Asset schema
+      - No prose, no Markdown, no code fences/backticks
+      - No <think> tags or explanatory text
+      - Just the JSON object
+
+
+    Here is the given asset:
+
+    {asset}
+
 
 # Dapr subscriptions - receive events from topics
 subscriptions:
-  # Invoice processing subscription
-  invoiceCreated:
+  # harmonizing processing subscription
+  harmonizingCreated:
     enabled: true
-    topic: invoice.created
-    route: /events/invoice
+    topic: harmonizing.created
+    route: /events/harmonizing
     pubsubname: pubsub
     metadata:
-      queueName: invoice-processing-queue
+      queueName: harmonizing-processing-queue
       durable: "true"
       autoDelete: "false"
       prefetchCount: "10"
-      consumerTag: invoice-processor
+      consumerTag: harmonizing-processor
 
 # Event publishing - send events to topics based on event type
 eventPublishing:
@@ -157,15 +181,15 @@ eventPublishing:
     # Simple format (topic only)
 
     # Advanced format with routing key for topic-based routing
-    "invoice.validated":
+    "harmonizing.validated":
       topic: "test.connection"
       routing_key: "valid"
 
-    "invoice.invalidated":
+    "harmonizing.invalidated":
       topic: "test.connection"
       routing_key: "invalid"
 
-    "invoice.analysis.error":
+    "harmonizing.analysis.error":
       topic: "test.connection"
       routing_key: "error"
 # Secrets
@@ -221,6 +245,7 @@ readinessProbe:
   periodSeconds: 5
   timeoutSeconds: 3
   failureThreshold: 3
+  successThreshold: 1  # Only 1 successful probe needed to mark ready again
 
 # Pod annotations
 podAnnotations: {}

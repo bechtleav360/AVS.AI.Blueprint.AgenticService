@@ -5,9 +5,9 @@ from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, FastAPI
 
-from blueprint.agents.base.agent_runtime import AgentRuntime
-from blueprint.agents.base.business_service import BusinessService
-from blueprint.agents.services.cache_service import DiskCacheService
+from .base.agent_runtime import AgentRuntime
+from .base.business_service import BusinessService
+from .services.cache_service import DiskCacheService
 
 from .api import actuators, cache, root
 from .base import EventHandler, RestApi
@@ -20,7 +20,7 @@ from .services.processing_service import ProcessingService
 # Dapr generic endpoints
 try:
     from .api import dapr
-except Exception:
+except ImportError:
     dapr = None
 
 logger = logging.getLogger(__name__)
@@ -80,6 +80,7 @@ class AppBuilder:
 
     def _build_rest_endpoints(self, app: FastAPI) -> None:
         """Build REST endpoints for the application."""
+
         # Include root endpoints
         root_api = root.RootApi(config=self._config)
         app.include_router(root_api.router, tags=["root"])
@@ -117,6 +118,7 @@ class AppBuilder:
         Raises:
             TypeError: If handler is neither a class nor an instance of EventHandler
         """
+
         if isinstance(handler, type):
             # It's a class - instantiate it immediately
             if not issubclass(handler, EventHandler):
@@ -128,11 +130,13 @@ class AppBuilder:
 
     def with_service(self, service_instance: BusinessService) -> "AppBuilder":
         """Register a business service class with the startup manager."""
+
         self._component_registry.register_service(service_instance)
         return self
 
     def with_agent(self, agent_instance: AgentRuntime) -> "AppBuilder":
         """Register an agent class with the startup manager."""
+
         self._component_registry.register_agent(agent_instance)
         return self
 
@@ -161,6 +165,7 @@ class AppBuilder:
         Returns:
             Self for chaining
         """
+
         if enabled:
             cache_config = self._config.get_cache_config()
             cache_service = DiskCacheService(

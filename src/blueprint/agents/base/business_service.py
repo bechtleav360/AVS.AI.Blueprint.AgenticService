@@ -1,7 +1,7 @@
 from abc import ABC
 from typing import TYPE_CHECKING, Any
 
-from blueprint.agents.config.config import Config
+from ..config import Config
 
 if TYPE_CHECKING:
     from ..registry.component_registry import ComponentRegistry

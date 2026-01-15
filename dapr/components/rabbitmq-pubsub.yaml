@@ -1,0 +1,40 @@
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: rabbitmq-pubsub
+spec:
+  type: pubsub.rabbitmq
+  version: v1
+  metadata:
+    # Connection Settings
+    - name: connectionString
+      value: amqp://guest:guest@rabbitmq:5672
+
+    # Queue Settings
+    - name: durable
+      value: "true"  # Queue survives broker restart
+    - name: deletedWhenUnused
+      value: "false"  # Keep queue even if no consumers
+    - name: autoAck
+      value: "false"  # Manual acknowledgment
+    - name: deliveryMode
+      value: "2"  # Persistent messages (saved to disk)
+    - name: requeueInFailure
+      value: "true"  # Retry failed messages
+
+    # Performance Settings
+    - name: prefetchCount
+      value: "10"  # Process 10 messages at a time
+    - name: reconnectWait
+      value: "5s"  # Wait before reconnecting
+    - name: concurrency
+      value: "parallel"  # Process messages in parallel
+
+    # Exchange Settings (optional)
+    - name: exchangeKind
+      value: "topic"  # topic, fanout, direct, headers
+    - name: enableDeadLetter
+      value: "true"  # Enable DLQ
+
+scopes:
+  - agents-item-harmonizer  # Only this app can use this component
