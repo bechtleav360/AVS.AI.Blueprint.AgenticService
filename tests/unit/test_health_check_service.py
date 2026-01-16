@@ -31,11 +31,22 @@ class TestAIProviderHealthChecker:
         assert "disabled" in result.message.lower()
 
     @pytest.mark.asyncio
+    def _configure_runtime_ai(self, mock_config, runtime_name: str, model: AIConfig) -> None:
+        mock_config.get_ai_config.side_effect = None
+
+        def _get_ai_config(name: str = "default") -> AIConfig:
+            if name == runtime_name:
+                return model
+            return AIConfig()
+
+        mock_config.get_ai_config.side_effect = _get_ai_config
+
+    @pytest.mark.asyncio
     async def test_health_check_no_provider_configured(self, mock_config):
         """Test health check when no provider is configured."""
         mock_config.get.return_value = True
         mock_config.get_ai_config.return_value = AIConfig()
-        checker = AIProviderHealthChecker(mock_config)
+        checker = AIProviderHealthChecker(mock_config, runtime_names=["default"])
 
         result = await checker.health_check()
 
@@ -50,7 +61,7 @@ class TestAIProviderHealthChecker:
             base_url="https://test-vllm.example.com/v1",
             api_key="test-key",
         )
-        checker = AIProviderHealthChecker(mock_config)
+        checker = AIProviderHealthChecker(mock_config, runtime_names=["default"])
 
         with patch("httpx.AsyncClient") as mock_client:
             mock_response = AsyncMock()
@@ -70,7 +81,7 @@ class TestAIProviderHealthChecker:
             base_url=None,
             api_key="test-key",
         )
-        checker = AIProviderHealthChecker(mock_config)
+        checker = AIProviderHealthChecker(mock_config, runtime_names=["default"])
 
         result = await checker.health_check()
 
@@ -85,7 +96,7 @@ class TestAIProviderHealthChecker:
             base_url="https://test-vllm.example.com/v1",
             api_key=None,
         )
-        checker = AIProviderHealthChecker(mock_config)
+        checker = AIProviderHealthChecker(mock_config, runtime_names=["default"])
 
         result = await checker.health_check()
 
@@ -96,12 +107,25 @@ class TestAIProviderHealthChecker:
     async def test_openai_health_check(self, mock_config):
         """Test OpenAI health check (always healthy if configured)."""
         mock_config.get_ai_config.return_value = AIConfig(provider="openai")
-        checker = AIProviderHealthChecker(mock_config)
+        checker = AIProviderHealthChecker(mock_config, runtime_names=["default"])
 
         result = await checker.health_check()
 
         assert result.status == "healthy"
         assert "openai" in result.message.lower()
+
+    @pytest.mark.asyncio
+    async def test_runtime_specific_configuration_used(self, mock_config):
+        """Ensure health checker uses provided runtime names when fetching config."""
+        mock_config.get_ai_config.side_effect = lambda runtime_name="default": AIConfig(
+            provider="openai" if runtime_name == "analysis" else None
+        )
+        checker = AIProviderHealthChecker(mock_config, runtime_names=["analysis", "default"])
+
+        result = await checker.health_check()
+
+        assert result.status == "healthy"
+        assert "analysis" in (result.message or "")
 
 
 class TestDaprPubSubHealthChecker:

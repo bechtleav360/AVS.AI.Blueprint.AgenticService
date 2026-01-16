@@ -5,16 +5,14 @@ from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, FastAPI
 
-from .base.agent_runtime import AgentRuntime
-from .base.business_service import BusinessService
-from .services.cache_service import DiskCacheService
-
 from .api import actuators, cache, root
 from .base import EventHandler, RestApi
+from .base.agent_runtime import AgentRuntime
+from .base.business_service import BusinessService
 from .config import Config, TelemetryManager
 from .registry.component_registry import ComponentRegistry
-from .services import (AIProviderHealthChecker, DaprPubSubHealthChecker,
-                       EventPublishingService)
+from .services import AIProviderHealthChecker, DaprPubSubHealthChecker, EventPublishingService
+from .services.cache_service import DiskCacheService
 from .services.processing_service import ProcessingService
 
 # Dapr generic endpoints
@@ -71,7 +69,11 @@ class AppBuilder:
             health_dependencies["rabbitmq"] = DaprPubSubHealthChecker(self._config)
 
         if self._component_registry.has_agent():
-            health_dependencies["ai_provider"] = AIProviderHealthChecker(self._config)
+            runtime_names = self._component_registry.list_agents()
+            health_dependencies["ai_provider"] = AIProviderHealthChecker(
+                self._config,
+                runtime_names=runtime_names,
+            )
 
         actuator_api = actuators.ActuatorApi(config=self._config, **health_dependencies)
         app.include_router(actuator_api.router, tags=["actuators"])
