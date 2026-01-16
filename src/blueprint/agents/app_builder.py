@@ -158,11 +158,13 @@ class AppBuilder:
         self._component_registry.register_rest_api(api=api_instance)
         return self
 
-    def with_cache(self, enabled: bool = True) -> "AppBuilder":
+    def with_cache(self, enabled: bool = True, enable_locking: bool = True) -> "AppBuilder":
         """Enable persistent caching using DiskCache.
 
         Args:
             enabled: Whether to enable caching (default: True)
+            enable_locking: Enable file-based locking for multi-deployment safety (default: True).
+                           Set to False only in single-deployment scenarios.
 
         Returns:
             Self for chaining
@@ -174,9 +176,14 @@ class AppBuilder:
                 cache_dir=cache_config.cache_dir,
                 size_limit=cache_config.size_limit,
                 eviction_policy=cache_config.eviction_policy,
+                enable_locking=enable_locking,
             )
             self._component_registry.register_cache(cache_service)
-            logger.info("Registered DiskCacheService with cache_dir=%s", cache_config.cache_dir)
+            logger.info(
+                "Registered DiskCacheService with cache_dir=%s (locking=%s)",
+                cache_config.cache_dir,
+                enable_locking,
+            )
         else:
             logger.info("Caching disabled")
         return self
