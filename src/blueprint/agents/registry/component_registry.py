@@ -66,7 +66,7 @@ class ComponentRegistry:
         Args:
             handler: The handler instance to register
         """
-        logger.info("Registering handler: %s with priority %d", handler._name, handler._priority)
+        logger.info("Registering handler: %s with priority %d", handler.get_name(), handler._priority)
 
         handler.link_config(self._settings)
         handler.link_component_registry(self)

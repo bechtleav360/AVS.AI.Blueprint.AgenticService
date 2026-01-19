@@ -59,7 +59,7 @@ class TestEventHandler:
 
         handler = TestHandler("TestHandler", priority=50)
 
-        assert handler._name == "TestHandler"
+        assert handler.get_name() == "TestHandler"
         assert handler._priority == 50
 
     def test_handler_comparison_by_priority(self):
@@ -121,9 +121,9 @@ class TestEventHandler:
 
         sorted_handlers = sorted(handlers)
 
-        assert sorted_handlers[0]._name == "First"
-        assert sorted_handlers[1]._name == "Second"
-        assert sorted_handlers[2]._name == "Third"
+        assert sorted_handlers[0].get_name() == "First"
+        assert sorted_handlers[1].get_name() == "Second"
+        assert sorted_handlers[2].get_name() == "Third"
 
     @pytest.mark.asyncio
     async def test_can_handle_wrapper_adds_tracing(self, mock_cloud_event, mock_context):

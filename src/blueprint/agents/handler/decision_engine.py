@@ -42,15 +42,15 @@ class DecisionEngine:
 
             for handler in self.handlers:
                 if await handler.can_handle(event, context):
-                    span.add_event(f"Executing handler: {handler._name}")
+                    span.add_event(f"Executing handler: {handler.get_name()}")
                     try:
                         result = await handler.handle(event, context)
                         if result is not None:
-                            span.set_attribute("handled_by", handler._name)
-                            logger.info("Event handled by %s.", handler._name)
+                            span.set_attribute("handled_by", handler.get_name())
+                            logger.info("Event handled by %s.", handler.get_name())
                             return result
                     except Exception as e:
-                        logger.exception("Handler %s failed.", handler._name)
+                        logger.exception("Handler %s failed.", handler.get_name())
                         span.record_exception(e)
                         break  # Stop processing on error
 

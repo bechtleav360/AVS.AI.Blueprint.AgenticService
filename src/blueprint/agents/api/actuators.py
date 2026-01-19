@@ -14,6 +14,7 @@ from opentelemetry import trace
 from ..config import Config
 from ..models.api import ComponentHealth, LivenessResponse, ReadinessResponse
 from ..models.status import BuildStatus, EnvironmentStatus, LLMStatus, ServiceInfo, VLLMInfo
+from ..services.health.cache import HealthCheckCache
 
 # FIXME: Import your dependencies here.
 # from ..dependencies import get_your_agent, get_data_gateway
@@ -33,10 +34,17 @@ class HealthCheckProvider(Protocol):
 class ActuatorApi:
     """Encapsulates all actuator-related endpoints and logic."""
 
-    def __init__(self, config: Config | None = None, **dependencies: HealthCheckProvider):
+    def __init__(
+        self,
+        config: Config | None = None,
+        health_check_interval_seconds: int = 30,
+        **dependencies: HealthCheckProvider,
+    ):
         self.router = APIRouter()
         self.config = config
         self.dependencies = dependencies
+        self._health_cache = HealthCheckCache(check_interval_seconds=health_check_interval_seconds)
+        self._health_cache.set_health_check_provider(dependencies)
         self._register_routes()
 
     def _register_routes(self) -> None:
@@ -107,31 +115,30 @@ class ActuatorApi:
         )
 
     async def readiness_probe(self) -> ReadinessResponse:
-        """Readiness probe to check if the service is ready to accept traffic."""
+        """Readiness probe to check if the service is ready to accept traffic.
+
+        Returns cached health status from background checks to minimize resource consumption.
+        """
         with tracer.start_as_current_span("api.readiness_probe") as span:
             try:
-                components: dict[str, ComponentHealth] = {}
-                for name, dependency in self.dependencies.items():
-                    components[name] = await dependency.health_check()
+                # Return cached health status (updated periodically in background)
+                response = await self._health_cache.get_health_status()
 
-                all_healthy = all(component.status == "healthy" for component in components.values())
-
-                overall_status = "UP" if all_healthy else "DOWN"
-
-                span.set_attribute("health_status", overall_status)
+                span.set_attribute("health_status", response.status)
+                span.set_attribute("cache_age_seconds", self._health_cache.get_cache_age_seconds())
 
                 # Only log if health check fails
-                if overall_status != "UP":
-                    logger.warning("Readiness probe failed: %s", components)
+                if response.status != "UP":
+                    logger.warning("Readiness probe failed: %s", response.components)
 
-                return ReadinessResponse(status=overall_status, components=components)
+                return response
 
             except Exception as exc:  # pragma: no cover - defensive logging
                 span.set_status(trace.Status(trace.StatusCode.ERROR, str(exc)))
-                logger.error("Health check failed: %s", exc)
+                logger.error("Readiness probe failed: %s", exc)
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="Health check failed",
+                    detail="Readiness probe failed",
                 ) from exc
 
     async def liveness_probe(self) -> LivenessResponse:
@@ -249,6 +256,20 @@ class ActuatorApi:
             else:
                 sanitized[key] = value
         return sanitized
+
+    async def start_health_checks(self) -> None:
+        """Start the background health check scheduler.
+
+        This should be called during application startup.
+        """
+        await self._health_cache.start()
+
+    async def stop_health_checks(self) -> None:
+        """Stop the background health check scheduler.
+
+        This should be called during application shutdown.
+        """
+        await self._health_cache.stop()
 
     def _ensure_config(self) -> Config:
         if not self.config:

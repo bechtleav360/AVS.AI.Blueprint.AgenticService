@@ -54,10 +54,10 @@ class _HandlerChainProcessor:
                     if await handler.can_handle(event, context):
                         logger.info(
                             "Handler %s can handle event %s",
-                            handler._name,
+                            handler.get_name(),
                             event.type,
                             extra={
-                                "handler_name": handler._name,
+                                "handler_name": handler.get_name(),
                                 "event_type": event.type,
                                 "event_id": getattr(event, "id", None),
                             },
@@ -68,24 +68,24 @@ class _HandlerChainProcessor:
                         if result is not None:
                             logger.info(
                                 "Handler %s processed event %s and returned result",
-                                handler._name,
+                                handler.get_name(),
                                 event.type,
                                 extra={
-                                    "handler_name": handler._name,
+                                    "handler_name": handler.get_name(),
                                     "event_type": event.type,
                                     "event_id": getattr(event, "id", None),
                                     "has_result": True,
                                 },
                             )
-                            span.set_attribute("handler.processed_by", handler._name)
+                            span.set_attribute("handler.processed_by", handler.get_name())
                             return result
                         else:
                             logger.info(
                                 "Handler %s processed event %s but passed to next handler",
-                                handler._name,
+                                handler.get_name(),
                                 event.type,
                                 extra={
-                                    "handler_name": handler._name,
+                                    "handler_name": handler.get_name(),
                                     "event_type": event.type,
                                     "event_id": getattr(event, "id", None),
                                     "has_result": False,
@@ -95,11 +95,11 @@ class _HandlerChainProcessor:
                 except Exception as e:
                     logger.error(
                         "Handler %s failed to process event %s: %s",
-                        handler._name,
+                        handler.get_name(),
                         event.type,
                         str(e),
                         extra={
-                            "handler_name": handler._name,
+                            "handler_name": handler.get_name(),
                             "event_type": event.type,
                             "event_id": getattr(event, "id", None),
                             "error": str(e),

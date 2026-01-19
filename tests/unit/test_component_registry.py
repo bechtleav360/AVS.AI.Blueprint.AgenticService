@@ -7,8 +7,8 @@ from dataclasses import dataclass
 import pytest
 from pydantic import BaseModel
 
+from blueprint.agents.base import AgentRuntime, BusinessService, EventHandler, RestApi
 from blueprint.agents.config.config import Config
-from blueprint.agents.base import EventHandler, BusinessService, RestApi, AgentRuntime
 from blueprint.agents.models.events import CloudEvent
 from blueprint.agents.registry.component_registry import ComponentRegistry
 
@@ -37,15 +37,15 @@ class EchoHandler(EventHandler):
         return True
 
     async def handle_event(self, event: CloudEvent, context: dict) -> dict:
-        return {"handled_by": self._name, "source": event.source}
+        return {"handled_by": self.get_name(), "source": event.source}
 
     async def on_startup(self) -> None:
         """Perform startup actions."""
-        print(f"Starting up {self._name}")
+        print(f"Starting up {self.get_name()}")
 
     async def on_shutdown(self) -> None:
         """Perform shutdown actions."""
-        print(f"Shutting down {self._name}")
+        print(f"Shutting down {self.get_name()}")
 
 
 class ComponentRegistryRuntime:
@@ -53,13 +53,13 @@ class ComponentRegistryRuntime:
 
     def __init__(self, config: Config) -> None:
         self.config = config
-        self._name = self.__class__.__name__
+        self._component_name = self.__class__.__name__
         self._component_registry: ComponentRegistry | None = None
         self._processed_payloads: list[str] = []
 
     def get_name(self) -> str:
         """Get the component name."""
-        return self._name
+        return self._component_name
 
     def link_component_registry(self, registry: ComponentRegistry) -> None:
         """Link the component registry."""
@@ -111,7 +111,7 @@ class TestComponentRegistry:
 
         handlers = registry.get_handlers()
         assert len(handlers) == 1
-        assert handlers[0]._name == "echo"
+        assert handlers[0].get_name() == "echo"
         assert handlers[0]._priority == 5
 
     def test_handlers_are_sorted_by_priority(self, registry: ComponentRegistry) -> None:

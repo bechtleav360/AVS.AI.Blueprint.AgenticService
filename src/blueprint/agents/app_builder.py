@@ -78,8 +78,15 @@ class AppBuilder:
                 runtime_names=runtime_names,
             )
 
-        actuator_api = actuators.ActuatorApi(config=self._config, **health_dependencies)
+        actuator_api = actuators.ActuatorApi(
+            config=self._config,
+            health_check_interval_seconds=self._config.get("health_check_interval_seconds", 30),
+            **health_dependencies,
+        )
         app.include_router(actuator_api.router, tags=["actuators"])
+
+        # Store actuator_api for lifecycle management
+        self._actuator_api = actuator_api
 
         return app
 
@@ -198,6 +205,14 @@ class AppBuilder:
 
             logger.info("Initializing agent components")
 
+            # Start background health check scheduler
+            if hasattr(self, "_actuator_api"):
+                try:
+                    await self._actuator_api.start_health_checks()
+                    logger.info("Health check cache scheduler started")
+                except Exception as e:
+                    logger.warning("Failed to start health check cache: %s", e)
+
             # Configure OpenTelemetry tracing
             try:
                 self._telemetry_manager.configure_tracing()
@@ -272,6 +287,14 @@ class AppBuilder:
             yield
 
             logger.info("Shutting down agent service")
+
+            # Stop background health check scheduler
+            if hasattr(self, "_actuator_api"):
+                try:
+                    await self._actuator_api.stop_health_checks()
+                    logger.info("Health check cache scheduler stopped")
+                except Exception as e:
+                    logger.warning("Failed to stop health check cache: %s", e)
 
             # Call on_shutdown on all registered components (in reverse order)
             logger.info("Calling on_shutdown hooks for all components")
