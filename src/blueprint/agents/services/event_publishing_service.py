@@ -8,7 +8,7 @@ import httpx
 from opentelemetry import trace
 
 from ..config import Config
-from ..models import CloudEvent, GenericCloudEvent
+from ..models import GenericCloudEvent
 from ..models.config import EventPublishingConfig, TopicConfig
 
 logger = logging.getLogger(__name__)
@@ -90,7 +90,7 @@ class EventPublishingService:
         pass
 
     async def publish_event(
-        self, event: CloudEvent, pubsub_name: str | None = None, topic: str | None = None, routing_key: str | None = None
+        self, event: GenericCloudEvent, pubsub_name: str | None = None, topic: str | None = None, routing_key: str | None = None
     ) -> dict[str, Any]:
         """
         Publish a CloudEvent to a topic via Dapr.

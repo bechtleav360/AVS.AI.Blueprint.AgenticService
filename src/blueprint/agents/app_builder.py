@@ -11,8 +11,9 @@ from .base.agent_runtime import AgentRuntime
 from .base.business_service import BusinessService
 from .config import Config, TelemetryManager
 from .registry.component_registry import ComponentRegistry
-from .services import AIProviderHealthChecker, DaprPubSubHealthChecker, EventPublishingService
+from .services import EventPublishingService
 from .services.cache_service import DiskCacheService
+from .services.health import DaprPubSubHealthChecker, VLLMProviderHealthChecker
 from .services.processing_service import ProcessingService
 
 # Dapr generic endpoints
@@ -66,11 +67,13 @@ class AppBuilder:
         health_dependencies: dict[str, actuators.HealthCheckProvider] = {}
 
         if self._component_registry.has_handler() or self._config.get_event_publishing_config().topic_mapping:
-            health_dependencies["rabbitmq"] = DaprPubSubHealthChecker(self._config)
+            logger.info("Health checks for DAPR connection enabled")
+            health_dependencies["dapr"] = DaprPubSubHealthChecker(self._config)
 
         if self._component_registry.has_agent():
             runtime_names = self._component_registry.list_agents()
-            health_dependencies["ai_provider"] = AIProviderHealthChecker(
+            logger.info("Health checks for the following Agent runtimes enabled: %s", runtime_names)
+            health_dependencies["ai_provider"] = VLLMProviderHealthChecker(
                 self._config,
                 runtime_names=runtime_names,
             )

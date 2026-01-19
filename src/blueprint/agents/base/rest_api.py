@@ -51,7 +51,7 @@ class RestApi(Generic[PayloadT]):
         """
         return self._name
 
-    def get_registry(self) -> "ComponentRegistry":
+    def get_registry(self) -> ComponentRegistry:
         """Get the component registry for accessing other components.
 
         Returns:
@@ -78,7 +78,7 @@ class RestApi(Generic[PayloadT]):
             raise RuntimeError(f"Config not linked to REST API '{self._name}'")
         return self._config
 
-    def link_component_registry(self, registry: "ComponentRegistry") -> None:
+    def link_component_registry(self, registry: ComponentRegistry) -> None:
         """Link the component registry to the service.
 
         This allows services to access other components via the registry.
@@ -107,7 +107,6 @@ class RestApi(Generic[PayloadT]):
         - Loading configuration
         - Initializing resources
         """
-        pass
 
     async def on_shutdown(self) -> None:
         """Called when application is shutting down.
@@ -117,7 +116,6 @@ class RestApi(Generic[PayloadT]):
         - Releasing resources
         - Flushing buffers
         """
-        pass
 
     def _register_routes(self) -> None:
         @self.router.post(

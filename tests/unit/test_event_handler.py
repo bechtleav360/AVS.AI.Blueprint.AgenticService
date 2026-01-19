@@ -1,10 +1,9 @@
 """Unit tests for EventHandler and Chain of Responsibility pattern."""
 
 from unittest import mock
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
-
-from unittest.mock import MagicMock, Mock, patch, AsyncMock
 
 # Import directly to avoid circular import during testing
 from blueprint.agents.base import EventHandler
@@ -347,8 +346,8 @@ class TestChainOfResponsibility:
         """Create a mock context dictionary."""
         return {}
 
-    def test_handler_returns_result_stops_chain(self):
-        """Test handler returning result stops the chain."""
+    async def test_handler_returns_result_stops_chain(self):
+        """Test handler returning result from handle_event method."""
 
         class Handler1(EventHandler):
             async def can_handle_event(self, event, context):
@@ -357,24 +356,13 @@ class TestChainOfResponsibility:
             async def handle_event(self, event, context):
                 return {"processed_by": "Handler1"}
 
-            async def on_startup(self):
-                pass
-
-            async def on_shutdown(self):
-                pass
-
-        class Handler2(_BaseTestHandler):
-            async def can_handle_event(self, event, context):
-                return True
-
-            async def handle_event(self, event, context):
-                return {"processed_by": "Handler2"}
-
         handler1 = Handler1("Handler1", priority=10)
-        handler2 = Handler2("Handler2", priority=20)
 
-        # Handler1 should process and stop chain
-        # Handler2 should never be called in real chain
+        # Process the event through the handler's handle() method
+        result = await handler1.handle(self.mock_cloud_event, self.mock_context)
+
+        # Verify Handler1 processed the event and returned the result
+        assert result == {"processed_by": "Handler1"}
 
     def test_handler_returns_none_continues_chain(self):
         """Test handler returning None continues to next handler."""

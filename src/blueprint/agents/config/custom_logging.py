@@ -18,11 +18,11 @@ class HealthCheckFilter(logging.Filter):
         message = record.getMessage()
 
         # Check if this is a uvicorn access log for health endpoints
-        if hasattr(record, 'name') and record.name == 'uvicorn.access':
+        if hasattr(record, "name") and record.name == "uvicorn.access":
             # Filter out successful health check requests (status 200)
-            if '/health/live' in message or '/health/ready' in message:
+            if "/health/live" in message or "/health/ready" in message:
                 # Only log if it's an error (status >= 400)
-                if ' 200 ' in message or ' 204 ' in message:
+                if " 200 " in message or " 204 " in message:
                     return False
 
         return True
@@ -196,7 +196,7 @@ class LoggingManager:
     def _attach_health_check_filter(self) -> None:
         """Attach the health check filter to uvicorn.access logger."""
 
-        uvicorn_access_logger = logging.getLogger('uvicorn.access')
+        uvicorn_access_logger = logging.getLogger("uvicorn.access")
         if self._health_check_filter not in uvicorn_access_logger.filters:
             uvicorn_access_logger.addFilter(self._health_check_filter)
             self.logger.debug("Attached health check filter to uvicorn.access logger")

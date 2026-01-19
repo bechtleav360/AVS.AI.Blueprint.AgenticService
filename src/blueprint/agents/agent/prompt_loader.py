@@ -20,7 +20,7 @@ class PromptLoader:
     def load_prompt(
         prompt_name: str,
         config: Config,
-        path: str | None = None,
+        path: str = "",
     ) -> str:
         """Load a system prompt file or from config.
 

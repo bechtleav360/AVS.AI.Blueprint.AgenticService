@@ -22,7 +22,8 @@ from typing import TYPE_CHECKING, Any
 from opentelemetry import trace
 
 from ..config import Config
-from ..models import CloudEvent, HandlerResult
+from ..models import HandlerResult
+from ..models.events import GenericCloudEvent
 from .agent_runtime import AgentRuntime
 
 tracer = trace.get_tracer(__name__)
@@ -112,15 +113,11 @@ class EventHandler(ABC):
         Override to perform initialization tasks.
         """
 
-        pass
-
     async def on_shutdown(self) -> None:
         """Called when application is shutting down.
 
         Override to perform cleanup tasks.
         """
-
-        pass
 
     def link_config(self, config: Config) -> None:
         """Link configuration to the service via dependency injection.
@@ -142,7 +139,7 @@ class EventHandler(ABC):
 
         self._component_registry = registry
 
-    async def can_handle(self, event: CloudEvent, context: dict[str, Any]) -> bool:
+    async def can_handle(self, event: GenericCloudEvent, context: dict[str, Any]) -> bool:
         """Framework method that adds tracing around capability checks.
 
         Do not override this method. Override can_handle_event() instead.
@@ -153,7 +150,7 @@ class EventHandler(ABC):
             span.set_attribute("handler.priority", self._priority)
             return await self.can_handle_event(event, context)
 
-    async def handle(self, event: CloudEvent, context: dict[str, Any]) -> Any | HandlerResult | list[HandlerResult] | None:
+    async def handle(self, event: GenericCloudEvent, context: dict[str, Any]) -> Any | HandlerResult | list[HandlerResult] | None:
         """Framework method that adds tracing around handler execution.
 
         Do not override this method. Override handle_event() instead.
@@ -178,7 +175,7 @@ class EventHandler(ABC):
             return result
 
     @abstractmethod
-    async def can_handle_event(self, event: CloudEvent, context: dict[str, Any]) -> bool:
+    async def can_handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> bool:
         """Determine if this handler should process the event.
 
         Override this method in your handler implementation.
@@ -194,7 +191,7 @@ class EventHandler(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def handle_event(self, event: CloudEvent, context: dict[str, Any]) -> Any | HandlerResult | list[HandlerResult] | None:
+    async def handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> Any | HandlerResult | list[HandlerResult] | None:
         """Process the event and optionally return a result.
 
         Override this method in your handler implementation.
@@ -274,7 +271,7 @@ class EventHandler(ABC):
 
         return None
 
-    def __lt__(self, other: "EventHandler") -> bool:
+    def __lt__(self, other: EventHandler) -> bool:
         """Support sorting by priority."""
 
         return self._priority < other._priority

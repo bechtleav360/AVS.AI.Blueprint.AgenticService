@@ -1,4 +1,3 @@
-from abc import ABC
 from typing import TYPE_CHECKING, Any
 
 from ..config import Config
@@ -7,8 +6,8 @@ if TYPE_CHECKING:
     from ..registry.component_registry import ComponentRegistry
 
 
-class BusinessService(ABC):
-    """Abstract base class for business services.
+class BusinessService:
+    """Base class for business services.
 
     Implements ComponentInterface to provide consistent lifecycle and registry access.
     """
@@ -87,7 +86,8 @@ class BusinessService(ABC):
         - Loading configuration
         - Initializing resources
         """
-        pass
+        # Default implementation does nothing
+        # Subclasses can override to perform startup tasks
 
     async def on_shutdown(self) -> None:
         """Called when application is shutting down.
@@ -97,4 +97,5 @@ class BusinessService(ABC):
         - Releasing resources
         - Flushing buffers
         """
-        pass
+        # Default implementation does nothing
+        # Subclasses can override to perform cleanup tasks

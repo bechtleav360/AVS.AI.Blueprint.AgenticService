@@ -1,7 +1,7 @@
 """Unit tests for AgentBuilder."""
 
 from pathlib import Path
-from unittest.mock import ANY, Mock, patch
+from unittest.mock import Mock, patch
 
 import pytest
 from pydantic import BaseModel

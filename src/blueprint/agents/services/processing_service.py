@@ -9,7 +9,7 @@ from pydantic import ValidationError
 
 from ..config import Config
 from ..models import ProcessingResult, ProcessingStatus
-from ..models.events import CloudEvent, HandlerResult
+from ..models.events import GenericCloudEvent, HandlerResult
 from .processing._event_publisher import _EventPublisher
 from .processing._handler_chain import _HandlerChainProcessor
 from .processing._health_checker import _HealthChecker
@@ -53,7 +53,7 @@ class ProcessingService:
 
     async def process_event(
         self,
-        event: CloudEvent,
+        event: GenericCloudEvent,
         context: dict[str, Any] | None = None,
         runtime_name: str | None = None,
         new_subject: str | None = None,
@@ -168,7 +168,7 @@ class ProcessingService:
             ProcessingResult describing the processing outcome
         """
         # Convert REST payload to CloudEvent format
-        event = CloudEvent(
+        event = GenericCloudEvent(
             specversion="1.0",
             datacontenttype="application/json",
             dataschema=None,
@@ -182,7 +182,7 @@ class ProcessingService:
 
         return await self.process_event(event, context, runtime_name)
 
-    def _unwrap_dapr_event(self, event: CloudEvent) -> CloudEvent:
+    def _unwrap_dapr_event(self, event: GenericCloudEvent) -> GenericCloudEvent:
         """
         Unwrap Dapr-wrapped events.
 
@@ -205,7 +205,7 @@ class ProcessingService:
             )
             inner_event = event.data
 
-            if isinstance(inner_event, CloudEvent):
+            if isinstance(inner_event, GenericCloudEvent):
                 return inner_event
 
             if isinstance(inner_event, dict):
@@ -217,7 +217,7 @@ class ProcessingService:
                     raise RuntimeError("Inner Dapr event is missing required 'type' field")
 
                 try:
-                    return CloudEvent.model_validate(inner_event)
+                    return GenericCloudEvent.model_validate(inner_event)
                 except ValidationError as exc:
                     logger.error("Failed to validate inner Dapr event as CloudEvent: %s", exc)
                     raise RuntimeError("Inner Dapr event could not be parsed as CloudEvent") from exc

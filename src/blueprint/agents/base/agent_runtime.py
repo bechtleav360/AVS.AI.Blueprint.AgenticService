@@ -52,6 +52,7 @@ class AgentRuntime(Agent[AgentDepsT, Any]):
         self._prompt_cache: dict[str, str] = {}
         self._config = config
         self._component_registry: Any = None
+        self._runtime_name: str = runtime_name  # Store for fallback
 
     def get_name(self) -> str:
         """Get the component name.
@@ -59,7 +60,8 @@ class AgentRuntime(Agent[AgentDepsT, Any]):
         Returns:
             The component name set during initialization
         """
-        return self._name
+        # Return the runtime_name which is always a string from constructor
+        return self._runtime_name
 
     def get_registry(self) -> ComponentRegistry:
         """Get the component registry for accessing other components.
@@ -71,7 +73,7 @@ class AgentRuntime(Agent[AgentDepsT, Any]):
             RuntimeError: If registry is not wired
         """
         if not hasattr(self, "_component_registry") or self._component_registry is None:
-            raise RuntimeError(f"Component registry not linked to service '{self.name}'")
+            raise RuntimeError(f"Component registry not linked to service '{self.get_name()}'")
         return self._component_registry
 
     def get_config(self) -> Config:
@@ -85,7 +87,7 @@ class AgentRuntime(Agent[AgentDepsT, Any]):
         """
 
         if not hasattr(self, "_config") or self._config is None:
-            raise RuntimeError(f"Config not linked to agent runtime '{self._name}'")
+            raise RuntimeError(f"Config not linked to agent runtime '{self.get_name()}'")
         return self._config
 
     def link_component_registry(self, registry: ComponentRegistry) -> None:
@@ -117,7 +119,6 @@ class AgentRuntime(Agent[AgentDepsT, Any]):
         - Loading configuration
         - Initializing resources
         """
-        pass
 
     async def on_shutdown(self) -> None:
         """Called when application is shutting down.
@@ -127,9 +128,8 @@ class AgentRuntime(Agent[AgentDepsT, Any]):
         - Releasing resources
         - Flushing buffers
         """
-        pass
 
-    def get_prompt(self, prompt_name: str, path: str = None) -> str:
+    def get_prompt(self, prompt_name: str, path: str = "") -> str:
         """Load instruction prompt by name (lazy loading with caching).
 
         Prompts are loaded on-demand and cached to avoid repeated file I/O.

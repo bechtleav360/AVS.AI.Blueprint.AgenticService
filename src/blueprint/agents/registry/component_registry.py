@@ -13,11 +13,9 @@ from ..base.business_service import BusinessService
 from ..base.event_handler import EventHandler
 from ..base.rest_api import RestApi
 from ..config import Config
-from ..config.custom_logging import (CorrelationContext,
-                                                    CorrelationContextProvider)
+from ..config.custom_logging import CorrelationContext, CorrelationContextProvider
 from ..services.cache_service import CacheService
-from ..services.event_publishing_service import \
-    EventPublishingService
+from ..services.event_publishing_service import EventPublishingService
 from ..services.processing_service import ProcessingService
 
 logger = logging.getLogger(__name__)

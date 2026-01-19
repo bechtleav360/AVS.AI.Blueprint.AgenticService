@@ -2,12 +2,11 @@
 
 from .cache_service import CacheService, DiskCacheService
 from .event_publishing_service import EventPublishingService
-from .health_check_service import (AIProviderHealthChecker,
-                                   DaprPubSubHealthChecker)
+from .health import DaprPubSubHealthChecker, VLLMProviderHealthChecker
 from .processing_service import ProcessingService
 
 __all__ = [
-    "AIProviderHealthChecker",
+    "VLLMProviderHealthChecker",
     "CacheService",
     "DaprPubSubHealthChecker",
     "DiskCacheService",

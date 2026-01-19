@@ -1,6 +1,6 @@
 """Unit tests for ProcessingService with concrete handlers."""
 
-from typing import Any, Dict, Optional
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -21,7 +21,7 @@ from blueprint.agents.services.processing_service import ProcessingService
 class ConcreteHandler(EventHandler):
     """Concrete handler for testing."""
 
-    def __init__(self, name: str = "TestHandler", priority: int = 100, should_handle: bool = True, result: Optional[Any] = None):
+    def __init__(self, name: str = "TestHandler", priority: int = 100, should_handle: bool = True, result: Any | None = None):
         super().__init__(name, priority)
         self.should_handle = should_handle
         self.result = result
@@ -38,12 +38,12 @@ class ConcreteHandler(EventHandler):
         """Shutdown hook."""
         self.on_shutdown_called = True
 
-    async def can_handle_event(self, event: CloudEvent, context: Dict[str, Any]) -> bool:
+    async def can_handle_event(self, event: CloudEvent, context: dict[str, Any]) -> bool:
         """Determine if handler should process the event."""
         self.can_handle_called = True
         return self.should_handle
 
-    async def handle_event(self, event: CloudEvent, context: Dict[str, Any]) -> Optional[Any]:
+    async def handle_event(self, event: CloudEvent, context: dict[str, Any]) -> Any | None:
         """Process the event."""
         self.handle_called = True
         return self.result
@@ -145,7 +145,7 @@ class TestProcessingService:
                 super().__init__(name, priority, should_handle=True, result=None)
                 self.order_list = order_list
 
-            async def handle_event(self, event: CloudEvent, context: Dict[str, Any]) -> Optional[Any]:
+            async def handle_event(self, event: CloudEvent, context: dict[str, Any]) -> Any | None:
                 self.order_list.append(self._name)
                 return await super().handle_event(event, context)
 
@@ -182,18 +182,18 @@ class TestProcessingService:
         """Test context is shared and accumulated across handlers."""
 
         class ContextAwareHandler(ConcreteHandler):
-            async def handle_event(self, event: CloudEvent, context: Dict[str, Any]) -> Optional[Any]:
+            async def handle_event(self, event: CloudEvent, context: dict[str, Any]) -> Any | None:
                 self.handle_called = True
                 context["enriched_data"] = "test_data"
                 context["validation_passed"] = True
                 return None
 
         class ContextConsumerHandler(ConcreteHandler):
-            async def can_handle_event(self, event: CloudEvent, context: Dict[str, Any]) -> bool:
+            async def can_handle_event(self, event: CloudEvent, context: dict[str, Any]) -> bool:
                 self.can_handle_called = True
                 return context.get("validation_passed") is True
 
-            async def handle_event(self, event: CloudEvent, context: Dict[str, Any]) -> Optional[Any]:
+            async def handle_event(self, event: CloudEvent, context: dict[str, Any]) -> Any | None:
                 self.handle_called = True
                 return {"processed": True, "data": context.get("enriched_data")}
 
@@ -213,7 +213,7 @@ class TestProcessingService:
         """Test exception in handler propagates correctly."""
 
         class FailingHandler(ConcreteHandler):
-            async def handle_event(self, event: CloudEvent, context: Dict[str, Any]) -> Optional[Any]:
+            async def handle_event(self, event: CloudEvent, context: dict[str, Any]) -> Any | None:
                 self.handle_called = True
                 raise ValueError("Handler failed")
 
@@ -228,7 +228,7 @@ class TestProcessingService:
         """Retryable handler errors propagate for upstream handling."""
 
         class RetryableFailingHandler(ConcreteHandler):
-            async def handle_event(self, event: CloudEvent, context: Dict[str, Any]) -> Optional[Any]:
+            async def handle_event(self, event: CloudEvent, context: dict[str, Any]) -> Any | None:
                 raise RetryableHandlerError(status="retry", reason="transient")
 
         component_registry.register_handler(RetryableFailingHandler("Retry", priority=10))
@@ -241,7 +241,7 @@ class TestProcessingService:
         """Invalid handler errors propagate for upstream handling."""
 
         class InvalidFailingHandler(ConcreteHandler):
-            async def handle_event(self, event: CloudEvent, context: Dict[str, Any]) -> Optional[Any]:
+            async def handle_event(self, event: CloudEvent, context: dict[str, Any]) -> Any | None:
                 raise InvalidEventError(status="bad", reason="invalid")
 
         component_registry.register_handler(InvalidFailingHandler("Invalid", priority=10))
@@ -254,7 +254,7 @@ class TestProcessingService:
         """Critical handler errors propagate for upstream handling."""
 
         class CriticalFailingHandler(ConcreteHandler):
-            async def handle_event(self, event: CloudEvent, context: Dict[str, Any]) -> Optional[Any]:
+            async def handle_event(self, event: CloudEvent, context: dict[str, Any]) -> Any | None:
                 raise CriticalHandlerError(status="critical", reason="fatal")
 
         component_registry.register_handler(CriticalFailingHandler("Critical", priority=10))
@@ -275,7 +275,7 @@ class TestProcessingService:
         """Test process_event passes context to handlers."""
 
         class ContextCheckHandler(ConcreteHandler):
-            async def handle_event(self, event: CloudEvent, context: Dict[str, Any]) -> Optional[Any]:
+            async def handle_event(self, event: CloudEvent, context: dict[str, Any]) -> Any | None:
                 self.handle_called = True
                 return {"has_custom_key": "custom_key" in context}
 
