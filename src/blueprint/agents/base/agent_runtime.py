@@ -58,7 +58,17 @@ class AgentRuntime(Agent[AgentDepsT, Any], Component):
         Returns:
             The component name set during initialization
         """
+
         return self._runtime_name
+
+    def get_pydantic_name(self) -> str:
+        """This method only exists for compatibility with old agent access using the pydantic name.
+
+        Returns:
+            The pydantic agent name
+        """
+
+        return self._name
 
     def get_registry(self) -> ComponentRegistry:
         """Get the component registry for accessing other components.
