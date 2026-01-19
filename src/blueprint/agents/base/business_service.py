@@ -1,15 +1,17 @@
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from ..config import Config
+from .component import Component
 
 if TYPE_CHECKING:
     from ..registry.component_registry import ComponentRegistry
 
 
-class BusinessService:
+class BusinessService(Component):
     """Base class for business services.
 
-    Implements ComponentInterface to provide consistent lifecycle and registry access.
+    Extends Component to provide consistent lifecycle and registry access
+    for business logic services.
     """
 
     def __init__(self, name: str = "BusinessService") -> None:
@@ -18,9 +20,7 @@ class BusinessService:
         Args:
             name: Human-readable name for the service
         """
-        self._name = name
-        self._component_registry: Any = None
-        self._config: Config | None = None
+        super().__init__(name)
 
     def get_name(self) -> str:
         """Get the component name.
@@ -28,7 +28,7 @@ class BusinessService:
         Returns:
             The component name set during initialization
         """
-        return self._name
+        return self._component_name
 
     def get_registry(self) -> "ComponentRegistry":
         """Get the component registry for accessing other components.
@@ -40,7 +40,7 @@ class BusinessService:
             RuntimeError: If registry is not wired
         """
         if not hasattr(self, "_component_registry") or self._component_registry is None:
-            raise RuntimeError(f"Component registry not linked to service '{self._name}'")
+            raise RuntimeError(f"Component registry not linked to service '{self._component_name}'")
         return self._component_registry
 
     def get_config(self) -> Config:
@@ -54,7 +54,7 @@ class BusinessService:
         """
 
         if self._config is None:
-            raise RuntimeError(f"Config not linked to service '{self._name}'")
+            raise RuntimeError(f"Config not linked to service '{self._component_name}'")
         return self._config
 
     def link_component_registry(self, registry: "ComponentRegistry") -> None:
@@ -86,8 +86,6 @@ class BusinessService:
         - Loading configuration
         - Initializing resources
         """
-        # Default implementation does nothing
-        # Subclasses can override to perform startup tasks
 
     async def on_shutdown(self) -> None:
         """Called when application is shutting down.
@@ -97,5 +95,3 @@ class BusinessService:
         - Releasing resources
         - Flushing buffers
         """
-        # Default implementation does nothing
-        # Subclasses can override to perform cleanup tasks

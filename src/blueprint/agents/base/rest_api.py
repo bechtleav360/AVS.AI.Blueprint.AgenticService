@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from ..config import Config
 from ..models import ProcessResourceResponse
+from .component import Component
 
 if TYPE_CHECKING:
     from ..registry.component_registry import ComponentRegistry
@@ -26,21 +27,17 @@ tracer = trace.get_tracer(__name__)
 PayloadT = TypeVar("PayloadT", bound=BaseModel)
 
 
-class RestApi(Generic[PayloadT]):
+class RestApi(Component, Generic[PayloadT]):
     """Generic OOP wrapper for the REST API router.
 
-    Implements the ComponentInterface:
-    - name: str - Component name
-    - get_registry() -> ComponentRegistry - Access component registry
-    - on_startup() - Optional initialization
-    - on_shutdown() - Optional cleanup
+    Extends Component to provide consistent lifecycle and registry access
+    for REST API endpoints.
     """
 
     def __init__(self, payload_type: type[PayloadT], name: str = "RestAPI") -> None:
+        super().__init__(name)
         self.router = APIRouter()
         self._payload_type = payload_type
-        self._component_registry: ComponentRegistry | None = None
-        self._name = name
         self._register_routes()
 
     def get_name(self) -> str:
@@ -49,7 +46,7 @@ class RestApi(Generic[PayloadT]):
         Returns:
             The component name set during initialization
         """
-        return self._name
+        return self._component_name
 
     def get_registry(self) -> ComponentRegistry:
         """Get the component registry for accessing other components.
@@ -61,7 +58,7 @@ class RestApi(Generic[PayloadT]):
             RuntimeError: If registry is not wired
         """
         if not hasattr(self, "_component_registry") or self._component_registry is None:
-            raise RuntimeError(f"Component registry not linked to service '{self._name}'")
+            raise RuntimeError(f"Component registry not linked to service '{self._component_name}'")
         return self._component_registry
 
     def get_config(self) -> Config:
@@ -75,7 +72,7 @@ class RestApi(Generic[PayloadT]):
         """
 
         if not hasattr(self, "_config") or self._config is None:
-            raise RuntimeError(f"Config not linked to REST API '{self._name}'")
+            raise RuntimeError(f"Config not linked to REST API '{self._component_name}'")
         return self._config
 
     def link_component_registry(self, registry: ComponentRegistry) -> None:
@@ -139,8 +136,8 @@ class RestApi(Generic[PayloadT]):
         )
         async def process_resource(
             request: Request,
-            payload: self.payload_type = Body(...),
-        ) -> ProcessResourceResponse:
+            payload: self._payload_type = Body(...),
+        ) -> ProcessResourceResponse | JSONResponse:
             return await self._process_resource(request, payload)
 
     async def _process_resource(self, request: Request, payload: PayloadT) -> ProcessResourceResponse | JSONResponse:

@@ -11,6 +11,7 @@ from pydantic_ai.tools import AgentDepsT
 
 from ..agent.prompt_loader import PromptLoader
 from ..config import Config
+from .component import Component
 
 if TYPE_CHECKING:
     from ..registry.component_registry import ComponentRegistry
@@ -18,17 +19,13 @@ if TYPE_CHECKING:
 logger: logging.Logger = logging.getLogger(__name__)
 
 
-class AgentRuntime(Agent[AgentDepsT, Any]):
+class AgentRuntime(Agent[AgentDepsT, Any], Component):
     """Agent subclass that stores registered prompts and exposes prompt execution.
 
     Handles all prompt-related operations including loading, registering, and executing
     prompts from files or configuration.
 
-    Implements the ComponentInterface:
-    - name: str - Component name
-    - get_registry() -> ComponentRegistry - Access component registry
-    - on_startup() - Optional initialization
-    - on_shutdown() - Optional cleanup
+    Extends Component to provide consistent lifecycle and registry access.
     """
 
     def __init__(
@@ -45,14 +42,15 @@ class AgentRuntime(Agent[AgentDepsT, Any]):
             **kwargs: Keyword arguments for Agent
         """
         if "name" in kwargs:
-            super().__init__(**kwargs)
+            Agent.__init__(self, **kwargs)
         else:
-            super().__init__(name=runtime_name, **kwargs)
+            Agent.__init__(self, name=runtime_name, **kwargs)
+
+        Component.__init__(self, runtime_name)
 
         self._prompt_cache: dict[str, str] = {}
         self._config = config
-        self._component_registry: Any = None
-        self._runtime_name: str = runtime_name  # Store for fallback
+        self._runtime_name: str = runtime_name
 
     def get_name(self) -> str:
         """Get the component name.
@@ -60,7 +58,6 @@ class AgentRuntime(Agent[AgentDepsT, Any]):
         Returns:
             The component name set during initialization
         """
-        # Return the runtime_name which is always a string from constructor
         return self._runtime_name
 
     def get_registry(self) -> ComponentRegistry:
