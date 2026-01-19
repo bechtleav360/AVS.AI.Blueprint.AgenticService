@@ -8,6 +8,7 @@ import httpx
 
 from ...config import Config
 from ...models.api import ComponentHealth
+from .base import HealthCheckerBase
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +18,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
-class DaprPubSubHealthChecker:
+class DaprPubSubHealthChecker(HealthCheckerBase):
     """Health check for Dapr sidecar availability."""
 
     def __init__(self, config: Config, pubsub_name: str | None = None) -> None:

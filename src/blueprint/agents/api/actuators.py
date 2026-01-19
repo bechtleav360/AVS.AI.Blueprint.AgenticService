@@ -119,8 +119,18 @@ class ActuatorApi:
 
         Returns cached health status from background checks to minimize resource consumption.
         """
+
         with tracer.start_as_current_span("api.readiness_probe") as span:
             try:
+                if self.config and self.config.has_validation_errors():
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail={
+                            "status": "DOWN",
+                            "errors": self.config.get_validation_errors(),
+                        },
+                    )
+
                 # Return cached health status (updated periodically in background)
                 response = await self._health_cache.get_health_status()
 
@@ -142,19 +152,20 @@ class ActuatorApi:
                 ) from exc
 
     async def liveness_probe(self) -> LivenessResponse:
-        """Liveness probe to indicate the service is running."""
+        """Liveness probe to indicate the service is running.
+
+        Returns 200 OK even if configuration has validation errors, as restarting
+        the pod won't fix configuration issues. Configuration errors should be
+        caught by the readiness probe instead.
+        """
         if self.config and self.config.has_validation_errors():
-            logger.error(
-                "Liveness probe failed - configuration validation errors: %s",
+            logger.warning(
+                "Liveness probe: configuration validation errors present: %s",
                 self.config.get_validation_errors(),
             )
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail={
-                    "status": "DOWN",
-                    "errors": self.config.get_validation_errors(),
-                },
-            )
+            # Still return UP - configuration errors don't require pod restart
+            # The readiness probe will handle marking the service as not ready
+            return LivenessResponse(status="UP")
 
         # Only log failures - successful liveness checks are not logged
         return LivenessResponse(status="UP")

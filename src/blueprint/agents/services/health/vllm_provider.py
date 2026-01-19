@@ -10,11 +10,12 @@ import httpx
 from ...config import Config
 from ...models.api import ComponentHealth
 from ...models.config import AIConfig
+from .base import HealthCheckerBase
 
 logger = logging.getLogger(__name__)
 
 
-class VLLMProviderHealthChecker:
+class VLLMProviderHealthChecker(HealthCheckerBase):
     """Health check provider for the configured AI model."""
 
     def __init__(self, config: Config, runtime_names: Iterable[str] | None = None) -> None:
