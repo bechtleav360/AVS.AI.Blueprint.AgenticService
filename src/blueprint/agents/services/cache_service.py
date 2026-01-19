@@ -6,6 +6,7 @@ import logging
 import threading
 import time
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -202,28 +203,31 @@ class DiskCacheService(CacheService):
         """
         return f"{namespaced_key}:__ttl__"
 
-    def _acquire_lock(self) -> None:
-        """Acquire lock for thread-safe cache operations.
+    @contextmanager
+    def _acquire_lock(self):
+        """Context manager for thread-safe cache operations.
 
-        Sequential access pattern: Lock is acquired before each operation
-        and released immediately after, allowing other threads to access
-        the cache between operations.
+        Acquires lock on entry and releases on exit, ensuring proper cleanup
+        even if exceptions occur. Allows clean usage with 'with' statement.
+
+        Example:
+            ```python
+            with self._acquire_lock():
+                # Perform cache operations
+                value = self._cache.get(key)
+            ```
         """
         if self._enable_locking:
             self._lock.acquire()
-
-    def _release_lock(self) -> None:
-        """Release lock for thread-safe cache operations.
-
-        Sequential access pattern: Lock is released immediately after
-        the operation completes, allowing other waiting threads to proceed.
-        """
-        if self._enable_locking:
-            try:
-                self._lock.release()
-            except RuntimeError:
-                # Lock was not acquired
-                pass
+        try:
+            yield
+        finally:
+            if self._enable_locking:
+                try:
+                    self._lock.release()
+                except RuntimeError:
+                    # Lock was not acquired
+                    pass
 
     def wait_for_cache_availability(self, timeout: float | None = None) -> bool:
         """Wait until the cache is available (not locked by another thread).
@@ -253,32 +257,30 @@ class DiskCacheService(CacheService):
 
     def get(self, key: str | list[str] | dict[str, Any], namespace: str = "default") -> Any | None:
         """Retrieve a value from cache."""
-        self._acquire_lock()
         try:
-            namespaced_key = self._make_key(key, namespace)
-            ttl_key = self._make_ttl_key(namespaced_key)
+            with self._acquire_lock():
+                namespaced_key = self._make_key(key, namespace)
+                ttl_key = self._make_ttl_key(namespaced_key)
 
-            # Check if TTL has expired (Option 1: persistent TTL)
-            ttl_timestamp = self._cache.get(ttl_key)
-            if ttl_timestamp is not None:
-                try:
-                    expiration_time = float(ttl_timestamp)
-                    if time.time() > expiration_time:
-                        # TTL expired, delete both value and TTL metadata
-                        self.delete(key, namespace)
-                        return None
-                except (ValueError, TypeError):
-                    logger.warning("Invalid TTL timestamp for key %s", namespaced_key)
+                # Check if TTL has expired (Option 1: persistent TTL)
+                ttl_timestamp = self._cache.get(ttl_key)
+                if ttl_timestamp is not None:
+                    try:
+                        expiration_time = float(ttl_timestamp)
+                        if time.time() > expiration_time:
+                            # TTL expired, delete both value and TTL metadata
+                            self.delete(key, namespace)
+                            return None
+                    except (ValueError, TypeError):
+                        logger.warning("Invalid TTL timestamp for key %s", namespaced_key)
 
-            value = self._cache.get(namespaced_key)
-            if value is not None:
-                logger.debug("Cache hit: %s", namespaced_key)
-            return value
+                value = self._cache.get(namespaced_key)
+                if value is not None:
+                    logger.debug("Cache hit: %s", namespaced_key)
+                return value
         except Exception as e:
             logger.warning("Error retrieving from cache: %s", e)
             return None
-        finally:
-            self._release_lock()
 
     def set(
         self,
@@ -288,91 +290,83 @@ class DiskCacheService(CacheService):
         ttl: int | None = None,
     ) -> None:
         """Store a value in cache."""
-        self._acquire_lock()
         try:
-            namespaced_key = self._make_key(key, namespace)
-            self._cache.set(namespaced_key, value)
+            with self._acquire_lock():
+                namespaced_key = self._make_key(key, namespace)
+                self._cache.set(namespaced_key, value)
 
-            # Store TTL metadata persistently (Option 1)
-            if ttl is not None:
-                ttl_key = self._make_ttl_key(namespaced_key)
-                expiration_time = time.time() + ttl
-                self._cache.set(ttl_key, str(expiration_time))
-                logger.debug("Cache set: %s (ttl=%s)", namespaced_key, ttl)
-            else:
-                # Remove TTL metadata if no TTL specified
-                ttl_key = self._make_ttl_key(namespaced_key)
-                if ttl_key in self._cache:
-                    del self._cache[ttl_key]
-                logger.debug("Cache set: %s (no ttl)", namespaced_key)
+                # Store TTL metadata persistently (Option 1)
+                if ttl is not None:
+                    ttl_key = self._make_ttl_key(namespaced_key)
+                    expiration_time = time.time() + ttl
+                    self._cache.set(ttl_key, str(expiration_time))
+                    logger.debug("Cache set: %s (ttl=%s)", namespaced_key, ttl)
+                else:
+                    # Remove TTL metadata if no TTL specified
+                    ttl_key = self._make_ttl_key(namespaced_key)
+                    if ttl_key in self._cache:
+                        del self._cache[ttl_key]
+                    logger.debug("Cache set: %s (no ttl)", namespaced_key)
         except Exception as e:
             logger.warning("Error setting cache: %s", e)
-        finally:
-            self._release_lock()
 
     def delete(self, key: str | list[str] | dict[str, Any], namespace: str = "default") -> bool:
         """Delete a value from cache."""
-        self._acquire_lock()
         try:
-            namespaced_key = self._make_key(key, namespace)
-            if namespaced_key in self._cache:
-                del self._cache[namespaced_key]
-                # Also delete TTL metadata
-                ttl_key = self._make_ttl_key(namespaced_key)
-                if ttl_key in self._cache:
-                    del self._cache[ttl_key]
-                logger.debug("Cache deleted: %s", namespaced_key)
-                return True
-            return False
+            with self._acquire_lock():
+                namespaced_key = self._make_key(key, namespace)
+                if namespaced_key in self._cache:
+                    del self._cache[namespaced_key]
+                    # Also delete TTL metadata
+                    ttl_key = self._make_ttl_key(namespaced_key)
+                    if ttl_key in self._cache:
+                        del self._cache[ttl_key]
+                    logger.debug("Cache deleted: %s", namespaced_key)
+                    return True
+                return False
         except Exception as e:
             logger.warning("Error deleting from cache: %s", e)
             return False
-        finally:
-            self._release_lock()
 
     def clear(self, namespace: str | None = None) -> None:
         """Clear cache entries."""
-        self._acquire_lock()
         try:
-            if namespace is None:
-                self._cache.clear()
-                logger.info("Cleared entire cache")
-            else:
-                # Clear only keys in the specified namespace
-                prefix = f"{namespace}:"
-                keys_to_delete = [k for k in self._cache.keys() if k.startswith(prefix)]
-                for key in keys_to_delete:
-                    del self._cache[key]
-                logger.info("Cleared cache namespace: %s (%d keys)", namespace, len(keys_to_delete))
+            with self._acquire_lock():
+                if namespace is None:
+                    self._cache.clear()
+                    logger.info("Cleared entire cache")
+                else:
+                    # Clear only keys in the specified namespace
+                    prefix = f"{namespace}:"
+                    keys_to_delete = [k for k in self._cache.keys() if k.startswith(prefix)]
+                    for key in keys_to_delete:
+                        del self._cache[key]
+                    logger.info("Cleared cache namespace: %s (%d keys)", namespace, len(keys_to_delete))
         except Exception as e:
             logger.warning("Error clearing cache: %s", e)
-        finally:
-            self._release_lock()
 
     def exists(self, key: str | list[str] | dict[str, Any], namespace: str = "default") -> bool:
         """Check if a key exists in cache."""
-        self._acquire_lock()
         try:
-            namespaced_key = self._make_key(key, namespace)
-            ttl_key = self._make_ttl_key(namespaced_key)
+            with self._acquire_lock():
+                namespaced_key = self._make_key(key, namespace)
+                ttl_key = self._make_ttl_key(namespaced_key)
 
-            # Check if TTL has expired
-            ttl_timestamp = self._cache.get(ttl_key)
-            if ttl_timestamp is not None:
-                try:
-                    expiration_time = float(ttl_timestamp)
-                    if time.time() > expiration_time:
-                        # TTL expired
-                        return False
-                except (ValueError, TypeError):
-                    pass
+                # Check if TTL has expired
+                ttl_timestamp = self._cache.get(ttl_key)
+                if ttl_timestamp is not None:
+                    try:
+                        expiration_time = float(ttl_timestamp)
+                        if time.time() > expiration_time:
+                            # TTL expired
+                            return False
+                    except (ValueError, TypeError):
+                        pass
 
-            return namespaced_key in self._cache
+                return namespaced_key in self._cache
         except Exception as e:
             logger.warning("Error checking cache existence: %s", e)
             return False
-        finally:
-            self._release_lock()
 
     def hash(self, value: str | list[str] | dict[str, Any]) -> str:
         """Generate a SHA256 hash of a value.
@@ -429,22 +423,20 @@ class DiskCacheService(CacheService):
 
     def get_stats(self) -> dict[str, Any]:
         """Get cache statistics."""
-        self._acquire_lock()
         try:
-            # diskcache-rs doesn't provide volume() method, so we estimate from key count
-            stats = {
-                "cache_dir": str(self.cache_dir),
-                "size": len(self._cache),
-                "size_limit": self._size_limit,
-                "eviction_policy": self._eviction_policy,
-            }
-            logger.debug("Cache stats: %s", stats)
-            return stats
+            with self._acquire_lock():
+                # diskcache-rs doesn't provide volume() method, so we estimate from key count
+                stats = {
+                    "cache_dir": str(self.cache_dir),
+                    "size": len(self._cache),
+                    "size_limit": self._size_limit,
+                    "eviction_policy": self._eviction_policy,
+                }
+                logger.debug("Cache stats: %s", stats)
+                return stats
         except Exception as e:
             logger.warning("Error getting cache stats: %s", e)
             return {}
-        finally:
-            self._release_lock()
 
     def list_namespaces(self) -> list[str]:
         """List all namespaces currently present in the cache."""

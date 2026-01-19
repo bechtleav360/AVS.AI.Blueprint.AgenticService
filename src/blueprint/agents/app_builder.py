@@ -2,8 +2,12 @@
 
 import logging
 from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, FastAPI
+
+if TYPE_CHECKING:
+    from .services.health_check_service import HealthCheckProvider
 
 from .api import actuators, cache, root
 from .base import EventHandler, RestApi
@@ -13,7 +17,7 @@ from .config import Config, TelemetryManager
 from .registry.component_registry import ComponentRegistry
 from .services import EventPublishingService
 from .services.cache_service import DiskCacheService
-from .services.health import DaprPubSubHealthChecker, VLLMProviderHealthChecker
+from .services.health import DaprPubSubHealthChecker, HealthCheckerRegistry, VLLMProviderHealthChecker
 from .services.processing_service import ProcessingService
 
 # Dapr generic endpoints
@@ -41,6 +45,7 @@ class AppBuilder:
         self._config = config
         self._telemetry_manager = TelemetryManager(settings=self._config)
         self._component_registry = ComponentRegistry(settings=self._config)
+        self._health_checker_registry = HealthCheckerRegistry()
 
     def build(self) -> FastAPI:
         """Create and configure the FastAPI application.
@@ -77,6 +82,12 @@ class AppBuilder:
                 self._config,
                 runtime_names=runtime_names,
             )
+
+        # Add custom health checkers registered via with_health_checker()
+        custom_checkers = self._health_checker_registry.get_all()
+        if custom_checkers:
+            logger.info("Adding %d custom health checkers", len(custom_checkers))
+            health_dependencies.update(custom_checkers)
 
         actuator_api = actuators.ActuatorApi(
             config=self._config,
@@ -196,6 +207,30 @@ class AppBuilder:
             )
         else:
             logger.info("Caching disabled")
+        return self
+
+    def with_health_checker(self, name: str, checker: "HealthCheckProvider") -> "AppBuilder":
+        """Register a custom health checker.
+
+        Health checkers are used to determine application readiness. They are executed
+        periodically in the background and cached for performance.
+
+        Args:
+            name: Unique identifier for the health checker
+            checker: Health checker instance implementing HealthCheckProvider
+
+        Returns:
+            Self for chaining
+
+        Example:
+            ```python
+            builder = AppBuilder(config)
+            builder.with_health_checker("database", DatabaseHealthChecker())
+            builder.with_health_checker("cache", CacheHealthChecker())
+            ```
+        """
+        self._health_checker_registry.register_or_replace(name, checker)
+        logger.info("Registered custom health checker: %s", name)
         return self
 
     def _create_lifespan_manager(self):
