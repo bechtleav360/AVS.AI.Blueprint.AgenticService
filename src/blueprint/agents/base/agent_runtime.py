@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic_ai import Agent
 from pydantic_ai.run import AgentRunResult
+from pydantic_ai.settings import ModelSettings
 from pydantic_ai.tools import AgentDepsT
 
 from ..agent.prompt_loader import PromptLoader
@@ -51,6 +52,7 @@ class AgentRuntime(Agent[AgentDepsT, Any], Component):
         self._prompt_cache: dict[str, str] = {}
         self._config = config
         self._runtime_name: str = runtime_name
+        self._model_settings: ModelSettings = {}  # type: ignore[assignment]
 
     def get_name(self) -> str:
         """Get the component name.
@@ -125,6 +127,60 @@ class AgentRuntime(Agent[AgentDepsT, Any], Component):
         - Releasing resources
         - Flushing buffers
         """
+
+    def get_model_settings(self) -> ModelSettings:
+        """Get model settings for use in agent.run() calls.
+
+        Returns model configuration settings (max_tokens, temperature, etc.)
+        that should be passed to agent.run() via the model_settings parameter.
+
+        Returns:
+            ModelSettings object with configuration from runtime settings
+        """
+        if not self._model_settings and self._config:
+            try:
+                ai_config = self._config.get_ai_config(self._runtime_name)
+                settings: ModelSettings = {}  # type: ignore[assignment]
+
+                if ai_config.max_tokens is not None:
+                    settings["max_tokens"] = ai_config.max_tokens
+
+                if ai_config.temperature is not None:
+                    settings["temperature"] = ai_config.temperature
+
+                self._model_settings = settings
+            except Exception as e:
+                logger.warning("Failed to load model settings from config: %s", e)
+                self._model_settings = {}  # type: ignore[assignment]
+
+        return self._model_settings
+
+    async def run(
+        self,
+        user_prompt: str | None = None,
+        *,
+        model_settings: ModelSettings | None = None,
+        **kwargs: Any,
+    ) -> AgentRunResult:
+        """Execute the agent with automatic model settings from configuration.
+
+        Overrides the parent Agent.run() method to automatically apply model settings
+        from configuration if not explicitly provided.
+
+        Args:
+            user_prompt: The user prompt to send to the agent
+            model_settings: Optional model settings. If not provided, uses settings from configuration.
+            **kwargs: Additional keyword arguments passed to parent Agent.run()
+
+        Returns:
+            Agent run result
+        """
+        # Use provided model_settings, or fall back to configuration settings
+        if model_settings is None:
+            model_settings = self.get_model_settings()
+
+        # Call parent run() with all parameters
+        return await super().run(user_prompt, model_settings=model_settings, **kwargs)
 
     def get_prompt(self, prompt_name: str, path: str = "") -> str:
         """Load instruction prompt by name (lazy loading with caching).

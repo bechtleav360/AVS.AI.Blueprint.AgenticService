@@ -175,6 +175,7 @@ class LoggingManager:
             "uvicorn.access": logging.WARNING,
             "opentelemetry": logging.WARNING,
             "openai": logging.INFO,
+            "apscheduler": logging.WARNING,
         }
         # Suppress verbose output from httpcore without touching vendored packages.
         for logger_name, level in noisy_loggers.items():
