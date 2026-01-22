@@ -124,6 +124,10 @@ class AIConfig(BaseModel):
     temperature: float | None = Field(None, description="Temperature for generation")
     concurrency_limit: int | None = Field(None, description="Max concurrent requests")
     usage_limits: UsageLimits = Field(default_factory=UsageLimits, description="Usage limits")
+    model_settings: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Additional model settings for specific providers"
+    )
 
 
 class PromptConfig(BaseModel):

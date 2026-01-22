@@ -20,14 +20,14 @@ config = Config(
 
 junior_agent: AgentRuntime = (
     AgentBuilder(config, runtime_name="junior_support")
-    .with_model_from_config("junior_support")
+    .with_model_from_config()
     .with_system_prompt("junior_system")
     .build(name="junior_support")
 )
 
 senior_agent: AgentRuntime = (
     AgentBuilder(config, runtime_name="senior_support")
-    .with_model_from_config("senior_support")
+    .with_model_from_config()
     .with_system_prompt("senior_system")
     .build(name="senior_support")
 )

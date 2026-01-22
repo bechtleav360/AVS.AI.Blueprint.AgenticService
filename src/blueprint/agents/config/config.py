@@ -194,9 +194,6 @@ class Config:
             if value is not None:
                 config[key] = value
 
-        # Override with runtime-specific config if it exists
-        runtime_config = None
-
         # Try to find runtime-specific config
         runtime_config = self.settings.get(f"runtimes.{runtime_name}")
         if not runtime_config:
@@ -243,6 +240,7 @@ class Config:
         Returns:
             AIConfig model with runtime-specific overrides.
         """
+
         # Get runtime-specific settings directly from settings
         runtime_settings = self.settings.get(f"runtimes.{runtime_name}")
         if not runtime_settings:
@@ -268,6 +266,10 @@ class Config:
         api_key = get_with_fallback("model_api_key")
         base_url = get_with_fallback("model_base_url")
 
+        model_settings = self.settings.get(f"runtimes.{runtime_name}.model_settings")
+        if not model_settings:
+            model_settings = {}
+
         # Log configuration resolution for debugging
         logger.debug(
             "AI config for runtime '%s': provider=%s, model=%s, has_api_key=%s, base_url=%s",
@@ -283,6 +285,7 @@ class Config:
             model_name=model_name,
             api_key=api_key,
             base_url=base_url,
+            model_settings=model_settings,
             max_tokens=get_with_fallback("model_max_tokens"),
             temperature=get_with_fallback("model_temperature"),
             concurrency_limit=get_with_fallback("concurrent_requests"),

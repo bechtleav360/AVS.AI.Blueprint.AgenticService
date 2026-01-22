@@ -73,40 +73,50 @@ class AgentBuilder:
         self._package_root = Path(package_root) if package_root else None
         self._metrics_enabled: bool = True
 
-    def with_model(self, model_name: str) -> "AgentBuilder":
+    def with_model(self, model_name: str = "") -> "AgentBuilder":
         """Configure with a specific model name.
 
         Args:
-            model_name: Name of the model (e.g., "gpt-4", "claude-3")
+            model_name: Name of the model (e.g., "gpt-4", "claude-3"). Can be left out if already part of configuration.
 
         Returns:
             Self for chaining
         """
+
+        logger.warning("Deprecation warning: with_model will be deprecated. Use with_model_from_config instead.")
+
         ai_config = self._config.get_ai_config(self._runtime_name)
         # Create a modified copy with the new model_name
         ai_config_dict = ai_config.model_dump()
-        ai_config_dict["model_name"] = model_name
+        if model_name:
+            ai_config_dict["model_name"] = model_name
         self._model = ModelProviderFactory.create_model(ai_config_dict)
         logger.info("Configured agent with model: %s", model_name)
         return self
 
-    def with_model_from_config(self, runtime_name: str | None = None) -> "AgentBuilder":
-        """Configure model from runtime-specific config.
+    def with_model_from_config(self, model_name: str = "", runtime_name: str = "") -> "AgentBuilder":
+        """Configure with a specific model name.
 
         Args:
-            runtime_name: Runtime name to lookup config, or None to use builder's runtime_name
+            model_name: Name of the model (e.g., "gpt-4", "claude-3"). Can be left out if already part of configuration.
+            runtime_name: Name of the runtime to get config for
 
         Returns:
             Self for chaining
         """
-        name = runtime_name or self._runtime_name
-        ai_config = self._config.get_ai_config(name)
+
+        logger.warning("Deprecation warning: runtime_name is not necessary anymore. "
+                       "Set the runtime in constructor instead.")
+
+        ai_config = self._config.get_ai_config(self._runtime_name)
+        if model_name:
+            ai_config.model_name = model_name
+
+        if not ai_config.model_name:
+            raise ValueError(f"No model name for runtime agent {self._runtime_name} configured")
+
         self._model = ModelProviderFactory.create_model(ai_config)
-        logger.info(
-            "Configured agent with model from config '%s': %s",
-            name,
-            ai_config.model_name,
-        )
+        logger.info("Configured agent with model: %s", model_name)
         return self
 
     def with_system_prompt(self, name: str | None = None) -> "AgentBuilder":

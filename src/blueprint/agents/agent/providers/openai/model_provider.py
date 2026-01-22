@@ -4,14 +4,16 @@ import logging
 from typing import TYPE_CHECKING, Any, Union
 
 from openai import AsyncOpenAI
+from openai.types import ReasoningEffort
+from pydantic_ai import ModelSettings
 from pydantic_ai.models import Model
-from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel, OpenAIResponsesModelSettings
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from ...model_provider import ModelProviderStrategy
 
 if TYPE_CHECKING:
-    from ...models.config import AIConfig
+    from ....models.config import AIConfig
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +37,11 @@ class OpenAIModelProvider(ModelProviderStrategy):
         if isinstance(ai_config, dict):
             api_key = ai_config["api_key"]
             model_name = ai_config["model_name"]
+            model_settings = OpenAIResponsesModelSettings(**ai_config.get("model_settings", {}))
         else:
             api_key = ai_config.api_key
             model_name = ai_config.model_name
+            model_settings = OpenAIResponsesModelSettings(**ai_config.model_settings)
 
         client = AsyncOpenAI(
             max_retries=3,
@@ -45,9 +49,10 @@ class OpenAIModelProvider(ModelProviderStrategy):
         )
         provider = OpenAIProvider(openai_client=client)
 
-        logger.info("OpenAI model configured: %s", model_name)
+        logger.info("OpenAI model configured: %s. Additional settings: %s", model_name, model_settings)
 
-        return OpenAIChatModel(
+        return OpenAIResponsesModel(
             provider=provider,
             model_name=model_name,
+            settings=model_settings
         )
