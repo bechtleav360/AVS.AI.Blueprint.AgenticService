@@ -71,7 +71,7 @@ class AgentBuilder:
         self._result_type: type[BaseModel] = BaseModel
         self._deps_type: type[Any] = type(None)
         self._meter = meter
-        self._package_root = Path(package_root) if package_root else None
+        self._package_root = Path(package_root) if package_root else ""
         self._metrics_enabled: bool = True
         self._max_tokens: int | None = None
         self._temperature: float | None = None
@@ -270,11 +270,13 @@ class AgentBuilder:
                 "Either call with_system_prompt() or configure system_prompt_name in settings."
             )
 
+        ai_config = self._config.get_ai_config(self._runtime_name)
         try:
             self._system_prompt = PromptLoader.load_prompt(
                 prompt_name,
                 self._config,
-                self._package_root,
+                path=self._package_root,
+                provider=ai_config.provider,
             )
         except Exception as e:
             raise ValueError(
