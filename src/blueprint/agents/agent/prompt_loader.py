@@ -20,7 +20,8 @@ class PromptLoader:
     def load_prompt(
         prompt_name: str,
         config: Config,
-        path: str = "",
+        path: str | Path = "",
+        provider: str = "",
     ) -> str:
         """Load a system prompt file or from config.
 
@@ -36,13 +37,12 @@ class PromptLoader:
 
         Args:
             prompt_name: Name of the prompt file (without .prompt extension).
-            agent_class: The agent class requesting the prompt.
             config: Optional prompt configuration (dict or PromptConfig model) with keys:
                    - prompts: Dict of prompt names to prompt content (highest priority)
                    - custom_path: Custom prompt directory path
                    - search_paths: List of additional search paths
-            package_root: Optional root path for the package (e.g., where main.py resides).
-                         Used to locate prompts in package_root/prompts directory.
+            path: Optional path to load the prompt from
+            provider: Optional provider name for loading provider specific prompts
 
         Returns:
             Prompt text content.
@@ -50,15 +50,14 @@ class PromptLoader:
         Raises:
             FileNotFoundError: If prompt file doesn't exist in any location.
         """
+
         search_roots: list[Path | str] = []
         searched_locations: list[Path] = []
 
         # 1. Config overrides have highest priority
-        search_paths: list[str] = []
-        if config:
-            search_paths = config.get("prompt_search_paths", []) or []
-            logger.debug("Added search paths from config: %s", search_paths)
-            search_roots.extend(search_paths)
+        search_paths = config.get("prompt_search_paths", []) or []
+        logger.debug("Added search paths from config: %s", search_paths)
+        search_roots.extend(search_paths)
 
         # 2. check if path is given
         if path:
@@ -71,7 +70,7 @@ class PromptLoader:
                 search_roots.append(path)
 
         # 3. check in package prompts directory
-        package_root = config.get_package_root() if config else None
+        package_root = config.get_package_root()
         if package_root:
             package_root_path = PromptLoader._ensure_path(package_root)
             search_roots.append(package_root_path / "prompts")
@@ -87,8 +86,14 @@ class PromptLoader:
                 searched_locations.append(prompt_directory / f"{prompt_name}.prompt")
                 continue
 
-            # check if file exists in current directory with {prompt_name}.prompt
-            prompt_path = prompt_directory / f"{prompt_name}.prompt"
+            # check if file exists in current directory with {prompt_name}.{provider}.prompt or {prompt_name}.prompt
+            if provider:
+                prompt_path = prompt_directory / f"{prompt_name}.{provider}.prompt"
+                if not prompt_path.exists():
+                    prompt_path = prompt_directory / f"{prompt_name}.prompt"
+            else:
+                prompt_path = prompt_directory / f"{prompt_name}.prompt"
+
             searched_locations.append(prompt_path)
             if prompt_path.exists():
                 with open(prompt_path) as f:
