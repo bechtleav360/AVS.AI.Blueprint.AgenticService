@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from pydantic_ai import Agent, Tool
 from pydantic_ai.models import Model
 from pydantic_ai.run import AgentRunResult
+from pydantic_ai.settings import ModelSettings
 
 from ..base import AgentRuntime
 from ..config import Config
@@ -72,6 +73,8 @@ class AgentBuilder:
         self._meter = meter
         self._package_root = Path(package_root) if package_root else None
         self._metrics_enabled: bool = True
+        self._max_tokens: int | None = None
+        self._temperature: float | None = None
 
     def with_model(self, model_name: str = "") -> "AgentBuilder":
         """Configure with a specific model name.
@@ -210,6 +213,28 @@ class AgentBuilder:
         logger.info("Metrics logging %s", "enabled" if enabled else "disabled")
         return self
 
+    def get_model_settings(self) -> ModelSettings:
+        """Get model settings for use in agent.run() calls.
+
+        Returns a ModelSettings object that should be passed to agent.run()
+        to apply max_tokens, temperature, and other model configuration.
+
+        Returns:
+            ModelSettings object with configuration from runtime settings
+        """
+        ai_config = self._config.get_ai_config(self._runtime_name)
+        settings: ModelSettings = {}  # type: ignore[assignment]
+
+        if ai_config.max_tokens is not None:
+            settings["max_tokens"] = ai_config.max_tokens
+            logger.debug("Model settings: max_tokens=%d", ai_config.max_tokens)
+
+        if ai_config.temperature is not None:
+            settings["temperature"] = ai_config.temperature
+            logger.debug("Model settings: temperature=%.2f", ai_config.temperature)
+
+        return settings
+
     def build(self, **kwargs) -> AgentRuntime:
         """Build the configured agent.
 
@@ -284,6 +309,9 @@ class AgentBuilder:
             runtime_name=self._runtime_name,
             **kwargs,
         )
+
+        # Store model settings from configuration for use in agent.run() calls
+        runtime._model_settings = self.get_model_settings()
 
         # Attach metrics recording method to the agent runtime
         runtime.record_metrics = self._create_metrics_recorder()  # type: ignore[attr-defined]
