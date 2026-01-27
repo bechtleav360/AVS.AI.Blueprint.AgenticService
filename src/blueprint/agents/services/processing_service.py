@@ -116,7 +116,7 @@ class ProcessingService:
                             data=result.data,
                             metadata=result.metadata or {},
                             source_event=event,
-                            new_subject= result.subject or new_subject,
+                            new_subject=result.subject or new_subject,
                         )
 
                 status = ProcessingStatus.NO_HANDLER_FOUND if handler_result is None else ProcessingStatus.PROCESSED
