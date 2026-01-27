@@ -110,16 +110,13 @@ class ProcessingService:
 
                 # Publish each event that has an event_type
                 for result in handler_results:
-                    event_type_to_publish = result.event_type
-                    if event_type_to_publish:
-                        result_data_dict = result.data
-                        result_metadata = result.metadata or {}
+                    if result.event_type:
                         await self._event_publisher.publish_handler_event(
-                            event_type=event_type_to_publish,
-                            data=result_data_dict,
-                            metadata=result_metadata,
+                            event_type=result.event_type,
+                            data=result.data,
+                            metadata=result.metadata or {},
                             source_event=event,
-                            new_subject=new_subject,
+                            new_subject= result.subject or new_subject,
                         )
 
                 status = ProcessingStatus.NO_HANDLER_FOUND if handler_result is None else ProcessingStatus.PROCESSED
