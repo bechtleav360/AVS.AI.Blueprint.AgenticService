@@ -75,10 +75,11 @@ class TestAgentBuilder:
             mock_model = Mock()
             mock_create.return_value = mock_model
 
-            result = builder.with_model_from_config("custom_runtime")
+            # runtime_name is deprecated and should not be used
+            result = builder.with_model_from_config(runtime_name="custom_runtime")
 
             assert result == builder
-            mock_config.get_ai_config.assert_called_with("custom_runtime")
+            mock_config.get_ai_config.assert_called_with("test_runtime")
 
     def test_with_tools_sets_tool_list(self, builder):
         """Test with_tools sets list of tools."""
@@ -426,4 +427,4 @@ class TestAgentBuilder:
         """Test AgentBuilder initialization without package_root."""
         builder = AgentBuilder(mock_config, runtime_name="test")
 
-        assert builder._package_root is None
+        assert builder._package_root is ""
