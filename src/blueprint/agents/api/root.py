@@ -21,48 +21,45 @@ class RootApi:
         self._register_routes()
 
     def _register_routes(self) -> None:
-        @self.router.get(
-            "/",
-            tags=["root"],
-            summary="Service metadata",
-        )
-        async def root() -> dict[str, Any]:
-            """Return basic information about the service and useful links."""
-            # Try to get metadata from config/settings first
-            service_name = None
-            service_version = None
-            service_description = None
+        self.router.add_api_route("/", self.root, methods=["GET"], summary="Service metadata", tags=["root"])
 
-            if self.config:
-                service_name = self.config.get("app_name")
-                service_version = self.config.get("app_version")
-                service_description = self.config.get("app_description")
+    async def root(self) -> dict[str, Any]:
+        """Return basic information about the service and useful links."""
+        # Try to get metadata from config/settings first
+        service_name = None
+        service_version = None
+        service_description = None
 
-            # Fall back to defaults if not in config
-            if not service_name:
-                service_name = "agent-service"
-            if not service_version:
-                service_version = "0.0.0"
-            if not service_description:
-                service_description = "Generic microservice blueprint for building intelligent agents"
+        if self.config:
+            service_name = self.config.get("app_name")
+            service_version = self.config.get("app_version")
+            service_description = self.config.get("app_description")
 
-            return {
-                "service": service_name,
-                "version": service_version,
-                "description": service_description,
-                "documentation": {
-                    "swagger_ui": "/docs",
-                    "redoc": "/redoc",
-                    "openapi_json": "/openapi.json",
-                },
-                "probes": {"liveness": "/health/live", "readiness": "/health/ready"},
-                "actuators": {
-                    "info": "/info",
-                    "environment": "/status/env",
-                    "llm": "/status/llm",
-                    "build": "/status/build",
-                },
-            }
+        # Fall back to defaults if not in config
+        if not service_name:
+            service_name = "agent-service"
+        if not service_version:
+            service_version = "0.0.0"
+        if not service_description:
+            service_description = "Generic microservice blueprint for building intelligent agents"
+
+        return {
+            "service": service_name,
+            "version": service_version,
+            "description": service_description,
+            "documentation": {
+                "swagger_ui": "/docs",
+                "redoc": "/redoc",
+                "openapi_json": "/openapi.json",
+            },
+            "probes": {"liveness": "/health/live", "readiness": "/health/ready"},
+            "actuators": {
+                "info": "/info",
+                "environment": "/status/env",
+                "llm": "/status/llm",
+                "build": "/status/build",
+            },
+        }
 
 
 # For backwards compatibility, keep the router instance

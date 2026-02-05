@@ -27,17 +27,16 @@ tracer = trace.get_tracer(__name__)
 PayloadT = TypeVar("PayloadT", bound=BaseModel)
 
 
-class RestApi(Component, Generic[PayloadT]):
+class RestApi(Component):
     """Generic OOP wrapper for the REST API router.
 
     Extends Component to provide consistent lifecycle and registry access
     for REST API endpoints.
     """
 
-    def __init__(self, payload_type: type[PayloadT], name: str = "RestAPI") -> None:
+    def __init__(self, name: str = "RestAPI") -> None:
         super().__init__(name)
         self.router = APIRouter()
-        self._payload_type = payload_type
         self._register_routes()
 
     def get_name(self) -> str:
@@ -115,30 +114,31 @@ class RestApi(Component, Generic[PayloadT]):
         """
 
     def _register_routes(self) -> None:
-        @self.router.post(
-            "/process-resource",
-            response_model=ProcessResourceResponse,
-            summary="Trigger resource processing",
-            responses={
-                status.HTTP_200_OK: {
-                    "description": "Processing completed",
-                    "content": {
-                        "application/json": {
-                            "example": {
-                                "success": True,
-                                "request_id": "9f2c1f2e-09d8-4d0d-9b6f-2f6fef2ad87a",
-                                "message": "Processing completed successfully",
-                            }
-                        }
-                    },
-                }
-            },
-        )
-        async def process_resource(
-            request: Request,
-            payload: self._payload_type = Body(...),
-        ) -> ProcessResourceResponse | JSONResponse:
-            return await self._process_resource(request, payload)
+        # @self.router.post(
+        #     "/process-resource",
+        #     response_model=ProcessResourceResponse,
+        #     summary="Trigger resource processing",
+        #     responses={
+        #         status.HTTP_200_OK: {
+        #             "description": "Processing completed",
+        #             "content": {
+        #                 "application/json": {
+        #                     "example": {
+        #                         "success": True,
+        #                         "request_id": "9f2c1f2e-09d8-4d0d-9b6f-2f6fef2ad87a",
+        #                         "message": "Processing completed successfully",
+        #                     }
+        #                 }
+        #             },
+        #         }
+        #     },
+        # )
+        # async def process_resource(
+        #     request: Request,
+        #     payload: self._payload_type = Body(...),
+        # ) -> ProcessResourceResponse | JSONResponse:
+        #     return await self._process_resource(request, payload)
+        raise NotImplementedError
 
     async def _process_resource(self, request: Request, payload: PayloadT) -> ProcessResourceResponse | JSONResponse:
         """Generic endpoint for processing resources with illustrative payloads."""

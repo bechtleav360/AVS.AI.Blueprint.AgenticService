@@ -1,6 +1,12 @@
 # Changelog
 ## [0.4.0] - Planned
 
+## [0.3.XX] - Planned
+- RestAPI Baseclass for all RestAPIs
+- Component Class as Baseclass for all Components (Baseclasses)
+- Implement some standard methods in Component
+- Scheduler in communication layer (Alternative to Events and API)
+
 ## [0.3.11] - 2025-12-22
 
 ### Highlights

@@ -6,11 +6,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "avs-blueprint-agents"
-version = "0.3.21"
+version = "0.3.22"
 description = "Microservice blueprint for creating agents"
 authors = [
-    {name = "Blueprint Team", email = "patrick.maue@bechtle.com"},
-    {name = "Blueprint Team", email = "jan.weber@bechtle.com"}
+    { name = "Blueprint Team", email = "patrick.maue@bechtle.com" },
+    { name = "Blueprint Team", email = "jan.weber@bechtle.com" }
 ]
 readme = "README.md"
 requires-python = ">=3.13"
@@ -37,7 +37,6 @@ dependencies = [
     "python-multipart>=0.0.20",
     "apscheduler>=3.11.2",
     "diskcache-rs>=0.4.4",
-
 ]
 
 [project.optional-dependencies]
@@ -56,6 +55,10 @@ dev = [
     "semver>=3.0.4",
 ]
 
+[project.scripts]
+setup = "blueprint.agent_generator.setup:main"
+create = "blueprint.agent_generator.create:main"
+
 [tool.setuptools]
 packages = [
     "blueprint",
@@ -73,6 +76,8 @@ packages = [
     "blueprint.agents.services",
     "blueprint.agents.services.health",
     "blueprint.agents.services.processing",
+    "blueprint.agent_generator",
+    "blueprint.agent_generator.generator"
 ]
 
 [tool.setuptools.package-dir]
@@ -95,6 +100,7 @@ packages = [
 
 [tool.setuptools.package-data]
 "blueprint.agents" = ["py.typed"]
+"blueprint.agent_generator" = ["**/*.py", "base_files/**/*"]
 
 [tool.black]
 line-length = 140
@@ -118,17 +124,17 @@ extend-exclude = '''
 target-version = "py313"
 line-length = 140
 lint.select = [
-    "E",  # pycodestyle errors
-    "W",  # pycodestyle warnings
-    "F",  # pyflakes
-    "B",  # flake8-bugbear
+    "E", # pycodestyle errors
+    "W", # pycodestyle warnings
+    "F", # pyflakes
+    "B", # flake8-bugbear
     "C4", # flake8-comprehensions
     "UP", # pyupgrade
 ]
 lint.ignore = [
-    "E501",  # line too long, handled by black
-    "B008",  # do not perform function calls in argument defaults
-    "C901",  # too complex
+    "E501", # line too long, handled by black
+    "B008", # do not perform function calls in argument defaults
+    "C901", # too complex
 ]
 
 [tool.ruff.lint.per-file-ignores]
