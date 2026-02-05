@@ -1,0 +1,7 @@
+"""DTOs for rest api
+"""
+
+from pydantic import BaseModel, Field
+
+
+dto_classes

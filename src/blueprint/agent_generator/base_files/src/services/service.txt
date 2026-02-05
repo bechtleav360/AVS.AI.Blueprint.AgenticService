@@ -1,0 +1,18 @@
+"""
+service_description
+"""
+
+import logging
+
+from blueprint.agents.base import AgentRuntime
+from blueprint.agents.base import BusinessService
+
+imports
+
+logger: logging.Logger = logging.getLogger(__name__)
+
+
+class_initialization
+
+on_startup
+process_functions

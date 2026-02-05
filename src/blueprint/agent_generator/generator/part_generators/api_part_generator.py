@@ -1,0 +1,156 @@
+from pathlib import Path
+
+from .part_generator_base import PartGeneratorBase
+
+
+class APIPartGenerator(PartGeneratorBase):
+    def __init__(self, config: dict, template_dir: str | Path, src_path: str) -> None:
+        super().__init__(config, template_dir, src_path)
+        self.template_file_name = "routes.txt"
+        self.template_vars["api_description"] = self.config["communication_layer"]["rest_api"]["description"]
+        self.template_vars["imports"] = self._create_api_imports()
+        self.template_vars["class_initialization"] = self._generate_class_initialization()
+        self.template_vars["on_startup"] = self._generate_on_startup()
+        self.template_vars["endpoint_functions"] = self._generate_endpoint_functions()
+        self.template_vars["register_routes"] = self._generate_register_routes()
+
+    def _create_api_imports(self) -> str:
+        """Generate import statements for routes.py.
+        """
+
+        lines = []
+        model_classes = [dto for dto in self.config['communication_layer']['rest_api']['dto_classes']]
+        model_classes.append(self.config['communication_layer']['rest_api']['mapper']['name'])
+        if len(model_classes) < 4:
+            lines.append(f"from ..models import {', '.join(model_classes)}")
+        else:
+            lines.append("from ..models import (")
+            for dto_class in model_classes:
+                lines.append(f"    {dto_class},")
+            lines[-1] = lines[-1][:-1]
+            lines.append(")")
+
+        service_classes = [service for service in self.config['communication_layer']['rest_api']['uses_services']]
+        if len(service_classes) < 4:
+            lines.append(f"from ..services import {', '.join(service_classes)}")
+        else:
+            lines.append("from ..services import (")
+            for service_class in service_classes:
+                lines.append(f"    {service_class},")
+            lines[-1] = lines[-1][:-1]
+            lines.append(")")
+
+        return "\n".join(lines)
+
+    def _generate_class_initialization(self) -> str:
+        """Generate class initialization code for routes.py.
+        """
+
+        lines = []
+        lines.extend([
+            f"class {self.config['communication_layer']['rest_api']['name']}(RestApi):",
+            '    """',
+            f"    {self.config["communication_layer"]["rest_api"]["description"]}",
+            '    """',
+            f"    def __init__(self, name: str = \"{self.config['communication_layer']['rest_api']['name']}\") -> None:",
+            "        super().__init__(name=name)"
+        ])
+
+        service_classes = [service for service in self.config['communication_layer']['rest_api']['uses_services']]
+        if service_classes:
+            for service_class in service_classes:
+                lines.append(f"        self._{self.camel_to_snake(service_class)} = {service_class}()")
+
+        return "\n".join(lines)
+
+    def _generate_on_startup(self) -> str:
+        """Generate on_startup code for routes.py.
+        """
+
+        lines = []
+        lines.extend([
+            "    async def on_startup(self) -> None:",
+            '        """Initialize the REST API by getting service from the registry."""',
+        ])
+
+        service_classes = [service for service in self.config['communication_layer']['rest_api']['uses_services']]
+        if service_classes:
+            for service_class in service_classes:
+                lines.append(
+                    f"        self._{self.camel_to_snake(service_class)} = "
+                    f"self.get_registry().get_service('{self.camel_to_snake(service_class)}')"
+                )
+
+        return "\n".join(lines)
+
+    def _generate_endpoint_functions(self) -> str:
+        """Generate endpoint functions for routes.py.
+        """
+
+        endpoint_functions = self.config['communication_layer']['rest_api']['endpoint_functions']
+        lines = []
+        for endpoint, endpoint_parameters in endpoint_functions.items():
+            lines.append(f"    async def {endpoint}(self, "
+                         f"{self.camel_to_snake(endpoint_parameters['input_dto'])}: "
+                         f"{endpoint_parameters['input_dto']}) -> "
+                         f"{endpoint_parameters['output_dto']}:")
+            lines.extend([
+                '        """',
+                "        This method should only concern itself with processing the dto. All business logic should be in the service.",
+                "        The service should never be aware of the rest api or the dto class. Instead, use domain specific model classes.",
+                "",
+                f"        Args:",
+                f"            {self.camel_to_snake(endpoint_parameters['input_dto'])} "
+                f"({endpoint_parameters['input_dto']}): "
+                f"The incoming data, parsed into the domain input model.",
+                "",
+                "        Returns:",
+                f"            {endpoint_parameters['output_dto']}: "
+                f"The processed data parsed into the domain output model.",
+                '        """',
+                "",
+                "        try:",
+                "            # Use the mapper to convert from the dto to the domain model",
+                f"            input_domain_model = {self.config['communication_layer']['rest_api']['mapper']['name']}."
+                f"from_{self.camel_to_snake(endpoint_parameters['input_dto'])}("
+                f"{self.camel_to_snake(endpoint_parameters['input_dto'])})",
+                "",
+                "            # Use the service to process the request",
+                f"            output_domain_model = await self._{self.camel_to_snake(endpoint_parameters['service'])}."
+                f"{self.config['service_layer'][endpoint_parameters['service']]['process_function']['name']}"
+                "(input_domain_model)",
+                "",
+                "            # Return the response as a dto",
+                f"            return {self.config['communication_layer']['rest_api']['mapper']['name']}."
+                f"to_{self.camel_to_snake(endpoint_parameters['output_dto'])}(output_domain_model)",
+                "        except Exception as e:",
+                "            logger.exception('Unexpected error when processing request')",
+                "            raise HTTPException(status_code=500, detail=str(e))",
+                ""
+            ])
+
+        return "\n".join(lines)
+
+    def _generate_register_routes(self) -> str:
+        """Generate register_routes code for routes.py.
+        """
+
+        endpoint_functions = self.config['communication_layer']['rest_api']['endpoint_functions']
+        lines = []
+        lines.extend([
+            "    def _register_routes(self) -> None:",
+            '        """Register the routes for the REST API."""'
+        ])
+        for endpoint in endpoint_functions:
+            lines.extend([
+                "        self.router.add_api_route(",
+                f"            '/{endpoint}',",
+                f"            self.{endpoint},",
+                f"            methods=['{endpoint_functions[endpoint]['method']}'],",
+                f"            response_model={endpoint_functions[endpoint]['output_dto']},",
+                "            summary='Process a request',",
+                "            description='Processes the incoming request and returns a response'",
+                "        )",
+            ])
+
+        return "\n".join(lines)

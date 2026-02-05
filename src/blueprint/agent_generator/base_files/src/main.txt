@@ -1,0 +1,19 @@
+"""
+app_name
+app_description
+"""
+
+from pathlib import Path
+
+imports
+
+# Initialize config
+config = Config(
+    settings_files=[
+        "settings.toml",
+        "secrets.toml",
+    ],
+    root_path=Path(__file__).parent.parent
+)
+
+agents_and_app_initialization

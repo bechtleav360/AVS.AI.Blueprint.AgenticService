@@ -1,0 +1,50 @@
+"""Event handler for handling cloud events
+"""
+
+import logging
+from typing import Any
+
+from blueprint.agents.base import EventHandler
+from blueprint.agents.models import CloudEvent, HandlerResult
+
+imports
+
+logger = logging.getLogger(__name__)
+
+
+handler_class
+
+on_startup
+
+    async def can_handle_event(self, event: CloudEvent, context: dict[str, Any]) -> bool:
+        """Determine if this handler should process the event.
+
+        This method should make all the necessary checks to determine if this handler should process the event.
+
+        Args:
+            event: The CloudEvent to potentially handle.
+            context: Processing context dictionary.
+
+        Returns:
+            True if this handler can process the event, False otherwise.
+        """
+        # Simple example
+        # if event.type == self._input_event_type:
+
+        raise NotImplementedError()
+
+    async def handle_event(self, event: CloudEvent, context: dict[str, Any]) -> HandlerResult | None:
+        """Handles the event. This is where the main business logic is implemented. This can a part of a chain of
+        handlers. The chain continues based on the handlers priorities and until a handler returns a result.
+
+        Args:
+            event: The CloudEvent to process.
+            context: Dictionary containing information from previous handlers. Can be extended to pass information to
+                the following handlers.
+
+        Returns:
+            HandlerResult: The resulting event to publish, when the handlers work is done.
+        """
+
+        logger.info("MyHandler processing event '%s'", event.type)
+        raise NotImplementedError()

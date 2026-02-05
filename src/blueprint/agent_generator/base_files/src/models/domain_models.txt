@@ -1,0 +1,7 @@
+"""Domain model classes.
+"""
+
+from pydantic import BaseModel, Field
+
+
+domain_model_classes

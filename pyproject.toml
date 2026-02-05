@@ -56,7 +56,7 @@ dev = [
 ]
 
 [project.scripts]
-setup = "blueprint.agent_generator.setup:main"
+setup_config = "blueprint.agent_generator.setup:main"
 create = "blueprint.agent_generator.create:main"
 
 [tool.setuptools]
