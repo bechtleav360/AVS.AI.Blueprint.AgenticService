@@ -329,7 +329,7 @@ class AgentGenerator:
                 "Dockerfile"
             ).create_file()
 
-            # Create template_for_git_ignore.txt
+            # Create .gitignore
             CopyPartGenerator(
                 self.config,
                 self.template_dir,
@@ -337,6 +337,9 @@ class AgentGenerator:
                 "template_for_git_ignore.txt",
                 ".gitignore"
             ).create_file()
+
+            # Create settings.toml
+            SettingsPartGenerator(self.config, self.template_dir, "").create_file()
 
             # Create __init__ files with imports
             InitPartGenerator(self.config, self.template_dir, "src").create_file()

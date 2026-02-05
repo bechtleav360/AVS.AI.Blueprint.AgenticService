@@ -1,0 +1,17 @@
+[default]
+app_name
+app_version = "0.1.0"
+app_description
+debug = true
+model_provider = "vllm"
+model_base_url = "https://avs-vllm.q14.net/v1"
+
+[default.logging]
+level = "DEBUG"
+format = "json"
+
+[default.observability]
+otel_enabled = false
+token_metrics_enabled = true
+
+agent_runtime_configs
