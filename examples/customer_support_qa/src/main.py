@@ -2,10 +2,11 @@
 
 from pathlib import Path
 
-from blueprint.agents.agent import AgentBuilder
-from blueprint.agents.app_builder import AppBuilder
-from blueprint.agents.config import Config
-from blueprint.agents.base import AgentRuntime
+from examples.customer_support_qa.src.handlers.agent_invoker import AgentInvokerHandler
+from src.blueprint.agents.agent import AgentBuilder
+from src.blueprint.agents.app_builder import AppBuilder
+from src.blueprint.agents.config import Config
+from src.blueprint.agents.base import AgentRuntime
 
 from examples.customer_support_qa.src.api import SupportQARestApi
 from examples.customer_support_qa.src.services import SupportQAService
@@ -37,6 +38,7 @@ app = (
     .with_cache()
     .with_agent(junior_agent)
     .with_agent(senior_agent)
+    .with_handler(AgentInvokerHandler)
     .with_service(SupportQAService())
     .with_rest_api(SupportQARestApi())
     .build()

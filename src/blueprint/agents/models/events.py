@@ -32,6 +32,7 @@ class CloudEvent(BaseModel, Generic[T]):
     dataschema: str | None = Field(None, description="Schema of the data")
     data: T | None = Field(None, description="Event payload")
     data_base64: str | None = Field(None, description="Base64-encoded event payload")
+    topic: str | None = Field(None, description="Topic of the event")
 
     model_config = ConfigDict(
         extra="allow",

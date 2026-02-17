@@ -6,6 +6,18 @@ debug = true
 model_provider = "vllm"
 model_base_url = "https://avs-vllm.q14.net/v1"
 model_name = "other"
+model_api_key = "vllm-global-key-12345"
+event_bus = "nats"
+
+[default.event_publishing]
+use_nats = true
+nats_url = "nats://localhost:4222"
+nats_use_jetstream = true
+nats_stream_name = "EVENTS"
+
+[default.event_publishing.topic_mapping]
+"test.event" = { topic = "test.topic" }
+"another.event" = { topic = "another.topic", routing_key = "routing.key" }
 
 [default.server]
 host = "0.0.0.0"

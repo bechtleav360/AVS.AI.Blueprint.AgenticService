@@ -2,12 +2,12 @@
 
 import logging
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 from fastapi import APIRouter, FastAPI
 
 if TYPE_CHECKING:
-    from .services.health_check_service import HealthCheckProvider
+    from .services.health.base import HealthCheckerBase
 
 from .api import actuators, cache, root
 from .base import EventHandler, RestApi
@@ -17,7 +17,7 @@ from .config import Config, TelemetryManager
 from .registry.component_registry import ComponentRegistry
 from .services import EventPublishingService
 from .services.cache_service import DiskCacheService
-from .services.health import DaprPubSubHealthChecker, HealthCheckerRegistry, VLLMProviderHealthChecker
+from .services.health import DaprPubSubHealthChecker, HealthCheckerRegistry, VLLMProviderHealthChecker, NatsHealthChecker
 from .services.processing_service import ProcessingService
 
 # Dapr generic endpoints
@@ -27,6 +27,7 @@ except ImportError:
     dapr = None
 
 logger = logging.getLogger(__name__)
+event_handler_derivative = TypeVar("event_handler_derivative", bound=EventHandler)
 
 
 class AppBuilder:
@@ -69,11 +70,17 @@ class AppBuilder:
 
         # Configure health checks based on registered components
 
-        health_dependencies: dict[str, actuators.HealthCheckProvider] = {}
+        health_dependencies: dict[str, HealthCheckerBase] = {}
 
+        # Configure health checks based on event bus type
+        event_bus_type = self._config.get("event_bus", "dapr").lower()
         if self._component_registry.has_handler() or self._config.get_event_publishing_config().topic_mapping:
-            logger.info("Health checks for DAPR connection enabled")
-            health_dependencies["dapr"] = DaprPubSubHealthChecker(self._config)
+            if event_bus_type == "dapr" and dapr is not None:
+                logger.info("Health checks for DAPR connection enabled")
+                health_dependencies["dapr"] = DaprPubSubHealthChecker(self._config)
+            elif event_bus_type == "nats":
+                logger.info("Health checks for NATS connection enabled")
+                health_dependencies["nats"] = NatsHealthChecker(self._config)
 
         if self._component_registry.has_agent():
             runtime_names = self._component_registry.list_agents()
@@ -116,17 +123,28 @@ class AppBuilder:
                 rest_api._register_routes()
             app.include_router(rest_api.router, prefix="/api", tags=["rest"])
 
-        # Include Dapr endpoints if handlers are registered
-        if dapr is not None and self._component_registry.get_handlers():
-            dapr_api = dapr.DaprApi(component_registry=self._component_registry)
-            app.include_router(dapr_api.router, tags=["dapr"])
+        # Include event bus endpoints based on configuration
+        if self._component_registry.get_handlers():
+            event_bus_type = self._config.get("event_bus", "dapr").lower()
+            
+            if event_bus_type == "dapr" and dapr is not None:
+                logger.info("Using Dapr as the event bus")
+                dapr_api = dapr.DaprApi(component_registry=self._component_registry)
+                app.include_router(dapr_api.router, tags=["dapr"])
+            elif event_bus_type == "nats":
+                logger.info("Using NATS as the event bus")
+                from .api.nats_bus import NatsEventBus
+                self._nats_bus = NatsEventBus(component_registry=self._component_registry, config=self._config)
+                # NATS doesn't expose a router as it uses direct NATS subscriptions
+            else:
+                logger.warning("No valid event bus configured. Event handling will be disabled.")
 
         # Include cache management endpoints if cache is registered
         if self._component_registry.has_cache():
             cache_api = cache.CacheManagementApi(component_registry=self._component_registry)
             app.include_router(cache_api.router, prefix="/api", tags=["cache"])
 
-    def with_handler(self, handler: type[EventHandler] | EventHandler) -> "AppBuilder":
+    def with_handler(self, handler: type[event_handler_derivative]) -> "AppBuilder":
         """Register a handler class or instance with the startup manager.
 
         Handler classes are instantiated immediately when registered.
@@ -275,6 +293,20 @@ class AppBuilder:
                 logger.error("Failed to register EventPublishingService: %s", e, exc_info=True)
                 raise
 
+            # Initialize event bus if needed
+            event_bus_type = self._config.get("event_bus", "dapr").lower()
+            if event_bus_type == "nats" and hasattr(self, '_nats_bus'):
+                try:
+                    await self._nats_bus.connect()
+                    await self._nats_bus.subscribe(
+                        self._config.get("nats_topic", "test.topic"),
+                        self._config.get("nats_queue_group", None)
+                    )
+                    logger.info("Successfully initialized NATS event bus")
+                except Exception as e:
+                    logger.error("Failed to initialize NATS: %s", str(e))
+                    raise
+
             # Call on_startup on all registered components
             logger.info("Calling on_startup hooks for all components")
 
@@ -330,6 +362,15 @@ class AppBuilder:
                     logger.info("Health check cache scheduler stopped")
                 except Exception as e:
                     logger.warning("Failed to stop health check cache: %s", e)
+
+            # Shutdown event bus if needed
+            event_bus_type = self._config.get("event_bus", "dapr").lower()
+            if event_bus_type == "nats" and hasattr(self, '_nats_bus'):
+                try:
+                    await self._nats_bus.close()
+                    logger.info("NATS connection closed")
+                except Exception as e:
+                    logger.error("Error closing NATS connection: %s", str(e))
 
             # Call on_shutdown on all registered components (in reverse order)
             logger.info("Calling on_shutdown hooks for all components")

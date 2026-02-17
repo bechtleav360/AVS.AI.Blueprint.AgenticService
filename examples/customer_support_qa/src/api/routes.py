@@ -2,7 +2,7 @@
 
 import logging
 
-from blueprint.agents.base import RestApi
+from src.blueprint.agents.base import RestApi
 from fastapi import HTTPException
 
 from ..models import SupportRequest, SupportResponse
@@ -19,7 +19,7 @@ class SupportQARestApi(RestApi):
 
         The component registry and agents will be wired in by AppBuilder.
         """
-        super().__init__(payload_type=SupportRequest, name="SupportQARestApi")
+        super().__init__(name="SupportQARestApi")
 
     async def on_startup(self) -> None:
         """Initialize the REST API by getting the support service from the registry."""

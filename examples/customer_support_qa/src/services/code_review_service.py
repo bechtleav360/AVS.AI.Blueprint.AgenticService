@@ -5,8 +5,8 @@ import logging
 import uuid
 from typing import Any
 
-from blueprint.agents.agent import AgentBuilder
-from blueprint.agents.base import BusinessService
+from src.blueprint.agents.agent import AgentBuilder
+from src.blueprint.agents.base import BusinessService
 from pydantic_ai import AgentRunResult
 
 from ..models import (
