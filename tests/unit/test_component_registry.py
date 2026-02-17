@@ -232,10 +232,7 @@ class TestComponentRegistry:
     def test_get_rest_api_by_class_missing_raises(self, registry: ComponentRegistry) -> None:
         """Test retrieving a missing REST API by class type raises ValueError."""
 
-        class MockPayload(BaseModel):
-            pass
-
-        class MockRestApi(RestApi[MockPayload]):
+        class MockRestApi(RestApi):
             pass
 
         with pytest.raises(ValueError, match="REST API of type 'MockRestApi' not found"):
