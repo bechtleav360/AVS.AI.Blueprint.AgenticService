@@ -9,7 +9,7 @@ from nats.aio.client import Client as NatsClient
 from nats.js.client import JetStreamContext
 from opentelemetry import trace
 
-from src.blueprint.agents.models import ProcessingResult
+from ...agents.models import ProcessingResult
 from ..config import Config
 from ..models.errors import CriticalHandlerError, InvalidEventError, RetryableHandlerError
 from ..models.events import CloudEvent
