@@ -19,6 +19,8 @@ config = Config(
     root_path=Path(__file__).parent.parent,
 )
 
+config.get_event_publishing_config()
+
 junior_agent: AgentRuntime = (
     AgentBuilder(config, runtime_name="junior_support")
     .with_model_from_config()

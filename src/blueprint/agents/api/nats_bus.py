@@ -381,7 +381,7 @@ if __name__ == '__main__':
             test_event = CloudEvent(
                 id=str(uuid.uuid4()),
                 source="test.source",
-                type="test.event",
+                type="ai_decomposition_result_v1",
                 data={"message": "Hello, NATS!"}
             )
             

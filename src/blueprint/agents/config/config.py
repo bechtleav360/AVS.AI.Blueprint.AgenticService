@@ -334,6 +334,8 @@ class Config:
             EventPublishingConfig model with event publishing configuration.
         """
 
+        logger.info(self.get("event_publishing.topic_mapping", {}))
+
         return EventPublishingConfig(
             default_pubsub_name=self.get("event_publishing.default_pubsub_name", "pubsub"),
             topic_mapping=self.get("event_publishing.topic_mapping", {}),
