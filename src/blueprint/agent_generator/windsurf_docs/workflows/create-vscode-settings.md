@@ -1,12 +1,8 @@
 ---
-description: Create default VSCode launch.json and tasks.json for a Blueprint Agents project
+description: Create default VSCode launch.json, tasks.json, and settings.json for a Blueprint Agents project
 ---
 
-## Steps
-
-1. Create the `.vscode/` directory in the project root if it does not exist.
-
-2. Create `.vscode/launch.json`:
+1. Create `.vscode/launch.json`:
 
 ```json
 {
@@ -54,11 +50,7 @@ description: Create default VSCode launch.json and tasks.json for a Blueprint Ag
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
-            "args": [
-                "tests/",
-                "-v",
-                "--tb=short"
-            ],
+            "args": ["tests/", "-v", "--tb=short"],
             "jinja": true,
             "justMyCode": false,
             "env": {
@@ -72,11 +64,7 @@ description: Create default VSCode launch.json and tasks.json for a Blueprint Ag
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
-            "args": [
-                "${file}",
-                "-v",
-                "--tb=short"
-            ],
+            "args": ["${file}", "-v", "--tb=short"],
             "jinja": true,
             "justMyCode": false,
             "env": {
@@ -89,7 +77,7 @@ description: Create default VSCode launch.json and tasks.json for a Blueprint Ag
 }
 ```
 
-3. Create `.vscode/tasks.json`:
+2. Create `.vscode/tasks.json`:
 
 ```json
 {
@@ -99,12 +87,7 @@ description: Create default VSCode launch.json and tasks.json for a Blueprint Ag
             "label": "Run: FastAPI app",
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/uvicorn",
-            "args": [
-                "src.main:app",
-                "--reload",
-                "--host", "0.0.0.0",
-                "--port", "8000"
-            ],
+            "args": ["src.main:app", "--reload", "--host", "0.0.0.0", "--port", "8000"],
             "options": {
                 "cwd": "${workspaceFolder}",
                 "env": {
@@ -112,14 +95,8 @@ description: Create default VSCode launch.json and tasks.json for a Blueprint Ag
                     "ENV_FOR_DYNACONF": "development"
                 }
             },
-            "group": {
-                "kind": "build",
-                "isDefault": true
-            },
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated"
-            },
+            "group": { "kind": "build", "isDefault": true },
+            "presentation": { "reveal": "always", "panel": "dedicated" },
             "problemMatcher": []
         },
         {
@@ -135,10 +112,7 @@ description: Create default VSCode launch.json and tasks.json for a Blueprint Ag
                 }
             },
             "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "shared"
-            },
+            "presentation": { "reveal": "always", "panel": "shared" },
             "problemMatcher": []
         },
         {
@@ -146,14 +120,9 @@ description: Create default VSCode launch.json and tasks.json for a Blueprint Ag
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/ruff",
             "args": ["check", "src/", "tests/"],
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
+            "options": { "cwd": "${workspaceFolder}" },
             "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "shared"
-            },
+            "presentation": { "reveal": "always", "panel": "shared" },
             "problemMatcher": []
         },
         {
@@ -161,14 +130,9 @@ description: Create default VSCode launch.json and tasks.json for a Blueprint Ag
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/black",
             "args": ["src/", "tests/"],
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
+            "options": { "cwd": "${workspaceFolder}" },
             "group": "test",
-            "presentation": {
-                "reveal": "silent",
-                "panel": "shared"
-            },
+            "presentation": { "reveal": "silent", "panel": "shared" },
             "problemMatcher": []
         },
         {
@@ -176,20 +140,15 @@ description: Create default VSCode launch.json and tasks.json for a Blueprint Ag
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/pip",
             "args": ["install", "-e", ".[dev]"],
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "presentation": {
-                "reveal": "always",
-                "panel": "shared"
-            },
+            "options": { "cwd": "${workspaceFolder}" },
+            "presentation": { "reveal": "always", "panel": "shared" },
             "problemMatcher": []
         }
     ]
 }
 ```
 
-4. Optionally create `.vscode/settings.json` for Python interpreter and editor settings:
+3. Create `.vscode/settings.json`:
 
 ```json
 {
@@ -198,7 +157,6 @@ description: Create default VSCode launch.json and tasks.json for a Blueprint Ag
     "python.testing.pytestArgs": ["tests/"],
     "python.testing.unittestEnabled": false,
     "editor.formatOnSave": true,
-    "editor.defaultFormatter": "ms-python.black-formatter",
     "[python]": {
         "editor.defaultFormatter": "ms-python.black-formatter",
         "editor.codeActionsOnSave": {
@@ -210,9 +168,21 @@ description: Create default VSCode launch.json and tasks.json for a Blueprint Ag
 }
 ```
 
+4. Add `secrets.toml` to `.gitignore` if not already present:
+
+```
+secrets.toml
+.env
+__pycache__/
+*.pyc
+.venv/
+dist/
+*.egg-info/
+```
+
 ## Notes
 
 - All tasks assume a virtual environment at `.venv/` in the project root.
 - Adjust `src.main:app` if your entry point module path differs.
-- The `ENV_FOR_DYNACONF` environment variable controls which dynaconf environment is active (`development`, `testing`, `production`).
-- Add `secrets.toml` to `.gitignore` — never commit API keys.
+- `ENV_FOR_DYNACONF` controls which dynaconf environment is active (`development`, `testing`, `production`).
+- Never commit `secrets.toml` or `.env` files — API keys go there.

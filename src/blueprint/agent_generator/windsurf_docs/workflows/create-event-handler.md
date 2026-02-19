@@ -2,14 +2,18 @@
 description: Create a new EventHandler subclass for processing CloudEvents
 ---
 
-## Steps
+Ask the user for:
+- Event type to handle (e.g. `order.placed`)
+- Handler name (e.g. `OrderPlacedHandler`)
+- Priority (default: 10 for first handlers, 100 for fallbacks)
+- Services and agents it needs
 
-1. Identify the event type to handle (e.g. `order.placed`) and target directory (e.g. `src/handlers/`).
+Then follow these steps:
 
-2. Create `src/handlers/order_handler.py`:
+1. Create `src/handlers/{name}_handler.py`:
 
 ```python
-"""Handler for order.placed events."""
+"""Handler for {event_type} events."""
 
 import logging
 
@@ -17,58 +21,58 @@ from blueprint.agents.base import EventHandler
 from blueprint.agents.models import HandlerResult
 from blueprint.agents.models.events import GenericCloudEvent
 
-from ..services import OrderService
+from ..services import {Service}
 
 logger = logging.getLogger(__name__)
 
 
-class OrderPlacedHandler(EventHandler):
-    """Processes ``order.placed`` CloudEvents.
+class {Name}Handler(EventHandler):
+    """Processes ``{event_type}`` CloudEvents.
 
-    Priority 10 — runs before any lower-priority handlers.
+    Priority {priority} — adjust to control evaluation order (lower = earlier).
     """
 
     def __init__(self) -> None:
-        super().__init__(name="OrderPlacedHandler", priority=10)
+        super().__init__(name="{Name}Handler", priority={priority})
 
     async def on_startup(self) -> None:
-        self._service: OrderService = self.get_registry().get_service("order_service")
+        self._service: {Service} = self.get_registry().get_service("{service_name}")
 
     async def can_handle_event(
         self, event: GenericCloudEvent, context: dict
     ) -> bool:
-        return event.type == "order.placed"
+        return event.type == "{event_type}"
 
     async def handle_event(
         self, event: GenericCloudEvent, context: dict
     ) -> HandlerResult | None:
-        logger.info("Processing order.placed event: %s", event.id)
+        logger.info("Processing {event_type} event: %s", event.id)
 
-        order = await self._service.create_from_event(event.data)
+        result = await self._service.process(event.data)
 
         return HandlerResult(
-            event_type="order.confirmed",
-            data=order.model_dump(),
-            metadata={"handler": self.get_name(), "order_id": order.id},
+            event_type="{output_event_type}",
+            data=result.model_dump() if hasattr(result, "model_dump") else result,
+            metadata={{"handler": self.get_name()}},
         )
 ```
 
-3. Export from `src/handlers/__init__.py`:
+2. Export from `src/handlers/__init__.py`:
 
 ```python
-from .order_handler import OrderPlacedHandler
+from .{name}_handler import {Name}Handler
 ```
 
-4. Register in `src/main.py`:
+3. Register in `src/main.py`:
 
 ```python
-from .handlers import OrderPlacedHandler
-from .services import OrderService
+from .handlers import {Name}Handler
+from .services import {Service}
 
 app = (
     AppBuilder(config=config)
-    .with_service(OrderService())
-    .with_handler(OrderPlacedHandler())
+    .with_service({Service}())
+    .with_handler({Name}Handler())
     .build()
 )
 ```
@@ -82,9 +86,9 @@ app = (
 | `[HandlerResult(...), HandlerResult(...)]` | Stops chain; publishes each with non-None `event_type` |
 | `None` | Passes to next handler in priority order |
 
-## Rules
+## Rules to follow
 
 - Lower `priority` numbers run first (default is 100).
-- `can_handle_event()` must be fast and side-effect-free — it is called for every event.
-- Never raise exceptions from `handle_event()` for expected error cases — return a `HandlerResult` with an error event type instead.
+- `can_handle_event()` must be fast and side-effect-free.
 - Resolve all dependencies in `on_startup()`, not in `__init__`.
+- See `docs/windsurf/rules/event-handler.md` for the full reference.

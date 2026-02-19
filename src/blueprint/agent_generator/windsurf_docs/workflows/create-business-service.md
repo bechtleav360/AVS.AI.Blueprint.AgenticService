@@ -2,84 +2,86 @@
 description: Create a new BusinessService subclass for domain logic
 ---
 
-## Steps
+Ask the user for:
+- Service name (e.g. `order_service`)
+- Target directory (default: `src/services/`)
+- Any other services it depends on
 
-1. Identify the service name (e.g. `order_service`) and target directory (e.g. `src/services/`).
+Then follow these steps:
 
-2. Create `src/services/order_service.py`:
+1. Create `src/services/{name}.py`:
 
 ```python
-"""Order domain service."""
+"""Domain service for {name}."""
 
 import logging
 
 from blueprint.agents.base import BusinessService
 
-from ..models import Order, OrderRequest
+from ..models import {Entity}, {Entity}Request
 
 logger = logging.getLogger(__name__)
 
 
-class OrderService(BusinessService):
-    """Manages order lifecycle.
+class {Name}Service(BusinessService):
+    """{Description}.
 
-    Registered in the ComponentRegistry as ``"order_service"``.
+    Registered in the ComponentRegistry as ``"{name}"``.
     """
 
     def __init__(self) -> None:
-        super().__init__("order_service")
-        self._orders: dict[str, Order] = {}
+        super().__init__("{name}")
+        self._store: dict[str, {Entity}] = {}
 
     async def on_startup(self) -> None:
-        """Optional: connect to DB, load initial data, etc."""
-        logger.info("OrderService started")
+        """Optional: connect to DB, load config, etc."""
+        logger.info("{Name}Service started")
 
     async def on_shutdown(self) -> None:
         """Optional: close connections, flush buffers."""
 
-    async def create(self, payload: OrderRequest) -> Order:
-        order = Order(id=str(len(self._orders) + 1), **payload.model_dump())
-        self._orders[order.id] = order
-        logger.info("Created order %s", order.id)
-        return order
+    async def create(self, payload: {Entity}Request) -> {Entity}:
+        entity = {Entity}(id=str(len(self._store) + 1), **payload.model_dump())
+        self._store[entity.id] = entity
+        return entity
 
-    async def get(self, order_id: str) -> Order | None:
-        return self._orders.get(order_id)
+    async def get(self, entity_id: str) -> {Entity} | None:
+        return self._store.get(entity_id)
 
-    async def list_all(self) -> list[Order]:
-        return list(self._orders.values())
+    async def list_all(self) -> list[{Entity}]:
+        return list(self._store.values())
 
-    async def delete(self, order_id: str) -> None:
-        self._orders.pop(order_id, None)
+    async def delete(self, entity_id: str) -> None:
+        self._store.pop(entity_id, None)
 ```
 
-3. Export from `src/services/__init__.py`:
+2. Export from `src/services/__init__.py`:
 
 ```python
-from .order_service import OrderService
+from .{name} import {Name}Service
 ```
 
-4. Register in `src/main.py`:
+3. Register in `src/main.py` — register dependencies before this service:
 
 ```python
-from .services import OrderService
+from .services import {Name}Service
 
-app = AppBuilder(config=config).with_service(OrderService()).build()
+app = AppBuilder(config=config).with_service({Name}Service()).build()
 ```
 
-5. Retrieve in other components:
+4. Retrieve in other components:
 
 ```python
 # By type (preferred — gives correct type hint)
-service: OrderService = self.get_registry().get_service(OrderService)
+service: {Name}Service = self.get_registry().get_service({Name}Service)
 
 # By name
-service = self.get_registry().get_service("order_service")
+service = self.get_registry().get_service("{name}")
 ```
 
-## Rules
+## Rules to follow
 
-- The string passed to `super().__init__()` is the registry key — keep it stable and unique.
+- The string passed to `super().__init__()` is the registry key — keep it stable, unique, snake_case.
 - Never call `get_registry()` or `get_config()` in `__init__`.
 - If this service depends on another service, register the dependency first in `AppBuilder`.
-- Keep services stateless where possible; use `on_startup()` for one-time initialisation.
+- See `docs/windsurf/rules/business-service.md` for the full reference.
