@@ -16,9 +16,7 @@ class InitPartGenerator(PartGeneratorBase):
         """
         super().__init__(config, template_dir, src_path)
         self.template_file_name = None
-        self.template_vars = {
-            "content": self.generate_init_content(output_path)
-        }
+        self.template_vars = {"content": self.generate_init_content(output_path)}
 
     def to_py_file_name(self) -> str:
         """Converts a file name to a corresponding Python file name."""
@@ -35,7 +33,7 @@ class InitPartGenerator(PartGeneratorBase):
             List of class names in the file.
         """
 
-        with open(file_path, 'r', encoding='utf-8') as f:
+        with open(file_path, "r", encoding="utf-8") as f:
             try:
                 tree = ast.parse(f.read(), filename=str(file_path))
                 return [node.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef)]
@@ -58,7 +56,7 @@ class InitPartGenerator(PartGeneratorBase):
             return ""
 
         # Get all Python files in the directory (non-recursive)
-        py_files = [f for f in directory.glob('*.py') if f.name != '__init__.py']
+        py_files = [f for f in directory.glob("*.py") if f.name != "__init__.py"]
 
         # For each file, get its classes
         imports: dict[str, list[str]] = {}
@@ -72,7 +70,7 @@ class InitPartGenerator(PartGeneratorBase):
         lines = []
         for module, classes in imports.items():
             if classes:
-                classes_str = ', '.join(classes)
+                classes_str = ", ".join(classes)
                 lines.append(f"from .{module} import {classes_str}")
 
         # Generate __all__
@@ -89,4 +87,4 @@ class InitPartGenerator(PartGeneratorBase):
                 lines[-1] = lines[-1][:-1]
                 lines.append(")")
 
-        return '\n'.join(lines)
+        return "\n".join(lines)

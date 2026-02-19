@@ -21,18 +21,13 @@ class ModelPartGenerator(PartGeneratorBase):
         lines = []
 
         for model_class_name, model in model_classes.items():
-            lines.extend([
-                f"class {model_class_name}(BaseModel):",
-                '    """',
-                f"    {model['description']}",
-                '    """'
-            ])
+            lines.extend([f"class {model_class_name}(BaseModel):", '    """', f"    {model['description']}", '    """'])
             for field_name, field in model["fields"].items():
                 lines.append(
                     f"    {field_name}: {field['type']} = Field("
-                    + ("..., " if not field.get('default', None) else "")
+                    + ("..., " if not field.get("default", None) else "")
                     + f"description='{field['description']}'"
-                    + (f", default=\"{field.get('default', None)}\")" if field.get('default', None) else ")")
+                    + (f", default=\"{field.get('default', None)}\")" if field.get("default", None) else ")")
                 )
             lines.append("")
 
@@ -43,9 +38,7 @@ class DTOPartGenerator(ModelPartGenerator):
     def __init__(self, config: dict, template_dir: str | Path, src_path: str) -> None:
         super().__init__(config, template_dir, src_path)
         self.template_file_name = "dto.txt"
-        self.template_vars["dto_classes"] = self._generate_model_classes(
-            self.config["communication_layer"]["rest_api"]["dto_classes"]
-        )
+        self.template_vars["dto_classes"] = self._generate_model_classes(self.config["communication_layer"]["rest_api"]["dto_classes"])
 
 
 class DomainModelPartGenerator(ModelPartGenerator):
@@ -113,24 +106,28 @@ class MapperPartGenerator(ModelPartGenerator):
 
         lines = [
             f"class {self.config['communication_layer']['rest_api']['mapper']['name']}:",
-            '    """Static mapper class for converting between domain models and DTOs."""'
-            , ""
+            '    """Static mapper class for converting between domain models and DTOs."""',
+            "",
         ]
 
         for mapping in self.config["communication_layer"]["rest_api"]["mapper"]["mappings"]:
-            lines.extend([
-                f"    @staticmethod",
-                (
-                    f"    def from_{self.camel_to_snake(mapping['from']['name'])}("
-                    if mapping['from']['type'] == "dto" else
-                    f"    def to_{self.camel_to_snake(mapping['to']['name'])}("
-                )
-                + f"{self.camel_to_snake(mapping['from']['name'])}: "
-                + f"{mapping['from']['name']}) -> {mapping['to']['name']}:",
-                f"        return {mapping['to']['name']}(",
-                *[f"            {_in}={self.camel_to_snake(mapping['from']['name'])}.{out},"
-                  for _in, out in mapping['field_mappings'].items()]
-            ])
+            lines.extend(
+                [
+                    f"    @staticmethod",
+                    (
+                        f"    def from_{self.camel_to_snake(mapping['from']['name'])}("
+                        if mapping["from"]["type"] == "dto"
+                        else f"    def to_{self.camel_to_snake(mapping['to']['name'])}("
+                    )
+                    + f"{self.camel_to_snake(mapping['from']['name'])}: "
+                    + f"{mapping['from']['name']}) -> {mapping['to']['name']}:",
+                    f"        return {mapping['to']['name']}(",
+                    *[
+                        f"            {_in}={self.camel_to_snake(mapping['from']['name'])}.{out},"
+                        for _in, out in mapping["field_mappings"].items()
+                    ],
+                ]
+            )
             lines[-1] = lines[-1][:-1]
             lines.append("        )")
             lines.append("")

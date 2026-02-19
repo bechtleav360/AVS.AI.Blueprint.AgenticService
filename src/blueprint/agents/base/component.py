@@ -1,12 +1,15 @@
 """Abstract base class for all framework components.
 
 This module provides the common interface that all framework components
-(EventHandler, BusinessService, AgentRuntime, RestApi) implement.
+(EventHandler, BusinessService, AgentRuntime, RestApi, Scheduler) implement.
+
+Concrete default implementations are provided for all lifecycle and dependency
+injection methods. Subclasses only need to override what is domain-specific.
 """
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
+from abc import ABC
 from typing import TYPE_CHECKING
 
 from ..config import Config
@@ -18,8 +21,10 @@ if TYPE_CHECKING:
 class Component(ABC):
     """Abstract base class for all framework components.
 
-    Defines the common lifecycle and dependency injection interface that all
-    framework components must implement. This includes:
+    Provides concrete default implementations for the common lifecycle and
+    dependency injection interface. Subclasses inherit these and only override
+    what is specific to their domain:
+
     - Component naming and identification
     - Access to configuration and component registry
     - Lifecycle hooks for startup and shutdown
@@ -35,16 +40,14 @@ class Component(ABC):
         self._config: Config | None = None
         self._component_registry: ComponentRegistry | None = None
 
-    @abstractmethod
     def get_name(self) -> str:
         """Get the component name.
 
         Returns:
             The component name set during initialization
         """
-        raise NotImplementedError
+        return self._component_name
 
-    @abstractmethod
     def get_registry(self) -> ComponentRegistry:
         """Get the component registry for accessing other components.
 
@@ -54,9 +57,10 @@ class Component(ABC):
         Raises:
             RuntimeError: If registry is not wired
         """
-        raise NotImplementedError
+        if self._component_registry is None:
+            raise RuntimeError(f"Component registry not linked to component '{self._component_name}'")
+        return self._component_registry
 
-    @abstractmethod
     def get_config(self) -> Config:
         """Get the configuration linked to this component.
 
@@ -66,32 +70,26 @@ class Component(ABC):
         Raises:
             RuntimeError: If config is not wired
         """
-        raise NotImplementedError
+        if self._config is None:
+            raise RuntimeError(f"Config not linked to component '{self._component_name}'")
+        return self._config
 
-    @abstractmethod
     def link_config(self, config: Config) -> None:
         """Link configuration to the component via dependency injection.
-
-        This allows components to access environment variables and configuration
-        during runtime.
 
         Args:
             config: The Config instance
         """
-        raise NotImplementedError
+        self._config = config
 
-    @abstractmethod
     def link_component_registry(self, registry: ComponentRegistry) -> None:
         """Link the component registry to the component.
-
-        This allows components to access other components via the registry.
 
         Args:
             registry: The ComponentRegistry instance
         """
-        raise NotImplementedError
+        self._component_registry = registry
 
-    @abstractmethod
     async def on_startup(self) -> None:
         """Called when component is registered and wired.
 
@@ -100,9 +98,7 @@ class Component(ABC):
         - Loading configuration
         - Initializing resources
         """
-        raise NotImplementedError
 
-    @abstractmethod
     async def on_shutdown(self) -> None:
         """Called when application is shutting down.
 
@@ -111,4 +107,3 @@ class Component(ABC):
         - Releasing resources
         - Flushing buffers
         """
-        raise NotImplementedError

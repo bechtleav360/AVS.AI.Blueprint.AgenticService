@@ -7,7 +7,6 @@ from .handler_part_generator import HandlerPartGenerator
 from .copy_part_generator import CopyPartGenerator
 from .settings_part_generator import SettingsPartGenerator
 
-
 __all__ = [
     "MainPartGenerator",
     "APIPartGenerator",
@@ -18,5 +17,5 @@ __all__ = [
     "MapperPartGenerator",
     "HandlerPartGenerator",
     "CopyPartGenerator",
-    "SettingsPartGenerator"
+    "SettingsPartGenerator",
 ]

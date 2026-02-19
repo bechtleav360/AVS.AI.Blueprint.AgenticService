@@ -29,7 +29,7 @@ class _EventPublisher:
         if self._event_pub_config is None:
             self._event_pub_config = self._settings.get_event_publishing_config()
         return self._event_pub_config
-        
+
     def _should_use_nats(self) -> bool:
         """Determine if NATS should be used based on the event_bus setting."""
         return self._settings.get("event_bus", "").lower() == "nats"
@@ -44,7 +44,7 @@ class _EventPublisher:
     async def _publish_with_nats(self, event: GenericCloudEvent, topic_config: Dict[str, Any]) -> None:
         """Publish an event using NATS."""
         try:
-            topic = topic_config.get('topic')
+            topic = topic_config.get("topic")
             if not topic:
                 logger.error("No topic specified in topic config for event type: %s", event.type)
                 return
@@ -56,14 +56,11 @@ class _EventPublisher:
             )
 
             # Create a new NatsEventBus instance with the component registry and settings
-            nats_bus = NatsEventBus(
-                component_registry=self._component_registry,
-                config=self._settings
-            )
-            
+            nats_bus = NatsEventBus(component_registry=self._component_registry, config=self._settings)
+
             # Connect to NATS
             await nats_bus.connect()
-            
+
             try:
                 # Publish the event
                 await nats_bus.publish(topic, event)
@@ -84,7 +81,7 @@ class _EventPublisher:
                 logger.debug("No Dapr publishing service registered")
                 return
 
-            topic = topic_config.get('topic')
+            topic = topic_config.get("topic")
             if not topic:
                 logger.error("No topic specified in topic config for event type: %s", event.type)
                 return
@@ -135,12 +132,12 @@ class _EventPublisher:
             )
 
     async def publish_handler_event(
-            self,
-            event_type: str,
-            data: Any,
-            metadata: dict[str, Any],
-            source_event: CloudEvent,
-            new_subject: str | None = None,
+        self,
+        event_type: str,
+        data: Any,
+        metadata: dict[str, Any],
+        source_event: CloudEvent,
+        new_subject: str | None = None,
     ) -> None:
         """
         Publish an event from a handler result.
@@ -155,10 +152,10 @@ class _EventPublisher:
 
         try:
             topic_config = await self._get_topic_config(event_type)
-            if topic_config.get('topic', 'unknown') == source_event.topic:
+            if topic_config.get("topic", "unknown") == source_event.topic:
                 logger.warning(
                     "Incoming event type '%s' is the same as the source event topic '%s', skipping publication",
-                    topic_config.get('topic', 'unknown'),
+                    topic_config.get("topic", "unknown"),
                     source_event.topic,
                 )
                 return
@@ -182,7 +179,7 @@ class _EventPublisher:
             logger.info(
                 "Publishing handler event type '%s' to topic '%s'",
                 event_type,
-                topic_config.get('topic', 'unknown'),
+                topic_config.get("topic", "unknown"),
                 extra={
                     "event_type": event_type,
                     "event_id": handler_event.id,

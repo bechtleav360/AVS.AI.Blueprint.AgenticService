@@ -10,14 +10,14 @@ if TYPE_CHECKING:
     from .services.health.base import HealthCheckerBase
 
 from .api import actuators, cache, root
-from .base import EventHandler, RestApi
+from .base import EventHandler, RestApi, Scheduler
 from .base.agent_runtime import AgentRuntime
 from .base.business_service import BusinessService
 from .config import Config, TelemetryManager
 from .registry.component_registry import ComponentRegistry
 from .services import EventPublishingService
 from .services.cache_service import DiskCacheService
-from .services.health import DaprPubSubHealthChecker, HealthCheckerRegistry, VLLMProviderHealthChecker, NatsHealthChecker
+from .services.health import DaprPubSubHealthChecker, HealthCheckerRegistry, NatsHealthChecker, VLLMProviderHealthChecker
 from .services.processing_service import ProcessingService
 
 # Dapr generic endpoints
@@ -126,7 +126,7 @@ class AppBuilder:
         # Include event bus endpoints based on configuration
         if self._component_registry.get_handlers():
             event_bus_type = self._config.get("event_bus", "dapr").lower()
-            
+
             if event_bus_type == "dapr" and dapr is not None:
                 logger.info("Using Dapr as the event bus")
                 dapr_api = dapr.DaprApi(component_registry=self._component_registry)
@@ -134,6 +134,7 @@ class AppBuilder:
             elif event_bus_type == "nats":
                 logger.info("Using NATS as the event bus")
                 from .api.nats_bus import NatsEventBus
+
                 self._nats_bus = NatsEventBus(component_registry=self._component_registry, config=self._config)
                 # NATS doesn't expose a router as it uses direct NATS subscriptions
             else:
@@ -179,6 +180,22 @@ class AppBuilder:
         """Register an agent class with the startup manager."""
 
         self._component_registry.register_agent(agent_instance)
+        return self
+
+    def with_scheduler(self, scheduler: Scheduler) -> "AppBuilder":
+        """Register a scheduler with the application.
+
+        The scheduler's ``tick()`` method will be called according to its
+        configured crontab expression.  The scheduler runs its own asyncio
+        background task and has access to the component registry.
+
+        Args:
+            scheduler: A :class:`Scheduler` subclass instance
+
+        Returns:
+            Self for chaining
+        """
+        self._component_registry.register_scheduler(scheduler)
         return self
 
     def with_rest_api(self, api_instance: RestApi) -> "AppBuilder":
@@ -295,13 +312,10 @@ class AppBuilder:
 
             # Initialize event bus if needed
             event_bus_type = self._config.get("event_bus", "dapr").lower()
-            if event_bus_type == "nats" and hasattr(self, '_nats_bus'):
+            if event_bus_type == "nats" and hasattr(self, "_nats_bus"):
                 try:
                     await self._nats_bus.connect()
-                    await self._nats_bus.subscribe(
-                        self._config.get("nats_topic", "test.topic"),
-                        self._config.get("nats_queue_group", None)
-                    )
+                    await self._nats_bus.subscribe(self._config.get("nats_topic", "test.topic"), self._config.get("nats_queue_group", None))
                     logger.info("Successfully initialized NATS event bus")
                 except Exception as e:
                     logger.error("Failed to initialize NATS: %s", str(e))
@@ -347,6 +361,15 @@ class AppBuilder:
                     logger.error("REST API %s startup failed: %s", rest_api.get_name(), e, exc_info=True)
                     raise
 
+            # Schedulers
+            for scheduler in self._component_registry.get_schedulers():
+                try:
+                    await scheduler.on_startup()
+                    logger.info("Scheduler %s startup completed", scheduler.get_name())
+                except Exception as e:
+                    logger.error("Scheduler %s startup failed: %s", scheduler.get_name(), e, exc_info=True)
+                    raise
+
             logger.info("Startup initialization completed")
 
             logger.info("Service startup completed")
@@ -365,7 +388,7 @@ class AppBuilder:
 
             # Shutdown event bus if needed
             event_bus_type = self._config.get("event_bus", "dapr").lower()
-            if event_bus_type == "nats" and hasattr(self, '_nats_bus'):
+            if event_bus_type == "nats" and hasattr(self, "_nats_bus"):
                 try:
                     await self._nats_bus.close()
                     logger.info("NATS connection closed")
@@ -374,6 +397,14 @@ class AppBuilder:
 
             # Call on_shutdown on all registered components (in reverse order)
             logger.info("Calling on_shutdown hooks for all components")
+
+            # Schedulers (shutdown first, before services)
+            for scheduler in self._component_registry.get_schedulers():
+                try:
+                    await scheduler.on_shutdown()
+                    logger.info("Scheduler %s shutdown completed", scheduler.get_name())
+                except Exception as e:
+                    logger.error("Scheduler %s shutdown failed: %s", scheduler.get_name(), e, exc_info=True)
 
             # REST APIs
             for rest_api in self._component_registry.get_rest_apis():

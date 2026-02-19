@@ -17,30 +17,12 @@ class TopicConfig(BaseModel):
 class EventPublishingConfig(BaseModel):
     """Event publishing configuration."""
 
-    default_pubsub_name: str = Field(
-        default="pubsub",
-        description="Default pubsub component name (Dapr or NATS)"
-    )
-    topic_mapping: dict[str, TopicConfig] = Field(
-        default_factory=dict,
-        description="Mapping of event types to topics"
-    )
-    use_nats: bool = Field(
-        default=False,
-        description="Use NATS instead of Dapr for event publishing"
-    )
-    nats_url: str | None = Field(
-        default=None,
-        description="NATS server URL (e.g., 'nats://localhost:4222')"
-    )
-    nats_use_jetstream: bool = Field(
-        default=False,
-        description="Enable JetStream for NATS"
-    )
-    nats_stream_name: str | None = Field(
-        default="EVENTS",
-        description="NATS JetStream stream name"
-    )
+    default_pubsub_name: str = Field(default="pubsub", description="Default pubsub component name (Dapr or NATS)")
+    topic_mapping: dict[str, TopicConfig] = Field(default_factory=dict, description="Mapping of event types to topics")
+    use_nats: bool = Field(default=False, description="Use NATS instead of Dapr for event publishing")
+    nats_url: str | None = Field(default=None, description="NATS server URL (e.g., 'nats://localhost:4222')")
+    nats_use_jetstream: bool = Field(default=False, description="Enable JetStream for NATS")
+    nats_stream_name: str | None = Field(default="EVENTS", description="NATS JetStream stream name")
 
     @field_validator("topic_mapping", mode="before")
     @classmethod
@@ -146,10 +128,7 @@ class AIConfig(BaseModel):
     temperature: float | None = Field(None, description="Temperature for generation")
     concurrency_limit: int | None = Field(None, description="Max concurrent requests")
     usage_limits: UsageLimits = Field(default_factory=UsageLimits, description="Usage limits")
-    model_settings: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Additional model settings for specific providers"
-    )
+    model_settings: dict[str, Any] = Field(default_factory=dict, description="Additional model settings for specific providers")
 
 
 class PromptConfig(BaseModel):

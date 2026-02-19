@@ -12,6 +12,7 @@ from ..base.agent_runtime import AgentRuntime
 from ..base.business_service import BusinessService
 from ..base.event_handler import EventHandler
 from ..base.rest_api import RestApi
+from ..base.scheduler import Scheduler
 from ..config import Config
 from ..config.custom_logging import CorrelationContext, CorrelationContextProvider
 from ..services.cache_service import CacheService
@@ -52,6 +53,7 @@ class ComponentRegistry:
         self._rest_apis: dict[str, RestApi] = {}
         self._business_services: dict[str, BusinessService] = {}
         self._handlers: list[EventHandler] = []
+        self._schedulers: list[Scheduler] = []
 
         logger.info("ComponentRegistry initialized")
 
@@ -151,6 +153,7 @@ class ComponentRegistry:
         self._agents.clear()
         self._rest_apis.clear()
         self._business_services.clear()
+        self._schedulers.clear()
         if self._cache_service is not None:
             self._cache_service.close()
             self._cache_service = None
@@ -503,3 +506,26 @@ class ComponentRegistry:
             Copy of the business services list (may be empty)
         """
         return list(self._business_services.values())
+
+    # ========================================================================
+    # Scheduler Management
+    # ========================================================================
+
+    def register_scheduler(self, scheduler: "Scheduler") -> None:
+        """Register a scheduler instance.
+
+        Args:
+            scheduler: The Scheduler instance to register
+        """
+        scheduler.link_config(self._settings)
+        scheduler.link_component_registry(self)
+        self._schedulers.append(scheduler)
+        logger.info("Registered scheduler: %s (crontab: %s)", scheduler.get_name(), scheduler._crontab)
+
+    def get_schedulers(self) -> list["Scheduler"]:
+        """Get all registered schedulers.
+
+        Returns:
+            List of registered Scheduler instances
+        """
+        return list(self._schedulers)

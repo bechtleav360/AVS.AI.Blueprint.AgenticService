@@ -21,17 +21,16 @@ from typing import TYPE_CHECKING, Any
 
 from opentelemetry import trace
 
-from ..config import Config
 from ..models import HandlerResult
 from ..models.events import GenericCloudEvent
 from .agent_runtime import AgentRuntime
 from .component import Component
 
+if TYPE_CHECKING:
+    pass
+
 tracer = trace.get_tracer(__name__)
 logger = logging.getLogger(__name__)
-
-if TYPE_CHECKING:
-    from ..registry.component_registry import ComponentRegistry
 
 
 class EventHandler(Component):
@@ -64,81 +63,8 @@ class EventHandler(Component):
             name: Human-readable name for the handler. Default: "EventHandler". Every handler should override this.
             priority: Execution priority (lower numbers run first).
         """
-
-        self._component_name = name
+        super().__init__(name)
         self._priority = priority
-        self._config: Config | None = None
-
-        self._component_registry: ComponentRegistry | None = None
-
-    def get_name(self) -> str:
-        """Get the component name.
-
-        Returns:
-            The component name set during initialization
-        """
-
-        return self._component_name
-
-    def get_registry(self) -> ComponentRegistry:
-        """Get the component registry for accessing other components.
-
-        Returns:
-            The ComponentRegistry instance
-
-        Raises:
-            RuntimeError: If registry is not wired
-        """
-
-        if not hasattr(self, "_component_registry") or self._component_registry is None:
-            raise RuntimeError(f"Component registry not linked to handler '{self._component_name}'")
-        return self._component_registry
-
-    def get_config(self) -> Config:
-        """Get the configuration linked to this handler.
-
-        Returns:
-            The Config instance linked via dependency injection
-
-        Raises:
-            RuntimeError: If config is not wired
-        """
-
-        if self._config is None:
-            raise RuntimeError(f"Config not linked to handler '{self._component_name}'")
-        return self._config
-
-    async def on_startup(self) -> None:
-        """Called when handler is registered and wired.
-
-        Override to perform initialization tasks.
-        """
-
-    async def on_shutdown(self) -> None:
-        """Called when application is shutting down.
-
-        Override to perform cleanup tasks.
-        """
-
-    def link_config(self, config: Config) -> None:
-        """Link configuration to the service via dependency injection.
-
-        This allows services to access environment variables and configuration
-        during runtime.
-
-        Args:
-            config: The Config instance
-        """
-
-        self._config = config
-
-    def link_component_registry(self, registry: ComponentRegistry) -> None:
-        """Link the component registry to the handler.
-
-        This allows handlers to access agent runtimes and other components.
-        """
-
-        self._component_registry = registry
 
     async def can_handle(self, event: GenericCloudEvent, context: dict[str, Any]) -> bool:
         """Framework method that adds tracing around capability checks.

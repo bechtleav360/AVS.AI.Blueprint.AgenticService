@@ -51,8 +51,4 @@ class OpenAIModelProvider(ModelProviderStrategy):
 
         logger.info("OpenAI model configured: %s. Additional settings: %s", model_name, model_settings)
 
-        return OpenAIResponsesModel(
-            provider=provider,
-            model_name=model_name,
-            settings=model_settings
-        )
+        return OpenAIResponsesModel(provider=provider, model_name=model_name, settings=model_settings)

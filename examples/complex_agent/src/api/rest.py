@@ -1,24 +1,14 @@
 """Custom REST API definition for the agent service."""
 
-from typing import Any
-
-from blueprint.agents.api.rest import RestApi
-
-from ..models import CustomPayload
+from blueprint.agents.base import RestApi
 
 
-class CustomRestApi(RestApi[CustomPayload]):
+class CustomRestApi(RestApi):
     """Custom REST API definition.
 
     The component registry and agent will be wired in by AppBuilder.
+    Routes are registered via @RestApi.get / @RestApi.post decorators on methods.
     """
 
     def __init__(self) -> None:
-        """Initialize the custom REST API.
-
-        The component registry and agent will be wired in by AppBuilder.
-        """
-        self._component_registry: Any = None
-        self._agent: Any = None
-        self.router: Any = None
-        self.payload_type = CustomPayload
+        super().__init__(name="CustomRestApi")

@@ -4,8 +4,7 @@ from pathlib import Path
 
 
 class PartGeneratorBase:
-    """Base class for generating files from templates based on a configuration.
-    """
+    """Base class for generating files from templates based on a configuration."""
 
     def __init__(self, config: dict, template_dir: str | Path, src_path: str) -> None:
         """
@@ -38,11 +37,11 @@ class PartGeneratorBase:
         """
 
         # Handle the case of multiple uppercase letters (acronyms) followed by lowercase
-        s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
+        s1 = re.sub("(.)([A-Z][a-z]+)", r"\1_\2", name)
         # Handle the case of a lowercase letter or number followed by an uppercase letter
-        s2 = re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1)
+        s2 = re.sub("([a-z0-9])([A-Z])", r"\1_\2", s1)
         # Handle the case of multiple uppercase letters at the end of the string
-        s3 = re.sub('([A-Z])([A-Z][a-z])', r'\1_\2', s2)
+        s3 = re.sub("([A-Z])([A-Z][a-z])", r"\1_\2", s2)
         return s3.lower()
 
     def create_file(self, output_path: str = "") -> None:
@@ -56,7 +55,7 @@ class PartGeneratorBase:
             template = "\n".join(template_var for template_var in self.template_vars.values())
         else:
             full_path = os.path.join(self.template_dir, self.src_path, self.template_file_name)
-            with open(full_path, 'r') as f:
+            with open(full_path, "r") as f:
                 template = f.read()
 
             try:
@@ -67,5 +66,5 @@ class PartGeneratorBase:
 
         output_path = Path(output_path).joinpath(self.src_path).resolve().joinpath(self.to_py_file_name())
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path , 'w') as f:
+        with open(output_path, "w") as f:
             f.write(template)

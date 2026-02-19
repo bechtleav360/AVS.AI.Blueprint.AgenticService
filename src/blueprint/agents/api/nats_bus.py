@@ -2,7 +2,7 @@
 
 import json
 import logging
-from typing import TYPE_CHECKING, List, Optional, Tuple
+from typing import TYPE_CHECKING
 
 import nats
 from nats.aio.client import Client as NatsClient
@@ -26,17 +26,17 @@ class NatsEventBus:
 
     def __init__(self, component_registry: "ComponentRegistry", config: Config) -> None:
         """Initialize the NATS event bus.
-        
+
         Args:
             component_registry: The component registry to get processing service from
             config: Configuration object containing NATS settings
         """
         self._component_registry = component_registry
         self._correlation_context = component_registry.get_correlation_context()
-        self._nats_client: Optional[NatsClient] = None
-        self._js: Optional[JetStreamContext] = None
+        self._nats_client: NatsClient | None = None
+        self._js: JetStreamContext | None = None
         self._use_jetstream = config.get("nats_use_jetstream", False)
-        self._subscriptions: List[Any] = []
+        self._subscriptions: list[Any] = []
         self.required_cloud_event_fields = {"specversion", "id", "source", "type"}
         self._config = config
 
@@ -48,7 +48,7 @@ class NatsEventBus:
         nats_url = self._config.get("nats_url", "nats://localhost:4222")
         max_reconnect_attempts = self._config.get("nats_max_reconnect_attempts", 5)
         reconnect_time_wait = self._config.get("nats_reconnect_time_wait", 2)
-        
+
         try:
             self._nats_client = await nats.connect(
                 nats_url,
@@ -66,7 +66,7 @@ class NatsEventBus:
                 except Exception as e:
                     logger.warning("JetStream initialization failed, falling back to Core NATS: %s", str(e))
                     self._use_jetstream = False
-            
+
             if not self._use_jetstream:
                 logger.info("Connected to NATS server (Core NATS) at %s", nats_url)
         except Exception as e:
@@ -80,19 +80,19 @@ class NatsEventBus:
             for sub in self._subscriptions:
                 await sub.unsubscribe()
             self._subscriptions.clear()
-            
+
             # Close the connection
             await self._nats_client.close()
             self._nats_client = None
             self._js = None
 
-    async def subscribe(self, topic: str, queue_group: Optional[str] = None) -> None:
+    async def subscribe(self, topic: str, queue_group: str | None = None) -> None:
         """Subscribe to a topic with an optional queue group.
-        
+
         Args:
             topic: The topic to subscribe to
             queue_group: Optional queue group for load balancing
-            
+
         Raises:
             RuntimeError: If NATS client is not connected or subscription fails
         """
@@ -103,7 +103,7 @@ class NatsEventBus:
             """Handle incoming NATS messages."""
             try:
                 # Check if this is a JetStream message
-                is_jetstream = hasattr(msg, '_jsm')
+                is_jetstream = hasattr(msg, "_jsm")
                 await self._handle_nats_message(topic, msg, is_jetstream)
             except Exception as e:
                 logger.error("Error processing message on topic %s: %s", topic, str(e), exc_info=True)
@@ -114,47 +114,35 @@ class NatsEventBus:
                 # JetStream subscription
                 stream_name = self._config.get("nats_stream_name", "EVENTS")
                 durable_name = self._config.get("nats_durable_name", f"{topic}-durable")
-                
+
                 try:
                     # Try to create the stream if it doesn't exist
                     await self._js.add_stream(name=stream_name, subjects=[f"{topic}.>"])
                 except Exception as e:
                     if "stream name already in use" not in str(e).lower():
                         logger.warning("Could not create stream: %s", str(e))
-                
+
                 # Subscribe with JetStream
-                sub = await self._js.subscribe(
-                    topic,
-                    queue=queue_group,
-                    durable=durable_name,
-                    manual_ack=True,
-                    cb=message_handler
-                )
-                logger.info("Subscribed to JetStream topic '%s'%s", topic, 
-                          f" in queue group '{queue_group}'" if queue_group else "")
+                sub = await self._js.subscribe(topic, queue=queue_group, durable=durable_name, manual_ack=True, cb=message_handler)
+                logger.info("Subscribed to JetStream topic '%s'%s", topic, f" in queue group '{queue_group}'" if queue_group else "")
             else:
                 # Core NATS subscription
-                sub = await self._nats_client.subscribe(
-                    topic, 
-                    queue=queue_group, 
-                    cb=message_handler
-                )
-                logger.info("Subscribed to Core NATS topic '%s'%s", topic, 
-                          f" in queue group '{queue_group}'" if queue_group else "")
-            
+                sub = await self._nats_client.subscribe(topic, queue=queue_group, cb=message_handler)
+                logger.info("Subscribed to Core NATS topic '%s'%s", topic, f" in queue group '{queue_group}'" if queue_group else "")
+
             self._subscriptions.append(sub)
-            
+
         except Exception as e:
             logger.error("Failed to subscribe to topic '%s': %s", topic, str(e))
             raise
 
     async def publish(self, topic: str, event: CloudEvent) -> None:
         """Publish an event to a topic.
-        
+
         Args:
             topic: The topic to publish to
             event: The CloudEvent to publish
-            
+
         Raises:
             RuntimeError: If NATS client is not connected or publishing fails
         """
@@ -164,25 +152,23 @@ class NatsEventBus:
         try:
             # Convert CloudEvent to bytes for NATS
             event_data = json.dumps(dict(event)).encode()
-            
+
             if self._use_jetstream and self._js:
                 # Publish with JetStream for persistence
                 ack = await self._js.publish(topic, event_data)
-                logger.debug("Published event to JetStream topic '%s' (seq: %d): %s", 
-                           topic, ack.seq, event.id)
+                logger.debug("Published event to JetStream topic '%s' (seq: %d): %s", topic, ack.seq, event.id)
             else:
                 # Publish with Core NATS
                 await self._nats_client.publish(topic, event_data)
-                logger.debug("Published event to Core NATS topic '%s': %s", 
-                           topic, event.id)
-                
+                logger.debug("Published event to Core NATS topic '%s': %s", topic, event.id)
+
         except Exception as e:
             logger.error("Failed to publish event to topic '%s': %s", topic, str(e))
             raise
 
     async def _handle_nats_message(self, topic: str, msg, is_jetstream: bool = False) -> None:
         """Process an incoming NATS message.
-        
+
         Args:
             topic: The topic the message was received on
             msg: The NATS message
@@ -191,7 +177,7 @@ class NatsEventBus:
         with tracer.start_as_current_span("nats.handle_message") as span:
             span.set_attribute("nats.topic", topic)
             correlation_token = None
-            
+
             try:
                 # Parse the CloudEvent
                 try:
@@ -204,7 +190,7 @@ class NatsEventBus:
 
                 original_event_type = cloud_event.type
                 correlation_token = self._correlation_context.set(getattr(cloud_event, "id", None))
-                
+
                 # Handle nested CloudEvents (similar to Dapr unwrapping)
                 cloud_event, was_unwrapped = self._unwrap_nested_cloud_event(cloud_event)
                 if was_unwrapped:
@@ -252,7 +238,7 @@ class NatsEventBus:
                     )
                     span.set_status(trace.Status(trace.StatusCode.ERROR, str(exc)))
                     # Acknowledge to prevent redelivery for JetStream messages
-                    if is_jetstream and hasattr(msg, 'ack'):
+                    if is_jetstream and hasattr(msg, "ack"):
                         await msg.ack()
                     return
 
@@ -286,10 +272,10 @@ class NatsEventBus:
                     return
 
                 # Acknowledge successful processing for JetStream messages
-                if is_jetstream and hasattr(msg, '_jsm'):
+                if is_jetstream and hasattr(msg, "_jsm"):
                     try:
                         # Only attempt to ack if the message has an ack method
-                        if callable(getattr(msg, 'ack', None)):
+                        if callable(getattr(msg, "ack", None)):
                             await msg.ack()
                     except Exception as ack_error:
                         logger.error("Failed to acknowledge JetStream message: %s", str(ack_error))
@@ -300,7 +286,7 @@ class NatsEventBus:
             finally:
                 self._correlation_context.reset(correlation_token)
 
-    def _unwrap_nested_cloud_event(self, event: CloudEvent) -> Tuple[CloudEvent, bool]:
+    def _unwrap_nested_cloud_event(self, event: CloudEvent) -> tuple[CloudEvent, bool]:
         """Handle nested CloudEvents if needed."""
         # This is a simplified version of the Dapr unwrapping logic
         # Modify as needed based on your event wrapping requirements
@@ -319,18 +305,18 @@ class NatsEventBus:
         logger.warning("Connection to NATS server closed")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     import asyncio
     import uuid
-    from typing import Any, Dict
-    
-    from ..registry.component_registry import ComponentRegistry
+    from typing import Any
+
     from ..models.events import CloudEvent
-    
+    from ..registry.component_registry import ComponentRegistry
+
     class DummyRegistry(ComponentRegistry):
         def __init__(self, config=None):
             self.config = config or {}
-            
+
         def get_processing_service(self):
             # Return a simple processing service that just logs the event
             class DummyProcessingService:
@@ -338,16 +324,19 @@ if __name__ == '__main__':
                     print(f"\nProcessing event: {event.id}")
                     print(f"Context: {context}")
                     return ProcessingResult(success=True, message="Processed successfully")
+
             return DummyProcessingService()
-            
+
         def get_correlation_context(self):
             class DummyContext:
                 def set(self, _):
                     return None
+
                 def reset(self, _):
                     pass
+
             return DummyContext()
-            
+
         def get_topic_for_event_type(self, event_type: str) -> str:
             # Map event types to topics
             topic_map = {
@@ -355,55 +344,49 @@ if __name__ == '__main__':
                 # Add more mappings as needed
             }
             return topic_map.get(event_type, f"events.{event_type}")
-    
+
     async def send_cloud_event():
         """Send a test CloudEvent to NATS."""
-        config = {
-            "nats_url": "nats://localhost:4222",
-            "nats_max_reconnect_attempts": 3,
-            "nats_reconnect_time_wait": 1
-        }
-        
+        config = {"nats_url": "nats://localhost:4222", "nats_max_reconnect_attempts": 3, "nats_reconnect_time_wait": 1}
+
         # Initialize NATS client with dummy registry
         nats_bus = NatsEventBus(DummyRegistry(config), config)
-        
+
         try:
             # Connect to NATS
             print("Connecting to NATS...")
             await nats_bus.connect()
-            
+
             if not nats_bus._nats_client or nats_bus._nats_client.is_closed:
                 raise Exception("Failed to connect to NATS")
-                
+
             print("Connected to NATS server")
-            
+
             # Create a test event
             test_event = CloudEvent(
-                id=str(uuid.uuid4()),
-                source="test.source",
-                type="ai_decomposition_result_v1",
-                data={"message": "Hello, NATS!"}
+                id=str(uuid.uuid4()), source="test.source", type="ai_decomposition_result_v1", data={"message": "Hello, NATS!"}
             )
-            
+
             # Publish the event
             print(f"\nPublishing test event: {test_event.id}")
             print(f"Type: {test_event.type}")
             print(f"Source: {test_event.source}")
             print(f"Data: {test_event.data}")
-            
+
             # Publish using the NatsEventBus interface
             await nats_bus.publish("test.topic", test_event)
             print("\nEvent published successfully!")
-            
+
         except Exception as e:
             print(f"\nError: {type(e).__name__}: {e}")
             import traceback
+
             traceback.print_exc()
         finally:
             print("\nCleaning up...")
             if nats_bus._nats_client and not nats_bus._nats_client.is_closed:
                 await nats_bus.close()
                 print("Disconnected from NATS server")
-    
+
     # Run the example
     asyncio.run(send_cloud_event())

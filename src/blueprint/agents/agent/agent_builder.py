@@ -108,8 +108,7 @@ class AgentBuilder:
             Self for chaining
         """
 
-        logger.warning("Deprecation warning: runtime_name is not necessary anymore. "
-                       "Set the runtime in constructor instead.")
+        logger.warning("Deprecation warning: runtime_name is not necessary anymore. " "Set the runtime in constructor instead.")
 
         ai_config = self._config.get_ai_config(self._runtime_name)
         if model_name:

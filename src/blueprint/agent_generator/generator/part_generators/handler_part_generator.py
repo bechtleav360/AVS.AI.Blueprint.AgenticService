@@ -40,12 +40,14 @@ class HandlerPartGenerator(PartGeneratorBase):
             f"    {self.config['communication_layer']['handlers'][self.handler_name]['description']}",
             '    """',
             "",
-            f"    def __init__(self, name: str = \"{self.camel_to_snake(self.handler_name)}\") -> None:",
+            f'    def __init__(self, name: str = "{self.camel_to_snake(self.handler_name)}") -> None:',
             f"        super().__init__(name=name, "
             f"priority={self.config['communication_layer']['handlers'][self.handler_name]['priority']})",
-            "        self._input_event_type: str = \"\"",
-            *[f"        self.{self.camel_to_snake(service)}: {service} | None = None"
-             for service in self.config["communication_layer"]["handlers"][self.handler_name]["uses_services"]],
+            '        self._input_event_type: str = ""',
+            *[
+                f"        self.{self.camel_to_snake(service)}: {service} | None = None"
+                for service in self.config["communication_layer"]["handlers"][self.handler_name]["uses_services"]
+            ],
         ]
 
         return "\n".join(lines)
@@ -61,19 +63,21 @@ class HandlerPartGenerator(PartGeneratorBase):
         lines = [
             "    async def on_startup(self) -> None:",
             '        """Initialize the handler by getting services from the registry."""',
-            ""
+            "",
         ]
         for service in self.config["communication_layer"]["handlers"][self.handler_name]["uses_services"]:
             lines.append(
-                f"        self.{self.camel_to_snake(service)} = "
-                f"self.get_registry().get_service('{self.camel_to_snake(service)}')"
+                f"        self.{self.camel_to_snake(service)} = " f"self.get_registry().get_service('{self.camel_to_snake(service)}')"
             )
-        lines.extend([
-            "",
-            f"        self._input_event_type = self.get_config().get(\"{self.camel_to_snake(self.handler_name)}\""
-            ", {}).get(\"input_event_type\", "")",
-            "        if self._input_event_type == \"\":",
-            "            raise ValueError(\"input_event_type is not set in config\")"
-        ])
+        lines.extend(
+            [
+                "",
+                f'        self._input_event_type = self.get_config().get("{self.camel_to_snake(self.handler_name)}"'
+                ', {}).get("input_event_type", '
+                ")",
+                '        if self._input_event_type == "":',
+                '            raise ValueError("input_event_type is not set in config")',
+            ]
+        )
 
         return "\n".join(lines)

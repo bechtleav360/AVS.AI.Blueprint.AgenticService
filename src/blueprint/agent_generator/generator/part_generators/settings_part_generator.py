@@ -22,18 +22,20 @@ class SettingsPartGenerator(PartGeneratorBase):
 
         lines = []
         for agent_name, agent_config in self.config["agent_layer"].items():
-            lines.extend([
-                f"[default.runtimes.{self.camel_to_snake(agent_name)}]",
-                "model_provider = \"openai\"",
-                "model_name = \"gpt-4.1-nano\"",
-                "model_max_tokens = 2000",
-                "model_temperature = 0.7",
-                "prompt_directory = \"src/prompts\"",
-                f"system_prompt_name = \"{self.camel_to_snake(agent_name)}_system\"",
-                "",
-                f"[default.runtimes.{self.camel_to_snake(agent_name)}.model_settings]",
-                "openai_reasoning_effort = \"low\"",
-                "openai_reasoning_summary = \"detailed\"",
-            ])
+            lines.extend(
+                [
+                    f"[default.runtimes.{self.camel_to_snake(agent_name)}]",
+                    'model_provider = "openai"',
+                    'model_name = "gpt-4.1-nano"',
+                    "model_max_tokens = 2000",
+                    "model_temperature = 0.7",
+                    'prompt_directory = "src/prompts"',
+                    f'system_prompt_name = "{self.camel_to_snake(agent_name)}_system"',
+                    "",
+                    f"[default.runtimes.{self.camel_to_snake(agent_name)}.model_settings]",
+                    'openai_reasoning_effort = "low"',
+                    'openai_reasoning_summary = "detailed"',
+                ]
+            )
 
         return "\n".join(lines)

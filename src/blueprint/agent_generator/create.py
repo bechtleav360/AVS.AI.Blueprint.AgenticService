@@ -13,6 +13,7 @@ import sys
 
 from .generator.generator import main as generate_microservice
 
+
 def find_config_file() -> str:
     """Find a config file in the current directory."""
     config_files = list(glob.glob("*_config.json"))
@@ -37,6 +38,7 @@ def find_config_file() -> str:
             sys.exit(1)
 
     return config_files[0]
+
 
 def main():
     # Get config file path
@@ -64,15 +66,18 @@ def main():
         print("\nMicroservice generated successfully!")
         print("Next steps:")
         print(f"1. Review the generated files in: {output_dir}")
-        print("2. If the agent microservice uses LLM agents, add the \"model_api_key\" to environment variables "
-              "using \"DYNACONF_MODEL_API_KEY\" or simply add a \"model_api_key\" to the settings.toml without an "
-              "actual key for testing (otherwise the agent microservice will not start).")
-        print("3. Run the microservice: \"uvicorn src.main:app\"")
+        print(
+            '2. If the agent microservice uses LLM agents, add the "model_api_key" to environment variables '
+            'using "DYNACONF_MODEL_API_KEY" or simply add a "model_api_key" to the settings.toml without an '
+            "actual key for testing (otherwise the agent microservice will not start)."
+        )
+        print('3. Run the microservice: "uvicorn src.main:app"')
         print("4. After confirming, that the service runs, add actual business logic to the microservice.")
 
     except Exception as e:
         print(f"\nError generating microservice: {e}", file=sys.stderr)
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

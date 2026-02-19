@@ -1,11 +1,10 @@
-"""Base classes and interfaces for all framework components.
+"""Base classes for all framework components.
 
 This module contains:
 - Abstract base class: Component (unified interface for all components)
-- Concrete implementations: EventHandler, AgentRuntime, RestApi, BusinessService
-- Interface definitions: ComponentInterface
+- Concrete implementations: EventHandler, AgentRuntime, RestApi, BusinessService, Scheduler
 
-All components extend Component and implement:
+All components extend Component and inherit:
 - get_name() -> str
 - get_registry() -> ComponentRegistry
 - get_config() -> Config
@@ -17,8 +16,8 @@ from .agent_runtime import AgentRuntime
 from .business_service import BusinessService
 from .component import Component
 from .event_handler import EventHandler
-from .interfaces import ComponentInterface
 from .rest_api import RestApi
+from .scheduler import Scheduler
 
 __all__ = [
     "Component",
@@ -26,5 +25,5 @@ __all__ = [
     "BusinessService",
     "EventHandler",
     "RestApi",
-    "ComponentInterface",
+    "Scheduler",
 ]

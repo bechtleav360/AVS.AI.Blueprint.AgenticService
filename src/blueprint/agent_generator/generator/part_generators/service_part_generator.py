@@ -27,7 +27,9 @@ class ServicePartGenerator(PartGeneratorBase):
         lines = []
         if self.config["service_layer"][self.service_name]["uses_domain_models"]:
             if len(self.config["service_layer"][self.service_name]["uses_domain_models"]) < 4:
-                lines.append(f"from ..models.domain_models import {', '.join(self.config['service_layer'][self.service_name]['uses_domain_models'])}")
+                lines.append(
+                    f"from ..models.domain_models import {', '.join(self.config['service_layer'][self.service_name]['uses_domain_models'])}"
+                )
             else:
                 lines.append("from ..models.domain_models import (")
                 for domain_model_name in self.config["service_layer"][self.service_name]["uses_domain_models"]:
@@ -43,14 +45,16 @@ class ServicePartGenerator(PartGeneratorBase):
         """
 
         lines = []
-        lines.extend([
-            f"class {self.service_name}(BusinessService):",
-            '    """',
-            f"    Service for {self.config['name']}.",
-            '    """',
-            f"    def __init__(self, name: str = \"{self.service_name}\") -> None:",
-            "        super().__init__(name=name)"
-        ])
+        lines.extend(
+            [
+                f"class {self.service_name}(BusinessService):",
+                '    """',
+                f"    Service for {self.config['name']}.",
+                '    """',
+                f'    def __init__(self, name: str = "{self.service_name}") -> None:',
+                "        super().__init__(name=name)",
+            ]
+        )
 
         if self.config["service_layer"][self.service_name]["uses_agents"]:
             for agent_name in self.config["service_layer"][self.service_name]["uses_agents"]:
@@ -65,14 +69,18 @@ class ServicePartGenerator(PartGeneratorBase):
 
         lines = []
         if self.config["service_layer"][self.service_name]["uses_agents"]:
-            lines.extend([
-                "    async def on_startup(self) -> None:",
-                '        """Initialize the service by getting agent from the registry."""',
-            ])
+            lines.extend(
+                [
+                    "    async def on_startup(self) -> None:",
+                    '        """Initialize the service by getting agent from the registry."""',
+                ]
+            )
 
             for agent_name in self.config["service_layer"][self.service_name]["uses_agents"]:
-                lines.append(f"        self._{self.camel_to_snake(agent_name)} = self.get_registry()"
-                             f".get_agent('{self.config['agent_layer'][agent_name]['runtime_name']}')")
+                lines.append(
+                    f"        self._{self.camel_to_snake(agent_name)} = self.get_registry()"
+                    f".get_agent('{self.config['agent_layer'][agent_name]['runtime_name']}')"
+                )
 
         lines.append("")
         return "\n".join(lines)
@@ -85,22 +93,25 @@ class ServicePartGenerator(PartGeneratorBase):
         lines = []
         function_parameters = self.config["service_layer"][self.service_name]["process_function"]
         lines.append("")
-        lines.append(f"    async def {function_parameters['name']}(self, "
-                     f"{self.camel_to_snake(function_parameters["input_type"])}"
-                     f": {function_parameters['input_type']}) -> {function_parameters['output_type']}:")
-        lines.extend([
-            '        """This method contains business logic of this microservice.',
-            "",
-            "        Args:",
-            f"            {self.camel_to_snake(function_parameters['input_type'])} "
-            f"({function_parameters['input_type']}): The incoming data, parsed into the domain input model.",
-            "",
-            "        Returns:",
-            f"            {function_parameters['output_type']}: "
-            f"The processed data parsed into the domain output model.",
-            '        """',
-            ""
-        ])
+        lines.append(
+            f"    async def {function_parameters['name']}(self, "
+            f"{self.camel_to_snake(function_parameters["input_type"])}"
+            f": {function_parameters['input_type']}) -> {function_parameters['output_type']}:"
+        )
+        lines.extend(
+            [
+                '        """This method contains business logic of this microservice.',
+                "",
+                "        Args:",
+                f"            {self.camel_to_snake(function_parameters['input_type'])} "
+                f"({function_parameters['input_type']}): The incoming data, parsed into the domain input model.",
+                "",
+                "        Returns:",
+                f"            {function_parameters['output_type']}: " f"The processed data parsed into the domain output model.",
+                '        """',
+                "",
+            ]
+        )
         lines.append(f"        raise NotImplementedError()")
 
         return "\n".join(lines)

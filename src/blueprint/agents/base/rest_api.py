@@ -1,146 +1,139 @@
-"""Generic RESTful API routes for the agent service (framework-level)."""
+"""Generic RESTful API base class for the agent service (framework-level).
+
+Subclasses register routes by decorating methods with FastAPI router decorators
+directly on ``self.router``.  No ``_register_routes()`` override is needed.
+
+Example::
+
+    class MyApi(RestApi):
+        def __init__(self) -> None:
+            super().__init__(name="MyApi")
+
+        @RestApi.get("/items", response_model=list[Item])
+        async def list_items(self) -> list[Item]:
+            return await self.get_registry().get_service("item_service").all()
+
+        @RestApi.post("/items", response_model=Item)
+        async def create_item(self, payload: ItemRequest) -> Item:
+            return await self.get_registry().get_service("item_service").create(payload)
+"""
 
 from __future__ import annotations
 
 import logging
 from http import HTTPStatus
 from time import perf_counter
-from typing import TYPE_CHECKING, Any, Generic, TypeVar
+from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Body, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from opentelemetry import trace
-from pydantic import BaseModel
 
-from ..config import Config
 from ..models import ProcessResourceResponse
 from .component import Component
-
-if TYPE_CHECKING:
-    from ..registry.component_registry import ComponentRegistry
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
 
-# Define a TypeVar for the generic payload model
-PayloadT = TypeVar("PayloadT", bound=BaseModel)
-
 
 class RestApi(Component):
-    """Generic OOP wrapper for the REST API router.
+    """Base class for REST API components.
 
-    Extends Component to provide consistent lifecycle and registry access
-    for REST API endpoints.
+    Extends :class:`Component` to provide consistent lifecycle and registry
+    access for FastAPI route handlers.
+
+    Routes are registered by decorating methods with the class-level HTTP verb
+    helpers (``RestApi.get``, ``RestApi.post``, ``RestApi.put``,
+    ``RestApi.delete``, ``RestApi.patch``).  The base class wires those
+    decorated methods onto ``self.router`` during ``__init__``, so subclasses
+    never need to call ``_register_routes()`` or touch the router directly.
+
+    All lifecycle and dependency-injection methods (``get_name``,
+    ``get_registry``, ``get_config``, ``link_config``,
+    ``link_component_registry``, ``on_startup``, ``on_shutdown``) are
+    inherited from :class:`Component`.
     """
 
-    def __init__(self, name: str = "RestAPI") -> None:
+    def __init__(self, name: str = "RestApi") -> None:
         super().__init__(name)
         self.router = APIRouter()
-        self._register_routes()
+        self._wire_routes()
 
-    def get_name(self) -> str:
-        """Get the component name.
+    # ------------------------------------------------------------------
+    # Class-level decorator helpers
+    # ------------------------------------------------------------------
 
-        Returns:
-            The component name set during initialization
-        """
-        return self._component_name
+    @classmethod
+    def get(cls, path: str, **kwargs: Any):
+        """Decorator: register a GET route on the instance router."""
 
-    def get_registry(self) -> ComponentRegistry:
-        """Get the component registry for accessing other components.
+        def decorator(func):
+            func._route = ("get", path, kwargs)
+            return func
 
-        Returns:
-            The ComponentRegistry instance
+        return decorator
 
-        Raises:
-            RuntimeError: If registry is not wired
-        """
-        if not hasattr(self, "_component_registry") or self._component_registry is None:
-            raise RuntimeError(f"Component registry not linked to service '{self._component_name}'")
-        return self._component_registry
+    @classmethod
+    def post(cls, path: str, **kwargs: Any):
+        """Decorator: register a POST route on the instance router."""
 
-    def get_config(self) -> Config:
-        """Get the configuration linked to this REST API.
+        def decorator(func):
+            func._route = ("post", path, kwargs)
+            return func
 
-        Returns:
-            The Config instance linked via dependency injection
+        return decorator
 
-        Raises:
-            RuntimeError: If config is not wired
-        """
+    @classmethod
+    def put(cls, path: str, **kwargs: Any):
+        """Decorator: register a PUT route on the instance router."""
 
-        if not hasattr(self, "_config") or self._config is None:
-            raise RuntimeError(f"Config not linked to REST API '{self._component_name}'")
-        return self._config
+        def decorator(func):
+            func._route = ("put", path, kwargs)
+            return func
 
-    def link_component_registry(self, registry: ComponentRegistry) -> None:
-        """Link the component registry to the service.
+        return decorator
 
-        This allows services to access other components via the registry.
+    @classmethod
+    def delete(cls, path: str, **kwargs: Any):
+        """Decorator: register a DELETE route on the instance router."""
 
-        Args:
-            registry: The ComponentRegistry instance
-        """
-        self._component_registry = registry
+        def decorator(func):
+            func._route = ("delete", path, kwargs)
+            return func
 
-    def link_config(self, config: Config) -> None:
-        """Link configuration to the service via dependency injection.
+        return decorator
 
-        This allows services to access environment variables and configuration
-        during runtime.
+    @classmethod
+    def patch(cls, path: str, **kwargs: Any):
+        """Decorator: register a PATCH route on the instance router."""
 
-        Args:
-            config: The Config instance
-        """
-        self._config = config
+        def decorator(func):
+            func._route = ("patch", path, kwargs)
+            return func
 
-    async def on_startup(self) -> None:
-        """Called when service is registered and wired.
+        return decorator
 
-        Override to perform initialization tasks such as:
-        - Connecting to external services
-        - Loading configuration
-        - Initializing resources
-        """
+    # ------------------------------------------------------------------
+    # Internal wiring
+    # ------------------------------------------------------------------
 
-    async def on_shutdown(self) -> None:
-        """Called when application is shutting down.
+    def _wire_routes(self) -> None:
+        """Discover and register all decorated route methods on self.router."""
+        import inspect
 
-        Override to perform cleanup tasks such as:
-        - Closing connections
-        - Releasing resources
-        - Flushing buffers
-        """
+        for _, method in inspect.getmembers(self, predicate=inspect.ismethod):
+            if not hasattr(method, "_route"):
+                continue
+            verb, path, kwargs = method._route
+            router_method = getattr(self.router, verb)
+            router_method(path, **kwargs)(method)
 
-    def _register_routes(self) -> None:
-        # @self.router.post(
-        #     "/process-resource",
-        #     response_model=ProcessResourceResponse,
-        #     summary="Trigger resource processing",
-        #     responses={
-        #         status.HTTP_200_OK: {
-        #             "description": "Processing completed",
-        #             "content": {
-        #                 "application/json": {
-        #                     "example": {
-        #                         "success": True,
-        #                         "request_id": "9f2c1f2e-09d8-4d0d-9b6f-2f6fef2ad87a",
-        #                         "message": "Processing completed successfully",
-        #                     }
-        #                 }
-        #             },
-        #         }
-        #     },
-        # )
-        # async def process_resource(
-        #     request: Request,
-        #     payload: self._payload_type = Body(...),
-        # ) -> ProcessResourceResponse | JSONResponse:
-        #     return await self._process_resource(request, payload)
-        raise NotImplementedError
+    # ------------------------------------------------------------------
+    # Shared helper: RFC 7807 problem details
+    # ------------------------------------------------------------------
 
-    async def _process_resource(self, request: Request, payload: PayloadT) -> ProcessResourceResponse | JSONResponse:
+    async def _process_resource(self, request: Request, payload: Any) -> ProcessResourceResponse | JSONResponse:
         """Generic endpoint for processing resources with illustrative payloads."""
         with tracer.start_as_current_span("api.process_resource") as span:
             request_id = str(uuid4())
