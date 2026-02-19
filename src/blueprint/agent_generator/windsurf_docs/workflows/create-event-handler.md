@@ -91,4 +91,3 @@ app = (
 - Lower `priority` numbers run first (default is 100).
 - `can_handle_event()` must be fast and side-effect-free.
 - Resolve all dependencies in `on_startup()`, not in `__init__`.
-- See `docs/windsurf/rules/event-handler.md` for the full reference.

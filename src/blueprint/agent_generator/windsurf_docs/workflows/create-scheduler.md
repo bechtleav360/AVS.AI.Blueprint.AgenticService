@@ -83,4 +83,3 @@ app = (
 - `tick()` runs in an asyncio context — use `await` freely.
 - Unhandled exceptions in `tick()` are caught and logged by the base class; the scheduler keeps running.
 - Use a shared `BusinessService` to share data between the scheduler and REST APIs.
-- See `docs/windsurf/rules/scheduler.md` for the full reference.

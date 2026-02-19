@@ -84,4 +84,3 @@ service = self.get_registry().get_service("{name}")
 - The string passed to `super().__init__()` is the registry key — keep it stable, unique, snake_case.
 - Never call `get_registry()` or `get_config()` in `__init__`.
 - If this service depends on another service, register the dependency first in `AppBuilder`.
-- See `docs/windsurf/rules/business-service.md` for the full reference.

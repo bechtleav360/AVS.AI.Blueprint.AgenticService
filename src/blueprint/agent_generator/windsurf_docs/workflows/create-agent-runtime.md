@@ -88,4 +88,3 @@ output: {Name}Output = result.output
 - Place prompt files in `src/prompts/` — they are discovered automatically.
 - Store API keys in `secrets.toml` (gitignored), never in `settings.toml`.
 - Register the agent with `AppBuilder.with_agent()` before any handlers or APIs that use it.
-- See `docs/windsurf/rules/agent-runtime.md` for the full reference.

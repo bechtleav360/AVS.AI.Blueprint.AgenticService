@@ -58,9 +58,7 @@ dev = [
 ]
 
 [project.scripts]
-setup_config = "blueprint.agent_generator.setup:main"
-create = "blueprint.agent_generator.create:main"
-windsurf = "blueprint.agent_generator.windsurf:main"
+asbs = "blueprint.agent_generator.cli.main:main"
 
 [tool.setuptools]
 packages = [
@@ -80,7 +78,9 @@ packages = [
     "blueprint.agents.services.health",
     "blueprint.agents.services.processing",
     "blueprint.agent_generator",
-    "blueprint.agent_generator.generator"
+    "blueprint.agent_generator.generator",
+    "blueprint.agent_generator.cli",
+    "blueprint.agent_generator.cli.commands"
 ]
 
 [tool.setuptools.package-dir]

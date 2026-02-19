@@ -83,4 +83,3 @@ app = (
 - Use `@RestApi.get/post/put/delete/patch` — never `@self.router.*` directly.
 - Each route method must have `self` as the first parameter.
 - Path parameters in the URL string (e.g. `{item_id}`) must match the method parameter name exactly.
-- See `docs/windsurf/rules/rest-api-routes.md` for the full reference.
