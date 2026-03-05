@@ -80,13 +80,14 @@ app = (
 ```python
 from unittest.mock import AsyncMock, MagicMock
 
+
 class TestInvoiceHandler:
     def setup_method(self) -> None:
         self.handler = InvoiceHandler()
         registry = MagicMock()
         registry.get_service.return_value = MagicMock(spec=InvoiceService)
         registry.get_agent.return_value = AsyncMock()
-        self.handler._component_registry = registry
+        self.handler._registry = registry
 
     @pytest.mark.asyncio
     async def test_can_handle_invoice_event(self) -> None:

@@ -15,7 +15,7 @@ from pydantic_ai.settings import ModelSettings
 from ..base import AgentRuntime
 from ..config import Config
 from .metrics import MetricsExtractor, MetricsRecorder
-from .model_provider import ModelProviderFactory
+from src.blueprint.agents.agent.providers.model_provider_factory import ModelProviderFactory
 from .prompt_loader import PromptLoader
 
 logger: logging.Logger = logging.getLogger(__name__)

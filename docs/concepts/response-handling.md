@@ -194,8 +194,9 @@ class InvoiceAnalysis(BaseModel):
 ```python
 from pydantic import ValidationError
 
+
 async def analyze_invoice(invoice_text: str) -> dict:
-    agent = self._component_registry.get_agent("invoice_analyzer")
+    agent = self._registry.get_agent("invoice_analyzer")
 
     try:
         result = await agent.run(invoice_text)
@@ -357,7 +358,7 @@ analysis = InvoiceAnalysis(
 
 ```python
 async def analyze_with_retry(invoice_text: str, max_retries: int = 3) -> InvoiceAnalysis:
-    agent = self._component_registry.get_agent("invoice_analyzer")
+    agent = self._registry.get_agent("invoice_analyzer")
 
     for attempt in range(max_retries):
         try:
@@ -374,7 +375,7 @@ async def analyze_with_retry(invoice_text: str, max_retries: int = 3) -> Invoice
 
 ```python
 async def analyze_invoice(invoice_text: str) -> InvoiceAnalysis:
-    agent = self._component_registry.get_agent("invoice_analyzer")
+    agent = self._registry.get_agent("invoice_analyzer")
 
     try:
         result = await agent.run(invoice_text)
@@ -393,12 +394,12 @@ async def analyze_invoice(invoice_text: str) -> InvoiceAnalysis:
 
 ```python
 async def analyze_and_enrich(invoice_text: str) -> dict:
-    agent = self._component_registry.get_agent("invoice_analyzer")
+    agent = self._registry.get_agent("invoice_analyzer")
     result = await agent.run(invoice_text)
     analysis = result.data
 
     # Enrich with additional data
-    service = self._component_registry.get_service("vendor_service")
+    service = self._registry.get_service("vendor_service")
     vendor_info = await service.get_vendor(analysis.vendor)
 
     return {

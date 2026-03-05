@@ -114,7 +114,7 @@ Use appropriate log levels:
 
 ```python
 logger.debug("Processing event: %s", event.type)
-logger.info("Handler registered: %s", self.get_name())
+logger.info("Handler registered: %s", self.name)
 logger.warning("Deprecated method called: %s", method_name)
 logger.error("Failed to process event: %s", error)
 ```

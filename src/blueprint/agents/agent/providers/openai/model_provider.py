@@ -4,13 +4,11 @@ import logging
 from typing import TYPE_CHECKING, Any, Union
 
 from openai import AsyncOpenAI
-from openai.types import ReasoningEffort
-from pydantic_ai import ModelSettings
 from pydantic_ai.models import Model
-from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel, OpenAIResponsesModelSettings
+from pydantic_ai.models.openai import OpenAIResponsesModel, OpenAIResponsesModelSettings
 from pydantic_ai.providers.openai import OpenAIProvider
 
-from ...model_provider import ModelProviderStrategy
+from src.blueprint.agents.agent.providers.model_provider_factory import ModelProviderStrategy
 
 if TYPE_CHECKING:
     from ....models.config import AIConfig

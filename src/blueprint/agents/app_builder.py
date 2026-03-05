@@ -328,9 +328,9 @@ class AppBuilder:
             for handler in self._component_registry.get_handlers():
                 try:
                     await handler.on_startup()
-                    logger.info("Handler %s startup completed", handler.get_name())
+                    logger.info("Handler %s startup completed", handler.name)
                 except Exception as e:
-                    logger.error("Handler %s startup failed: %s", handler.get_name(), e, exc_info=True)
+                    logger.error("Handler %s startup failed: %s", handler.name, e, exc_info=True)
                     raise
 
             # Agents
@@ -347,27 +347,27 @@ class AppBuilder:
             for service in self._component_registry.list_services():
                 try:
                     await service.on_startup()
-                    logger.info("Business service %s startup completed", service.get_name())
+                    logger.info("Business service %s startup completed", service.name)
                 except Exception as e:
-                    logger.error("Business service %s startup failed: %s", service.get_name(), e, exc_info=True)
+                    logger.error("Business service %s startup failed: %s", service.name, e, exc_info=True)
                     raise
 
             # REST APIs
             for rest_api in self._component_registry.get_rest_apis():
                 try:
                     await rest_api.on_startup()
-                    logger.info("REST API %s startup completed", rest_api.get_name())
+                    logger.info("REST API %s startup completed", rest_api.name)
                 except Exception as e:
-                    logger.error("REST API %s startup failed: %s", rest_api.get_name(), e, exc_info=True)
+                    logger.error("REST API %s startup failed: %s", rest_api.name, e, exc_info=True)
                     raise
 
             # Schedulers
             for scheduler in self._component_registry.get_schedulers():
                 try:
                     await scheduler.on_startup()
-                    logger.info("Scheduler %s startup completed", scheduler.get_name())
+                    logger.info("Scheduler %s startup completed", scheduler.name)
                 except Exception as e:
-                    logger.error("Scheduler %s startup failed: %s", scheduler.get_name(), e, exc_info=True)
+                    logger.error("Scheduler %s startup failed: %s", scheduler.name, e, exc_info=True)
                     raise
 
             logger.info("Startup initialization completed")
@@ -402,25 +402,25 @@ class AppBuilder:
             for scheduler in self._component_registry.get_schedulers():
                 try:
                     await scheduler.on_shutdown()
-                    logger.info("Scheduler %s shutdown completed", scheduler.get_name())
+                    logger.info("Scheduler %s shutdown completed", scheduler.name)
                 except Exception as e:
-                    logger.error("Scheduler %s shutdown failed: %s", scheduler.get_name(), e, exc_info=True)
+                    logger.error("Scheduler %s shutdown failed: %s", scheduler.name, e, exc_info=True)
 
             # REST APIs
             for rest_api in self._component_registry.get_rest_apis():
                 try:
                     await rest_api.on_shutdown()
-                    logger.info("REST API %s shutdown completed", rest_api.get_name())
+                    logger.info("REST API %s shutdown completed", rest_api.name)
                 except Exception as e:
-                    logger.error("REST API %s shutdown failed: %s", rest_api.get_name(), e, exc_info=True)
+                    logger.error("REST API %s shutdown failed: %s", rest_api.name, e, exc_info=True)
 
             # Business Services
             for service in self._component_registry.list_services():
                 try:
                     await service.on_shutdown()
-                    logger.info("Business service %s shutdown completed", service.get_name())
+                    logger.info("Business service %s shutdown completed", service.name)
                 except Exception as e:
-                    logger.error("Business service %s shutdown failed: %s", service.get_name(), e, exc_info=True)
+                    logger.error("Business service %s shutdown failed: %s", service.name, e, exc_info=True)
 
             # Agents
             for agent_name in self._component_registry.list_agents():
@@ -435,9 +435,9 @@ class AppBuilder:
             for handler in self._component_registry.get_handlers():
                 try:
                     await handler.on_shutdown()
-                    logger.info("Handler %s shutdown completed", handler.get_name())
+                    logger.info("Handler %s shutdown completed", handler.name)
                 except Exception as e:
-                    logger.error("Handler %s shutdown failed: %s", handler.get_name(), e, exc_info=True)
+                    logger.error("Handler %s shutdown failed: %s", handler.name, e, exc_info=True)
 
             logger.info("Service shutdown completed")
 

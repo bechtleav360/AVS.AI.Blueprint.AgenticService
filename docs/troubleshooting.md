@@ -92,7 +92,7 @@ pip install -e .
    ```
 2. Use correct component name:
    ```python
-   agent = self._component_registry.get_agent("my_agent")  # Must match registration
+   agent = self._registry.get_agent("my_agent")  # Must match registration
    ```
 
 ---
@@ -308,11 +308,11 @@ async def handle_event(self, event: CloudEvent, context):
 
 ```python
 # List all registered handlers
-handlers = self._component_registry.get_handlers()
-print(f"Handlers: {[h.get_name() for h in handlers]}")
+handlers = self._registry.get_handlers()
+print(f"Handlers: {[h.name for h in handlers]}")
 
 # List all agents
-agents = self._component_registry.list_agents()
+agents = self._registry.list_agents()
 print(f"Agents: {agents}")
 ```
 

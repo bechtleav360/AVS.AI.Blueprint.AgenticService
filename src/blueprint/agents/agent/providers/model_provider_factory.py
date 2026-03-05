@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Union
 from pydantic_ai.models import Model
 
 if TYPE_CHECKING:
-    from ..models.config import AIConfig
+    from src.blueprint.agents.models.config import AIConfig
 
 logger = logging.getLogger(__name__)
 

@@ -72,8 +72,8 @@ class EventHandler(Component):
         Do not override this method. Override can_handle_event() instead.
         """
 
-        with tracer.start_as_current_span(f"handler.{self._component_name}.can_handle") as span:
-            span.set_attribute("handler.name", self._component_name)
+        with tracer.start_as_current_span(f"handler.{self._name}.can_handle") as span:
+            span.set_attribute("handler.name", self._name)
             span.set_attribute("handler.priority", self._priority)
             return await self.can_handle_event(event, context)
 
@@ -83,8 +83,8 @@ class EventHandler(Component):
         Do not override this method. Override handle_event() instead.
         """
 
-        with tracer.start_as_current_span(f"handler.{self._component_name}.handle") as span:
-            span.set_attribute("handler.name", self._component_name)
+        with tracer.start_as_current_span(f"handler.{self._name}.handle") as span:
+            span.set_attribute("handler.name", self._name)
             span.set_attribute("handler.priority", self._priority)
             result = await self.handle_event(event, context)
 
@@ -167,15 +167,15 @@ class EventHandler(Component):
             )
         """
 
-        if not hasattr(self, "_component_registry") or self._component_registry is None:
+        if not hasattr(self, "_component_registry") or self._registry is None:
             raise RuntimeError(
-                f"Component registry not linked to handler '{self._component_name}'. " "This is a framework initialization error."
+                f"Component registry not linked to handler '{self._name}'. " "This is a framework initialization error."
             )
 
-        return self._component_registry.get_agent(agent_name)
+        return self._registry.get_agent(agent_name)
 
     def _get_agent(self, agent_name: str) -> AgentRuntime:
-        logger.warning("Handler '%s' is using deprecated _get_agent() method. Use get_agent() instead.", self._component_name)
+        logger.warning("Handler '%s' is using deprecated _get_agent() method. Use get_agent() instead.", self._name)
         return self.get_agent(agent_name)
 
     def get_published_event_types(self) -> tuple[str, str] | None:

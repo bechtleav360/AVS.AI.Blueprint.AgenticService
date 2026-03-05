@@ -9,10 +9,11 @@ injection methods. Subclasses only need to override what is domain-specific.
 
 from __future__ import annotations
 
-from abc import ABC
+from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
 from ..config import Config
+from ..utils import camel_to_snake
 
 if TYPE_CHECKING:
     from ..registry.component_registry import ComponentRegistry
@@ -28,17 +29,72 @@ class Component(ABC):
     - Component naming and identification
     - Access to configuration and component registry
     - Lifecycle hooks for startup and shutdown
+
+    Every Component will by default have its name set to its class name.
     """
 
-    def __init__(self, name: str = "Component") -> None:
+    _registry = ComponentRegistry()
+    _config: Config | None = None
+
+    def __init__(self, should_register:bool = True) -> None:
         """Initialize the component.
+        """
+
+        self._name = camel_to_snake(self.__class__.__name__)
+        if should_register:
+            self.registry.add_component(self.name, self)
+
+    @property
+    def name(self) -> str:
+        """Get the component name.
+
+        Returns:
+            The component name set during initialization
+        """
+        return self._name
+
+    @name.setter
+    def name(self, value: str):
+        """Set the component name. Also updates the name in the component registry.
 
         Args:
-            name: Human-readable name for the component
+            value: The component name
         """
-        self._component_name = name
-        self._config: Config | None = None
-        self._component_registry: ComponentRegistry | None = None
+
+        self.registry.update_component_name(self._name, value)
+        self._name = value
+
+    @property
+    def registry(self) -> ComponentRegistry:
+        """Get the component registry for accessing other components.
+
+        Uses class-level variable to avoid shadowing the registry.
+
+        Returns:
+            The ComponentRegistry instance
+        """
+
+        return Component._registry
+
+    @property
+    def config(self) -> Config:
+        """Get the configuration linked to this component.
+
+        Returns:
+            The Config instance linked via dependency injection
+        """
+
+        return Component._config
+
+    @config.setter
+    def config(self, value: Config):
+        """Set the configuration linked to this component.
+
+        Args:
+            value: The Config instance
+        """
+
+        Component._config = value
 
     def get_name(self) -> str:
         """Get the component name.
@@ -46,7 +102,7 @@ class Component(ABC):
         Returns:
             The component name set during initialization
         """
-        return self._component_name
+        return self._name
 
     def get_registry(self) -> ComponentRegistry:
         """Get the component registry for accessing other components.
@@ -57,9 +113,9 @@ class Component(ABC):
         Raises:
             RuntimeError: If registry is not wired
         """
-        if self._component_registry is None:
-            raise RuntimeError(f"Component registry not linked to component '{self._component_name}'")
-        return self._component_registry
+        if self._registry is None:
+            raise RuntimeError(f"Component registry not linked to component '{self._name}'")
+        return self._registry
 
     def get_config(self) -> Config:
         """Get the configuration linked to this component.
@@ -71,7 +127,7 @@ class Component(ABC):
             RuntimeError: If config is not wired
         """
         if self._config is None:
-            raise RuntimeError(f"Config not linked to component '{self._component_name}'")
+            raise RuntimeError(f"Config not linked to component '{self._name}'")
         return self._config
 
     def link_config(self, config: Config) -> None:
@@ -88,8 +144,9 @@ class Component(ABC):
         Args:
             registry: The ComponentRegistry instance
         """
-        self._component_registry = registry
+        self._registry = registry
 
+    @abstractmethod
     async def on_startup(self) -> None:
         """Called when component is registered and wired.
 
@@ -99,6 +156,9 @@ class Component(ABC):
         - Initializing resources
         """
 
+        raise NotImplementedError()
+
+    @abstractmethod
     async def on_shutdown(self) -> None:
         """Called when application is shutting down.
 
@@ -107,3 +167,5 @@ class Component(ABC):
         - Releasing resources
         - Flushing buffers
         """
+
+        raise NotImplementedError()

@@ -70,10 +70,10 @@ class Scheduler(Component):
         """Start the background scheduling task."""
         if not croniter.is_valid(self._crontab):
             raise ValueError(
-                f"Scheduler '{self._component_name}' has an invalid crontab expression: '{self._crontab}'"
+                f"Scheduler '{self._name}' has an invalid crontab expression: '{self._crontab}'"
             )
-        self._task = asyncio.create_task(self._run(), name=f"scheduler.{self._component_name}")
-        logger.info("Scheduler '%s' started with crontab '%s'", self._component_name, self._crontab)
+        self._task = asyncio.create_task(self._run(), name=f"scheduler.{self._name}")
+        logger.info("Scheduler '%s' started with crontab '%s'", self._name, self._crontab)
 
     async def on_shutdown(self) -> None:
         """Cancel the background scheduling task."""
@@ -83,7 +83,7 @@ class Scheduler(Component):
                 await self._task
             except asyncio.CancelledError:
                 pass
-        logger.info("Scheduler '%s' stopped", self._component_name)
+        logger.info("Scheduler '%s' stopped", self._name)
 
     # ------------------------------------------------------------------
     # Internal loop
@@ -98,7 +98,7 @@ class Scheduler(Component):
             delay = (next_dt - now).total_seconds()
             if delay > 0:
                 await asyncio.sleep(delay)
-            logger.debug("Scheduler '%s' firing tick", self._component_name)
+            logger.debug("Scheduler '%s' firing tick", self._name)
             try:
                 await self.tick()
             except asyncio.CancelledError:
@@ -106,6 +106,6 @@ class Scheduler(Component):
             except Exception as exc:
                 logger.exception(
                     "Scheduler '%s' tick raised an unhandled exception: %s",
-                    self._component_name,
+                    self._name,
                     exc,
                 )

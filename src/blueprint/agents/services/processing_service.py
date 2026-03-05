@@ -12,7 +12,6 @@ from ..models import ProcessingResult, ProcessingStatus
 from ..models.events import GenericCloudEvent, HandlerResult
 from .processing._event_publisher import _EventPublisher
 from .processing._handler_chain import _HandlerChainProcessor
-from .processing._health_checker import _HealthChecker
 from .processing._result_builder import _ResultBuilder
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -46,7 +45,6 @@ class ProcessingService:
         self._component_registry: ComponentRegistry = component_registry
         self._handler_chain: _HandlerChainProcessor = _HandlerChainProcessor(component_registry)
         self._event_publisher: _EventPublisher = _EventPublisher(component_registry, settings)
-        self._health_checker: _HealthChecker = _HealthChecker(component_registry)
         self._result_builder: _ResultBuilder = _ResultBuilder()
         self._correlation_context = component_registry.get_correlation_context()
         self.name = self.__class__.__name__

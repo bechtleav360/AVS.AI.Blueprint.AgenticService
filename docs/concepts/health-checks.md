@@ -104,7 +104,7 @@ class MyRestApi(RestApi):
 @self.router.get("/health/cache")
 async def check_cache():
     try:
-        cache = self._component_registry.get_cache()
+        cache = self._registry.get_cache()
 
         if not cache:
             return {"status": "ok", "cache": "disabled"}
@@ -210,6 +210,7 @@ from prometheus_client import Counter, Gauge
 health_checks = Counter("health_checks_total", "Total health checks")
 healthy_services = Gauge("healthy_services", "Number of healthy services")
 
+
 @self.router.get("/health/metrics")
 async def health_metrics():
     health_checks.inc()
@@ -224,7 +225,7 @@ async def health_metrics():
         pass
 
     # Check cache
-    if self._component_registry.has_cache():
+    if self._registry.has_cache():
         healthy += 1
 
     healthy_services.set(healthy)
@@ -384,7 +385,7 @@ async def health():
 
     # Cache is optional
     try:
-        cache = self._component_registry.get_cache()
+        cache = self._registry.get_cache()
         if cache:
             checks["cache"] = "ok"
     except:

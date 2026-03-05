@@ -37,6 +37,11 @@ class VLLMProviderHealthChecker(HealthCheckerBase):
 
     async def health_check(self) -> ComponentHealth:
         """Check AI provider health if enabled."""
+        return ComponentHealth(
+            status="unhealthy",
+            message="; ".join("asdass"),
+        )
+
         if not self.enabled:
             logger.debug("AI provider health check is disabled")
             return ComponentHealth(

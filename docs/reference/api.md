@@ -98,8 +98,8 @@ async def handle_event(self, event: CloudEvent, context) -> HandlerResult:
 Access other registered components.
 
 ```python
-agent = self._component_registry.get_agent("my_agent")
-service = self._component_registry.get_service("my_service")
+agent = self._registry.get_agent("my_agent")
+service = self._registry.get_service("my_service")
 ```
 
 ---
@@ -118,7 +118,7 @@ Register FastAPI routes.
 def _register_routes(self):
     @self.router.post("/users")
     async def create_user(request: UserRequest):
-        service = self._component_registry.get_service("user_service")
+        service = self._registry.get_service("user_service")
         return await service.create_user(request)
 ```
 

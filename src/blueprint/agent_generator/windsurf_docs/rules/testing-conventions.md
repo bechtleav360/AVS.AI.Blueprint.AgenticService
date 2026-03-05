@@ -73,21 +73,22 @@ import pytest
 from src.handlers.invoice_handler import InvoiceHandler
 from blueprint.agents.models.events import GenericCloudEvent
 
+
 class TestInvoiceHandler:
     def setup_method(self) -> None:
         self.handler = InvoiceHandler()
-        
+
         # Mock registry
         registry = MagicMock()
         registry.get_service.return_value = MagicMock()
         registry.get_agent.return_value = AsyncMock()
-        self.handler._component_registry = registry
-    
+        self.handler._registry = registry
+
     @pytest.mark.asyncio
     async def test_can_handle_invoice_event(self) -> None:
         event = GenericCloudEvent(type="invoice.received", data={})
         assert await self.handler.can_handle_event(event, {}) is True
-    
+
     @pytest.mark.asyncio
     async def test_ignores_other_events(self) -> None:
         event = GenericCloudEvent(type="order.placed", data={})
@@ -173,14 +174,14 @@ async def test_with_patched_client(mock_client):
 ```python
 def setup_method(self) -> None:
     self.handler = MyHandler()
-    
+
     # Create mock registry
     registry = MagicMock()
     registry.get_service.return_value = MagicMock(spec=MyService)
     registry.get_agent.return_value = AsyncMock()
-    
+
     # Link to handler
-    self.handler._component_registry = registry
+    self.handler._registry = registry
 ```
 
 ## Fixtures and Reusability
@@ -216,7 +217,7 @@ class TestMyHandler:
     async def test_with_config(self, test_config, mock_registry) -> None:
         handler = MyHandler()
         handler._config = test_config
-        handler._component_registry = mock_registry
+        handler._registry = mock_registry
         ...
 ```
 

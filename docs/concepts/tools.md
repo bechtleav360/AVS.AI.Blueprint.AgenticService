@@ -365,7 +365,7 @@ log_level = "DEBUG"
 
 ```python
 async def lookup_vendor(vendor_name: str) -> dict:
-    cache = self._component_registry.get_cache()
+    cache = self._registry.get_cache()
 
     # Check cache
     cached = cache.get("vendors", vendor_name)

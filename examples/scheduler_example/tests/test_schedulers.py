@@ -16,7 +16,7 @@ class TestMetricsCollectorScheduler:
         registry.get_service.return_value = self.service
 
         self.scheduler = MetricsCollectorScheduler()
-        self.scheduler._component_registry = registry
+        self.scheduler._registry = registry
         self.scheduler._metrics = self.service
 
     @pytest.mark.asyncio
@@ -55,7 +55,7 @@ class TestCleanupScheduler:
         registry.get_service.return_value = self.service
 
         self.scheduler = CleanupScheduler()
-        self.scheduler._component_registry = registry
+        self.scheduler._registry = registry
         self.scheduler._metrics = self.service
 
     @pytest.mark.asyncio

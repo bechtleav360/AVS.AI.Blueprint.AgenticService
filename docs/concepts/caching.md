@@ -79,7 +79,7 @@ class InvoiceService(BusinessService):
 The cache automatically hashes keys for consistency:
 
 ```python
-cache = self._component_registry.get_cache()
+cache = self._registry.get_cache()
 
 # String key
 key1 = cache.hash("user:123")
@@ -112,7 +112,7 @@ cache.hash('{"b": 2, "a": 1}')
 Organize cache entries by namespace:
 
 ```python
-cache = self._component_registry.get_cache()
+cache = self._registry.get_cache()
 
 # Store in "users" namespace
 cache.set("users", key, user_data)
@@ -136,7 +136,7 @@ namespaces = cache.list_namespaces()
 Automatically expire cached entries:
 
 ```python
-cache = self._component_registry.get_cache()
+cache = self._registry.get_cache()
 
 # Cache for 1 hour (3600 seconds)
 cache.set("users", key, data, ttl=3600)
@@ -273,7 +273,7 @@ class InvoiceHandler(EventHandler):
 
 ```python
 async def get_user(user_id: str):
-    cache = self._component_registry.get_cache()
+    cache = self._registry.get_cache()
 
     # Try cache first
     cached = cache.get("users", user_id)
@@ -293,7 +293,7 @@ async def get_user(user_id: str):
 
 ```python
 async def update_user(user_id: str, data: dict):
-    cache = self._component_registry.get_cache()
+    cache = self._registry.get_cache()
 
     # Update database
     user = await database.update_user(user_id, data)
@@ -308,7 +308,7 @@ async def update_user(user_id: str, data: dict):
 
 ```python
 async def get_users(user_ids: list[str]):
-    cache = self._component_registry.get_cache()
+    cache = self._registry.get_cache()
     results = []
 
     for user_id in user_ids:
@@ -342,8 +342,8 @@ async def get_users(user_ids: list[str]):
 
 3. Verify cache is registered:
    ```python
-   if self._component_registry.has_cache():
-       cache = self._component_registry.get_cache()
+   if self._registry.has_cache():
+       cache = self._registry.get_cache()
    ```
 
 ### Cache Growing Too Large

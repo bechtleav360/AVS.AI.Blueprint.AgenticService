@@ -68,7 +68,7 @@ class ComponentRegistry:
         Args:
             handler: The handler instance to register
         """
-        logger.info("Registering handler: %s with priority %d", handler.get_name(), handler._priority)
+        logger.info("Registering handler: %s with priority %d", handler.name, handler._priority)
 
         handler.link_config(self._settings)
         handler.link_component_registry(self)
@@ -97,7 +97,7 @@ class ComponentRegistry:
         if name is None:
             return len(self._handlers) > 0
 
-        return any(h.get_name() == name for h in self._handlers)
+        return any(h.name == name for h in self._handlers)
 
     def clear_handlers(self) -> None:
         """Clear all registered handlers (useful for testing)."""
@@ -246,14 +246,14 @@ class ComponentRegistry:
         Raises:
             ValueError: If agent with this name already exists
         """
-        if agent.get_name() in self._agents:
-            raise ValueError(f"Agent '{agent.get_name()}' is already registered")
+        if agent.name in self._agents:
+            raise ValueError(f"Agent '{agent.name}' is already registered")
 
         agent.link_config(self._settings)
         agent.link_component_registry(self)
 
-        self._agents[agent.get_name()] = agent
-        logger.info("Registered agent: %s", agent.get_name())
+        self._agents[agent.name] = agent
+        logger.info("Registered agent: %s", agent.name)
 
     @overload
     def get_agent(self, name: str) -> "AgentRuntime": ...
@@ -337,14 +337,14 @@ class ComponentRegistry:
         Raises:
             ValueError: If REST API with this name already exists
         """
-        if api.get_name() in self._rest_apis:
-            raise ValueError(f"REST API '{api.get_name()}' is already registered")
+        if api.name in self._rest_apis:
+            raise ValueError(f"REST API '{api.name}' is already registered")
 
         api.link_component_registry(self)
         api.link_config(self._settings)
 
-        self._rest_apis[api.get_name()] = api
-        logger.info("Registered REST API: %s", api.get_name())
+        self._rest_apis[api.name] = api
+        logger.info("Registered REST API: %s", api.name)
 
     @overload
     def get_rest_api(self, name: str) -> "RestApi": ...
@@ -421,14 +421,14 @@ class ComponentRegistry:
         Raises:
             ValueError: If business service with this name already exists
         """
-        if service.get_name() in self._business_services:
-            raise ValueError(f"Business service '{service.get_name()}' is already registered")
+        if service.name in self._business_services:
+            raise ValueError(f"Business service '{service.name}' is already registered")
 
         service.link_config(self._settings)
         service.link_component_registry(self)
 
-        self._business_services[service.get_name()] = service
-        logger.info("Registered business service: %s", service.get_name())
+        self._business_services[service.name] = service
+        logger.info("Registered business service: %s", service.name)
 
     @overload
     def get_service(self, name: str) -> "BusinessService": ...
@@ -474,9 +474,9 @@ class ComponentRegistry:
             logger.error(
                 "Multiple business services share the class name '%s'. Available matches: %s",
                 requested_type_name,
-                ", ".join(service.get_name() for service in matching_services),
+                ", ".join(service.name for service in matching_services),
             )
-            conflicts = ", ".join(service.get_name() for service in matching_services)
+            conflicts = ", ".join(service.name for service in matching_services)
             raise ValueError(
                 "Multiple business services share the requested type name. "
                 f"Please disambiguate by passing the service name. Conflicts: {conflicts}"
@@ -520,7 +520,7 @@ class ComponentRegistry:
         scheduler.link_config(self._settings)
         scheduler.link_component_registry(self)
         self._schedulers.append(scheduler)
-        logger.info("Registered scheduler: %s (crontab: %s)", scheduler.get_name(), scheduler._crontab)
+        logger.info("Registered scheduler: %s (crontab: %s)", scheduler.name, scheduler._crontab)
 
     def get_schedulers(self) -> list["Scheduler"]:
         """Get all registered schedulers.
