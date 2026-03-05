@@ -41,6 +41,7 @@ difficulty = "medium"
 # LLM model configuration
 model_provider = "openai"
 model_name = "gpt-4o-mini"
+# model_api_key = "@format {env[OPENAI_API_KEY]}"  # Set OPENAI_API_KEY environment variable
 # Prompt configuration
 prompt_directory = "src/prompts"
 system_prompt_name = "system"

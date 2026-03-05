@@ -2,14 +2,14 @@
 
 from pathlib import Path
 
-from examples.customer_support_qa.src.handlers.agent_invoker import AgentInvokerHandler
-from src.blueprint.agents.agent import AgentBuilder
-from src.blueprint.agents.app_builder import AppBuilder
-from src.blueprint.agents.config import Config
-from src.blueprint.agents.base import AgentRuntime
+from blueprint.agents.agent import AgentBuilder
+from blueprint.agents.app_builder import AppBuilder
+from blueprint.agents.config import Config
+from blueprint.agents.base import AgentRuntime
 
-from examples.customer_support_qa.src.api import SupportQARestApi
-from examples.customer_support_qa.src.services import SupportQAService
+from .handlers.agent_invoker import AgentInvokerHandler
+from .api import SupportQARestApi
+from .services import SupportQAService
 
 config = Config(
     settings_files=[

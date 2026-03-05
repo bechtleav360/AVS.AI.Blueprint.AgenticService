@@ -140,6 +140,14 @@ class AppBuilder:
             else:
                 logger.warning("No valid event bus configured. Event handling will be disabled.")
 
+        # Initialize sessions service event bus if configured
+        if self._config.get("sessions_service"):
+            logger.info("Initializing sessions service event bus")
+            from .api.sessions_bus import SessionsBus
+
+            self._sessions_bus = SessionsBus(component_registry=self._component_registry, config=self._config)
+            # SessionsBus doesn't expose a router as it uses SSE subscriptions
+
         # Include cache management endpoints if cache is registered
         if self._component_registry.has_cache():
             cache_api = cache.CacheManagementApi(component_registry=self._component_registry)
@@ -321,6 +329,28 @@ class AppBuilder:
                     logger.error("Failed to initialize NATS: %s", str(e))
                     raise
 
+            # Initialize sessions service event bus if configured
+            if self._config.get("sessions_service") and hasattr(self, "_sessions_bus"):
+                logger.info("Sessions service integration enabled")
+                try:
+                    # Register required services
+                    from .services.sessions import SessionsApiClient, SessionKeyProvider
+
+                    sessions_client = SessionsApiClient()
+                    self._component_registry.register_service(sessions_client)
+                    logger.info("Registered SessionsApiClient")
+
+                    key_provider = SessionKeyProvider()
+                    self._component_registry.register_service(key_provider)
+                    logger.info("Registered SessionKeyProvider")
+
+                    # Connect to sessions service SSE
+                    await self._sessions_bus.connect()
+                    logger.info("Successfully initialized sessions service event bus")
+                except Exception as e:
+                    logger.error("Failed to initialize sessions service: %s", e, exc_info=True)
+                    raise
+
             # Call on_startup on all registered components
             logger.info("Calling on_startup hooks for all components")
 
@@ -394,6 +424,14 @@ class AppBuilder:
                     logger.info("NATS connection closed")
                 except Exception as e:
                     logger.error("Error closing NATS connection: %s", str(e))
+
+            # Shutdown sessions service event bus if needed
+            if hasattr(self, "_sessions_bus"):
+                try:
+                    await self._sessions_bus.close()
+                    logger.info("Sessions service connection closed")
+                except Exception as e:
+                    logger.error("Error closing sessions service connection: %s", str(e))
 
             # Call on_shutdown on all registered components (in reverse order)
             logger.info("Calling on_shutdown hooks for all components")

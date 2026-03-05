@@ -4,7 +4,7 @@ import logging
 
 from fastapi import HTTPException
 
-from src.blueprint.agents.base import RestApi
+from blueprint.agents.base import RestApi
 
 from ..models import SupportRequest, SupportResponse
 from ..services import SupportQAService

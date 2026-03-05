@@ -29,6 +29,8 @@ dependencies = [
     "pydantic-ai>=1.44.0",
     "dynaconf>=3.2.12",
     "httpx>=0.28.1",
+    "httpx-sse>=0.4.0",
+    "cachetools>=5.3.0",
     "opentelemetry-api>=1.38.0",
     "opentelemetry-sdk>=1.38.0",
     "opentelemetry-instrumentation-fastapi>=0.59b0",
@@ -77,6 +79,7 @@ packages = [
     "blueprint.agents.services",
     "blueprint.agents.services.health",
     "blueprint.agents.services.processing",
+    "blueprint.agents.services.sessions",
     "blueprint.agent_generator",
     "blueprint.agent_generator.generator",
     "blueprint.agent_generator.cli",
@@ -100,6 +103,7 @@ packages = [
 "blueprint.agents.services" = "src/blueprint/agents/services"
 "blueprint.agents.services.health" = "src/blueprint/agents/services/health"
 "blueprint.agents.services.processing" = "src/blueprint/agents/services/processing"
+"blueprint.agents.services.sessions" = "src/blueprint/agents/services/sessions"
 
 [tool.setuptools.package-data]
 "blueprint.agents" = ["py.typed"]
