@@ -1,7 +1,6 @@
 """Health check provider for NATS connection."""
 
 import logging
-from typing import Optional
 
 import nats
 from nats.aio.client import Client as NatsClient
@@ -23,7 +22,7 @@ class NatsHealthChecker(HealthCheckerBase):
             config: Application configuration
         """
         self._config = config
-        self._nats_client: Optional[NatsClient] = None
+        self._nats_client: NatsClient | None = None
         self._nats_url = self._config.get("nats_url", "nats://localhost:4222")
         self._timeout = self._config.get("nats_health_check_timeout", 5.0)
 

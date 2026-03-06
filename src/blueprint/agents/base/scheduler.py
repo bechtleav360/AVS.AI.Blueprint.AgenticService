@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import abstractmethod
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from typing import TYPE_CHECKING
 
 from croniter import croniter
@@ -69,9 +69,7 @@ class Scheduler(Component):
     async def on_startup(self) -> None:
         """Start the background scheduling task."""
         if not croniter.is_valid(self._crontab):
-            raise ValueError(
-                f"Scheduler '{self._component_name}' has an invalid crontab expression: '{self._crontab}'"
-            )
+            raise ValueError(f"Scheduler '{self._component_name}' has an invalid crontab expression: '{self._crontab}'")
         self._task = asyncio.create_task(self._run(), name=f"scheduler.{self._component_name}")
         logger.info("Scheduler '%s' started with crontab '%s'", self._component_name, self._crontab)
 
@@ -91,10 +89,10 @@ class Scheduler(Component):
 
     async def _run(self) -> None:
         """Background loop: sleep until next tick, then call tick()."""
-        cron = croniter(self._crontab, datetime.now(tz=timezone.utc))
+        cron = croniter(self._crontab, datetime.now(tz=UTC))
         while True:
             next_dt: datetime = cron.get_next(datetime)
-            now = datetime.now(tz=timezone.utc)
+            now = datetime.now(tz=UTC)
             delay = (next_dt - now).total_seconds()
             if delay > 0:
                 await asyncio.sleep(delay)

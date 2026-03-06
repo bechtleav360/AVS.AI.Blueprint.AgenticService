@@ -1,16 +1,13 @@
 """Pydantic models for CloudEvents v1.0 specification."""
 
 from datetime import UTC, datetime
-from typing import Any, Generic, Literal, TypeVar
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic.config import ConfigDict
 
-# Generic type for the CloudEvent data payload.
-T = TypeVar("T")
 
-
-class CloudEvent(BaseModel, Generic[T]):
+class CloudEvent[T](BaseModel):
     """
     A Pydantic model for a CloudEvent, compliant with the v1.0 spec.
     This model is generic and can be used with any data payload type.

@@ -33,7 +33,7 @@ class InitPartGenerator(PartGeneratorBase):
             List of class names in the file.
         """
 
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(file_path, encoding="utf-8") as f:
             try:
                 tree = ast.parse(f.read(), filename=str(file_path))
                 return [node.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef)]

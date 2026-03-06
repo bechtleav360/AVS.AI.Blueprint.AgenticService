@@ -6,7 +6,18 @@ import os
 import sys
 from pathlib import Path
 
-from .part_generators import *
+from .part_generators import (
+    APIPartGenerator,
+    CopyPartGenerator,
+    DomainModelPartGenerator,
+    DTOPartGenerator,
+    HandlerPartGenerator,
+    InitPartGenerator,
+    MainPartGenerator,
+    MapperPartGenerator,
+    ServicePartGenerator,
+    SettingsPartGenerator,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -61,7 +72,7 @@ class AgentGenerator:
             raise FileNotFoundError(error_msg)
 
         try:
-            with open(self.config_path, "r") as f:
+            with open(self.config_path) as f:
                 logger.debug(f"Reading config file: {self.config_path}")
                 self.config = json.load(f)
                 logger.debug(f"Loaded config: {json.dumps(self.config, indent=2, default=str)}")

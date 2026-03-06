@@ -1,7 +1,6 @@
 """Dev command - start development server."""
 
 import logging
-import os
 import sys
 import subprocess
 from argparse import Namespace
@@ -12,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 def run(args: Namespace) -> None:
     """Execute the dev command.
-    
+
     Args:
         args: Parsed command-line arguments
     """
@@ -21,11 +20,11 @@ def run(args: Namespace) -> None:
         print("Error: src/main.py not found", file=sys.stderr)
         print("Make sure you're in a Blueprint Agents project directory", file=sys.stderr)
         sys.exit(1)
-    
+
     print(f"Starting development server on {args.host}:{args.port}")
     print("Press Ctrl+C to stop")
     print()
-    
+
     try:
         # Run uvicorn with reload
         cmd = [
@@ -34,12 +33,14 @@ def run(args: Namespace) -> None:
             "uvicorn",
             "src.main:app",
             "--reload",
-            "--host", args.host,
-            "--port", str(args.port),
+            "--host",
+            args.host,
+            "--port",
+            str(args.port),
         ]
-        
+
         subprocess.run(cmd, check=True)
-        
+
     except FileNotFoundError:
         print("Error: uvicorn not found", file=sys.stderr)
         print("Install with: pip install uvicorn", file=sys.stderr)

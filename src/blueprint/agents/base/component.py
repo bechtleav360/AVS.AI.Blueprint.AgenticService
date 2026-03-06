@@ -9,7 +9,6 @@ injection methods. Subclasses only need to override what is domain-specific.
 
 from __future__ import annotations
 
-from abc import ABC
 from typing import TYPE_CHECKING
 
 from ..config import Config
@@ -18,7 +17,7 @@ if TYPE_CHECKING:
     from ..registry.component_registry import ComponentRegistry
 
 
-class Component(ABC):
+class Component:
     """Abstract base class for all framework components.
 
     Provides concrete default implementations for the common lifecycle and

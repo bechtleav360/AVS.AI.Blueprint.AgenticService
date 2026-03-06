@@ -55,7 +55,7 @@ class MainPartGenerator(PartGeneratorBase):
                 [
                     f"{agent['runtime_name']}: AgentRuntime = (",
                     f"    AgentBuilder(config, runtime_name=\"{agent['runtime_name']}\")",
-                    f"    .with_model_from_config()",
+                    "    .with_model_from_config()",
                     f'    .with_system_prompt("{self.camel_to_snake(agent_name)}")',
                     f'    .build(name="{self.camel_to_snake(agent_name)}")',
                     ")",

@@ -21,7 +21,7 @@ class SettingsPartGenerator(PartGeneratorBase):
         """
 
         lines = []
-        for agent_name, agent_config in self.config["agent_layer"].items():
+        for agent_name, _ in self.config["agent_layer"].items():
             lines.extend(
                 [
                     f"[default.runtimes.{self.camel_to_snake(agent_name)}]",

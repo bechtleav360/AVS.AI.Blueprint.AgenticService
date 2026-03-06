@@ -18,7 +18,7 @@ class APIPartGenerator(PartGeneratorBase):
         """Generate import statements for routes.py."""
 
         lines = []
-        model_classes = [dto for dto in self.config["communication_layer"]["rest_api"]["dto_classes"]]
+        model_classes = list(self.config["communication_layer"]["rest_api"]["dto_classes"])
         model_classes.append(self.config["communication_layer"]["rest_api"]["mapper"]["name"])
         if len(model_classes) < 4:
             lines.append(f"from ..models import {', '.join(model_classes)}")
@@ -29,7 +29,7 @@ class APIPartGenerator(PartGeneratorBase):
             lines[-1] = lines[-1][:-1]
             lines.append(")")
 
-        service_classes = [service for service in self.config["communication_layer"]["rest_api"]["uses_services"]]
+        service_classes = list(self.config["communication_layer"]["rest_api"]["uses_services"])
         if len(service_classes) < 4:
             lines.append(f"from ..services import {', '.join(service_classes)}")
         else:
@@ -56,7 +56,7 @@ class APIPartGenerator(PartGeneratorBase):
             ]
         )
 
-        service_classes = [service for service in self.config["communication_layer"]["rest_api"]["uses_services"]]
+        service_classes = list(self.config["communication_layer"]["rest_api"]["uses_services"])
         if service_classes:
             for service_class in service_classes:
                 lines.append(f"        self._{self.camel_to_snake(service_class)} = {service_class}()")
@@ -74,7 +74,7 @@ class APIPartGenerator(PartGeneratorBase):
             ]
         )
 
-        service_classes = [service for service in self.config["communication_layer"]["rest_api"]["uses_services"]]
+        service_classes = list(self.config["communication_layer"]["rest_api"]["uses_services"])
         if service_classes:
             for service_class in service_classes:
                 lines.append(
@@ -102,7 +102,7 @@ class APIPartGenerator(PartGeneratorBase):
                     "        This method should only concern itself with processing the dto. All business logic should be in the service.",
                     "        The service should never be aware of the rest api or the dto class. Instead, use domain specific model classes.",
                     "",
-                    f"        Args:",
+                    "        Args:",
                     f"            {self.camel_to_snake(endpoint_parameters['input_dto'])} "
                     f"({endpoint_parameters['input_dto']}): "
                     f"The incoming data, parsed into the domain input model.",

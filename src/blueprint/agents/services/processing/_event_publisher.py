@@ -1,8 +1,7 @@
 """Event publisher for handling event publication with support for both Dapr and NATS."""
 
-import asyncio
 import logging
-from typing import TYPE_CHECKING, Any, Optional, Dict
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from ...config import Config
@@ -22,7 +21,7 @@ class _EventPublisher:
     def __init__(self, component_registry: "ComponentRegistry", settings: Config) -> None:
         self._component_registry: ComponentRegistry = component_registry
         self._settings: Config = settings
-        self._event_pub_config: Optional[EventPublishingConfig] = None
+        self._event_pub_config: EventPublishingConfig | None = None
 
     def _get_event_pub_config(self) -> EventPublishingConfig:
         """Get the event publishing configuration."""
@@ -34,14 +33,14 @@ class _EventPublisher:
         """Determine if NATS should be used based on the event_bus setting."""
         return self._settings.get("event_bus", "").lower() == "nats"
 
-    async def _get_topic_config(self, event_type: str) -> Optional[Dict[str, Any]]:
+    async def _get_topic_config(self, event_type: str) -> dict[str, Any] | None:
         """Get topic configuration for the given event type."""
         topic_mapping = self._get_event_pub_config().topic_mapping
         if event_type in topic_mapping:
             return topic_mapping[event_type].model_dump()
         return None
 
-    async def _publish_with_nats(self, event: GenericCloudEvent, topic_config: Dict[str, Any]) -> None:
+    async def _publish_with_nats(self, event: GenericCloudEvent, topic_config: dict[str, Any]) -> None:
         """Publish an event using NATS."""
         try:
             topic = topic_config.get("topic")
@@ -73,7 +72,7 @@ class _EventPublisher:
             logger.error("Failed to publish event to NATS: %s", str(e), exc_info=True)
             raise
 
-    async def _publish_with_dapr(self, event: GenericCloudEvent, topic_config: Dict[str, Any]) -> None:
+    async def _publish_with_dapr(self, event: GenericCloudEvent, topic_config: dict[str, Any]) -> None:
         """Publish an event using Dapr."""
         try:
             publishing_service = self._component_registry.get_event_publishing_service()

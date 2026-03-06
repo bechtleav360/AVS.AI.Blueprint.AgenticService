@@ -55,14 +55,14 @@ class PartGeneratorBase:
             template = "\n".join(template_var for template_var in self.template_vars.values())
         else:
             full_path = os.path.join(self.template_dir, self.src_path, self.template_file_name)
-            with open(full_path, "r") as f:
+            with open(full_path) as f:
                 template = f.read()
 
             try:
                 for key, value in self.template_vars.items():
                     template = template.replace(key, value)
             except Exception as e:
-                raise ValueError(f"Error processing template {full_path}: {e}")
+                raise ValueError(f"Error processing template {full_path}: {e}") from e
 
         output_path = Path(output_path).joinpath(self.src_path).resolve().joinpath(self.to_py_file_name())
         output_path.parent.mkdir(parents=True, exist_ok=True)

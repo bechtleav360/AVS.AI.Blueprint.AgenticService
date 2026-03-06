@@ -166,7 +166,7 @@ class SessionsBus:
                         self._shutdown_event.wait(),
                         timeout=self._reconnect_delay,
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     pass
 
     async def _connect_and_consume(self) -> None:
@@ -228,7 +228,7 @@ class SessionsBus:
                     self._process_job_notification(job_data),
                     timeout=self._job_timeout,
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.error(
                     "Job processing timeout after %ds: job_id=%s",
                     self._job_timeout,

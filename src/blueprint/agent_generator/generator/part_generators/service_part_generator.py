@@ -112,6 +112,6 @@ class ServicePartGenerator(PartGeneratorBase):
                 "",
             ]
         )
-        lines.append(f"        raise NotImplementedError()")
+        lines.append("        raise NotImplementedError()")
 
         return "\n".join(lines)

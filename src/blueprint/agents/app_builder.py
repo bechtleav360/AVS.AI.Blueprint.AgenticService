@@ -252,7 +252,7 @@ class AppBuilder:
             logger.info("Caching disabled")
         return self
 
-    def with_health_checker(self, name: str, checker: "HealthCheckProvider") -> "AppBuilder":
+    def with_health_checker(self, name: str, checker: "HealthCheckerBase") -> "AppBuilder":
         """Register a custom health checker.
 
         Health checkers are used to determine application readiness. They are executed

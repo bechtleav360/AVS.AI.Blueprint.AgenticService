@@ -113,7 +113,7 @@ class MapperPartGenerator(ModelPartGenerator):
         for mapping in self.config["communication_layer"]["rest_api"]["mapper"]["mappings"]:
             lines.extend(
                 [
-                    f"    @staticmethod",
+                    "    @staticmethod",
                     (
                         f"    def from_{self.camel_to_snake(mapping['from']['name'])}("
                         if mapping["from"]["type"] == "dto"

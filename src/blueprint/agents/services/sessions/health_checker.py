@@ -6,7 +6,7 @@ connection status.
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from typing import Any
 
 import httpx
@@ -68,9 +68,7 @@ class SessionsServiceHealthChecker(HealthCheckerBase):
 
         # Check SSE connection status via heartbeat
         if self._last_heartbeat:
-            time_since_heartbeat = (
-                datetime.now(timezone.utc) - self._last_heartbeat
-            ).total_seconds()
+            time_since_heartbeat = (datetime.now(UTC) - self._last_heartbeat).total_seconds()
             details["last_heartbeat_seconds_ago"] = int(time_since_heartbeat)
 
             # Consider stale if no heartbeat in 60 seconds
@@ -103,5 +101,5 @@ class SessionsServiceHealthChecker(HealthCheckerBase):
 
         Should be called by JobConsumerService when SSE heartbeat events are received.
         """
-        self._last_heartbeat = datetime.now(timezone.utc)
+        self._last_heartbeat = datetime.now(UTC)
         logger.debug("Sessions service heartbeat updated")

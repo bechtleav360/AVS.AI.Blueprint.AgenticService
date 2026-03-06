@@ -7,8 +7,6 @@ external vaults). It includes caching with TTL and invalidation support.
 
 import logging
 import os
-from datetime import datetime, timedelta, timezone
-from typing import Any
 from uuid import UUID
 
 from cachetools import TTLCache
@@ -168,7 +166,4 @@ class SessionKeyProvider(BusinessService):
         # - HashiCorp Vault
         # - Azure Key Vault
         # - AWS Secrets Manager
-        raise NotImplementedError(
-            "Vault integration not yet implemented. "
-            "Use session_key_source='env' or 'config' for now."
-        )
+        raise NotImplementedError("Vault integration not yet implemented. " "Use session_key_source='env' or 'config' for now.")

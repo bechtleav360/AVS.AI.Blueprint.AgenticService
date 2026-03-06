@@ -6,9 +6,7 @@ This script attempts to start each example and verifies it initializes without e
 
 import subprocess
 import sys
-import time
 from pathlib import Path
-import signal
 
 
 EXAMPLES_DIR = Path(__file__).parent.parent / "examples"

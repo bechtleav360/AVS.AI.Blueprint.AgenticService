@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import pytest
-from pydantic import BaseModel
 
 from blueprint.agents.base import AgentRuntime, BusinessService, EventHandler, RestApi
 from blueprint.agents.config.config import Config
