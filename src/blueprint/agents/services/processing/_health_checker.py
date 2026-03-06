@@ -27,9 +27,10 @@ class _HealthChecker:
         """
         with tracer.start_as_current_span("processing_service.runtime_health") as span:
             results = {}
-            runtimes = self._component_registry.get_all_runtimes()
+            runtime_names = self._component_registry.list_agents()
 
-            for name, runtime in runtimes.items():
+            for name in runtime_names:
+                runtime = self._component_registry.get_agent(name)
                 try:
                     health_result = await runtime.health_check()
                     results[name] = health_result
@@ -40,7 +41,7 @@ class _HealthChecker:
                     logger.error("Health check failed for runtime %s: %s", name, str(e))
                     results[name] = {"status": "unhealthy", "error": str(e)}
 
-            span.set_attribute("runtimes.count", len(runtimes))
+            span.set_attribute("runtimes.count", len(runtime_names))
             span.set_attribute(
                 "runtimes.healthy_count",
                 sum(1 for r in results.values() if r.get("status") == "healthy"),
@@ -59,5 +60,5 @@ class _HealthChecker:
         return {
             "status": "healthy" if handlers else "unhealthy",
             "count": len(handlers),
-            "handlers": [{"name": h._name, "priority": h._priority} for h in handlers],
+            "handlers": [{"name": h.get_name(), "priority": getattr(h, "_priority", 0)} for h in handlers],
         }

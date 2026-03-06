@@ -135,7 +135,7 @@ class _EventPublisher:
         event_type: str,
         data: Any,
         metadata: dict[str, Any],
-        source_event: CloudEvent,
+        source_event: CloudEvent[Any],
         new_subject: str | None = None,
     ) -> None:
         """
@@ -151,6 +151,13 @@ class _EventPublisher:
 
         try:
             topic_config = await self._get_topic_config(event_type)
+            if not topic_config:
+                logger.warning(
+                    "No topic mapping found for handler event type '%s', skipping publication",
+                    event_type,
+                )
+                return
+
             if topic_config.get("topic", "unknown") == source_event.topic:
                 logger.warning(
                     "Incoming event type '%s' is the same as the source event topic '%s', skipping publication",
@@ -159,14 +166,7 @@ class _EventPublisher:
                 )
                 return
 
-            if not topic_config:
-                logger.warning(
-                    "No topic mapping found for handler event type '%s', skipping publication",
-                    event_type,
-                )
-                return
-
-            handler_event = CloudEvent(
+            handler_event: GenericCloudEvent = CloudEvent(
                 specversion="1.0",
                 id=str(uuid4()),
                 source=self._settings.get("app_name", "agent-service"),

@@ -15,7 +15,7 @@ tracer = trace.get_tracer(__name__)
 class DecisionEngine:
     """Chain of responsibility engine for processing events."""
 
-    def __init__(self, handlers: list[EventHandler]):
+    def __init__(self, handlers: list[EventHandler]) -> None:
         """
         Initialize the decision engine with a list of handlers.
 
@@ -23,9 +23,9 @@ class DecisionEngine:
             handlers: A list of event handlers to use for processing.
         """
         self.handlers = sorted(handlers)
-        logger.info("Initialized with handlers: %s", [h._name for h in self.handlers])
+        logger.info("Initialized with handlers: %s", [h.get_name() for h in self.handlers])
 
-    async def process_event(self, event: CloudEvent) -> Any | None:
+    async def process_event(self, event: CloudEvent[Any]) -> Any | None:
         """
         Process an event through the chain of responsibility.
 

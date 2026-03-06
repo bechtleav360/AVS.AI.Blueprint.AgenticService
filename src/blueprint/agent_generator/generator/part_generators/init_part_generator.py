@@ -1,11 +1,12 @@
 import ast
 from pathlib import Path
+from typing import Any
 
 from .part_generator_base import PartGeneratorBase
 
 
 class InitPartGenerator(PartGeneratorBase):
-    def __init__(self, config: dict, template_dir: str | Path, src_path: str, output_path: str = "") -> None:
+    def __init__(self, config: dict[str, Any], template_dir: str | Path, src_path: str, output_path: str = "") -> None:
         """Generate __init__.py file from template.
 
         Args:
@@ -61,7 +62,7 @@ class InitPartGenerator(PartGeneratorBase):
         # For each file, get its classes
         imports: dict[str, list[str]] = {}
         for py_file in py_files:
-            classes = self.get_classes_from_file(py_file)
+            classes = self.get_classes_from_file(str(py_file))
             if classes:
                 module_name = py_file.stem
                 imports[module_name] = classes

@@ -31,7 +31,7 @@ class LoggingHandler(EventHandler):
         ```
     """
 
-    def __init__(self, priority: int = 10, log_level: str = "INFO"):
+    def __init__(self, priority: int = 10, log_level: str = "INFO") -> None:
         """
         Initialize the logging handler.
 
@@ -74,7 +74,7 @@ class LoggingHandler(EventHandler):
             logger.log(self.log_level, "   Subject: %s", event.subject)
 
         if event.time:
-            logger.log(self.log_level, "   Time: %s", event.time.isoformat())
+            logger.log(self.log_level, "   Time: %s", event.time)
 
         if event.datacontenttype:
             logger.log(self.log_level, "   Content Type: %s", event.datacontenttype)
@@ -91,9 +91,9 @@ class LoggingHandler(EventHandler):
             except (TypeError, ValueError):
                 # Fallback for non-JSON serializable data
                 logger.log(self.log_level, "%s", str(event.data))
-        elif event.data_base64:
+        elif getattr(event, "data_base64", None):
             logger.log(self.log_level, "   [Base64 encoded data]")
-            logger.log(self.log_level, "   %s", event.data_base64[:100] + "...")
+            logger.log(self.log_level, "   %s", str(getattr(event, "data_base64", ""))[:100] + "...")
         else:
             logger.log(self.log_level, "   [No data]")
 

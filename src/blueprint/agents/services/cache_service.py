@@ -79,6 +79,11 @@ class CacheService(ABC):
         pass
 
     @abstractmethod
+    def close(self) -> None:
+        """Close the cache and release any resources."""
+        pass
+
+    @abstractmethod
     def exists(self, key: str | list[str] | dict[str, Any], namespace: str = "default") -> bool:
         """Check if a key exists in cache.
 
@@ -204,7 +209,7 @@ class DiskCacheService(CacheService):
         return f"{namespaced_key}:__ttl__"
 
     @contextmanager
-    def _acquire_lock(self):
+    def _acquire_lock(self) -> Any:
         """Context manager for thread-safe cache operations.
 
         Acquires lock on entry and releases on exit, ensuring proper cleanup
@@ -461,10 +466,10 @@ class DiskCacheService(CacheService):
         except Exception as e:
             logger.warning("Error closing cache: %s", e)
 
-    def __enter__(self):
+    def __enter__(self) -> "DiskCacheService":
         """Context manager entry."""
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         """Context manager exit."""
         self.close()

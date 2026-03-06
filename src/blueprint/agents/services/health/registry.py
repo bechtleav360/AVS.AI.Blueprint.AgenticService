@@ -6,7 +6,7 @@ import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..health_check_service import HealthCheckProvider
+    from .base import HealthCheckerBase
 
 logger = logging.getLogger(__name__)
 
@@ -17,16 +17,16 @@ class HealthCheckerRegistry:
     Allows services to register custom health checkers in addition to defaults.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize the registry."""
-        self._checkers: dict[str, HealthCheckProvider] = {}
+        self._checkers: dict[str, HealthCheckerBase] = {}
 
-    def register(self, name: str, checker: HealthCheckProvider) -> None:
+    def register(self, name: str, checker: HealthCheckerBase) -> None:
         """Register a health checker.
 
         Args:
             name: Unique identifier for the checker
-            checker: Health checker instance implementing HealthCheckProvider
+            checker: Health checker instance implementing HealthCheckerBase
 
         Raises:
             ValueError: If checker with same name already registered
@@ -37,12 +37,12 @@ class HealthCheckerRegistry:
         logger.info("Registering health checker: %s", name)
         self._checkers[name] = checker
 
-    def register_or_replace(self, name: str, checker: HealthCheckProvider) -> None:
+    def register_or_replace(self, name: str, checker: HealthCheckerBase) -> None:
         """Register a health checker, replacing if it exists.
 
         Args:
             name: Unique identifier for the checker
-            checker: Health checker instance implementing HealthCheckProvider
+            checker: Health checker instance implementing HealthCheckerBase
         """
         if name in self._checkers:
             logger.info("Replacing health checker: %s", name)
@@ -51,7 +51,7 @@ class HealthCheckerRegistry:
 
         self._checkers[name] = checker
 
-    def get(self, name: str) -> HealthCheckProvider | None:
+    def get(self, name: str) -> HealthCheckerBase | None:
         """Get a registered health checker.
 
         Args:
@@ -62,7 +62,7 @@ class HealthCheckerRegistry:
         """
         return self._checkers.get(name)
 
-    def get_all(self) -> dict[str, HealthCheckProvider]:
+    def get_all(self) -> dict[str, HealthCheckerBase]:
         """Get all registered health checkers.
 
         Returns:

@@ -1,10 +1,11 @@
 from pathlib import Path
+from typing import Any
 
 from .part_generator_base import PartGeneratorBase
 
 
 class ServicePartGenerator(PartGeneratorBase):
-    def __init__(self, config: dict, template_dir: str | Path, src_path: str, service_name: str) -> None:
+    def __init__(self, config: dict[str, Any], template_dir: str | Path, src_path: str, service_name: str) -> None:
         super().__init__(config, template_dir, src_path)
         self.template_file_name = "service.txt"
         self.service_name = service_name

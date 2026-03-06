@@ -21,6 +21,7 @@ Example::
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from http import HTTPStatus
 from time import perf_counter
 from typing import Any
@@ -31,6 +32,7 @@ from fastapi.responses import JSONResponse
 from opentelemetry import trace
 
 from ..models import ProcessResourceResponse
+from ..models.result import ProcessingStatus
 from .component import Component
 
 logger = logging.getLogger(__name__)
@@ -65,50 +67,50 @@ class RestApi(Component):
     # ------------------------------------------------------------------
 
     @classmethod
-    def get(cls, path: str, **kwargs: Any):
+    def get(cls, path: str, **kwargs: Any) -> Callable[[Any], Any]:
         """Decorator: register a GET route on the instance router."""
 
-        def decorator(func):
+        def decorator(func: Any) -> Any:
             func._route = ("get", path, kwargs)
             return func
 
         return decorator
 
     @classmethod
-    def post(cls, path: str, **kwargs: Any):
+    def post(cls, path: str, **kwargs: Any) -> Callable[[Any], Any]:
         """Decorator: register a POST route on the instance router."""
 
-        def decorator(func):
+        def decorator(func: Any) -> Any:
             func._route = ("post", path, kwargs)
             return func
 
         return decorator
 
     @classmethod
-    def put(cls, path: str, **kwargs: Any):
+    def put(cls, path: str, **kwargs: Any) -> Callable[[Any], Any]:
         """Decorator: register a PUT route on the instance router."""
 
-        def decorator(func):
+        def decorator(func: Any) -> Any:
             func._route = ("put", path, kwargs)
             return func
 
         return decorator
 
     @classmethod
-    def delete(cls, path: str, **kwargs: Any):
+    def delete(cls, path: str, **kwargs: Any) -> Callable[[Any], Any]:
         """Decorator: register a DELETE route on the instance router."""
 
-        def decorator(func):
+        def decorator(func: Any) -> Any:
             func._route = ("delete", path, kwargs)
             return func
 
         return decorator
 
     @classmethod
-    def patch(cls, path: str, **kwargs: Any):
+    def patch(cls, path: str, **kwargs: Any) -> Callable[[Any], Any]:
         """Decorator: register a PATCH route on the instance router."""
 
-        def decorator(func):
+        def decorator(func: Any) -> Any:
             func._route = ("patch", path, kwargs)
             return func
 
@@ -164,23 +166,22 @@ class RestApi(Component):
                 }
 
                 processing_service = self.get_registry().get_processing_service()
-                result_event = await processing_service.process_rest_request(payload, context)
-
-                # Extract result data from CloudEvent
-                result = result_event.data
+                result = await processing_service.process_rest_request(payload, context)
 
                 # Determine success based on processing result
-                success = result["status"] == "processed"
+                success = result.status == ProcessingStatus.PROCESSED
                 success_message = "Processing completed successfully"
 
-                if result.get("processed_by"):
-                    processors = ", ".join(result["processed_by"])
+                # Extract handler information from metadata
+                processed_by = result.metadata.get("processed_by", [])
+                if processed_by:
+                    processors = ", ".join(processed_by)
                     success_message = f"Processing completed by: {processors}"
                 elif not success:
                     success_message = "No processor handled this request"
 
-                # Extract agent result if available
-                agent_result = result.get("agent_result")
+                # Extract agent result from metadata
+                agent_result = result.metadata.get("agent_result")
                 response_data = None
                 if agent_result:
                     # Convert Pydantic model to dict if needed

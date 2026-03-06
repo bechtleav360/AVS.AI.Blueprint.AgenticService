@@ -1,6 +1,7 @@
 """OpenTelemetry configuration and setup."""
 
 import logging
+from typing import Any
 
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
@@ -73,7 +74,7 @@ class TelemetryManager:
         except Exception as exc:  # pragma: no cover - defensive logging
             self.logger.warning("Failed to setup HTTPX instrumentation: %s", exc)
 
-    def _build_exporters(self, observability) -> list:
+    def _build_exporters(self, observability: Any) -> list[Any]:
         exporters = []
 
         otlp_endpoint = observability.otel_endpoint
@@ -98,25 +99,26 @@ class TelemetryManager:
 class TracingContext:
     """Context manager for creating and managing spans."""
 
-    def __init__(self, name: str, attributes: dict | None = None):
+    def __init__(self, name: str, attributes: dict[str, Any] | None = None) -> None:
         self.name = name
         self.attributes = attributes or {}
-        self.span = None
+        self.span: trace.Span | None = None
         self.tracer = trace.get_tracer(__name__)
 
     def __enter__(self) -> trace.Span:
         self.span = self.tracer.start_span(self.name)
+        assert self.span is not None
         self._add_span_attributes(self.span, self.attributes)
         return self.span
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: Any) -> None:
         if self.span:
             if exc_type is not None:
                 self.span.set_status(trace.Status(trace.StatusCode.ERROR, str(exc_val)))
             self.span.end()
 
     @staticmethod
-    def _add_span_attributes(span: trace.Span, attributes: dict) -> None:
+    def _add_span_attributes(span: trace.Span, attributes: dict[str, Any]) -> None:
         for key, value in attributes.items():
             if value is not None:
                 span.set_attribute(key, str(value))

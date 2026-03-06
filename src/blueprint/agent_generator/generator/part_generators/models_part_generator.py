@@ -1,15 +1,16 @@
 from pathlib import Path
+from typing import Any
 
 from .part_generator_base import PartGeneratorBase
 
 
 class ModelPartGenerator(PartGeneratorBase):
-    def __init__(self, config: dict, template_dir: str | Path, src_path: str) -> None:
+    def __init__(self, config: dict[str, Any], template_dir: str | Path, src_path: str) -> None:
         super().__init__(config, template_dir, src_path)
         self.template_file_name = "dto.txt"
 
     @staticmethod
-    def _generate_model_classes(model_classes: dict) -> str:
+    def _generate_model_classes(model_classes: dict[str, Any]) -> str:
         """Generate the model classes based on the configuration and the template file.
 
         Args:
@@ -35,21 +36,21 @@ class ModelPartGenerator(PartGeneratorBase):
 
 
 class DTOPartGenerator(ModelPartGenerator):
-    def __init__(self, config: dict, template_dir: str | Path, src_path: str) -> None:
+    def __init__(self, config: dict[str, Any], template_dir: str | Path, src_path: str) -> None:
         super().__init__(config, template_dir, src_path)
         self.template_file_name = "dto.txt"
         self.template_vars["dto_classes"] = self._generate_model_classes(self.config["communication_layer"]["rest_api"]["dto_classes"])
 
 
 class DomainModelPartGenerator(ModelPartGenerator):
-    def __init__(self, config: dict, template_dir: str | Path, src_path: str) -> None:
+    def __init__(self, config: dict[str, Any], template_dir: str | Path, src_path: str) -> None:
         super().__init__(config, template_dir, src_path)
         self.template_file_name = "domain_models.txt"
         self.template_vars["domain_model_classes"] = self._generate_model_classes(self.config["domain_models"])
 
 
 class MapperPartGenerator(ModelPartGenerator):
-    def __init__(self, config: dict, template_dir: str | Path, src_path: str) -> None:
+    def __init__(self, config: dict[str, Any], template_dir: str | Path, src_path: str) -> None:
         super().__init__(config, template_dir, src_path)
         self.template_file_name = "mapper.txt"
         self.template_vars["imports"] = self._create_mapper_imports()

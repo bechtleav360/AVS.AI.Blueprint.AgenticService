@@ -85,7 +85,7 @@ class ComponentRegistry:
         handlers = sorted(self._handlers, key=lambda x: x._priority)
         return handlers
 
-    def has_handler(self, name: str = None) -> bool:
+    def has_handler(self, name: str | None = None) -> bool:
         """Check if a handler is registered.
 
         Args:
@@ -294,7 +294,7 @@ class ComponentRegistry:
         available = ", ".join(type(a).__name__ for a in self._agents.values()) if self._agents else "none"
         raise ValueError(f"Agent of type '{name.__name__}' not found. Available types: {available}")
 
-    def has_agent(self, name: str = None) -> bool:
+    def has_agent(self, name: str | None = None) -> bool:
         """Check if an agent is registered.
 
         Args:
@@ -316,7 +316,7 @@ class ComponentRegistry:
         """
         return list(self._agents.keys())
 
-    def get_agent_registry(self):
+    def get_agent_registry(self) -> "ComponentRegistry":
         """Get the agent registry (for backward compatibility).
 
         Returns:
@@ -378,7 +378,7 @@ class ComponentRegistry:
         available = ", ".join(type(a).__name__ for a in self._rest_apis.values()) if self._rest_apis else "none"
         raise ValueError(f"REST API of type '{name.__name__}' not found. Available types: {available}")
 
-    def has_rest_api(self, name: str = None) -> bool:
+    def has_rest_api(self, name: str | None = None) -> bool:
         """Check if a REST API is registered.
 
         Args:

@@ -10,7 +10,6 @@ from pydantic import BaseModel
 from pydantic_ai import Agent, Tool
 from pydantic_ai.models import Model
 from pydantic_ai.run import AgentRunResult
-from pydantic_ai.settings import ModelSettings
 
 from ..base import AgentRuntime
 from ..config import Config
@@ -156,7 +155,7 @@ class AgentBuilder:
         logger.info("Configured agent with %d tools", len(tools))
         return self
 
-    def with_tool(self, name: str, function: Callable) -> "AgentBuilder":
+    def with_tool(self, name: str, function: Callable[..., Any]) -> "AgentBuilder":
         """Add a single tool.
 
         Args:
@@ -212,7 +211,7 @@ class AgentBuilder:
         logger.info("Metrics logging %s", "enabled" if enabled else "disabled")
         return self
 
-    def get_model_settings(self) -> ModelSettings:
+    def get_model_settings(self) -> dict[str, Any]:
         """Get model settings for use in agent.run() calls.
 
         Returns a ModelSettings object that should be passed to agent.run()
@@ -222,7 +221,7 @@ class AgentBuilder:
             ModelSettings object with configuration from runtime settings
         """
         ai_config = self._config.get_ai_config(self._runtime_name)
-        settings: ModelSettings = {}  # type: ignore[assignment]
+        settings: dict[str, Any] = {}
 
         if ai_config.max_tokens is not None:
             settings["max_tokens"] = ai_config.max_tokens
@@ -234,7 +233,7 @@ class AgentBuilder:
 
         return settings
 
-    def build(self, **kwargs) -> AgentRuntime:
+    def build(self, **kwargs: Any) -> AgentRuntime:
         """Build the configured agent.
 
         If no system prompt is configured, automatically loads it from config.
@@ -275,7 +274,7 @@ class AgentBuilder:
                 prompt_name,
                 self._config,
                 path=self._package_root,
-                provider=ai_config.provider,
+                provider=ai_config.provider or "default",
             )
         except Exception as e:
             raise ValueError(
@@ -302,7 +301,7 @@ class AgentBuilder:
                     raise ValueError(f"Unexpected keyword argument for Agent: {kwarg}")
 
         # Create agent runtime with configuration
-        runtime = AgentRuntime[self._deps_type](  # type: ignore[misc]
+        runtime = AgentRuntime[Any](
             model=self._model,
             system_prompt=self._system_prompt,
             tools=self._tools if self._tools else [],
@@ -312,7 +311,7 @@ class AgentBuilder:
         )
 
         # Store model settings from configuration for use in agent.run() calls
-        runtime._model_settings = self.get_model_settings()
+        runtime._model_settings = self.get_model_settings()  # type: ignore[assignment]
 
         # Attach metrics recording method to the agent runtime
         runtime.record_metrics = self._create_metrics_recorder()  # type: ignore[attr-defined]
@@ -353,7 +352,7 @@ class AgentBuilder:
                 duration_ms: Response time in milliseconds
                 model_name: Model name (optional, uses configured model if not provided)
             """
-            model = model_name or (self._model.model_name if hasattr(self._model, "model_name") else "unknown")
+            model = model_name or (self._model.model_name if self._model and hasattr(self._model, "model_name") else "unknown")
             recorder.record(result, duration_ms, model)
 
         return record_metrics_impl

@@ -51,7 +51,7 @@ class Scheduler(Component):
     def __init__(self, crontab: str, name: str = "Scheduler") -> None:
         super().__init__(name)
         self._crontab = crontab
-        self._task: asyncio.Task | None = None
+        self._task: asyncio.Task[None] | None = None
 
     @abstractmethod
     async def tick(self) -> None:

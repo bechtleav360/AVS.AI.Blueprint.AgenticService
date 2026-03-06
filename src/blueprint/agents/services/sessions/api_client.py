@@ -11,7 +11,7 @@ from uuid import UUID
 
 import httpx
 
-from ..base.business_service import BusinessService
+from ...base.business_service import BusinessService
 
 logger = logging.getLogger(__name__)
 

@@ -79,7 +79,7 @@ class ProcessingService:
         with tracer.start_as_current_span("processing_service.process_event") as span:
             span.set_attribute("request_id", request_id)
             span.set_attribute("event.type", event.type)
-            span.set_attribute("event.source", event.source)
+            span.set_attribute("event.source", event.source or "")
 
             if hasattr(event, "id"):
                 span.set_attribute("event.id", event.id)
@@ -202,7 +202,7 @@ class ProcessingService:
             )
             inner_event = event.data
 
-            if isinstance(inner_event, GenericCloudEvent):
+            if isinstance(inner_event, type(GenericCloudEvent)):
                 return inner_event
 
             if isinstance(inner_event, dict):

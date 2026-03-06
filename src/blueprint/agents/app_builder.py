@@ -1,8 +1,9 @@
 """Generic FastAPI application setup and configuration."""
 
 import logging
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from fastapi import APIRouter, FastAPI
 
@@ -24,7 +25,7 @@ from .services.processing_service import ProcessingService
 try:
     from .api import dapr
 except ImportError:
-    dapr = None
+    dapr = None  # type: ignore
 
 logger = logging.getLogger(__name__)
 event_handler_derivative = TypeVar("event_handler_derivative", bound=EventHandler)
@@ -173,9 +174,9 @@ class AppBuilder:
             # It's a class - instantiate it immediately
             if not issubclass(handler, EventHandler):
                 raise TypeError(f"Handler class must be a subclass of EventHandler, " f"got {handler.__name__}")
-            handler = handler()
+            handler_instance = handler()
 
-        self._component_registry.register_handler(handler)
+        self._component_registry.register_handler(handler_instance)
         return self
 
     def with_service(self, service_instance: BusinessService) -> "AppBuilder":
@@ -276,9 +277,9 @@ class AppBuilder:
         logger.info("Registered custom health checker: %s", name)
         return self
 
-    def _create_lifespan_manager(self):
+    def _create_lifespan_manager(self) -> Callable[[FastAPI], Any]:
         @asynccontextmanager
-        async def lifespan(_app: FastAPI):
+        async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             """Application lifespan manager for startup and shutdown events."""
 
             logger.info("Initializing agent components")
@@ -334,7 +335,7 @@ class AppBuilder:
                 logger.info("Sessions service integration enabled")
                 try:
                     # Register required services
-                    from .services.sessions import SessionsApiClient, SessionKeyProvider
+                    from .services.sessions import SessionKeyProvider, SessionsApiClient
 
                     sessions_client = SessionsApiClient()
                     self._component_registry.register_service(sessions_client)

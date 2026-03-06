@@ -11,7 +11,7 @@ from uuid import UUID
 
 from cachetools import TTLCache
 
-from ..base.business_service import BusinessService
+from ...base.business_service import BusinessService
 
 logger = logging.getLogger(__name__)
 

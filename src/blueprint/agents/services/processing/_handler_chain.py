@@ -20,7 +20,7 @@ class _HandlerChainProcessor:
     def __init__(self, component_registry: "ComponentRegistry") -> None:
         self._component_registry: ComponentRegistry = component_registry
 
-    async def process(self, event: CloudEvent, context: dict[str, Any]) -> Any | HandlerResult | list[HandlerResult] | None:
+    async def process(self, event: CloudEvent[Any], context: dict[str, Any]) -> Any | HandlerResult | list[HandlerResult] | None:
         """
         Process event through all registered handlers in priority order.
 

@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any
 
 from .part_generator_base import PartGeneratorBase
 
@@ -6,7 +7,7 @@ from .part_generator_base import PartGeneratorBase
 class MainPartGenerator(PartGeneratorBase):
     """Generate main.py for the agents blueprint."""
 
-    def __init__(self, config: dict, template_dir: str | Path, src_path: str) -> None:
+    def __init__(self, config: dict[str, Any], template_dir: str | Path, src_path: str) -> None:
         super().__init__(config, template_dir, src_path)
         self.template_file_name = "main.txt"
         self.template_vars["app_name"] = self.config["name"]

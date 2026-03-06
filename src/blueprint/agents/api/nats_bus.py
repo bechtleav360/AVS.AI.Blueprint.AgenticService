@@ -2,14 +2,16 @@
 
 import json
 import logging
-from typing import TYPE_CHECKING
+import uuid
+from typing import TYPE_CHECKING, Any
 
 import nats
 from nats.aio.client import Client as NatsClient
+from nats.aio.client import Subscription
 from nats.js.client import JetStreamContext
 from opentelemetry import trace
 
-from ...agents.models import ProcessingResult
+from ...agents.models import ProcessingResult, ProcessingStatus
 from ..config import Config
 from ..models.errors import CriticalHandlerError, InvalidEventError, RetryableHandlerError
 from ..models.events import CloudEvent
@@ -99,7 +101,7 @@ class NatsEventBus:
         if self._nats_client is None:
             raise RuntimeError("NATS client not connected")
 
-        async def message_handler(msg):
+        async def message_handler(msg: Any) -> None:
             """Handle incoming NATS messages."""
             try:
                 # Check if this is a JetStream message
@@ -123,11 +125,13 @@ class NatsEventBus:
                         logger.warning("Could not create stream: %s", str(e))
 
                 # Subscribe with JetStream
-                sub = await self._js.subscribe(topic, queue=queue_group, durable=durable_name, manual_ack=True, cb=message_handler)
+                sub: Subscription = await self._js.subscribe(
+                    topic, queue=queue_group, durable=durable_name, manual_ack=True, cb=message_handler
+                )
                 logger.info("Subscribed to JetStream topic '%s'%s", topic, f" in queue group '{queue_group}'" if queue_group else "")
             else:
                 # Core NATS subscription
-                sub = await self._nats_client.subscribe(topic, queue=queue_group, cb=message_handler)
+                sub = await self._nats_client.subscribe(topic, queue=queue_group or "", cb=message_handler)
                 logger.info("Subscribed to Core NATS topic '%s'%s", topic, f" in queue group '{queue_group}'" if queue_group else "")
 
             self._subscriptions.append(sub)
@@ -136,7 +140,7 @@ class NatsEventBus:
             logger.error("Failed to subscribe to topic '%s': %s", topic, str(e))
             raise
 
-    async def publish(self, topic: str, event: CloudEvent) -> None:
+    async def publish(self, topic: str, event: CloudEvent[Any]) -> None:
         """Publish an event to a topic.
 
         Args:
@@ -166,7 +170,7 @@ class NatsEventBus:
             logger.error("Failed to publish event to topic '%s': %s", topic, str(e))
             raise
 
-    async def _handle_nats_message(self, topic: str, msg, is_jetstream: bool = False) -> None:
+    async def _handle_nats_message(self, topic: str, msg: Any, is_jetstream: bool = False) -> None:
         """Process an incoming NATS message.
 
         Args:
@@ -182,7 +186,7 @@ class NatsEventBus:
                 # Parse the CloudEvent
                 try:
                     event_data = json.loads(msg.data.decode())
-                    cloud_event = CloudEvent(**event_data)
+                    cloud_event: CloudEvent[Any] = CloudEvent(**event_data)
                     cloud_event.topic = topic
                 except Exception as e:
                     logger.error("Failed to parse CloudEvent: %s", str(e))
@@ -209,9 +213,9 @@ class NatsEventBus:
                         "Unwrapped nested CloudEvent of type %s from NATS message",
                         cloud_event.type,
                     )
-                    context["nats_unwrapped"] = True
+                    context["nats_unwrapped"] = "true"
                     span.set_attribute("nats.unwrapped", True)
-                    span.set_attribute("nats.inner_event_type", cloud_event.type)
+                    span.set_attribute("nats.inner_event_type", cloud_event.type or "")
 
                 # Process through the unified service
                 processing_service = self._component_registry.get_processing_service()
@@ -286,21 +290,21 @@ class NatsEventBus:
             finally:
                 self._correlation_context.reset(correlation_token)
 
-    def _unwrap_nested_cloud_event(self, event: CloudEvent) -> tuple[CloudEvent, bool]:
+    def _unwrap_nested_cloud_event(self, event: CloudEvent[Any]) -> tuple[CloudEvent[Any], bool]:
         """Handle nested CloudEvents if needed."""
         # This is a simplified version of the Dapr unwrapping logic
         # Modify as needed based on your event wrapping requirements
         return event, False
 
-    async def _on_nats_error(self, e):
+    async def _on_nats_error(self, e: Any) -> None:
         """Handle NATS error events."""
         logger.error("NATS error: %s", str(e))
 
-    async def _on_nats_reconnected(self):
+    async def _on_nats_reconnected(self) -> None:
         """Handle NATS reconnection events."""
         logger.info("Reconnected to NATS server")
 
-    async def _on_nats_connection_closed(self):
+    async def _on_nats_connection_closed(self) -> None:
         """Handle NATS connection closed events."""
         logger.warning("Connection to NATS server closed")
 
@@ -314,25 +318,27 @@ if __name__ == "__main__":
     from ..registry.component_registry import ComponentRegistry
 
     class DummyRegistry(ComponentRegistry):
-        def __init__(self, config=None):
+        def __init__(self, config: dict[str, Any] | None = None) -> None:
             self.config = config or {}
 
-        def get_processing_service(self):
+        def get_processing_service(self) -> Any:
             # Return a simple processing service that just logs the event
             class DummyProcessingService:
-                async def process_event(self, event, context):
+                async def process_event(self, event: Any, context: dict[str, Any]) -> ProcessingResult:
                     print(f"\nProcessing event: {event.id}")
                     print(f"Context: {context}")
-                    return ProcessingResult(success=True, message="Processed successfully")
+                    return ProcessingResult(
+                        request_id=str(uuid.uuid4()), status=ProcessingStatus.PROCESSED, message="Processed successfully"
+                    )
 
             return DummyProcessingService()
 
-        def get_correlation_context(self):
+        def get_correlation_context(self) -> Any:
             class DummyContext:
-                def set(self, _):
+                def set(self, correlation_id: str | None) -> str | None:
                     return None
 
-                def reset(self, _):
+                def reset(self, token: str | None) -> None:
                     pass
 
             return DummyContext()
@@ -345,12 +351,12 @@ if __name__ == "__main__":
             }
             return topic_map.get(event_type, f"events.{event_type}")
 
-    async def send_cloud_event():
+    async def send_cloud_event() -> None:
         """Send a test CloudEvent to NATS."""
         config = {"nats_url": "nats://localhost:4222", "nats_max_reconnect_attempts": 3, "nats_reconnect_time_wait": 1}
 
         # Initialize NATS client with dummy registry
-        nats_bus = NatsEventBus(DummyRegistry(config), config)
+        nats_bus = NatsEventBus(DummyRegistry(config), Config())
 
         try:
             # Connect to NATS
@@ -363,7 +369,7 @@ if __name__ == "__main__":
             print("Connected to NATS server")
 
             # Create a test event
-            test_event = CloudEvent(
+            test_event: CloudEvent[Any] = CloudEvent(
                 id=str(uuid.uuid4()), source="test.source", type="ai_decomposition_result_v1", data={"message": "Hello, NATS!"}
             )
 

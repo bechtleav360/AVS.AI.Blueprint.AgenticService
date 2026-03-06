@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException
 
-from ..models.api import CacheEvictRequest, CacheNamespacesResponse, CacheStatsResponse
+from ..models.api import CacheEvictRequest, CacheEvictResponse, CacheNamespacesResponse, CacheStatsResponse
 
 if TYPE_CHECKING:
     from ..registry.component_registry import ComponentRegistry
@@ -30,7 +30,7 @@ class CacheManagementApi:
         """Register cache management routes."""
 
         @self.router.get("/stats", response_model=CacheStatsResponse)
-        async def get_cache_stats():
+        async def get_cache_stats() -> CacheStatsResponse:
             """Get cache statistics."""
             if not self._component_registry.has_cache():
                 raise HTTPException(status_code=503, detail="Cache service not available")
@@ -40,7 +40,7 @@ class CacheManagementApi:
             return CacheStatsResponse(**stats)
 
         @self.router.get("/namespaces", response_model=CacheNamespacesResponse)
-        async def list_cache_namespaces():
+        async def list_cache_namespaces() -> CacheNamespacesResponse:
             """List all namespaces currently stored in cache."""
             if not self._component_registry.has_cache():
                 raise HTTPException(status_code=503, detail="Cache service not available")
@@ -51,7 +51,7 @@ class CacheManagementApi:
             return CacheNamespacesResponse(namespaces=namespaces, count=len(namespaces))
 
         @self.router.post("/evict")
-        async def evict_cache_entry(request: CacheEvictRequest):
+        async def evict_cache_entry(request: CacheEvictRequest) -> CacheEvictResponse:
             """Evict (clear) cache contents for an optional namespace.
 
             Args:
@@ -66,8 +66,8 @@ class CacheManagementApi:
                 logger.info("Cleared cache namespace '%s'", request.namespace)
             else:
                 logger.info("Cleared entire cache")
-            return {
-                "status": "ok",
-                "namespace": request.namespace or "all",
-                "message": f"Cache cleared for namespace '{request.namespace}'" if request.namespace else "Entire cache cleared",
-            }
+            return CacheEvictResponse(
+                success=True,
+                namespace=request.namespace,
+                evicted_keys=0,  # We don't track exact count in this implementation
+            )

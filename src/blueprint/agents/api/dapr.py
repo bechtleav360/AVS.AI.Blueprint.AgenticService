@@ -7,9 +7,8 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, HTTPException, status
 from opentelemetry import trace
 
-from ..models.errors import CriticalHandlerError, InvalidEventError, RetryableHandlerError
-
 from ..models import ProcessingResult, ProcessingStatus
+from ..models.errors import CriticalHandlerError, InvalidEventError, RetryableHandlerError
 from ..models.events import CloudEvent
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -29,7 +28,7 @@ class DaprApi:
         self._register_routes()
         self.required_cloud_event_fields = {"specversion", "id", "source", "type"}
 
-    def _register_routes(self):
+    def _register_routes(self) -> None:
         self.router.add_api_route("/dapr/subscribe", self.dapr_subscribe, methods=["GET"])
         self.router.add_api_route("/events/{topic}", self.handle_dapr_event, methods=["POST"])
 
@@ -52,7 +51,7 @@ class DaprApi:
         # ]
         return []
 
-    async def handle_dapr_event(self, topic: str, cloud_event: CloudEvent) -> dict[str, Any]:
+    async def handle_dapr_event(self, topic: str, cloud_event: CloudEvent[Any]) -> dict[str, Any]:
         """
         Generic Dapr event handler that processes events through the unified service.
         """
@@ -82,9 +81,9 @@ class DaprApi:
                         "Unwrapped nested CloudEvent of type %s from Dapr envelope",
                         cloud_event.type,
                     )
-                    context["dapr_unwrapped"] = True
+                    context["dapr_unwrapped"] = "true"
                     span.set_attribute("dapr.unwrapped", True)
-                    span.set_attribute("dapr.inner_event_type", cloud_event.type)
+                    span.set_attribute("dapr.event_type", cloud_event.type or "")
 
                 # Process through the unified service
                 processing_service = self._component_registry.get_processing_service()
@@ -162,7 +161,7 @@ class DaprApi:
             finally:
                 self._correlation_context.reset(correlation_token)
 
-    def _unwrap_nested_cloud_event(self, event: CloudEvent) -> tuple[CloudEvent, bool]:
+    def _unwrap_nested_cloud_event(self, event: CloudEvent[Any]) -> tuple[CloudEvent[Any], bool]:
         """Return inner CloudEvent when wrapped by Dapr envelope."""
 
         if event.type != "com.dapr.event.sent":

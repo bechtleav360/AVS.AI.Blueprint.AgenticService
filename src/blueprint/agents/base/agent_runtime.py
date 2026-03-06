@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from pydantic_ai import Agent
@@ -52,7 +53,7 @@ class AgentRuntime(Agent[AgentDepsT, Any], Component):
         self._prompt_cache: dict[str, str] = {}
         self._config = config
         self._runtime_name: str = runtime_name
-        self._model_settings: ModelSettings = {}  # type: ignore[assignment]
+        self._model_settings: ModelSettings = {}
 
     def get_name(self) -> str:
         """Get the component name.
@@ -70,7 +71,7 @@ class AgentRuntime(Agent[AgentDepsT, Any], Component):
             The pydantic agent name
         """
 
-        return self._name
+        return self._name or ""
 
     def get_model_settings(self) -> ModelSettings:
         """Get model settings for use in agent.run() calls.
@@ -84,7 +85,7 @@ class AgentRuntime(Agent[AgentDepsT, Any], Component):
         if not self._model_settings and self._config:
             try:
                 ai_config = self._config.get_ai_config(self._runtime_name)
-                settings: ModelSettings = {}  # type: ignore[assignment]
+                settings: ModelSettings = {}
 
                 if ai_config.max_tokens is not None:
                     settings["max_tokens"] = ai_config.max_tokens
@@ -95,13 +96,13 @@ class AgentRuntime(Agent[AgentDepsT, Any], Component):
                 self._model_settings = settings
             except Exception as e:
                 logger.warning("Failed to load model settings from config: %s", e)
-                self._model_settings = {}  # type: ignore[assignment]
+                self._model_settings = {}
 
         return self._model_settings
 
-    async def run(
+    async def run(  # type: ignore[override]
         self,
-        user_prompt: str | None = None,
+        user_prompt: str | Sequence[Any] | None = None,
         *,
         model_settings: ModelSettings | None = None,
         **kwargs: Any,
@@ -125,6 +126,27 @@ class AgentRuntime(Agent[AgentDepsT, Any], Component):
 
         # Call parent run() with all parameters
         return await super().run(user_prompt, model_settings=model_settings, **kwargs)
+
+    async def health_check(self) -> dict[str, Any]:
+        """Perform a health check on the agent runtime.
+
+        Returns:
+            Health status information
+        """
+        try:
+            # Basic health check - verify we can access the model
+            model_name = getattr(self._model, "model_name", "unknown")
+            return {
+                "status": "healthy",
+                "model": model_name,
+                "runtime_name": self.get_name(),
+            }
+        except Exception as e:
+            return {
+                "status": "unhealthy",
+                "error": str(e),
+                "runtime_name": self.get_name(),
+            }
 
     def get_prompt(self, prompt_name: str, path: str = "") -> str:
         """Load instruction prompt by name (lazy loading with caching).
