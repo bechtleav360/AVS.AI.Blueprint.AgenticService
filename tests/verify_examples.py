@@ -8,7 +8,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 EXAMPLES_DIR = Path(__file__).parent.parent / "examples"
 
 # Examples with their startup commands
@@ -57,6 +56,7 @@ def verify_example(name: str, config: dict) -> tuple[bool, str]:
     try:
         # Set PYTHONPATH to include the src directory
         import os
+
         env = os.environ.copy()
         src_path = str(Path(__file__).parent / "src")
         env["PYTHONPATH"] = src_path + ":" + env.get("PYTHONPATH", "")

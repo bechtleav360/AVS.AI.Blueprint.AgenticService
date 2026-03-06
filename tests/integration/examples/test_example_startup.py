@@ -8,7 +8,6 @@ import sys
 from pathlib import Path
 import importlib.util
 
-
 EXAMPLES_DIR = Path(__file__).parent.parent.parent.parent / "examples"
 
 

@@ -10,7 +10,6 @@ import pytest
 from pathlib import Path
 import tomllib
 
-
 EXAMPLES_DIR = Path(__file__).parent.parent.parent.parent / "examples"
 
 # List of all examples to test
@@ -31,8 +30,7 @@ def test_example_has_main_file(example_name):
     example_path = EXAMPLES_DIR / example_name
 
     # Check for main.py in either root or src/
-    has_main = (example_path / "main.py").exists() or \
-                (example_path / "src" / "main.py").exists()
+    has_main = (example_path / "main.py").exists() or (example_path / "src" / "main.py").exists()
 
     assert has_main, f"Example {example_name} missing main.py"
 
@@ -57,8 +55,7 @@ def test_example_settings_valid(example_name):
             settings = tomllib.load(f)
         assert isinstance(settings, dict), f"Example {example_name} settings.toml is not valid"
         # Check for app_name in root or default section
-        has_app_name = "app_name" in settings or \
-                       ("default" in settings and "app_name" in settings["default"])
+        has_app_name = "app_name" in settings or ("default" in settings and "app_name" in settings["default"])
         assert has_app_name, f"Example {example_name} missing app_name in settings"
 
 
@@ -80,10 +77,8 @@ def test_rest_api_example_structure(example_name):
     """Test that REST API examples have the required structure."""
     example_path = EXAMPLES_DIR / example_name
 
-    assert (example_path / "src" / "api").exists(), \
-        f"Example {example_name} missing src/api directory"
-    assert (example_path / "src" / "services").exists(), \
-        f"Example {example_name} missing src/services directory"
+    assert (example_path / "src" / "api").exists(), f"Example {example_name} missing src/api directory"
+    assert (example_path / "src" / "services").exists(), f"Example {example_name} missing src/services directory"
 
 
 # Specific tests for event handler examples
@@ -101,8 +96,7 @@ def test_event_handler_example_structure(example_name):
     example_path = EXAMPLES_DIR / example_name
 
     # Check for handlers directory in either root or src/
-    has_handlers = (example_path / "handlers").exists() or \
-                   (example_path / "src" / "handlers").exists()
+    has_handlers = (example_path / "handlers").exists() or (example_path / "src" / "handlers").exists()
 
     assert has_handlers, f"Example {example_name} missing handlers directory"
 
