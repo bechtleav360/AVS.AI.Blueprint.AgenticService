@@ -39,7 +39,7 @@ class OpenAIModelProvider(ModelProviderStrategy):
         else:
             api_key = ai_config.api_key
             model_name = ai_config.model_name
-            model_settings = OpenAIResponsesModelSettings(**dict(ai_config.model_settings))
+            model_settings = OpenAIResponsesModelSettings(**ai_config.model_settings)  # type: ignore[typeddict-item]
 
         client = AsyncOpenAI(
             max_retries=3,
