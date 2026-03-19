@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 
-from ...models.api import ComponentHealth
+from .....models.api import ComponentHealth
 
 
 class HealthCheckerBase(ABC):
@@ -30,4 +30,4 @@ class HealthCheckerBase(ABC):
         Raises:
             Exception: Any exceptions are caught by the caller and logged.
         """
-        pass
+        raise NotImplementedError()

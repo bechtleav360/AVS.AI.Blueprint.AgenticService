@@ -7,7 +7,7 @@ import logging
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from ...models.api import ComponentHealth, ReadinessResponse
+from .....models.api import ComponentHealth, ReadinessResponse
 
 if TYPE_CHECKING:
     from apscheduler.schedulers.asyncio import AsyncIOScheduler

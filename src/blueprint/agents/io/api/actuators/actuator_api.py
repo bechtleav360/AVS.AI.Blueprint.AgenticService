@@ -5,103 +5,62 @@ import os
 import platform
 from importlib import metadata
 from importlib.metadata import PackageNotFoundError
-from typing import Any, Protocol
+from typing import Any
 
 import httpx
-from fastapi import APIRouter, HTTPException, status
+from fastapi import HTTPException, status
 from opentelemetry import trace
 
-from ..config import Config
-from ..models.api import ComponentHealth, LivenessResponse, ReadinessResponse
-from ..models.status import BuildStatus, EnvironmentStatus, LLMStatus, ServiceInfo, VLLMInfo
-from ..services.health.cache import HealthCheckCache
-
-# FIXME: Import your dependencies here.
-# from ..dependencies import get_your_agent, get_data_gateway
-# from ..agent.runtime import AgentRuntime
-# from ..services.data_gateway import DataGatewayClient
+from ....component.component import traced
+from ....config import Config
+from ....models.api import LivenessResponse, ReadinessResponse
+from ....models.status import BuildStatus, EnvironmentStatus, LLMStatus, ServiceInfo, VLLMInfo
+from .health.health_cache import HealthCheckCache
+from ..rest_api_base import RestApiBase
+from .health.health_base import HealthCheckerBase
 
 logger = logging.getLogger(__name__)
-tracer = trace.get_tracer(__name__)
 
 
-class HealthCheckProvider(Protocol):
-    """A protocol for components that can provide a health check."""
-
-    async def health_check(self) -> ComponentHealth: ...
-
-
-class ActuatorApi:
+class ActuatorApi(RestApiBase):
     """Encapsulates all actuator-related endpoints and logic."""
 
-    def __init__(
-        self,
-        config: Config | None = None,
-        health_check_interval_seconds: int = 30,
-        **dependencies: HealthCheckProvider,
-    ):
-        self.router = APIRouter()
-        self.config = config
-        self.dependencies = dependencies
-        self._health_cache = HealthCheckCache(check_interval_seconds=health_check_interval_seconds)
-        self._health_cache.set_health_check_provider(dependencies)
-        self._register_routes()
+    def __init__(self):
+        super().__init__(should_register=False)
+        self._health_cache = None
+        self._pending_providers: dict[str, HealthCheckerBase] = {}
 
-    def _register_routes(self) -> None:
-        self.router.add_api_route(
-            "/info",
-            self.info,
-            methods=["GET"],
-            summary="Returns service information and dependencies.",
-            tags=["Status"],
-            response_model=ServiceInfo,
-        )
-        self.router.add_api_route(
-            "/health/live",
-            self.liveness_probe,
-            methods=["GET"],
-            summary="Performs a liveness probe of the service.",
-            tags=["Health"],
-            response_model=LivenessResponse,
-            include_in_schema=False,
-        )
-        self.router.add_api_route(
-            "/health/ready",
-            self.readiness_probe,
-            methods=["GET"],
-            summary="Performs a readiness probe of the service.",
-            tags=["Health"],
-            response_model=ReadinessResponse,
-            include_in_schema=False,
-        )
-        self.router.add_api_route(
-            "/status/env",
-            self.env_status,
-            methods=["GET"],
-            summary="Returns a snapshot of the current configuration.",
-            tags=["Status"],
-            response_model=EnvironmentStatus,
-            include_in_schema=False,
-        )
-        self.router.add_api_route(
-            "/status/llm",
-            self.llm_status,
-            methods=["GET"],
-            summary="Returns AI provider configuration and diagnostics.",
-            tags=["Status"],
-            response_model=LLMStatus,
-            include_in_schema=False,
-        )
-        self.router.add_api_route(
-            "/status/build",
-            self.build_status,
-            methods=["GET"],
-            summary="Returns build and runtime information.",
-            tags=["Status"],
-            response_model=BuildStatus,
-            include_in_schema=False,
-        )
+    def add_health_providers(self, providers: dict[str, HealthCheckerBase]) -> None:
+        """Register health check providers.
 
+        Args:
+            providers: Mapping of component name to HealthCheckerBase instance
+        """
+        if self._health_cache is not None:
+            self._health_cache.set_health_check_provider(providers)
+        else:
+            self._pending_providers = providers
+
+    async def on_startup(self) -> None:
+        """Start the health check cache."""
+        self._health_cache = HealthCheckCache(
+            check_interval_seconds=self.config.get("health_check_interval_seconds", 30)
+        )
+        if hasattr(self, "_pending_providers") and self._pending_providers:
+            self._health_cache.set_health_check_provider(self._pending_providers)
+        await self._health_cache.start()
+
+    async def on_shutdown(self) -> None:
+        """Stop the health check cache."""
+        if self._health_cache is not None:
+            await self._health_cache.stop()
+
+    @RestApiBase.get(
+        "/info",
+        response_model=ServiceInfo,
+        tags=["Status"],
+        summary="Returns service information and dependencies."
+    )
     async def info(self) -> ServiceInfo:
         """Expose service information and dependencies."""
         config = self._ensure_config()
@@ -114,43 +73,54 @@ class ActuatorApi:
             dependencies=dependencies,
         )
 
+    @RestApiBase.get(
+        "/health/ready",
+        response_model=ReadinessResponse,
+        tags=["Health"],
+        summary="Performs a readiness probe of the service."
+    )
+    @traced()
     async def readiness_probe(self) -> ReadinessResponse:
         """Readiness probe to check if the service is ready to accept traffic.
 
         Returns cached health status from background checks to minimize resource consumption.
         """
-
-        with tracer.start_as_current_span("api.readiness_probe") as span:
-            try:
-                if self.config and self.config.has_validation_errors():
-                    raise HTTPException(
-                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                        detail={
-                            "status": "DOWN",
-                            "errors": self.config.get_validation_errors(),
-                        },
-                    )
-
-                # Return cached health status (updated periodically in background)
-                response = await self._health_cache.get_health_status()
-
-                span.set_attribute("health_status", response.status)
-                span.set_attribute("cache_age_seconds", self._health_cache.get_cache_age_seconds())
-
-                # Only log if health check fails
-                if response.status != "UP":
-                    logger.warning("Readiness probe failed: %s", response.components)
-
-                return response
-
-            except Exception as exc:  # pragma: no cover - defensive logging
-                span.set_status(trace.Status(trace.StatusCode.ERROR, str(exc)))
-                logger.error("Readiness probe failed: %s", exc)
+        try:
+            if self.config and self.config.has_validation_errors():
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="Readiness probe failed",
-                ) from exc
+                    detail={
+                        "status": "DOWN",
+                        "errors": self.config.get_validation_errors(),
+                    },
+                )
 
+            # Return cached health status (updated periodically in background)
+            response = await self._health_cache.get_health_status()
+
+            span = trace.get_current_span()
+            span.set_attribute("health_status", response.status)
+            span.set_attribute("cache_age_seconds", self._health_cache.get_cache_age_seconds())
+
+            # Only log if health check fails
+            if response.status != "UP":
+                logger.warning("Readiness probe failed: %s", response.components)
+
+            return response
+
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.error("Readiness probe failed: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Readiness probe failed",
+            ) from exc
+
+    @RestApiBase.get(
+        "/health/live",
+        response_model=LivenessResponse,
+        tags=["Health"],
+        summary="Performs a liveness probe of the service."
+    )
     async def liveness_probe(self) -> LivenessResponse:
         """Liveness probe to indicate the service is running.
 
@@ -170,6 +140,12 @@ class ActuatorApi:
         # Only log failures - successful liveness checks are not logged
         return LivenessResponse(status="UP")
 
+    @RestApiBase.get(
+        "/status/env",
+        response_model=EnvironmentStatus,
+        tags=["Status"],
+        summary="Returns a snapshot of the current configuration."
+    )
     async def env_status(self) -> EnvironmentStatus:
         """Expose the current configuration state (with secrets masked)."""
 
@@ -186,6 +162,12 @@ class ActuatorApi:
             settings=self._sanitize_config(raw_config),
         )
 
+    @RestApiBase.get(
+        "/status/llm",
+        response_model=LLMStatus,
+        tags=["Status"],
+        summary="Returns AI provider configuration and diagnostics."
+    )
     async def llm_status(self) -> LLMStatus:
         """Expose AI configuration and provider diagnostics."""
 
@@ -236,6 +218,12 @@ class ActuatorApi:
 
         return LLMStatus(config=ai_config, vllm=vllm_info_data)
 
+    @RestApiBase.get(
+        "/status/build",
+        response_model=BuildStatus,
+        tags=["Status"],
+        summary="Returns build and runtime information."
+    )
     async def build_status(self) -> BuildStatus:
         """Expose build and runtime metadata."""
 
@@ -268,20 +256,6 @@ class ActuatorApi:
                 sanitized[key] = value
         return sanitized
 
-    async def start_health_checks(self) -> None:
-        """Start the background health check scheduler.
-
-        This should be called during application startup.
-        """
-        await self._health_cache.start()
-
-    async def stop_health_checks(self) -> None:
-        """Stop the background health check scheduler.
-
-        This should be called during application shutdown.
-        """
-        await self._health_cache.stop()
-
     def _ensure_config(self) -> Config:
         if not self.config:
             logger.error("Configuration not available for status endpoint")
@@ -290,14 +264,3 @@ class ActuatorApi:
                 detail="Configuration not available",
             )
         return self.config
-
-
-# Example of how to instantiate and use the ActuatorApi
-# dependencies = {
-#     "your_agent": get_your_agent(),
-#     "data_gateway": get_data_gateway(),
-# }
-# actuator_api = ActuatorApi(**dependencies)
-# router = actuator_api.router
-
-# The router is created and configured within the AppBuilder
