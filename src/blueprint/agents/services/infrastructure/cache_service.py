@@ -5,17 +5,19 @@ import json
 import logging
 import threading
 import time
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 from diskcache_rs import Cache
 
+from ..service_base import ServiceBase
+
 logger = logging.getLogger(__name__)
 
 
-class CacheService(ABC):
+class CacheService(ServiceBase):
     """Abstract base class for cache services.
 
     Provides a unified interface for caching operations with support for:
@@ -36,7 +38,6 @@ class CacheService(ABC):
         Returns:
             Cached value or None if not found or expired
         """
-        pass
 
     @abstractmethod
     def set(
@@ -54,7 +55,6 @@ class CacheService(ABC):
             namespace: Namespace for the key (default: "default")
             ttl: Time-to-live in seconds (None = no expiration)
         """
-        pass
 
     @abstractmethod
     def delete(self, key: str | list[str] | dict[str, Any], namespace: str = "default") -> bool:
@@ -67,7 +67,6 @@ class CacheService(ABC):
         Returns:
             True if key existed and was deleted, False otherwise
         """
-        pass
 
     @abstractmethod
     def clear(self, namespace: str | None = None) -> None:
@@ -76,7 +75,6 @@ class CacheService(ABC):
         Args:
             namespace: Clear only this namespace (None = clear all)
         """
-        pass
 
     @abstractmethod
     def exists(self, key: str | list[str] | dict[str, Any], namespace: str = "default") -> bool:
@@ -89,7 +87,6 @@ class CacheService(ABC):
         Returns:
             True if key exists and is not expired
         """
-        pass
 
     @abstractmethod
     def hash(self, value: str | list[str] | dict[str, Any]) -> str:
@@ -106,7 +103,6 @@ class CacheService(ABC):
         Returns:
             SHA256 hash of the value
         """
-        pass
 
     @abstractmethod
     def get_stats(self) -> dict[str, Any]:
@@ -115,12 +111,10 @@ class CacheService(ABC):
         Returns:
             Dictionary with cache stats (size, hit rate, etc.)
         """
-        pass
 
     @abstractmethod
     def list_namespaces(self) -> list[str]:
         """List all namespaces currently present in the cache."""
-        pass
 
 
 class DiskCacheService(CacheService):
@@ -159,6 +153,7 @@ class DiskCacheService(CacheService):
             eviction_policy: Eviction policy (informational, diskcache-rs uses its own strategy)
             enable_locking: Enable locking for thread-safe operations (default: True)
         """
+        super().__init__()
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -178,6 +173,13 @@ class DiskCacheService(CacheService):
             eviction_policy,
             enable_locking,
         )
+
+    async def on_startup(self) -> None:
+        """No startup actions required."""
+
+    async def on_shutdown(self) -> None:
+        """Close the cache on shutdown."""
+        self.close()
 
     def _make_key(self, key: str | list[str] | dict[str, Any], namespace: str) -> str:
         """Create a namespaced cache key by hashing the input.
