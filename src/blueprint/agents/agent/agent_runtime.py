@@ -10,9 +10,9 @@ from pydantic_ai.run import AgentRunResult
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.tools import AgentDepsT
 
-from ..agent.prompt_loader import PromptLoader
-from ..config import Config
-from .component import Component
+from .metrics import MetricsRecorder
+from .prompt_loader import PromptLoader
+from ..component.component import Component
 
 if TYPE_CHECKING:
     pass
@@ -29,39 +29,36 @@ class AgentRuntime(Agent[AgentDepsT, Any], Component):
     Extends Component to provide consistent lifecycle and registry access.
     """
 
+    @property
+    def name(self) -> str | None:
+        """Agent name — delegates to Agent.name to preserve _override_name context-var logic."""
+        return Agent.name.fget(self)
+
+    @name.setter
+    def name(self, value: str | None) -> None:
+        """Update name in both the pydantic_ai Agent and the Component registry."""
+        Agent.name.fset(self, value)       # pydantic_ai side-effects (future-proof)
+        Component.name.fset(self, value)   # registry update + self._name
+
     def __init__(
         self,
-        config: Config | None = None,
-        runtime_name: str = "default",
+        name: str,
         **kwargs: Any,
     ) -> None:
         """Initialize the agent runtime.
 
         Args:
-            config: Application configuration for prompt loading
-            runtime_name: Name for runtime-specific config lookup
-            **kwargs: Keyword arguments for Agent
+            name: Name used for registry lookup and logging
+            **kwargs: Keyword arguments forwarded to pydantic_ai.Agent
         """
-        if "name" in kwargs:
-            Agent.__init__(self, **kwargs)
-        else:
-            Agent.__init__(self, name=runtime_name, **kwargs)
-
-        Component.__init__(self, runtime_name)
+        Agent.__init__(self, name=name, **kwargs)
+        Component.__init__(self, should_register=False)
+        self._name = name
+        self.registry.add_component(name, self)
 
         self._prompt_cache: dict[str, str] = {}
-        self._config = config
-        self._runtime_name: str = runtime_name
         self._model_settings: ModelSettings = {}  # type: ignore[assignment]
-
-    def get_name(self) -> str:
-        """Get the component name.
-
-        Returns:
-            The component name set during initialization
-        """
-
-        return self._runtime_name
+        self._recorder: MetricsRecorder | None = None
 
     def get_pydantic_name(self) -> str:
         """This method only exists for compatibility with old agent access using the pydantic name.
@@ -81,9 +78,9 @@ class AgentRuntime(Agent[AgentDepsT, Any], Component):
         Returns:
             ModelSettings object with configuration from runtime settings
         """
-        if not self._model_settings and self._config:
+        if not self._model_settings:
             try:
-                ai_config = self._config.get_ai_config(self._runtime_name)
+                ai_config = self.config.get_ai_config(self.name)
                 settings: ModelSettings = {}  # type: ignore[assignment]
 
                 if ai_config.max_tokens is not None:
@@ -119,12 +116,30 @@ class AgentRuntime(Agent[AgentDepsT, Any], Component):
         Returns:
             Agent run result
         """
-        # Use provided model_settings, or fall back to configuration settings
         if model_settings is None:
             model_settings = self.get_model_settings()
 
-        # Call parent run() with all parameters
         return await super().run(user_prompt, model_settings=model_settings, **kwargs)
+
+    async def on_startup(self) -> None:
+        """No startup actions required; lifecycle is managed by AgentBuilder."""
+
+    async def on_shutdown(self) -> None:
+        """No shutdown actions required; lifecycle is managed by AgentBuilder."""
+
+    def record_metrics(self, result: AgentRunResult, duration_ms: float, model_name: str | None = None) -> None:
+        """Record LLM metrics to logs and OpenTelemetry.
+
+        Args:
+            result: The AgentRunResult object from agent.run()
+            duration_ms: Response time in milliseconds
+            model_name: Name of the LLM model; resolved from the agent's model if omitted
+        """
+        if self._recorder is None:
+            return
+
+        resolved = model_name or getattr(getattr(self, "model", None), "model_name", "unknown")
+        self._recorder.record(result, duration_ms, resolved)
 
     def get_prompt(self, prompt_name: str, path: str = "") -> str:
         """Load instruction prompt by name (lazy loading with caching).
@@ -142,14 +157,11 @@ class AgentRuntime(Agent[AgentDepsT, Any], Component):
             ValueError: If config is not available
             FileNotFoundError: If prompt file not found
         """
-
-        # Check cache first
         if prompt_name in self._prompt_cache:
             logger.debug("Retrieved cached prompt: %s", prompt_name)
             return self._prompt_cache[prompt_name]
 
-        # Load and cache
-        prompt_content = PromptLoader.load_prompt(prompt_name, self.get_config(), path)
+        prompt_content = PromptLoader.load_prompt(prompt_name, self.config, path)
         self._prompt_cache[prompt_name] = prompt_content
         logger.info("Loaded and cached prompt: %s", prompt_name)
         return prompt_content

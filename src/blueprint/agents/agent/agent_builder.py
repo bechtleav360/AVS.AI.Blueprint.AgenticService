@@ -12,13 +12,24 @@ from pydantic_ai.models import Model
 from pydantic_ai.run import AgentRunResult
 from pydantic_ai.settings import ModelSettings
 
-from ..base import AgentRuntime
+from .agent_runtime import AgentRuntime
+from ..clients.ai.ai_client_base import AIClientBase
+from ..clients.ai.openai_client import OpenAIClient
+from ..clients.ai.vllm_client import VLLMClient
 from ..config import Config
+from ..models.config import AIConfig
 from .metrics import MetricsExtractor, MetricsRecorder
-from src.blueprint.agents.agent.providers.model_provider_factory import ModelProviderFactory
 from .prompt_loader import PromptLoader
 
 logger: logging.Logger = logging.getLogger(__name__)
+
+_CLIENT_MAP: dict[str, type[AIClientBase]] = {
+    "vllm": VLLMClient,
+    "openai": OpenAIClient,
+}
+
+_AGENT_SIGNATURE = inspect.signature(Agent)
+_BUILDER_ARGS = frozenset(["model", "system_prompt", "tools"])
 
 
 class AgentBuilder:
@@ -29,18 +40,18 @@ class AgentBuilder:
 
     Example:
         # Simple agent
-        agent = (
+        agent = await (
             AgentBuilder(config)
-            .with_model("gpt-4")
-            .with_system_prompt_text("You are an invoice analyzer")
+            .with_model_from_config()
+            .with_system_prompt("system")
             .build()
         )
 
         # Fully configured agent
-        agent = (
-            AgentBuilder(config)
-            .with_model_from_config("invoice_analyzer")
-            .with_system_prompt_file("invoice_analyzer")
+        agent = await (
+            AgentBuilder(config, runtime_name="invoice_analyzer")
+            .with_model_from_config()
+            .with_system_prompt("invoice_analyzer")
             .with_tools([calculate_tool, validate_tool])
             .with_result_type(InvoiceOutput)
             .build()
@@ -65,6 +76,7 @@ class AgentBuilder:
         """
         self._config = config
         self._runtime_name = runtime_name
+        self._ai_config: AIConfig | None = None
         self._model: Model | None = None
         self._system_prompt: str | None = None
         self._tools: list[Tool] = []
@@ -73,69 +85,50 @@ class AgentBuilder:
         self._meter = meter
         self._package_root = Path(package_root) if package_root else ""
         self._metrics_enabled: bool = True
-        self._max_tokens: int | None = None
-        self._temperature: float | None = None
-
-    def with_model(self, model_name: str = "") -> "AgentBuilder":
-        """Configure with a specific model name.
-
-        Args:
-            model_name: Name of the model (e.g., "gpt-4", "claude-3"). Can be left out if already part of configuration.
-
-        Returns:
-            Self for chaining
-        """
-
-        logger.warning("Deprecation warning: with_model will be deprecated. Use with_model_from_config instead.")
-
-        ai_config = self._config.get_ai_config(self._runtime_name)
-        # Create a modified copy with the new model_name
-        ai_config_dict = ai_config.model_dump()
-        if model_name:
-            ai_config_dict["model_name"] = model_name
-        self._model = ModelProviderFactory.create_model(ai_config_dict)
-        logger.info("Configured agent with model: %s", model_name)
-        return self
+        self._recorder: MetricsRecorder | None = None
+        self._built: bool = False
 
     def with_model_from_config(self, model_name: str = "", runtime_name: str = "") -> "AgentBuilder":
-        """Configure with a specific model name.
+        """Configure the model from application config.
 
         Args:
-            model_name: Name of the model (e.g., "gpt-4", "claude-3"). Can be left out if already part of configuration.
-            runtime_name: Name of the runtime to get config for
+            model_name: Optional model name override. If omitted, uses the value from config.
+            runtime_name: Deprecated. Set the runtime in the constructor instead.
 
         Returns:
             Self for chaining
         """
-
-        logger.warning("Deprecation warning: runtime_name is not necessary anymore. " "Set the runtime in constructor instead.")
+        if runtime_name:
+            logger.warning("Deprecation warning: runtime_name is not necessary anymore. Set the runtime in constructor instead.")
 
         ai_config = self._config.get_ai_config(self._runtime_name)
+
         if model_name:
             ai_config.model_name = model_name
 
         if not ai_config.model_name:
-            raise ValueError(f"No model name for runtime agent {self._runtime_name} configured")
+            raise ValueError(f"No model name for runtime agent '{self._runtime_name}' configured")
 
-        self._model = ModelProviderFactory.create_model(ai_config)
-        logger.info("Configured agent with model: %s", model_name)
+        if not ai_config.provider:
+            raise ValueError(f"No provider for runtime agent '{self._runtime_name}' configured")
+
+        if ai_config.provider not in _CLIENT_MAP:
+            raise ValueError(f"Unsupported provider: '{ai_config.provider}'. Supported: {list(_CLIENT_MAP.keys())}")
+
+        self._ai_config = ai_config
+        logger.info("Configured agent with provider=%s, model=%s", ai_config.provider, ai_config.model_name)
         return self
 
     def with_system_prompt(self, name: str | None = None) -> "AgentBuilder":
-        """Configure the system prompt.
-
-        Can be used in two ways:
-        1. With text: .with_system_prompt("You are an assistant")
-        2. Load from config: .with_system_prompt() or .with_system_prompt(None)
+        """Configure the system prompt by name.
 
         Args:
-            name: Name of the system prompt, or None to load from config
+            name: Name of the system prompt file, or None to use default 'system'
 
         Returns:
             Self for chaining
         """
         if name is None:
-            # Load from config
             logger.warning("System prompt name is None, using default 'system'")
             name = "system"
 
@@ -199,9 +192,6 @@ class AgentBuilder:
     def with_metrics(self, enabled: bool = True) -> "AgentBuilder":
         """Configure whether metrics logging is enabled.
 
-        Controls whether token usage and response latency metrics are logged
-        and recorded to OpenTelemetry.
-
         Args:
             enabled: Whether to enable metrics logging (default: True)
 
@@ -214,9 +204,6 @@ class AgentBuilder:
 
     def get_model_settings(self) -> ModelSettings:
         """Get model settings for use in agent.run() calls.
-
-        Returns a ModelSettings object that should be passed to agent.run()
-        to apply max_tokens, temperature, and other model configuration.
 
         Returns:
             ModelSettings object with configuration from runtime settings
@@ -234,22 +221,30 @@ class AgentBuilder:
 
         return settings
 
-    def build(self, **kwargs) -> AgentRuntime:
+    async def build(self, **kwargs) -> AgentRuntime:
         """Build the configured agent.
 
-        If no system prompt is configured, automatically loads it from config.
+        Connects the AI client, creates the model, and resolves the system prompt.
 
         Args:
             **kwargs: Additional keyword arguments for instantiating the agent
 
         Returns:
-            Configured AgentRuntime instance with prompt handling capabilities
+            Configured AgentRuntime instance
 
         Raises:
             ValueError: If required configuration is missing
         """
-        if self._model is None:
-            raise ValueError("Model must be configured before building agent")
+        if self._ai_config is None:
+            raise ValueError("Model must be configured before building agent. Call with_model_from_config() first.")
+
+        if self._built:
+            raise RuntimeError("AgentBuilder.build() has already been called. Create a new builder instance.")
+
+        # Connect client and create pydantic_ai model
+        client = _CLIENT_MAP[self._ai_config.provider](self._ai_config)
+        await client.connect()
+        self._model = client.create_model()
 
         # Resolve system prompt either from explicit configuration or runtime config defaults
         prompt_name = self._system_prompt
@@ -269,13 +264,12 @@ class AgentBuilder:
                 "Either call with_system_prompt() or configure system_prompt_name in settings."
             )
 
-        ai_config = self._config.get_ai_config(self._runtime_name)
         try:
             self._system_prompt = PromptLoader.load_prompt(
                 prompt_name,
                 self._config,
                 path=self._package_root,
-                provider=ai_config.provider,
+                provider=self._ai_config.provider,
             )
         except Exception as e:
             raise ValueError(
@@ -284,107 +278,43 @@ class AgentBuilder:
 
         # Check for unexpected kwargs
         if kwargs:
-            # Get parameters from Agent constructor
-            sig = inspect.signature(Agent)
-
-            # List of arguments set by builder
-            builder_args = ["model", "system_prompt", "tools"]
-
-            # Check for not allowed kwargs
             for kwarg in kwargs:
-                if kwarg in builder_args:
+                if kwarg in _BUILDER_ARGS:
                     raise ValueError(f"The Agent argument '{kwarg}' is set by the builder and cannot be given for instantiation")
 
-            # Remove arguments set by builder
-            filtered_parameters = {name: param for name, param in sig.parameters.items() if name not in builder_args}
+            allowed = {name for name in _AGENT_SIGNATURE.parameters if name not in _BUILDER_ARGS}
             for kwarg in kwargs:
-                if kwarg not in filtered_parameters:
+                if kwarg not in allowed:
                     raise ValueError(f"Unexpected keyword argument for Agent: {kwarg}")
 
-        # Create agent runtime with configuration
         runtime = AgentRuntime[self._deps_type](  # type: ignore[misc]
             model=self._model,
             system_prompt=self._system_prompt,
             tools=self._tools if self._tools else [],
-            config=self._config,
             runtime_name=self._runtime_name,
             **kwargs,
         )
 
-        # Store model settings from configuration for use in agent.run() calls
+        self._built = True
+        if self._metrics_enabled:
+            self._recorder = MetricsRecorder(self._config, self._meter, self._model)
+            runtime._recorder = self._recorder
+
         runtime._model_settings = self.get_model_settings()
 
-        # Attach metrics recording method to the agent runtime
-        runtime.record_metrics = self._create_metrics_recorder()  # type: ignore[attr-defined]
-
         logger.info(
-            "Built agent with model=%s, tools=%d, result_type=%s",
-            self._model.__class__.__name__,
+            "Built agent with provider=%s, model=%s, tools=%d, result_type=%s",
+            self._ai_config.provider,
+            self._ai_config.model_name,
             len(self._tools),
             self._result_type.__name__,
         )
 
         return runtime
 
-    def _create_metrics_recorder(self) -> Any:
-        """Create a metrics recorder function bound to this builder instance.
-
-        Returns a callable that records metrics when called with agent result and duration.
-        This is attached to the agent instance for easy access.
-
-        Returns:
-            A callable that records metrics: record_metrics(result, duration_ms, model_name)
-            or a no-op function if metrics are disabled.
-        """
-        if not self._metrics_enabled:
-            # Return a no-op function if metrics are disabled
-            def noop_recorder(result: AgentRunResult, duration_ms: float, model_name: str | None = None) -> None:
-                pass
-
-            return noop_recorder
-
-        recorder = MetricsRecorder(self._config, self._meter, self._model)
-
-        def record_metrics_impl(result: AgentRunResult, duration_ms: float, model_name: str | None = None) -> None:
-            """Record metrics for an agent execution.
-
-            Args:
-                result: The AgentRunResult from agent.run()
-                duration_ms: Response time in milliseconds
-                model_name: Model name (optional, uses configured model if not provided)
-            """
-            model = model_name or (self._model.model_name if hasattr(self._model, "model_name") else "unknown")
-            recorder.record(result, duration_ms, model)
-
-        return record_metrics_impl
-
-    def record_metrics(
-        self,
-        result: AgentRunResult,
-        duration_ms: float,
-        model_name: str,
-    ) -> None:
-        """Record LLM metrics to logs and OpenTelemetry.
-
-        Delegates to MetricsRecorder for actual recording if metrics are enabled.
-        Does nothing if metrics are disabled via with_metrics(False).
-
-        Args:
-            result: The AgentRunResult object from agent.run()
-            duration_ms: Response time in milliseconds
-            model_name: Name of the LLM model (e.g., "gpt-4o-mini")
-        """
-        if not self._metrics_enabled:
-            return
-
-        recorder = MetricsRecorder(self._config, self._meter, self._model)
-        recorder.record(result, duration_ms, model_name)
-
     @staticmethod
     def extract_response_text(result: AgentRunResult) -> str:
         """Extract response text from an agent result.
-
-        Delegates to MetricsExtractor.
 
         Args:
             result: The agent result object
@@ -397,8 +327,6 @@ class AgentBuilder:
     @staticmethod
     def extract_usage_info(result: AgentRunResult) -> dict[str, Any]:
         """Extract usage information from an agent result.
-
-        Delegates to MetricsExtractor.
 
         Args:
             result: The AgentRunResult object from agent.run()
