@@ -9,36 +9,30 @@ from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-from .config import Config
+from ..io_base import IOBase
+
+logger = logging.getLogger(__name__)
 
 
-class TelemetryManager:
+class TelemetryManager(IOBase):
     """Object-oriented manager for logging and tracing setup."""
 
-    def __init__(
-        self,
-        settings: Config | None = None,
-        *,
-        logger: logging.Logger | None = None,
-    ) -> None:
-        self.settings = settings
-        self.logger = logger or logging.getLogger(self.__class__.__name__)
+    def __init__(self):
+        # Do not add to component registry
+        super().__init__(False)
 
-    # ---------------------------------------------------------------------
-    # Public API
-    # ---------------------------------------------------------------------
     def configure_tracing(self) -> None:
         """Configure OpenTelemetry tracing using the provided settings."""
 
-        if self.settings is None:
+        if self.config is None:
             raise ValueError("TelemetryManager.configure_tracing requires a Config instance")
 
         try:
-            observability = self.settings.get_observability_config()
+            observability = self.config.get_observability_config()
 
             # Check if OpenTelemetry is enabled
             if not observability.otel_enabled:
-                self.logger.info("OpenTelemetry tracing is disabled")
+                logger.info("OpenTelemetry tracing is disabled")
                 return
 
             service_name = observability.otel_service_name
@@ -49,29 +43,26 @@ class TelemetryManager:
 
             exporters = self._build_exporters(observability)
             if not exporters:
-                self.logger.warning("No trace exporters configured")
+                logger.warning("No trace exporters configured")
                 return
 
             for exporter in exporters:
                 tracer_provider.add_span_processor(BatchSpanProcessor(exporter))
 
             self._setup_instrumentation()
-            self.logger.info("OpenTelemetry configured for service '%s'", service_name)
+            logger.info("OpenTelemetry configured for service '%s'", service_name)
 
         except Exception as exc:  # pragma: no cover - defensive logging
-            self.logger.error("Failed to configure telemetry", exc_info=exc)
+            logger.error("Failed to configure telemetry", exc_info=exc)
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
     def _setup_instrumentation(self) -> None:
         """Enable automatic instrumentation for supported libraries."""
 
         try:
             HTTPXClientInstrumentor().instrument()
-            self.logger.debug("HTTPX instrumentation enabled")
+            logger.debug("HTTPX instrumentation enabled")
         except Exception as exc:  # pragma: no cover - defensive logging
-            self.logger.warning("Failed to setup HTTPX instrumentation: %s", exc)
+            logger.warning("Failed to setup HTTPX instrumentation: %s", exc)
 
     def _build_exporters(self, observability) -> list:
         exporters = []
@@ -82,9 +73,9 @@ class TelemetryManager:
                 # Use gRPC exporter for better performance
                 # gRPC doesn't need /v1/traces path, just host:port
                 exporters.append(OTLPSpanExporter(endpoint=otlp_endpoint, insecure=True))
-                self.logger.info("OTLP gRPC exporter configured for %s", otlp_endpoint)
+                logger.info("OTLP gRPC exporter configured for %s", otlp_endpoint)
             except Exception as exc:
-                self.logger.warning("Failed to configure OTLP exporter: %s", exc)
+                logger.warning("Failed to configure OTLP exporter: %s", exc)
 
         # ConsoleSpanExporter disabled - traces are sent to OTLP collector only
         # Uncomment below to enable console output for debugging:
@@ -93,6 +84,20 @@ class TelemetryManager:
         #     self.logger.info("Console span exporter enabled for debug log level")
 
         return exporters
+
+    def on_startup(self) -> None:
+        """Startup OpenTelemetry.
+        """
+
+        # OpenTelemetry does not have a startup method
+        pass
+
+    def on_shutdown(self) -> None:
+        """Shutdown OpenTelemetry.
+        """
+
+        # OpenTelemetry does not have a shutdown method
+        pass
 
 
 class TracingContext:
