@@ -31,10 +31,12 @@ from fastapi import FastAPI
 from base.src.app import create_app
 from agent.src.custom.api import orders
 
+
 def build_app() -> FastAPI:
     app = create_app()
     app.include_router(orders.router, tags=["orders"])  # optionally add prefix
     return app
+
 
 app = build_app()
 ```
@@ -59,6 +61,7 @@ async def on_asset_created(event: dict):
 
 ```python
 from agent.src.custom.api import custom_events
+
 app.include_router(custom_events.router, tags=["events"])  # prefix already /events in route
 ```
 
@@ -89,6 +92,7 @@ Then wire it in `agent/src/main.py`:
 
 ```python
 from agent.src.custom.api import dapr_subscriptions
+
 app.include_router(dapr_subscriptions.router, tags=["dapr"])  # mounts subscribe + handlers
 ```
 

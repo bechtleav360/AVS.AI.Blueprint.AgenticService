@@ -105,23 +105,24 @@ from unittest.mock import MagicMock
 from src.api.item_api import ItemApi
 from src.models import Item
 
+
 class TestItemApi:
     def setup_method(self) -> None:
         self.api = ItemApi()
-        
+
         # Mock service
         self.mock_service = MagicMock()
         self.api._service = self.mock_service
-        
+
         # Create test client
         self.client = TestClient(self.api.router)
-    
+
     def test_get_item_returns_200_when_found(self) -> None:
         self.mock_service.get.return_value = Item(id="1", name="Test")
         response = self.client.get("/items/1")
         assert response.status_code == 200
         assert response.json()["name"] == "Test"
-    
+
     def test_get_item_returns_404_when_not_found(self) -> None:
         self.mock_service.get.return_value = None
         response = self.client.get("/items/999")

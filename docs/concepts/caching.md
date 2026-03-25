@@ -45,13 +45,14 @@ app = (
 ```python
 from blueprint.agents import BusinessService
 
+
 class InvoiceService(BusinessService):
     def get_name(self) -> str:
         return "invoice_service"
 
     async def analyze_invoice(self, invoice_text: str) -> dict:
         # Get cache from registry
-        cache = self._component_registry.get_cache()
+        cache = self._component_registry.cache_service
 
         # Create a cache key
         cache_key = cache.hash(invoice_text)
@@ -79,7 +80,7 @@ class InvoiceService(BusinessService):
 The cache automatically hashes keys for consistency:
 
 ```python
-cache = self._registry.get_cache()
+cache = self._registry.cache_service
 
 # String key
 key1 = cache.hash("user:123")
@@ -112,7 +113,7 @@ cache.hash('{"b": 2, "a": 1}')
 Organize cache entries by namespace:
 
 ```python
-cache = self._registry.get_cache()
+cache = self._registry.cache_service
 
 # Store in "users" namespace
 cache.set("users", key, user_data)
@@ -136,7 +137,7 @@ namespaces = cache.list_namespaces()
 Automatically expire cached entries:
 
 ```python
-cache = self._registry.get_cache()
+cache = self._registry.cache_service
 
 # Cache for 1 hour (3600 seconds)
 cache.set("users", key, data, ttl=3600)
@@ -214,7 +215,7 @@ class InvoiceService(BusinessService):
         return "invoice_service"
 
     async def analyze_invoice(self, invoice_text: str) -> dict:
-        cache = self._component_registry.get_cache()
+        cache = self._component_registry.cache_service
         agent = self._component_registry.get_agent("invoice_analyzer")
 
         # Create cache key from invoice text
@@ -273,7 +274,7 @@ class InvoiceHandler(EventHandler):
 
 ```python
 async def get_user(user_id: str):
-    cache = self._registry.get_cache()
+    cache = self._registry.cache_service
 
     # Try cache first
     cached = cache.get("users", user_id)
@@ -293,7 +294,7 @@ async def get_user(user_id: str):
 
 ```python
 async def update_user(user_id: str, data: dict):
-    cache = self._registry.get_cache()
+    cache = self._registry.cache_service
 
     # Update database
     user = await database.update_user(user_id, data)
@@ -308,7 +309,7 @@ async def update_user(user_id: str, data: dict):
 
 ```python
 async def get_users(user_ids: list[str]):
-    cache = self._registry.get_cache()
+    cache = self._registry.cache_service
     results = []
 
     for user_id in user_ids:
@@ -343,7 +344,7 @@ async def get_users(user_ids: list[str]):
 3. Verify cache is registered:
    ```python
    if self._registry.has_cache():
-       cache = self._registry.get_cache()
+       cache = self._registry.cache_service
    ```
 
 ### Cache Growing Too Large

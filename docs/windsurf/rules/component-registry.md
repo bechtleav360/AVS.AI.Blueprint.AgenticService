@@ -65,7 +65,7 @@ registry.register_service(InvoiceService())
 ## Checking existence
 
 ```python
-if self.get_registry().has_service("cache_service"):
+if self.get_registry().has_services("cache_service"):
     cache = self.get_registry().get_service("cache_service")
 ```
 
@@ -75,10 +75,10 @@ Available: `has_service()`, `has_agent()`, `has_rest_api()`, `has_handler()`,
 ## Listing registered components
 
 ```python
-service_list  = self.get_registry().list_services()   # list[BusinessService]
-agent_names   = self.get_registry().list_agents()     # list[str]
-api_names     = self.get_registry().list_rest_apis()  # list[str]
-handlers      = self.get_registry().get_handlers()    # list[EventHandler] sorted by priority
+service_list = self.get_registry().get_services()  # list[BusinessService]
+agent_names = self.get_registry().get_agents()  # list[str]
+api_names = self.get_registry().get_rest_api_names()  # list[str]
+handlers = self.get_registry().get_event_handler()  # list[EventHandler] sorted by priority
 ```
 
 ## Cache service
@@ -87,13 +87,7 @@ The optional built-in cache is registered separately:
 
 ```python
 # AppBuilder wires this automatically when with_cache() is called
-cache = self.get_registry().get_cache()   # raises ValueError if not registered
-```
-
-## Settings
-
-```python
-settings = self.get_registry().get_settings()   # returns Config instance
+cache = self.get_registry().cache_service  # raises ValueError if not registered
 ```
 
 Prefer `self.get_config()` (inherited from `Component`) over this.

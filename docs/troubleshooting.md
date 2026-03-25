@@ -308,11 +308,11 @@ async def handle_event(self, event: CloudEvent, context):
 
 ```python
 # List all registered handlers
-handlers = self._registry.get_handlers()
+handlers = self._registry.get_event_handler()
 print(f"Handlers: {[h.name for h in handlers]}")
 
 # List all agents
-agents = self._registry.list_agents()
+agents = self._registry.get_agents()
 print(f"Agents: {agents}")
 ```
 

@@ -104,7 +104,7 @@ class MyRestApi(RestApi):
 @self.router.get("/health/cache")
 async def check_cache():
     try:
-        cache = self._registry.get_cache()
+        cache = self._registry.cache_service
 
         if not cache:
             return {"status": "ok", "cache": "disabled"}
@@ -240,6 +240,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
 @self.router.get("/health/log")
 async def health_with_logging():
     logger.info("Health check requested")
@@ -275,6 +276,7 @@ async def health_with_logging():
 from blueprint.agents import RestApi
 from datetime import datetime
 
+
 class HealthRestApi(RestApi):
     def _register_routes(self):
         @self.router.get("/health")
@@ -301,7 +303,7 @@ class HealthRestApi(RestApi):
 
             # Check cache
             try:
-                cache = self._component_registry.get_cache()
+                cache = self._component_registry.cache_service
                 if cache:
                     test_key = cache.hash("health_check")
                     cache.set("health", test_key, {"test": True}, ttl=10)
@@ -328,7 +330,7 @@ class HealthRestApi(RestApi):
         @self.router.get("/health/detailed")
         async def detailed_health():
             """Detailed health information."""
-            cache = self._component_registry.get_cache()
+            cache = self._component_registry.cache_service
 
             return {
                 "status": "ok",
@@ -385,7 +387,7 @@ async def health():
 
     # Cache is optional
     try:
-        cache = self._registry.get_cache()
+        cache = self._registry.cache_service
         if cache:
             checks["cache"] = "ok"
     except:

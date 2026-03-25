@@ -361,7 +361,7 @@ config = Config(
 )
 
 # Get raw settings
-settings = config.settings
+settings = config.config
 print(json.dumps(settings.get("runtimes", {}), indent=2))
 ```
 
