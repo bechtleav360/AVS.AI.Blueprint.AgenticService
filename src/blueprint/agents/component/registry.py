@@ -44,7 +44,7 @@ class Registry:
         """Initialize the component registry.
         """
 
-        if not component_class.__class__.__name__ == "type":
+        if not isinstance(component_class, type):
             raise ValueError("component_class must be a class")
 
         Registry._component_class = component_class

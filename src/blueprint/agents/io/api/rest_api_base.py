@@ -114,12 +114,15 @@ class RestApiBase(IOBase, ABC):
     def _wire_routes(self) -> None:
         """Discover and register all decorated route methods on self.router."""
 
-        for _, method in inspect.getmembers(self, predicate=inspect.ismethod):
-            if not hasattr(method, "_route"):
-                continue
-            verb, path, kwargs = method._route
-            router_method = getattr(self.router, verb)
-            router_method(path, **kwargs)(method)
+        seen: set[str] = set()
+        for cls in type(self).__mro__:
+            for name, obj in cls.__dict__.items():
+                if name in seen:
+                    continue
+                seen.add(name)
+                if callable(obj) and hasattr(obj, "_route"):
+                    verb, path, kwargs = obj._route
+                    getattr(self.router, verb)(path, **kwargs)(getattr(self, name))
 
     @traced()
     async def _process_resource(self, request: Request, payload: Any) -> ProcessResourceResponse | JSONResponse:

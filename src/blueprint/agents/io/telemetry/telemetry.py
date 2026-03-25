@@ -19,7 +19,7 @@ class TelemetryManager(IOBase):
 
     def __init__(self):
         # Do not add to component registry
-        super().__init__(False)
+        super().__init__(should_register=False)
 
     def configure_tracing(self) -> None:
         """Configure OpenTelemetry tracing using the provided settings."""
