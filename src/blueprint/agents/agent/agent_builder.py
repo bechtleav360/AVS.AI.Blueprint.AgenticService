@@ -221,10 +221,10 @@ class AgentBuilder:
 
         return settings
 
-    async def build(self, **kwargs) -> AgentRuntime:
+    def build(self, **kwargs) -> AgentRuntime:
         """Build the configured agent.
 
-        Connects the AI client, creates the model, and resolves the system prompt.
+        Creates the model and resolves the system prompt.
 
         Args:
             **kwargs: Additional keyword arguments for instantiating the agent
@@ -241,9 +241,8 @@ class AgentBuilder:
         if self._built:
             raise RuntimeError("AgentBuilder.build() has already been called. Create a new builder instance.")
 
-        # Connect client and create pydantic_ai model
-        client = _CLIENT_MAP[self._ai_config.provider](self._ai_config)
-        await client.connect()
+        # Create AI client and model — client reads config via self.config
+        client = _CLIENT_MAP[self._ai_config.provider](self._runtime_name)
         self._model = client.create_model()
 
         # Resolve system prompt either from explicit configuration or runtime config defaults
@@ -291,7 +290,6 @@ class AgentBuilder:
             model=self._model,
             system_prompt=self._system_prompt,
             tools=self._tools if self._tools else [],
-            runtime_name=self._runtime_name,
             **kwargs,
         )
 
