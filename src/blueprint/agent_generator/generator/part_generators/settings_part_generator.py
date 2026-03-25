@@ -1,10 +1,11 @@
 from pathlib import Path
+from typing import Any
 
 from .part_generator_base import PartGeneratorBase
 
 
 class SettingsPartGenerator(PartGeneratorBase):
-    def __init__(self, config: dict, template_dir: str | Path, src_path: str) -> None:
+    def __init__(self, config: dict[str, Any], template_dir: str | Path, src_path: str) -> None:
         super().__init__(config, template_dir, src_path)
         self.template_file_name = "settings.txt"
         self.template_vars["app_name"] = f"app_name = \"{self.config['name']}\""
@@ -21,7 +22,7 @@ class SettingsPartGenerator(PartGeneratorBase):
         """
 
         lines = []
-        for agent_name, agent_config in self.config["agent_layer"].items():
+        for agent_name, _ in self.config["agent_layer"].items():
             lines.extend(
                 [
                     f"[default.runtimes.{self.camel_to_snake(agent_name)}]",

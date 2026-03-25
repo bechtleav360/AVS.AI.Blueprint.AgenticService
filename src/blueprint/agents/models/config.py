@@ -176,3 +176,28 @@ class RuntimeConfig(BaseModel):
     ai_concurrent_requests: int | None = Field(None, description="Concurrency limit override")
     prompt_directory: str | None = Field(None, description="Prompt directory override")
     prompt_search_paths: list[str] | None = Field(None, description="Prompt search paths override")
+
+
+class SessionsServiceConfig(BaseModel):
+    """Configuration for sessions service integration."""
+
+    base_url: str = Field(description="Base URL of sessions service")
+    api_key: str = Field(description="API key for authentication")
+    agent_id: str = Field(description="Unique agent identifier")
+    agent_type: str | None = Field(default=None, description="Type of agent")
+    capabilities: list[str] = Field(default_factory=list, description="Job types this agent can handle")
+
+    # Session key management
+    session_key_source: str = Field(default="env", description="Where to retrieve session keys from (env, vault, context)")
+    session_key_env_var: str = Field(default="SESSION_KEY", description="Environment variable name for session key")
+    session_key_cache_ttl_seconds: int = Field(default=3600, description="Cache TTL for session keys in seconds")
+
+    # Concurrency & Performance
+    max_concurrent_jobs: int = Field(default=10, description="Maximum concurrent job processing")
+    job_timeout_seconds: int = Field(default=300, description="Timeout per job in seconds")
+    sse_reconnect_delay_seconds: int = Field(default=5, description="Delay between SSE reconnection attempts")
+    sse_max_reconnect_attempts: int = Field(default=-1, description="Max SSE reconnect attempts (-1 = infinite)")
+
+    # Health checks
+    health_check_enabled: bool = Field(default=True, description="Enable health check integration")
+    health_check_interval_seconds: int = Field(default=30, description="Health check interval in seconds")

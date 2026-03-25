@@ -173,7 +173,11 @@ class ActuatorApi(RestApiBase):
 
         config = self._ensure_config()
         ai_config_model = config.get_ai_config()
-        ai_config_dict = ai_config_model.model_dump() if hasattr(ai_config_model, "model_dump") else ai_config_model
+        ai_config_dict = (
+            ai_config_model.model_dump()
+            if hasattr(ai_config_model, "model_dump")
+            else ai_config_model.dict() if hasattr(ai_config_model, "dict") else {}
+        )
         ai_config = self._sanitize_config(ai_config_dict)
 
         provider = ai_config.get("provider")

@@ -1,12 +1,13 @@
 import os
 import re
 from pathlib import Path
+from typing import Any
 
 
 class PartGeneratorBase:
     """Base class for generating files from templates based on a configuration."""
 
-    def __init__(self, config: dict, template_dir: str | Path, src_path: str) -> None:
+    def __init__(self, config: dict[str, Any], template_dir: str | Path, src_path: str) -> None:
         """
         Args:
             config: Configuration dictionary.
@@ -19,14 +20,14 @@ class PartGeneratorBase:
         if not Path(template_dir).exists():
             raise FileNotFoundError(f"Template directory not found: {template_dir}")
         self.template_dir = template_dir
-        self.template_vars: dict = {}
+        self.template_vars: dict[str, str] = {}
 
         self.src_path = src_path
         self.template_file_name: str | None = None
 
     def to_py_file_name(self) -> str:
         """Converts a file name to a corresponding Python file name."""
-
+        assert self.template_file_name is not None
         return f"{self.template_file_name.split('.')[0]}.py"
 
     @staticmethod
@@ -55,16 +56,16 @@ class PartGeneratorBase:
             template = "\n".join(template_var for template_var in self.template_vars.values())
         else:
             full_path = os.path.join(self.template_dir, self.src_path, self.template_file_name)
-            with open(full_path, "r") as f:
+            with open(full_path) as f:
                 template = f.read()
 
             try:
                 for key, value in self.template_vars.items():
                     template = template.replace(key, value)
             except Exception as e:
-                raise ValueError(f"Error processing template {full_path}: {e}")
+                raise ValueError(f"Error processing template {full_path}: {e}") from e
 
-        output_path = Path(output_path).joinpath(self.src_path).resolve().joinpath(self.to_py_file_name())
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, "w") as f:
+        out_path = Path(output_path).joinpath(self.src_path).resolve().joinpath(self.to_py_file_name())
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(out_path, "w") as f:
             f.write(template)

@@ -73,6 +73,14 @@ ai_usage_input_tokens_limit = 6000
 ai_usage_output_tokens_limit = 4000
 ai_usage_total_tokens_limit = 10000
 
+# Runtime-specific AI configuration
+[default.runtimes.invoice_analyzer]
+model_provider = "vllm"
+model_base_url = "https://avs-vllm.q14.net/v1"
+model_name = "default"
+max_tokens = 500
+temperature = 0.1
+
 [testing]
 app_name = "agent_blueprint"
 app_port = 8000

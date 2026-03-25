@@ -1,6 +1,7 @@
 """Generic FastAPI application setup and configuration."""
 
 import logging
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -233,7 +234,7 @@ class AppBuilder:
 
     def _create_lifespan_manager(self):
         @asynccontextmanager
-        async def lifespan(_app: FastAPI):
+        async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             """Application lifespan manager for startup and shutdown events."""
             registry: Registry = Component.registry
             logger.info("Starting up application components")

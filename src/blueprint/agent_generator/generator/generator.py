@@ -5,8 +5,20 @@ import logging
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
-from .part_generators import *
+from .part_generators import (
+    APIPartGenerator,
+    CopyPartGenerator,
+    DomainModelPartGenerator,
+    DTOPartGenerator,
+    HandlerPartGenerator,
+    InitPartGenerator,
+    MainPartGenerator,
+    MapperPartGenerator,
+    ServicePartGenerator,
+    SettingsPartGenerator,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -32,7 +44,7 @@ class AgentGenerator:
         self.config_path = Path(config_path).absolute()
         self.output_dir = Path(output_dir).absolute()
         self.template_dir = (Path(__file__).parent.parent / "base_files").absolute()
-        self.config: dict = {}
+        self.config: dict[str, Any] = {}
 
         logger.info(f"Using template directory: {self.template_dir}")
         logger.info(f"Output will be written to: {self.output_dir}")
@@ -61,7 +73,7 @@ class AgentGenerator:
             raise FileNotFoundError(error_msg)
 
         try:
-            with open(self.config_path, "r") as f:
+            with open(self.config_path) as f:
                 logger.debug(f"Reading config file: {self.config_path}")
                 self.config = json.load(f)
                 logger.debug(f"Loaded config: {json.dumps(self.config, indent=2, default=str)}")
@@ -358,7 +370,7 @@ def main(config_path: str, output_dir: str) -> None:
         sys.exit(1)
 
 
-def cli():
+def cli() -> None:
     """Command line interface for the generator."""
     import argparse
 

@@ -427,4 +427,4 @@ class TestAgentBuilder:
         """Test AgentBuilder initialization without package_root."""
         builder = AgentBuilder(mock_config, runtime_name="test")
 
-        assert builder._package_root is ""
+        assert builder._package_root == ""

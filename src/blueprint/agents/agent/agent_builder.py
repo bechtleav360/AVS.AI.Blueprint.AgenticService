@@ -10,7 +10,6 @@ from pydantic import BaseModel
 from pydantic_ai import Agent, Tool
 from pydantic_ai.models import Model
 from pydantic_ai.run import AgentRunResult
-from pydantic_ai.settings import ModelSettings
 
 from .agent_runtime import AgentRuntime
 from ..clients.ai.ai_client_base import AIClientBase
@@ -149,7 +148,7 @@ class AgentBuilder:
         logger.info("Configured agent with %d tools", len(tools))
         return self
 
-    def with_tool(self, name: str, function: Callable) -> "AgentBuilder":
+    def with_tool(self, name: str, function: Callable[..., Any]) -> "AgentBuilder":
         """Add a single tool.
 
         Args:
@@ -202,14 +201,14 @@ class AgentBuilder:
         logger.info("Metrics logging %s", "enabled" if enabled else "disabled")
         return self
 
-    def get_model_settings(self) -> ModelSettings:
+    def get_model_settings(self) -> dict[str, Any]:
         """Get model settings for use in agent.run() calls.
 
         Returns:
             ModelSettings object with configuration from runtime settings
         """
         ai_config = self._config.get_ai_config(self._runtime_name)
-        settings: ModelSettings = {}  # type: ignore[assignment]
+        settings: dict[str, Any] = {}
 
         if ai_config.max_tokens is not None:
             settings["max_tokens"] = ai_config.max_tokens
@@ -221,7 +220,7 @@ class AgentBuilder:
 
         return settings
 
-    def build(self, **kwargs) -> AgentRuntime:
+    def build(self, **kwargs: Any) -> AgentRuntime:
         """Build the configured agent.
 
         Creates the model and resolves the system prompt.

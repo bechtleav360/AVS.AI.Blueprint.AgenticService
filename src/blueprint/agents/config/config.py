@@ -22,7 +22,7 @@ class ConfigError(Exception):
 class Config:
     """A class to manage the application's configuration using dynaconf."""
 
-    def __init__(self, settings_files=None, root_path=None):
+    def __init__(self, settings_files: list[str] | str | None = None, root_path: str | None = None) -> None:
         """Initialize the configuration manager."""
 
         self._validation_errors: list[str] = []
@@ -82,12 +82,12 @@ class Config:
         manager = LoggingManager()
         manager.configure(log_level=log_level, log_format=log_format, suppress_noisy_loggers=suppress_noisy)
 
-    def _process_dynabox(self, box, placeholder, replacement):
+    def _process_dynabox(self, box: Any, placeholder: str, replacement: str) -> Any:
         """Recursively process a DynaBox to replace placeholders in keys and convert to lowercase.
         Also attempts to parse string values as JSON if they appear to be JSON objects/arrays.
         """
 
-        def _try_parse_json(possible_json_value):
+        def _try_parse_json(possible_json_value: Any) -> Any:
             """Try to parse a string value as JSON, return original if not valid JSON."""
             if not isinstance(possible_json_value, str):
                 return possible_json_value
@@ -98,7 +98,7 @@ class Config:
             except (json.JSONDecodeError, TypeError):
                 return possible_json_value
 
-        def _convert_keyed_list_to_dict(items):
+        def _convert_keyed_list_to_dict(items: Any) -> Any:
             """Convert a list of dicts with 'key' field to a dictionary.
 
             Args:
@@ -297,7 +297,7 @@ class Config:
             ),
         )
 
-    def get_prompt_config(self, runtime_name: str = None) -> PromptConfig:
+    def get_prompt_config(self, runtime_name: str | None = None) -> PromptConfig:
         """Get prompt-related configuration for a specific runtime.
 
         Args:
@@ -306,7 +306,7 @@ class Config:
         Returns:
             PromptConfig model with prompt configuration.
         """
-        runtime_config = self.get_runtime_config(runtime_name)
+        runtime_config = self.get_runtime_config(runtime_name or "default")
 
         return PromptConfig(
             custom_path=runtime_config.get("prompt_directory", self.get("prompt_directory")),
@@ -355,7 +355,7 @@ class Config:
             default_ttl=self.get("cache.default_ttl", 3600),
         )
 
-    def validate(self):
+    def validate(self) -> bool:
         """Validate the configuration."""
         self._validation_errors.clear()
         try:

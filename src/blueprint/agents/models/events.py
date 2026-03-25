@@ -1,16 +1,13 @@
 """Pydantic models for CloudEvents v1.0 specification."""
 
 from datetime import UTC, datetime
-from typing import Any, Generic, Literal, TypeVar
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic.config import ConfigDict
 
-# Generic type for the CloudEvent data payload.
-T = TypeVar("T")
 
-
-class CloudEvent(BaseModel, Generic[T]):
+class CloudEvent[T](BaseModel):
     """
     A Pydantic model for a CloudEvent, compliant with the v1.0 spec.
     This model is generic and can be used with any data payload type.
@@ -53,8 +50,9 @@ class CloudEvent(BaseModel, Generic[T]):
         },
     )
 
+    @classmethod
     @field_validator("time")
-    def validate_time_format(cls, v):
+    def validate_time_format(cls, v: str | None) -> str | None:
         """Validate that the time is in ISO 8601 format with timezone."""
         if not isinstance(v, str):
             raise ValueError("Time must be a string in ISO 8601 format")
@@ -66,6 +64,7 @@ class CloudEvent(BaseModel, Generic[T]):
         except ValueError as e:
             raise ValueError("Time must be in ISO 8601 format with timezone") from e
 
+    @classmethod
     @model_validator(mode="before")
     def validate_data_exclusivity(cls, values: dict[str, Any]) -> dict[str, Any]:
         """Validate that CloudEvent cannot include both 'data' and 'data_base64'."""

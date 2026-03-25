@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any
 
 from .part_generator_base import PartGeneratorBase
 
@@ -6,7 +7,7 @@ from .part_generator_base import PartGeneratorBase
 class MainPartGenerator(PartGeneratorBase):
     """Generate main.py for the agents blueprint."""
 
-    def __init__(self, config: dict, template_dir: str | Path, src_path: str) -> None:
+    def __init__(self, config: dict[str, Any], template_dir: str | Path, src_path: str) -> None:
         super().__init__(config, template_dir, src_path)
         self.template_file_name = "main.txt"
         self.template_vars["app_name"] = self.config["name"]
@@ -55,7 +56,7 @@ class MainPartGenerator(PartGeneratorBase):
                 [
                     f"{agent['runtime_name']}: AgentRuntime = (",
                     f"    AgentBuilder(config, runtime_name=\"{agent['runtime_name']}\")",
-                    f"    .with_model_from_config()",
+                    "    .with_model_from_config()",
                     f'    .with_system_prompt("{self.camel_to_snake(agent_name)}")',
                     f'    .build(name="{self.camel_to_snake(agent_name)}")',
                     ")",

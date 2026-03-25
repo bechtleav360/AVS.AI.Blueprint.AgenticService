@@ -340,7 +340,7 @@ def create_agent(args: Namespace) -> None:
     if agent_name.endswith("Agent"):
         agent_name = agent_name[:-5]
 
-    agent_class_name = f"{agent_name}Agent"
+    _agent_class_name = f"{agent_name}Agent"
     agent_name_snake = _to_snake_case(agent_name)
     file_name = f"{agent_name_snake}_agent.py"
     output_file = output_dir / file_name

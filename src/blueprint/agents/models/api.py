@@ -262,6 +262,14 @@ class CacheEvictRequest(BaseModel):
     namespace: str | None = None
 
 
+class CacheEvictResponse(BaseModel):
+    """Response for cache eviction operation."""
+
+    success: bool = Field(..., description="Whether the eviction was successful")
+    namespace: str | None = Field(None, description="The namespace that was evicted")
+    evicted_keys: int = Field(0, description="Number of keys evicted")
+
+
 class AgentHealthDependencies(BaseModel):
     """Dependencies checked during agent health check."""
 

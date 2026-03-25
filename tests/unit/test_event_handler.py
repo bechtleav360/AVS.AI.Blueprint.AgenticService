@@ -383,8 +383,8 @@ class TestChainOfResponsibility:
                 context["handler2_called"] = True
                 return {"processed_by": "Handler2"}
 
-        handler1 = Handler1("Handler1", priority=10)
-        handler2 = Handler2("Handler2", priority=20)
+        _handler1 = Handler1("Handler1", priority=10)
+        _handler2 = Handler2("Handler2", priority=20)
 
         # In real chain, both would be called
 
@@ -407,8 +407,8 @@ class TestChainOfResponsibility:
             async def handle_event(self, event, context):
                 return {"result": context.get("data")}
 
-        enrichment = EnrichmentHandler("Enrichment", priority=10)
-        processing = ProcessingHandler("Processing", priority=20)
+        _enrichment = EnrichmentHandler("Enrichment", priority=10)
+        _processing = ProcessingHandler("Processing", priority=20)
 
         # Context is shared between handlers
 
@@ -423,7 +423,7 @@ class TestChainOfResponsibility:
             async def handle_event(self, event, context):
                 return {"processed": True}
 
-        handler = ConditionalHandler("Conditional")
+        _handler = ConditionalHandler("Conditional")
 
         # Handler should skip if condition not met
 

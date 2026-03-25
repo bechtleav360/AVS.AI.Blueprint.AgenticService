@@ -40,11 +40,11 @@ class AgentInvokerHandler(EventHandlerBase):
     async def on_shutdown(self) -> None:
         """No shutdown actions required."""
 
-    async def can_handle_event(self, event: CloudEvent, context: dict[str, Any]) -> bool:
+    async def can_handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> bool:
         """Handle events with 'invoke_agent' action."""
         return True
 
-    async def handle_event(self, event: CloudEvent, context: dict[str, Any]) -> Optional[HandlerResult]:
+    async def handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> Optional[HandlerResult]:
         """Validate the payload, invoke the agent, and return structured result.
 
         Returns:

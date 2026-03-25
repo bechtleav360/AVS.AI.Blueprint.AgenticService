@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from pydantic_ai import Agent
@@ -67,7 +68,7 @@ class AgentRuntime(Agent[AgentDepsT, Any], Component):
             The pydantic agent name
         """
 
-        return self._name
+        return self._name or ""
 
     def get_model_settings(self) -> ModelSettings:
         """Get model settings for use in agent.run() calls.
@@ -92,13 +93,13 @@ class AgentRuntime(Agent[AgentDepsT, Any], Component):
                 self._model_settings = settings
             except Exception as e:
                 logger.warning("Failed to load model settings from config: %s", e)
-                self._model_settings = {}  # type: ignore[assignment]
+                self._model_settings = {}
 
         return self._model_settings
 
-    async def run(
+    async def run(  # type: ignore[override]
         self,
-        user_prompt: str | None = None,
+        user_prompt: str | Sequence[Any] | None = None,
         *,
         model_settings: ModelSettings | None = None,
         **kwargs: Any,

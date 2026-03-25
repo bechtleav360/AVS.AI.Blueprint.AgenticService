@@ -122,7 +122,7 @@ class HealthCheckCache:
                 results: list[ComponentHealth | BaseException] = await asyncio.gather(*tasks.values(), return_exceptions=True)
 
                 for name, result in zip(tasks.keys(), results, strict=True):
-                    if isinstance(result, Exception):
+                    if isinstance(result, BaseException):
                         logger.warning(
                             "Health check failed for %s: %s",
                             name,

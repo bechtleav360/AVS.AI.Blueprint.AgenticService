@@ -6,6 +6,7 @@ import sys
 import tempfile
 from argparse import Namespace
 from pathlib import Path
+from typing import Any
 
 from ...generator.generator import AgentGenerator
 from ...generator.part_generators.part_generator_base import PartGeneratorBase
@@ -13,7 +14,7 @@ from ...generator.part_generators.part_generator_base import PartGeneratorBase
 logger = logging.getLogger(__name__)
 
 
-def create_basic_config(name: str) -> dict:
+def create_basic_config(name: str) -> dict[str, Any]:
     """Create a basic configuration template.
 
     Args:

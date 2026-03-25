@@ -54,13 +54,11 @@ class TestEventPublishingService:
     def test_topic_mapping_parsing_from_string(self):
         """Topic mapping should be parsed from string-based env override."""
 
-        mapping_string = textwrap.dedent(
-            """{
+        mapping_string = textwrap.dedent("""{
                 'invoice.validated': { topic: 'test.connection', routing_key: 'valid' },
                 'invoice.invalidated': { topic: 'test.connection', routing_key: 'invalid' },
                 'invoice.analysis.error': { topic: 'test.connection', routing_key: 'error' }
-            }"""
-        )
+            }""")
 
         config = EventPublishingConfig(topic_mapping=mapping_string)
 
