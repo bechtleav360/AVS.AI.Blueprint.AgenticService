@@ -22,20 +22,10 @@ class NATSClient(IOClientBase):
         super().__init__()
         self._nats_client: NatsClient | None = None
         self._js: JetStreamContext | None = None
-        self._use_jetstream: bool | None = None
+        self._use_jetstream: bool = False
         self._subscriptions: list[Any] = []
-        self._nats_url: str | None = None
-        self._max_reconnect_attempts: int | None = None
-        self._reconnect_time_wait: int | None = None
-
-    async def on_startup(self) -> None:
-        """Read NATS configuration. Connection is lazy on first use."""
-        self._nats_url = self.config.get("nats_url", "nats://localhost:4222")
-        self._max_reconnect_attempts = self.config.get("nats_max_reconnect_attempts", 5)
-        self._reconnect_time_wait = self.config.get("nats_reconnect_time_wait", 2)
 
     def _is_connected(self) -> bool:
-        """Check if the NATS client is connected."""
         return (
             self._nats_client is not None
             and not self._nats_client.is_closed
@@ -47,11 +37,12 @@ class NATSClient(IOClientBase):
         if self._nats_client is not None and not self._nats_client.is_closed:
             return
 
+        nats_url = self.config.get("nats_url", "nats://localhost:4222")
         try:
             self._nats_client = await nats.connect(
-                self._nats_url,
-                max_reconnect_attempts=self._max_reconnect_attempts,
-                reconnect_time_wait=self._reconnect_time_wait,
+                nats_url,
+                max_reconnect_attempts=self.config.get("nats_max_reconnect_attempts", 5),
+                reconnect_time_wait=self.config.get("nats_reconnect_time_wait", 2),
                 connect_timeout=10,
             )
             self._client = self._nats_client
@@ -59,13 +50,13 @@ class NATSClient(IOClientBase):
             if self._use_jetstream:
                 try:
                     self._js = self._nats_client.jetstream()
-                    logger.info("Connected to NATS server with JetStream at %s", self._nats_url)
+                    logger.info("Connected to NATS server with JetStream at %s", nats_url)
                 except Exception as e:
                     logger.warning("JetStream initialization failed, falling back to Core NATS: %s", str(e))
                     self._use_jetstream = False
 
             if not self._use_jetstream:
-                logger.info("Connected to NATS server (Core NATS) at %s", self._nats_url)
+                logger.info("Connected to NATS server (Core NATS) at %s", nats_url)
         except Exception as e:
             logger.error("Failed to connect to NATS: %s", str(e))
             raise

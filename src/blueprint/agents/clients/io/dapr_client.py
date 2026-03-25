@@ -20,35 +20,21 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 class DaprClient(IOClientBase):
     """Dapr client for publishing CloudEvents via Dapr pub/sub."""
 
-    def __init__(self) -> None:
-        super().__init__()
-        self._http_client: httpx.AsyncClient | None = None
-        self._dapr_url: str | None = None
-        self._pubsub_name: str | None = None
-
-    async def on_startup(self) -> None:
-        """Read Dapr configuration. Connection is lazy on first use."""
-        self._dapr_url = self.config.get("dapr_url", "http://localhost:3500")
-        self._pubsub_name = self.config.get("dapr_pubsub_name", "pubsub")
-
     def _is_connected(self) -> bool:
-        """Check if the Dapr HTTP client is initialized."""
-        return self._http_client is not None
+        return self._client is not None
 
     async def connect(self) -> None:
-        """Initialize HTTP client for Dapr communication."""
-        if self._http_client is not None:
+        """Initialize the HTTP client for Dapr communication."""
+        if self._client is not None:
             return
 
-        self._http_client = httpx.AsyncClient()
-        self._client = self._http_client
-        logger.info("Initialized Dapr client at %s", self._dapr_url)
+        self._client = httpx.AsyncClient()
+        logger.info("Initialized Dapr client at %s", self.config.get("dapr_url", "http://localhost:3500"))
 
     async def close(self) -> None:
         """Close the HTTP client."""
-        if self._http_client is not None:
-            await self._http_client.aclose()
-            self._http_client = None
+        if self._client is not None:
+            await self._client.aclose()
             self._client = None
 
     async def subscribe(
@@ -71,8 +57,9 @@ class DaprClient(IOClientBase):
         """Publish a CloudEvent to a Dapr pub/sub topic."""
         client = await self.client
 
-        effective_pubsub = pubsub_name or self._pubsub_name
-        url = f"{self._dapr_url}/v1.0/publish/{effective_pubsub}/{topic}"
+        dapr_url = self.config.get("dapr_url", "http://localhost:3500")
+        effective_pubsub = pubsub_name or self.config.get("dapr_pubsub_name", "pubsub")
+        url = f"{dapr_url}/v1.0/publish/{effective_pubsub}/{topic}"
         headers = {"Content-Type": "application/cloudevents+json"}
         if routing_key:
             headers["metadata.routingKey"] = routing_key
@@ -88,18 +75,18 @@ class DaprClient(IOClientBase):
 
     async def health_check(self) -> ComponentHealth:
         """Check Dapr sidecar availability."""
-        enabled = self.config.get("health_check_dapr", True)
-        if not enabled:
+        if not self.config.get("health_check_dapr", True):
             logger.debug("Dapr health check is disabled")
             return ComponentHealth(status="healthy", message="Dapr health check disabled")
 
+        dapr_url = self.config.get("dapr_url", "http://localhost:3500")
         try:
             client = await self.client
-            dapr_health_response = await client.get(f"{self._dapr_url}/v1.0/healthz")
+            dapr_health_response = await client.get(f"{dapr_url}/v1.0/healthz")
             dapr_health_response.raise_for_status()
             return ComponentHealth(
                 status="healthy",
-                message=f"Dapr sidecar reachable at {self._dapr_url}",
+                message=f"Dapr sidecar reachable at {dapr_url}",
             )
         except httpx.RequestError as e:
             logger.warning("Dapr sidecar not reachable: %s", e)

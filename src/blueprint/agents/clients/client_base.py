@@ -45,7 +45,7 @@ class ClientBase(Component, ABC):
         return self._get_connected_client()
 
     async def on_startup(self) -> None:
-        """Override to read config and initialise state. Do not connect here."""
+        """No-op. Clients connect lazily on first use via the client property."""
 
     async def on_shutdown(self) -> None:
         """Close the client connection."""
