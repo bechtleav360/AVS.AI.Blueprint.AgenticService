@@ -6,7 +6,6 @@ from examples.customer_support_qa.src.handlers.agent_invoker import AgentInvoker
 from src.blueprint.agents.agent import AgentBuilder
 from src.blueprint.agents.app_builder import AppBuilder
 from src.blueprint.agents.config import Config
-from src.blueprint.agents.base import AgentRuntime
 
 from examples.customer_support_qa.src.api import SupportQARestApi
 from examples.customer_support_qa.src.services import SupportQAService
@@ -19,29 +18,27 @@ config = Config(
     root_path=Path(__file__).parent.parent,
 )
 
-config.get_event_publishing_config()
+# Build the app first — this injects shared config so AI clients can use self.config
+app = (
+    AppBuilder(config=config)
+    .with_cache()
+    .with_handler(AgentInvokerHandler)
+    .with_service(SupportQAService())
+    .with_rest_api(SupportQARestApi())
+    .build()
+)
 
-junior_agent: AgentRuntime = (
+# Agents are built after config injection and auto-register into the shared registry
+(
     AgentBuilder(config, runtime_name="junior_support")
     .with_model_from_config()
     .with_system_prompt("junior_system")
     .build(name="junior_support")
 )
 
-senior_agent: AgentRuntime = (
+(
     AgentBuilder(config, runtime_name="senior_support")
     .with_model_from_config()
     .with_system_prompt("senior_system")
     .build(name="senior_support")
-)
-
-app = (
-    AppBuilder(config=config)
-    .with_cache()
-    .with_agent(junior_agent)
-    .with_agent(senior_agent)
-    .with_handler(AgentInvokerHandler)
-    .with_service(SupportQAService())
-    .with_rest_api(SupportQARestApi())
-    .build()
 )

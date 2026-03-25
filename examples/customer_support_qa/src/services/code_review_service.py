@@ -6,7 +6,7 @@ import uuid
 from typing import Any
 
 from src.blueprint.agents.agent import AgentBuilder
-from src.blueprint.agents.base import BusinessService
+from src.blueprint.agents.services import ServiceBase
 from pydantic_ai import AgentRunResult
 
 from ..models import (
@@ -20,15 +20,21 @@ from ..models import (
 logger: logging.Logger = logging.getLogger(__name__)
 
 
-class SupportQAService(BusinessService):
+class SupportQAService(ServiceBase):
     """Service for managing customer support Q&A with junior and senior agents."""
 
     sessions: dict[str, SupportSession]
 
     def __init__(self) -> None:
         """Initialize the support Q&A service."""
-        super().__init__("support_qa_service")
+        super().__init__()
         self.sessions: dict[str, SupportSession] = {}
+
+    async def on_startup(self) -> None:
+        pass
+
+    async def on_shutdown(self) -> None:
+        pass
 
     async def answer_question(
         self, question: str, category: str = "general", context: str = ""
@@ -87,14 +93,14 @@ class SupportQAService(BusinessService):
         logger.info(f"Junior agent generating answer for session {session_id}")
 
         prompt = (
-            self.get_registry()
+            self.registry
             .get_agent("junior_support")
             .get_prompt("answer_question")
             .format(question=question, category=category, context=context)
         )
 
         try:
-            result: AgentRunResult = await self.get_registry().get_agent("junior_support").run(prompt)
+            result: AgentRunResult = await self.registry.get_agent("junior_support").run(prompt)
 
             response_text = AgentBuilder.extract_response_text(result)
             usage = AgentBuilder.extract_usage_info(result)
@@ -147,7 +153,7 @@ class SupportQAService(BusinessService):
         logger.info(f"Senior agent validating answer for session {session_id}")
 
         prompt = (
-            self.get_registry()
+            self.registry
             .get_agent("senior_support")
             .get_prompt("validate_answer")
             .format(
@@ -158,7 +164,7 @@ class SupportQAService(BusinessService):
         )
 
         try:
-            result: AgentRunResult = await self.get_registry().get_agent("senior_support").run(prompt)
+            result: AgentRunResult = await self.registry.get_agent("senior_support").run(prompt)
 
             response_text = AgentBuilder.extract_response_text(result)
             usage = AgentBuilder.extract_usage_info(result)

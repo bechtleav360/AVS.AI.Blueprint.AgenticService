@@ -4,7 +4,7 @@ import logging
 
 from fastapi import HTTPException
 
-from src.blueprint.agents.base import RestApi
+from src.blueprint.agents.io.api import RestApiBase
 
 from ..models import SupportRequest, SupportResponse
 from ..services import SupportQAService
@@ -12,7 +12,7 @@ from ..services import SupportQAService
 logger = logging.getLogger(__name__)
 
 
-class SupportQARestApi(RestApi):
+class SupportQARestApi(RestApiBase):
     """REST API for customer support Q&A operations."""
 
     def __init__(self) -> None:
@@ -20,13 +20,16 @@ class SupportQARestApi(RestApi):
 
         The component registry and agents will be wired in by AppBuilder.
         """
-        super().__init__(name="SupportQARestApi")
+        super().__init__()
 
     async def on_startup(self) -> None:
         """Initialize the REST API by getting the support service from the registry."""
-        self._support_service: SupportQAService = self.get_registry().get_service("support_qa_service")
+        self._support_service: SupportQAService = self.registry.get_service("support_qa_service")
 
-    @RestApi.post("/support/ask", response_model=SupportResponse)
+    async def on_shutdown(self) -> None:
+        pass
+
+    @RestApiBase.post("/support/ask", response_model=SupportResponse)
     async def ask_question(self, request: SupportRequest) -> SupportResponse:
         """Ask a customer support question and get an answer with validation.
 
@@ -48,7 +51,7 @@ class SupportQARestApi(RestApi):
             logger.error(f"Error processing question: {e}")
             raise HTTPException(status_code=500, detail=str(e))
 
-    @RestApi.get("/support/{session_id}", response_model=dict)
+    @RestApiBase.get("/support/{session_id}", response_model=dict)
     async def get_session(self, session_id: str) -> dict:
         """Get a support session by ID.
 
@@ -68,7 +71,7 @@ class SupportQARestApi(RestApi):
             logger.error(f"Error getting session: {e}")
             raise HTTPException(status_code=500, detail=str(e))
 
-    @RestApi.get("/support/sessions/list", response_model=list)
+    @RestApiBase.get("/support/sessions/list", response_model=list)
     async def list_sessions(self) -> list:
         """List all support sessions.
 
