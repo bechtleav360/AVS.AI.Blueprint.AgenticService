@@ -11,12 +11,12 @@ from uuid import UUID
 
 import httpx
 
-from ...base.business_service import BusinessService
+from ..service_base import ServiceBase
 
 logger = logging.getLogger(__name__)
 
 
-class SessionsApiClient(BusinessService):
+class SessionsApiClient(ServiceBase):
     """HTTP client for sessions service REST API.
 
     Provides methods to fetch job details, start jobs, complete jobs, and cancel jobs.
@@ -30,14 +30,14 @@ class SessionsApiClient(BusinessService):
     """
 
     def __init__(self) -> None:
-        super().__init__("SessionsApiClient")
+        super().__init__()
         self._base_url: str | None = None
         self._api_key: str | None = None
         self._client: httpx.AsyncClient | None = None
 
     async def on_startup(self) -> None:
         """Initialize the HTTP client with configuration."""
-        config = self.get_config().get("sessions_service")
+        config = self.config.get("sessions_service")
         if not config:
             raise ValueError("sessions_service configuration not found")
 

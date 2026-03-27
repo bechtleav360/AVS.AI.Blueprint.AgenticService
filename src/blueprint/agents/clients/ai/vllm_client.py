@@ -2,6 +2,7 @@
 
 import logging
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 from openai import AsyncOpenAI
 from pydantic_ai.models import Model
@@ -37,10 +38,10 @@ class VLLMClient(AIClientBase):
             await self._client.close()
             self._client = None
 
-    async def subscribe(self, topic: str, callback: Callable[[CloudEvent], Awaitable[None]]) -> None:
+    async def subscribe(self, topic: str, callback: Callable[[CloudEvent[Any]], Awaitable[None]]) -> None:
         logger.warning("VLLM client does not support subscriptions")
 
-    async def publish(self, topic: str, event: CloudEvent, routing_key: str | None = None) -> None:
+    async def publish(self, topic: str, event: CloudEvent[Any], routing_key: str | None = None) -> None:
         logger.warning("VLLM client does not support publishing")
 
     def create_model(self) -> Model:
@@ -58,7 +59,7 @@ class VLLMClient(AIClientBase):
         provider = OpenAIProvider(openai_client=self._client)
         self._model = OpenAIChatModel(
             provider=provider,
-            model_name=ai_config.model_name,
+            model_name=ai_config.model_name,  # type: ignore[arg-type]
             profile=_VLLM_PROFILE,
         )
         logger.info("VLLM model configured: %s at %s", ai_config.model_name, ai_config.base_url)

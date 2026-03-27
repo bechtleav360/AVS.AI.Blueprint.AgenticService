@@ -2,6 +2,7 @@
 
 import logging
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 from openai import AsyncOpenAI
 from pydantic_ai.models import Model
@@ -29,10 +30,10 @@ class OpenAIClient(AIClientBase):
             await self._client.close()
             self._client = None
 
-    async def subscribe(self, topic: str, callback: Callable[[CloudEvent], Awaitable[None]]) -> None:
+    async def subscribe(self, topic: str, callback: Callable[[CloudEvent[Any]], Awaitable[None]]) -> None:
         logger.warning("OpenAI client does not support subscriptions")
 
-    async def publish(self, topic: str, event: CloudEvent, routing_key: str | None = None) -> None:
+    async def publish(self, topic: str, event: CloudEvent[Any], routing_key: str | None = None) -> None:
         logger.warning("OpenAI client does not support publishing")
 
     def create_model(self) -> Model:
@@ -42,11 +43,11 @@ class OpenAIClient(AIClientBase):
 
         ai_config = self.config.get_ai_config(self._runtime_name)
         self._client = AsyncOpenAI(max_retries=3, api_key=ai_config.api_key)
-        settings = OpenAIResponsesModelSettings(**ai_config.model_settings)
+        settings = OpenAIResponsesModelSettings(**ai_config.model_settings)  # type: ignore[typeddict-item]
         provider = OpenAIProvider(openai_client=self._client)
         self._model = OpenAIResponsesModel(
             provider=provider,
-            model_name=ai_config.model_name,
+            model_name=ai_config.model_name,  # type: ignore[arg-type]
             settings=settings,
         )
         logger.info("OpenAI model configured: %s. Additional settings: %s", ai_config.model_name, settings)

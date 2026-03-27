@@ -70,14 +70,14 @@ class NATSClient(IOClientBase):
             self._js = None
             self._client = None
 
-    async def subscribe(self, topic: str, callback: Callable[[CloudEvent], Awaitable[None]]) -> None:
+    async def subscribe(self, topic: str, callback: Callable[[CloudEvent[Any]], Awaitable[None]]) -> None:
         """Subscribe to a topic and call callback with parsed CloudEvents."""
         client = await self.client
 
-        async def message_handler(msg):
+        async def message_handler(msg: Any) -> None:
             try:
                 event_data = json.loads(msg.data.decode())
-                cloud_event = CloudEvent(**event_data)
+                cloud_event: CloudEvent[Any] = CloudEvent(**event_data)
                 await callback(cloud_event)
             except Exception as ex:
                 logger.error("Failed to handle NATS message: %s", str(ex))
@@ -110,7 +110,7 @@ class NATSClient(IOClientBase):
             logger.error("Failed to subscribe to topic '%s': %s", topic, str(e))
             raise
 
-    async def publish(self, topic: str, event: CloudEvent, routing_key: str | None = None) -> None:
+    async def publish(self, topic: str, event: CloudEvent[Any], routing_key: str | None = None) -> None:
         """Publish a CloudEvent to a topic.
 
         Args:

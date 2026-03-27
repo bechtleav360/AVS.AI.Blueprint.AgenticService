@@ -3,6 +3,7 @@
 import json
 import logging
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 import httpx
 
@@ -37,7 +38,7 @@ class DaprClient(IOClientBase):
             await self._client.aclose()
             self._client = None
 
-    async def subscribe(self, topic: str, callback: Callable[[CloudEvent], Awaitable[None]]) -> None:
+    async def subscribe(self, topic: str, callback: Callable[[CloudEvent[Any]], Awaitable[None]]) -> None:
         """Subscribe to a topic.
 
         Note: Dapr subscriptions are typically configured declaratively,
@@ -48,7 +49,7 @@ class DaprClient(IOClientBase):
     async def publish(
         self,
         topic: str,
-        event: CloudEvent,
+        event: CloudEvent[Any],
         routing_key: str | None = None,
         pubsub_name: str | None = None,
     ) -> None:

@@ -122,7 +122,7 @@ class AppBuilder:
                 eviction_policy=cache_config.eviction_policy,
                 enable_locking=enable_locking,
             )
-            Component.registry.cache_service = cache_service
+            Component.shared_registry.cache_service = cache_service  # type: ignore[union-attr]
             logger.info(
                 "Registered DiskCacheService with cache_dir=%s (locking=%s)",
                 cache_config.cache_dir,
@@ -163,7 +163,7 @@ class AppBuilder:
         # 1. Inject config — enforced once-only by metaclass guard
         Component.configure(self._config)
 
-        registry: Registry = Component.registry
+        registry: Registry = Component.shared_registry  # type: ignore[assignment]
 
         # 2. Create IO transport client and eventing endpoint if handlers registered
         if registry.get_event_handler():
@@ -223,17 +223,18 @@ class AppBuilder:
         if registry.has_cache():
             app.include_router(CacheManagementApi().router, prefix="/api", tags=["cache"])
 
-        app.include_router(self._actuator_api.router, tags=["actuators"])
+        if self._actuator_api is not None:
+            app.include_router(self._actuator_api.router, tags=["actuators"])
 
     # ------------------------------------------------------------------
     # Lifespan
     # ------------------------------------------------------------------
 
-    def _create_lifespan_manager(self):
+    def _create_lifespan_manager(self) -> Any:
         @asynccontextmanager
         async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             """Application lifespan manager for startup and shutdown events."""
-            registry: Registry = Component.registry
+            registry: Registry = Component.shared_registry  # type: ignore[assignment]
             logger.info("Starting up application components")
 
             # Configure OpenTelemetry tracing
@@ -243,7 +244,8 @@ class AppBuilder:
                 logger.warning("Failed to configure OpenTelemetry: %s", e)
 
             # ActuatorApi
-            await self._actuator_api.on_startup()
+            if self._actuator_api is not None:
+                await self._actuator_api.on_startup()
 
             # Clients (IO + AI) — config reading and lazy-connect preparation
             for client in registry.get_clients():
@@ -360,7 +362,8 @@ class AppBuilder:
                 except Exception as e:
                     logger.error("Client %s shutdown failed: %s", client.name, e, exc_info=True)
 
-            await self._actuator_api.on_shutdown()
+            if self._actuator_api is not None:
+                await self._actuator_api.on_shutdown()
             logger.info("Application shutdown completed")
 
         return lifespan

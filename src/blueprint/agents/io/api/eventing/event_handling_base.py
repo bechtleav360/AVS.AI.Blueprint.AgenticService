@@ -29,7 +29,7 @@ class EventHandlingBase(RestApiBase, ABC):
         self.required_cloud_event_fields = {"specversion", "id", "source", "type"}
 
     @traced("topic", "cloud_event")
-    async def handle_event(self, topic: str, cloud_event: CloudEvent) -> dict[str, Any]:
+    async def handle_event(self, topic: str, cloud_event: CloudEvent[Any]) -> dict[str, Any]:
         processing_result = await self._process_cloud_event(cloud_event, {"topic": topic})
         if processing_result.status == ProcessingStatus.PROCESSED:
             return {"status": "SUCCESS"}
@@ -38,7 +38,7 @@ class EventHandlingBase(RestApiBase, ABC):
             return {"status": "RETRY", "reason": failure_reason}
 
     @abstractmethod
-    async def publish(self, topic: str, event: CloudEvent) -> dict[str, Any]:
+    async def publish(self, topic: str, event: CloudEvent[Any]) -> dict[str, Any]:
         """Abstract method for publishing events (output)"""
 
         raise NotImplementedError()
@@ -49,7 +49,7 @@ class EventHandlingBase(RestApiBase, ABC):
 
         raise NotImplementedError()
 
-    async def _process_cloud_event(self, cloud_event: CloudEvent, context: dict[str, Any]) -> ProcessingResult:
+    async def _process_cloud_event(self, cloud_event: CloudEvent[Any], context: dict[str, Any]) -> ProcessingResult:
         """Process a CloudEvent with common error handling and tracing.
 
         Args:
@@ -93,7 +93,7 @@ class EventHandlingBase(RestApiBase, ABC):
             # Process through the unified service
             processing_service = self.registry.get_service(EventProcessingService)
 
-            processing_result = await processing_service.process_event(cloud_event, context)
+            processing_result = await processing_service.process_event(cloud_event, context)  # type: ignore[attr-defined]
 
             if not isinstance(processing_result, ProcessingResult):
                 logger.error(
@@ -124,7 +124,7 @@ class EventHandlingBase(RestApiBase, ABC):
             if correlation_token is not None:
                 self.registry.correlation_context.reset(correlation_token)
 
-    def _unwrap_nested_cloud_event(self, event: CloudEvent) -> tuple[CloudEvent, bool]:
+    def _unwrap_nested_cloud_event(self, event: CloudEvent[Any]) -> tuple[CloudEvent[Any], bool]:
         """Unwrap nested CloudEvents if present.
 
         Handles CloudEvents wrapped in envelopes, such as Dapr's "com.dapr.event.sent" type.

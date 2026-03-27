@@ -40,7 +40,7 @@ class CacheManagementApi(RestApiBase):
         return CacheNamespacesResponse(namespaces=namespaces, count=len(namespaces))
 
     @RestApiBase.post("/cache/evict", tags=["cache"], summary="Evict cache contents for an optional namespace.")
-    async def evict_cache_entry(self, request: CacheEvictRequest):
+    async def evict_cache_entry(self, request: CacheEvictRequest) -> dict[str, str]:
         """Evict (clear) cache contents for an optional namespace."""
         if not self.registry.has_cache():
             raise HTTPException(status_code=503, detail="Cache service not available")

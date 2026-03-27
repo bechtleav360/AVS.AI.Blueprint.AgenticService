@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 class TelemetryManager(IOBase):
     """Object-oriented manager for logging and tracing setup."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         # Do not add to component registry
         super().__init__(should_register=False)
 
@@ -86,13 +86,13 @@ class TelemetryManager(IOBase):
 
         return exporters
 
-    def on_startup(self) -> None:
+    async def on_startup(self) -> None:
         """Startup OpenTelemetry."""
 
         # OpenTelemetry does not have a startup method
         pass
 
-    def on_shutdown(self) -> None:
+    async def on_shutdown(self) -> None:
         """Shutdown OpenTelemetry."""
 
         # OpenTelemetry does not have a shutdown method

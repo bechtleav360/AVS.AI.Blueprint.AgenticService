@@ -241,7 +241,7 @@ class AgentBuilder:
             raise RuntimeError("AgentBuilder.build() has already been called. Create a new builder instance.")
 
         # Create AI client and model — client reads config via self.config
-        client = _CLIENT_MAP[self._ai_config.provider](self._runtime_name)
+        client = _CLIENT_MAP[self._ai_config.provider](self._runtime_name)  # type: ignore[index]
         self._model = client.create_model()
 
         # Resolve system prompt either from explicit configuration or runtime config defaults
@@ -267,7 +267,7 @@ class AgentBuilder:
                 prompt_name,
                 self._config,
                 path=self._package_root,
-                provider=self._ai_config.provider,
+                provider=self._ai_config.provider,  # type: ignore[arg-type]
             )
         except Exception as e:
             raise ValueError(
@@ -285,7 +285,7 @@ class AgentBuilder:
                 if kwarg not in allowed:
                     raise ValueError(f"Unexpected keyword argument for Agent: {kwarg}")
 
-        runtime = AgentRuntime[self._deps_type](  # type: ignore[misc]
+        runtime = AgentRuntime(
             model=self._model,
             system_prompt=self._system_prompt,
             tools=self._tools if self._tools else [],
@@ -297,7 +297,7 @@ class AgentBuilder:
             self._recorder = MetricsRecorder(self._config, self._meter, self._model)
             runtime._recorder = self._recorder
 
-        runtime._model_settings = self.get_model_settings()
+        runtime._model_settings = self.get_model_settings()  # type: ignore[assignment]
 
         logger.info(
             "Built agent with provider=%s, model=%s, tools=%d, result_type=%s",

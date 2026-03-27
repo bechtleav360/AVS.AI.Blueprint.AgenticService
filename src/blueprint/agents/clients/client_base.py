@@ -31,14 +31,14 @@ class ClientBase(Component, ABC):
         super().__init__()
         self._client: Any = None
 
-    async def _get_connected_client(self):
+    async def _get_connected_client(self) -> Any:
         """Get the client, connecting lazily if necessary."""
         if not self._is_connected():
             await self.connect()
         return self._client
 
     @property
-    def client(self):
+    def client(self) -> Any:
         """Get the client, ensuring connection if necessary.
 
         Returns a coroutine that performs reconnect if needed.
@@ -68,12 +68,12 @@ class ClientBase(Component, ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def subscribe(self, topic: str, callback: Callable[[CloudEvent], Awaitable[None]]) -> None:
+    async def subscribe(self, topic: str, callback: Callable[[CloudEvent[Any]], Awaitable[None]]) -> None:
         """Subscribe to a topic with a callback for incoming events."""
         raise NotImplementedError
 
     @abstractmethod
-    async def publish(self, topic: str, event: CloudEvent, routing_key: str | None = None) -> None:
+    async def publish(self, topic: str, event: CloudEvent[Any], routing_key: str | None = None) -> None:
         """Publish a CloudEvent to a topic."""
         raise NotImplementedError
 

@@ -26,9 +26,9 @@ class ClientHealthChecker(HealthCheckerBase):
             result = await client.health_check()
 
             if result.status == "healthy":
-                healthy_messages.append(result.message)
+                healthy_messages.append(result.message or "")
             else:
-                unhealthy_messages.append(result.message)
+                unhealthy_messages.append(result.message or "")
                 logger.warning("Client health check failed: %s", result.message)
 
         if unhealthy_messages:

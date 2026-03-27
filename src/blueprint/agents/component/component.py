@@ -96,7 +96,7 @@ class Component(ABC, metaclass=_ComponentMeta):
         return self._name
 
     @name.setter
-    def name(self, value: str):
+    def name(self, value: str) -> None:
         """Set the component name. Also updates the name in the component registry."""
         self.registry.update_component_name(self._name, value)
         self._name = value
@@ -104,7 +104,7 @@ class Component(ABC, metaclass=_ComponentMeta):
     @property
     def registry(self) -> Registry:
         """Get the component registry for accessing other components."""
-        return Component.shared_registry
+        return Component.shared_registry  # type: ignore[return-value]
 
     @property
     def config(self) -> Config:
@@ -159,7 +159,7 @@ def _stamp_span(span: trace.Span, name: str, value: Any) -> None:
         span.set_attribute(name, str(value))
 
 
-def traced(*extract: str) -> Callable:
+def traced(*extract: str) -> Callable[..., Any]:
     """Decorator factory that wraps a Component method in an OTel span.
 
     Span name is auto-prefixed with the component's name:
@@ -189,10 +189,10 @@ def traced(*extract: str) -> Callable:
         async def readiness_probe(self): ...
     """
 
-    def decorator(func: Callable) -> Callable:
+    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         sig = inspect.signature(func)
 
-        def _open_span_and_stamp(self: Component, bound_args: dict) -> trace.Span:
+        def _open_span_and_stamp(self: Component, bound_args: dict[str, Any]) -> trace.Span:
             span = trace.get_current_span()  # already entered via context manager below
             if extract:
                 for name in extract:

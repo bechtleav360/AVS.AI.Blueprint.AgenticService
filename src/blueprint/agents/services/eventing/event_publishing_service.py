@@ -84,12 +84,12 @@ class EventPublishingService(ServiceBase):
         event.datacontenttype = event.datacontenttype or "application/json"
 
         span = trace.get_current_span()
-        span.set_attribute("pubsub.topic", topic)
+        span.set_attribute("pubsub.topic", topic or "")
         if routing_key:
             span.set_attribute("pubsub.routing_key", routing_key)
 
         logger.info("Publishing event type '%s' to topic '%s'", event.type, topic)
-        await self._client.publish(topic, event, routing_key=routing_key)
+        await self._client.publish(topic, event, routing_key=routing_key)  # type: ignore[union-attr, arg-type]
 
         trace.get_current_span().set_attribute("publish.status", "success")
         logger.info("Successfully published event type '%s' to topic '%s'", event.type, topic)
@@ -101,7 +101,7 @@ class EventPublishingService(ServiceBase):
         event_type: str,
         data: Any,
         metadata: dict[str, Any],
-        source_event: CloudEvent,
+        source_event: CloudEvent[Any],
         new_subject: str | None = None,
     ) -> None:
         """Construct and publish a CloudEvent from a handler result.

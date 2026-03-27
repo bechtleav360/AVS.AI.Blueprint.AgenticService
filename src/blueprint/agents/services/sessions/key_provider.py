@@ -11,12 +11,12 @@ from uuid import UUID
 
 from cachetools import TTLCache
 
-from ...base.business_service import BusinessService
+from ..service_base import ServiceBase
 
 logger = logging.getLogger(__name__)
 
 
-class SessionKeyProvider(BusinessService):
+class SessionKeyProvider(ServiceBase):
     """Provides session keys from configured source.
 
     Supports multiple sources:
@@ -35,7 +35,7 @@ class SessionKeyProvider(BusinessService):
     """
 
     def __init__(self) -> None:
-        super().__init__("SessionKeyProvider")
+        super().__init__()
         self._cache: TTLCache | None = None
         self._source: str = "env"
         self._env_var: str = "SESSION_KEY"
@@ -43,7 +43,7 @@ class SessionKeyProvider(BusinessService):
 
     async def on_startup(self) -> None:
         """Initialize the session key provider with configuration."""
-        config = self.get_config().get("sessions_service")
+        config = self.config.get("sessions_service")
         if not config:
             raise ValueError("sessions_service configuration not found")
 
@@ -141,7 +141,7 @@ class SessionKeyProvider(BusinessService):
         Raises:
             ValueError: If session key not in config
         """
-        config = self.get_config().get("sessions_service")
+        config = self.config.get("sessions_service")
         session_key = config.get("session_key")
 
         if not session_key:

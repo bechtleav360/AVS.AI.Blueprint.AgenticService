@@ -50,7 +50,7 @@ class DaprEventing(EventHandlingBase):
         return {}
 
     @RestApiBase.post("/events/{topic}", tags=["dapr"])
-    async def publish(self, topic: str, cloud_event: CloudEvent) -> dict[str, Any]:
+    async def publish(self, topic: str, cloud_event: CloudEvent[Any]) -> dict[str, Any]:
         """
         Generic Dapr event handler that processes events through the unified service.
         """

@@ -25,9 +25,9 @@ logger = logging.getLogger(__name__)
 class ActuatorApi(RestApiBase):
     """Encapsulates all actuator-related endpoints and logic."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__(should_register=False)
-        self._health_cache = None
+        self._health_cache: HealthCheckCache | None = None
         self._pending_providers: dict[str, HealthCheckerBase] = {}
 
     def add_health_providers(self, providers: dict[str, HealthCheckerBase]) -> None:
@@ -83,6 +83,12 @@ class ActuatorApi(RestApiBase):
                         "status": "DOWN",
                         "errors": self.config.get_validation_errors(),
                     },
+                )
+
+            if self._health_cache is None:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Health check cache not initialized",
                 )
 
             # Return cached health status (updated periodically in background)

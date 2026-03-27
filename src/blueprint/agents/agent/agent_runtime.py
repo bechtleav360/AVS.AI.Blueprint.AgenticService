@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 logger: logging.Logger = logging.getLogger(__name__)
 
 
-class AgentRuntime(Agent[AgentDepsT, Any], Component):
+class AgentRuntime(Agent[AgentDepsT, Any], Component):  # type: ignore[misc]
     """Agent subclass that stores registered prompts and exposes prompt execution.
 
     Handles all prompt-related operations including loading, registering, and executing
@@ -30,16 +30,16 @@ class AgentRuntime(Agent[AgentDepsT, Any], Component):
     Extends Component to provide consistent lifecycle and registry access.
     """
 
-    @property
+    @property  # type: ignore[override]
     def name(self) -> str | None:
         """Agent name — delegates to Agent.name to preserve _override_name context-var logic."""
-        return Agent.name.fget(self)
+        return Agent.name.fget(self)  # type: ignore[attr-defined]
 
     @name.setter
     def name(self, value: str | None) -> None:
         """Update name in both the pydantic_ai Agent and the Component registry."""
-        Agent.name.fset(self, value)  # pydantic_ai side-effects (future-proof)
-        Component.name.fset(self, value)  # registry update + self._name
+        Agent.name.fset(self, value)  # type: ignore[attr-defined]  # pydantic_ai side-effects (future-proof)
+        Component.name.fset(self, value)  # type: ignore[attr-defined]  # registry update + self._name
 
     def __init__(
         self,
@@ -58,7 +58,7 @@ class AgentRuntime(Agent[AgentDepsT, Any], Component):
         self.registry.add_component(name, self)
 
         self._prompt_cache: dict[str, str] = {}
-        self._model_settings: ModelSettings = {}  # type: ignore[assignment]
+        self._model_settings: ModelSettings = {}
         self._recorder: MetricsRecorder | None = None
 
     def get_pydantic_name(self) -> str:
@@ -81,8 +81,8 @@ class AgentRuntime(Agent[AgentDepsT, Any], Component):
         """
         if not self._model_settings:
             try:
-                ai_config = self.config.get_ai_config(self.name)
-                settings: ModelSettings = {}  # type: ignore[assignment]
+                ai_config = self.config.get_ai_config(self.name)  # type: ignore[arg-type]
+                settings: ModelSettings = {}
 
                 if ai_config.max_tokens is not None:
                     settings["max_tokens"] = ai_config.max_tokens
@@ -140,7 +140,7 @@ class AgentRuntime(Agent[AgentDepsT, Any], Component):
             return
 
         resolved = model_name or getattr(getattr(self, "model", None), "model_name", "unknown")
-        self._recorder.record(result, duration_ms, resolved)
+        self._recorder.record(result, duration_ms, resolved)  # type: ignore[arg-type]
 
     def get_prompt(self, prompt_name: str, path: str = "") -> str:
         """Load instruction prompt by name (lazy loading with caching).

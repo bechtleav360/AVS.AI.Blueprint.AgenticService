@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 
 from abc import ABC
+from collections.abc import Callable
 from http import HTTPStatus
 from time import perf_counter
 from typing import Any
@@ -61,51 +62,51 @@ class RestApiBase(IOBase, ABC):
         return self._router
 
     @staticmethod
-    def get(path: str, **kwargs: Any):
+    def get(path: str, **kwargs: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Decorator: register a GET route on the instance router."""
 
-        def decorator(func):
-            func._route = ("get", path, kwargs)
+        def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+            func._route = ("get", path, kwargs)  # type: ignore[attr-defined]
             return func
 
         return decorator
 
     @staticmethod
-    def post(path: str, **kwargs: Any):
+    def post(path: str, **kwargs: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Decorator: register a POST route on the instance router."""
 
-        def decorator(func):
-            func._route = ("post", path, kwargs)
+        def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+            func._route = ("post", path, kwargs)  # type: ignore[attr-defined]
             return func
 
         return decorator
 
     @staticmethod
-    def put(path: str, **kwargs: Any):
+    def put(path: str, **kwargs: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Decorator: register a PUT route on the instance router."""
 
-        def decorator(func):
-            func._route = ("put", path, kwargs)
+        def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+            func._route = ("put", path, kwargs)  # type: ignore[attr-defined]
             return func
 
         return decorator
 
     @staticmethod
-    def delete(path: str, **kwargs: Any):
+    def delete(path: str, **kwargs: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Decorator: register a DELETE route on the instance router."""
 
-        def decorator(func):
-            func._route = ("delete", path, kwargs)
+        def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+            func._route = ("delete", path, kwargs)  # type: ignore[attr-defined]
             return func
 
         return decorator
 
     @staticmethod
-    def patch(path: str, **kwargs: Any):
+    def patch(path: str, **kwargs: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Decorator: register a PATCH route on the instance router."""
 
-        def decorator(func):
-            func._route = ("patch", path, kwargs)
+        def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+            func._route = ("patch", path, kwargs)  # type: ignore[attr-defined]
             return func
 
         return decorator
@@ -154,7 +155,10 @@ class RestApiBase(IOBase, ABC):
                 "client_ip": request.client.host if request.client else None,
             }
 
-            result_event = await self.registry.event_processing_service.process_rest_request(payload, context)
+            from ...services.eventing.event_processing_service import EventProcessingService  # noqa: PLC0415
+
+            event_processing_service = self.registry.get_service(EventProcessingService)
+            result_event = await event_processing_service.process_rest_request(payload, context)  # type: ignore[attr-defined]
 
             # Extract result data from CloudEvent
             result = result_event.data

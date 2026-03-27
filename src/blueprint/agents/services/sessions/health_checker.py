@@ -12,7 +12,7 @@ from typing import Any
 import httpx
 
 from ...models.api import ComponentHealth
-from ..health.base import HealthCheckerBase
+from ...io.api.actuators.health.health_base import HealthCheckerBase
 
 logger = logging.getLogger(__name__)
 

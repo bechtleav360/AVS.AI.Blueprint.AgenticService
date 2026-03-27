@@ -10,7 +10,7 @@ from pydantic import ValidationError
 from ...component.component import traced
 from ...handler.handler_chain import HandlerChain
 from ...models import ProcessingResult, ProcessingStatus
-from ...models.events import GenericCloudEvent, HandlerResult
+from ...models.events import CloudEvent, GenericCloudEvent, HandlerResult
 from ..service_base import ServiceBase
 from .event_publishing_service import EventPublishingService
 
@@ -194,7 +194,7 @@ class EventProcessingService(ServiceBase):
         )
         inner_event = event.data
 
-        if isinstance(inner_event, GenericCloudEvent):
+        if isinstance(inner_event, CloudEvent):
             return inner_event
 
         if isinstance(inner_event, dict):

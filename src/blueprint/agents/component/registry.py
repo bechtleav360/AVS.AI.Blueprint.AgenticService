@@ -50,7 +50,7 @@ class Registry:
         self._correlation_context = CorrelationContextProvider.get_correlation_context()
 
         self._cache_service: CacheService | None = None
-        self._components = {}
+        self._components: dict[str, Any] = {}
 
         logger.info("ComponentRegistry initialized")
 
@@ -109,7 +109,7 @@ class Registry:
         logger.info("Registering cache service: %s", type(cache_service).__name__)
         self._cache_service = cache_service
 
-    def add_component(self, name: str, component: _component_class) -> None:
+    def add_component(self, name: str, component: Any) -> None:
         """Add a component to the registry.
 
         Args:
@@ -117,7 +117,7 @@ class Registry:
             component: An instance of a Component class
         """
 
-        if not isinstance(component, self._component_class):
+        if not isinstance(component, self._component_class):  # type: ignore[arg-type]
             raise ValueError(f"component must be an instance of {self._component_class}")
 
         if name in self._components:
@@ -202,7 +202,7 @@ class Registry:
         else:
             return any(isinstance(component, name_or_class) for component in self._components.values())
 
-    def has_component_of_type(self, component_type: Any, name: str = None) -> bool:
+    def has_component_of_type(self, component_type: Any, name: str | None = None) -> bool:
         """Check if a component is registered.
 
         Args:
@@ -252,7 +252,7 @@ class Registry:
 
         return self._cache_service is not None
 
-    def has_event_handler(self, name: str = None) -> bool:
+    def has_event_handler(self, name: str | None = None) -> bool:
         """Check if a handler is registered.
 
         Args:
@@ -269,7 +269,7 @@ class Registry:
 
         return self.get_components_by_type(EventHandlerBase)
 
-    def has_agents(self, name: str = None) -> bool:
+    def has_agents(self, name: str | None = None) -> bool:
         """Check if an agent is registered.
 
         Args:
@@ -304,7 +304,7 @@ class Registry:
 
         return self.get_component_names_by_type(AgentRuntime)
 
-    def has_rest_apis(self, name: str = None) -> bool:
+    def has_rest_apis(self, name: str | None = None) -> bool:
         """Check if a REST API is registered.
 
         Args:
@@ -334,14 +334,14 @@ class Registry:
             ValueError: If not found, wrong type, or multiple matches exist
         """
 
-        return self._resolve_single(name_or_class, RestApiBase)
+        return self._resolve_single(name_or_class, RestApiBase)  # type: ignore[type-abstract]
 
     def get_rest_apis(self) -> list[RestApiBase]:
         """Get all registered REST APIs."""
 
         return self.get_components_by_type(RestApiBase)
 
-    def has_services(self, name: str = None) -> bool:
+    def has_services(self, name: str | None = None) -> bool:
         """Check if a business service is registered.
 
         Args:
@@ -366,14 +366,14 @@ class Registry:
             ValueError: If not found, wrong type, or multiple matches exist
         """
 
-        return self._resolve_single(name_or_class, ServiceBase)
+        return self._resolve_single(name_or_class, ServiceBase)  # type: ignore[type-abstract]
 
     def get_services(self) -> list[ServiceBase]:
         """Get all registered business services."""
 
         return self.get_components_by_type(ServiceBase)
 
-    def has_schedulers(self, name: str = None) -> bool:
+    def has_schedulers(self, name: str | None = None) -> bool:
         """Check if a scheduler is registered.
 
         Args:
@@ -398,7 +398,7 @@ class Registry:
             ValueError: If not found, wrong type, or multiple matches exist
         """
 
-        return self._resolve_single(name_or_class, SchedulerBase)
+        return self._resolve_single(name_or_class, SchedulerBase)  # type: ignore[type-abstract]
 
     def get_schedulers(self) -> list[SchedulerBase]:
         """Get all registered schedulers."""
@@ -418,7 +418,7 @@ class Registry:
             ValueError: If not found, wrong type, or multiple matches exist
         """
 
-        return self._resolve_single(name_or_class, ClientBase)
+        return self._resolve_single(name_or_class, ClientBase)  # type: ignore[type-abstract]
 
     def get_io_client(self, name_or_class: str | type[IOClientBase]) -> IOClientBase:
         """Get a registered IO client by name or class.
@@ -433,7 +433,7 @@ class Registry:
             ValueError: If not found, wrong type, or multiple matches exist
         """
 
-        return self._resolve_single(name_or_class, IOClientBase)
+        return self._resolve_single(name_or_class, IOClientBase)  # type: ignore[type-abstract]
 
     def get_ai_client(self, name_or_class: str | type[AIClientBase]) -> AIClientBase:
         """Get a registered AI client by name or class.
@@ -448,7 +448,7 @@ class Registry:
             ValueError: If not found, wrong type, or multiple matches exist
         """
 
-        return self._resolve_single(name_or_class, AIClientBase)
+        return self._resolve_single(name_or_class, AIClientBase)  # type: ignore[type-abstract]
 
     def get_clients(self) -> list[ClientBase]:
         """Get all registered clients (IO and AI)."""

@@ -41,7 +41,7 @@ class NatsEventing(EventHandlingBase):
             raise RuntimeError("NATS client not initialized")
 
         # Callback to process incoming events
-        async def _process_event(event: CloudEvent) -> None:
+        async def _process_event(event: CloudEvent[Any]) -> None:
             try:
                 context = {"nats_topic": topic}
                 processing_result = await self._process_cloud_event(event, context)
@@ -59,7 +59,7 @@ class NatsEventing(EventHandlingBase):
         return {"message": f"Subscribed to topic {topic}"}
 
     @RestApiBase.post("/events/{topic}", tags=["nats"])
-    async def publish(self, topic: str, event: CloudEvent) -> dict[str, Any]:
+    async def publish(self, topic: str, event: CloudEvent[Any]) -> dict[str, Any]:
         """Publish a CloudEvent to a NATS topic.
 
         Args:
