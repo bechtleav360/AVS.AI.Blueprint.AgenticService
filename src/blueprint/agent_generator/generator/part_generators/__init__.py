@@ -6,6 +6,7 @@ from .models_part_generator import DTOPartGenerator, DomainModelPartGenerator, M
 from .handler_part_generator import HandlerPartGenerator
 from .copy_part_generator import CopyPartGenerator
 from .settings_part_generator import SettingsPartGenerator
+from .secrets_part_generator import SecretsPartGenerator
 
 __all__ = [
     "MainPartGenerator",
@@ -18,4 +19,5 @@ __all__ = [
     "HandlerPartGenerator",
     "CopyPartGenerator",
     "SettingsPartGenerator",
+    "SecretsPartGenerator",
 ]

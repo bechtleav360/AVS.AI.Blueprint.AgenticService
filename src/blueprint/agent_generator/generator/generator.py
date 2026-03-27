@@ -18,6 +18,7 @@ from .part_generators import (
     MapperPartGenerator,
     ServicePartGenerator,
     SettingsPartGenerator,
+    SecretsPartGenerator
 )
 
 # Configure logging
@@ -339,6 +340,9 @@ class AgentGenerator:
 
             # Create settings.toml
             SettingsPartGenerator(self.config, self.template_dir, "").create_file(out)
+
+            # Create secrets.toml with API key placeholder
+            SecretsPartGenerator(self.config, self.template_dir, "").create_file()
 
             # Create __init__ files with imports
             InitPartGenerator(self.config, self.template_dir, "src", out).create_file(out)

@@ -79,6 +79,54 @@ def main() -> None:
     scheduler_parser.add_argument("--cron", default="0 * * * *", help="Cron expression (default: '0 * * * *')")
     scheduler_parser.add_argument("--output-dir", default="src/schedulers", help="Output directory")
 
+    # Claude command
+    claude_parser = subparsers.add_parser(
+        "claude",
+        help="Generate Claude Code integration files",
+        description="Create .claude/CLAUDE.md with Blueprint framework context",
+    )
+    claude_parser.add_argument(
+        "output_dir",
+        nargs="?",
+        default=".",
+        help="Project root directory (default: current directory)",
+    )
+    claude_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing files",
+    )
+    claude_parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        help="Enable verbose logging",
+    )
+
+    # Windsurf command
+    windsurf_parser = subparsers.add_parser(
+        "windsurf",
+        help="Generate Windsurf IDE integration files",
+        description="Create .windsurf/ directory with rules and workflows",
+    )
+    windsurf_parser.add_argument(
+        "output_dir",
+        nargs="?",
+        default=".",
+        help="Project root directory (default: current directory)",
+    )
+    windsurf_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing files",
+    )
+    windsurf_parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        help="Enable verbose logging",
+    )
+
     # Validate command
     validate_parser = subparsers.add_parser(
         "validate",

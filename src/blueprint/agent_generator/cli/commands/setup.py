@@ -23,6 +23,16 @@ def create_basic_config(name: str) -> dict[str, Any]:
     Returns:
         Configuration dictionary for the generator
     """
+    # Avoid double "Agent" suffix when project name already ends with "agent"
+    name_normalized = name.lower().replace("-", "").replace("_", "")
+    has_agent_suffix = name_normalized.endswith("agent")
+    agent_class_name = name if has_agent_suffix else f"{name}Agent"
+    agent_runtime_name = (
+        PartGeneratorBase.camel_to_snake(name)
+        if has_agent_suffix
+        else f"{PartGeneratorBase.camel_to_snake(name)}_agent"
+    )
+
     return {
         "name": name,
         "description": f"{name} agent microservice",
@@ -74,7 +84,7 @@ def create_basic_config(name: str) -> dict[str, Any]:
             },
             "handlers": {f"{name}Handler": {"description": f"Handler for {name}", "priority": 10, "uses_services": [f"{name}Service"]}},
         },
-        "agent_layer": {f"{name}Agent": {"runtime_name": f"{PartGeneratorBase.camel_to_snake(name)}_agent"}},
+        "agent_layer": {agent_class_name: {"runtime_name": agent_runtime_name}},
         "service_layer": {
             f"{name}Service": {
                 "description": f"Service for {name}",
@@ -154,15 +164,15 @@ def run(args: Namespace) -> None:
             print("  │   ├── models/")
             print("  │   └── prompts/")
             print("  ├── settings.toml")
+            print("  ├── secrets.toml")
             print("  ├── Dockerfile")
             print("  └── .gitignore")
 
             print("\nNext steps:")
             print(f"  1. cd {project_name}")
             print("  2. Review and edit the generated files")
-            print("  3. Add your LLM API key to settings.toml:")
-            print(f"     [runtimes.{PartGeneratorBase.camel_to_snake(project_name)}_agent]")
-            print('     model_api_key = "your-api-key-here"')
+            print("  3. Add your LLM API key to secrets.toml")
+            print("     (A secrets.toml with a placeholder has been created for you)")
             print("  4. Install dependencies: pip install -e .")
             print("  5. Run the service: uvicorn src.main:app --reload")
             print("  6. View API docs at: http://localhost:8000/docs")

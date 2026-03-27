@@ -1,79 +1,40 @@
-"""Claude command - generate a CLAUDE.md for Claude Code integration."""
+"""Claude command - generate Claude Code integration files."""
 
-import importlib.resources
 import logging
+import os
 import sys
 from argparse import Namespace
-from pathlib import Path
+
+from ...generator.claude_generator import ClaudeGenerator
 
 logger = logging.getLogger(__name__)
-
-_CLAUDE_MD = "CLAUDE.md"
-
-
-def _locate_template() -> Path:
-    """Locate the CLAUDE.md template inside the installed package.
-
-    Uses ``importlib.resources`` so the path is resolved correctly from
-    both an editable install and a built wheel.
-
-    Returns:
-        Path to the CLAUDE.md template file.
-
-    Raises:
-        FileNotFoundError: If the template cannot be located.
-    """
-    try:
-        pkg_ref = importlib.resources.files("blueprint.agent_generator")
-        candidate = Path(str(pkg_ref)) / "assistant_integrations" / _CLAUDE_MD
-        if candidate.exists():
-            return candidate.resolve()
-    except (TypeError, ModuleNotFoundError):
-        pass
-
-    # Fallback for running from source without an editable install
-    fallback = Path(__file__).parent.parent.parent / "assistant_integrations" / _CLAUDE_MD
-    if fallback.exists():
-        return fallback.resolve()
-
-    raise FileNotFoundError(
-        f"Could not locate the {_CLAUDE_MD} template.\n"
-        "Expected it at: blueprint.agent_generator/assistant_integrations/CLAUDE.md\n"
-        "Make sure the package is installed with: pip install -e ."
-    )
 
 
 def run(args: Namespace) -> None:
     """Execute the claude command.
 
     Args:
-        args: Parsed command-line arguments.
+        args: Parsed command-line arguments
     """
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(levelname)s: %(message)s",
     )
 
-    output_dir = Path(args.output_dir).resolve()
+    output_dir = os.path.abspath(args.output_dir)
 
-    if not output_dir.is_dir():
+    if not os.path.isdir(output_dir):
         print(f"Error: Output directory does not exist: {output_dir}", file=sys.stderr)
         sys.exit(1)
 
-    destination = output_dir / _CLAUDE_MD
-
-    if destination.exists() and not args.overwrite:
-        print(f"Error: {destination} already exists.", file=sys.stderr)
-        print("Use --overwrite to replace it.", file=sys.stderr)
-        sys.exit(1)
+    print(f"Generating Claude Code integration files for: {output_dir}")
 
     try:
-        template = _locate_template()
-        destination.write_text(template.read_text(encoding="utf-8"), encoding="utf-8")
-        logger.info("Wrote %s", destination)
+        generator = ClaudeGenerator(output_dir)
+        generator.generate(overwrite=args.overwrite)
 
-        print(f"\n✓ {_CLAUDE_MD} generated in: {output_dir}")
-        print("\nClaude Code will pick it up automatically on the next session.")
+        print("\nCreated:")
+        print("  .claude/CLAUDE.md  - Blueprint framework context for Claude Code")
 
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
