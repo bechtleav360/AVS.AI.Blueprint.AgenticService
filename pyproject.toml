@@ -66,48 +66,40 @@ asbs = "blueprint.agent_generator.cli.main:main"
 packages = [
     "blueprint",
     "blueprint.agents",
-    "blueprint.agents.base",
     "blueprint.agents.agent",
-    "blueprint.agents.agent.providers",
-    "blueprint.agents.agent.providers.openai",
-    "blueprint.agents.agent.providers.vllm",
-    "blueprint.agents.api",
+    "blueprint.agents.clients",
+    "blueprint.agents.clients.ai",
+    "blueprint.agents.clients.io",
+    "blueprint.agents.component",
     "blueprint.agents.config",
     "blueprint.agents.handler",
+    "blueprint.agents.io",
+    "blueprint.agents.io.api",
+    "blueprint.agents.io.api.actuators",
+    "blueprint.agents.io.api.actuators.health",
+    "blueprint.agents.io.api.eventing",
+    "blueprint.agents.io.api.scheduling",
+    "blueprint.agents.io.api.utilities",
+    "blueprint.agents.io.telemetry",
     "blueprint.agents.models",
-    "blueprint.agents.registry",
     "blueprint.agents.services",
-    "blueprint.agents.services.health",
-    "blueprint.agents.services.processing",
+    "blueprint.agents.services.eventing",
+    "blueprint.agents.services.infrastructure",
     "blueprint.agents.services.sessions",
+    "blueprint.agents.utils",
     "blueprint.agent_generator",
     "blueprint.agent_generator.generator",
+    "blueprint.agent_generator.generator.part_generators",
     "blueprint.agent_generator.cli",
-    "blueprint.agent_generator.cli.commands"
+    "blueprint.agent_generator.cli.commands",
 ]
 
 [tool.setuptools.package-dir]
 "" = "src"
-"blueprint" = "src/blueprint"
-"blueprint.agents" = "src/blueprint/agents"
-"blueprint.agents.agent" = "src/blueprint/agents/agent"
-"blueprint.agents.agent.providers" = "src/blueprint/agents/agent/providers"
-"blueprint.agents.agent.providers.openai" = "src/blueprint/agents/agent/providers/openai"
-"blueprint.agents.agent.providers.vllm" = "src/blueprint/agents/agent/providers/vllm"
-"blueprint.agents.api" = "src/blueprint/agents/api"
-"blueprint.agents.base" = "src/blueprint/agents/base"
-"blueprint.agents.config" = "src/blueprint/agents/config"
-"blueprint.agents.handler" = "src/blueprint/agents/handler"
-"blueprint.agents.models" = "src/blueprint/agents/models"
-"blueprint.agents.registry" = "src/blueprint/agents/registry"
-"blueprint.agents.services" = "src/blueprint/agents/services"
-"blueprint.agents.services.health" = "src/blueprint/agents/services/health"
-"blueprint.agents.services.processing" = "src/blueprint/agents/services/processing"
-"blueprint.agents.services.sessions" = "src/blueprint/agents/services/sessions"
 
 [tool.setuptools.package-data]
 "blueprint.agents" = ["py.typed"]
-"blueprint.agent_generator" = ["**/*.py", "base_files/**/*", "windsurf_docs/**/*"]
+"blueprint.agent_generator" = ["base_files/**/*", "assistant_integrations/**/*"]
 
 [tool.black]
 line-length = 140
@@ -180,4 +172,9 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 pythonpath = [
     "src",
+]
+
+[tool.uv.workspace]
+members = [
+    "MyTestAgent",
 ]

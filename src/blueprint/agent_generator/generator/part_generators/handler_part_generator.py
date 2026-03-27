@@ -13,6 +13,7 @@ class HandlerPartGenerator(PartGeneratorBase):
         self.template_vars["imports"] = self._create_handler_imports()
         self.template_vars["handler_class"] = self._generate_handler_class()
         self.template_vars["on_startup"] = self._generate_on_startup()
+        self.template_vars["on_shutdown"] = self._generate_on_shutdown()
 
     def _create_handler_imports(self) -> str:
         """
@@ -36,14 +37,13 @@ class HandlerPartGenerator(PartGeneratorBase):
         """
 
         lines = [
-            f"class {self.handler_name}(EventHandler):",
+            f"class {self.handler_name}(EventHandlerBase):",
             '    """',
             f"    {self.config['communication_layer']['handlers'][self.handler_name]['description']}",
             '    """',
             "",
-            f'    def __init__(self, name: str = "{self.camel_to_snake(self.handler_name)}") -> None:',
-            f"        super().__init__(name=name, "
-            f"priority={self.config['communication_layer']['handlers'][self.handler_name]['priority']})",
+            "    def __init__(self) -> None:",
+            f"        super().__init__(priority={self.config['communication_layer']['handlers'][self.handler_name]['priority']})",
             '        self._input_event_type: str = ""',
             *[
                 f"        self.{self.camel_to_snake(service)}: {service} | None = None"
@@ -68,12 +68,12 @@ class HandlerPartGenerator(PartGeneratorBase):
         ]
         for service in self.config["communication_layer"]["handlers"][self.handler_name]["uses_services"]:
             lines.append(
-                f"        self.{self.camel_to_snake(service)} = " f"self.get_registry().get_service('{self.camel_to_snake(service)}')"
+                f"        self.{self.camel_to_snake(service)} = self.registry.get_service('{self.camel_to_snake(service)}')"
             )
         lines.extend(
             [
                 "",
-                f'        self._input_event_type = self.get_config().get("{self.camel_to_snake(self.handler_name)}"'
+                f'        self._input_event_type = self.config.get("{self.camel_to_snake(self.handler_name)}"'
                 ', {}).get("input_event_type", '
                 ")",
                 '        if self._input_event_type == "":',
@@ -82,3 +82,10 @@ class HandlerPartGenerator(PartGeneratorBase):
         )
 
         return "\n".join(lines)
+
+    def _generate_on_shutdown(self) -> str:
+        """Generate a no-op on_shutdown method for the handler class."""
+        return "\n".join([
+            "    async def on_shutdown(self) -> None:",
+            '        """Clean up handler resources on shutdown."""',
+        ])

@@ -14,6 +14,7 @@ class ServicePartGenerator(PartGeneratorBase):
         self.template_vars["imports"] = self._create_service_imports()
         self.template_vars["class_initialization"] = self._generate_class_initialization()
         self.template_vars["on_startup"] = self._generate_on_startup()
+        self.template_vars["on_shutdown"] = self._generate_on_shutdown()
         self.template_vars["process_functions"] = self._generate_process_function()
 
     def to_py_file_name(self) -> str:
@@ -48,12 +49,12 @@ class ServicePartGenerator(PartGeneratorBase):
         lines = []
         lines.extend(
             [
-                f"class {self.service_name}(BusinessService):",
+                f"class {self.service_name}(ServiceBase):",
                 '    """',
                 f"    Service for {self.config['name']}.",
                 '    """',
-                f'    def __init__(self, name: str = "{self.service_name}") -> None:',
-                "        super().__init__(name=name)",
+                "    def __init__(self) -> None:",
+                "        super().__init__()",
             ]
         )
 
@@ -68,23 +69,26 @@ class ServicePartGenerator(PartGeneratorBase):
         Generate on_startup code for service.py.
         """
 
-        lines = []
-        if self.config["service_layer"][self.service_name]["uses_agents"]:
-            lines.extend(
-                [
-                    "    async def on_startup(self) -> None:",
-                    '        """Initialize the service by getting agent from the registry."""',
-                ]
-            )
+        lines = [
+            "    async def on_startup(self) -> None:",
+            '        """Initialize the service by getting dependencies from the registry."""',
+        ]
 
-            for agent_name in self.config["service_layer"][self.service_name]["uses_agents"]:
-                lines.append(
-                    f"        self._{self.camel_to_snake(agent_name)} = self.get_registry()"
-                    f".get_agent('{self.config['agent_layer'][agent_name]['runtime_name']}')"
-                )
+        for agent_name in self.config["service_layer"][self.service_name].get("uses_agents", []):
+            lines.append(
+                f"        self._{self.camel_to_snake(agent_name)} = "
+                f"self.registry.get_agent('{self.config['agent_layer'][agent_name]['runtime_name']}')"
+            )
 
         lines.append("")
         return "\n".join(lines)
+
+    def _generate_on_shutdown(self) -> str:
+        """Generate a no-op on_shutdown method for the service class."""
+        return "\n".join([
+            "    async def on_shutdown(self) -> None:",
+            '        """Clean up service resources on shutdown."""',
+        ])
 
     def _generate_process_function(self) -> str:
         """

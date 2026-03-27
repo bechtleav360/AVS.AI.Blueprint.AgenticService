@@ -308,19 +308,20 @@ class AgentGenerator:
             logger.error(error_msg)
             raise FileNotFoundError(error_msg)
 
+        out = str(self.output_dir)
         try:
             # Create python files
-            MainPartGenerator(self.config, self.template_dir, "src").create_file()
-            DomainModelPartGenerator(self.config, self.template_dir, "src/models").create_file()
+            MainPartGenerator(self.config, self.template_dir, "src").create_file(out)
+            DomainModelPartGenerator(self.config, self.template_dir, "src/models").create_file(out)
             # Only create API, DTO, and mapper files if REST API is enabled
             if self.config["communication_layer"]["rest_api"]["add_rest_api"]:
-                APIPartGenerator(self.config, self.template_dir, "src/api").create_file()
-                DTOPartGenerator(self.config, self.template_dir, "src/models").create_file()
-                MapperPartGenerator(self.config, self.template_dir, "src/models").create_file()
+                APIPartGenerator(self.config, self.template_dir, "src/api").create_file(out)
+                DTOPartGenerator(self.config, self.template_dir, "src/models").create_file(out)
+                MapperPartGenerator(self.config, self.template_dir, "src/models").create_file(out)
             for service_name in self.config["service_layer"]:
-                ServicePartGenerator(self.config, self.template_dir, "src/services", service_name).create_file()
+                ServicePartGenerator(self.config, self.template_dir, "src/services", service_name).create_file(out)
             for handler_name in self.config["communication_layer"]["handlers"]:
-                HandlerPartGenerator(self.config, self.template_dir, "src/handlers", handler_name).create_file()
+                HandlerPartGenerator(self.config, self.template_dir, "src/handlers", handler_name).create_file(out)
             for agent_name in self.config["agent_layer"]:
                 CopyPartGenerator(
                     self.config,
@@ -328,23 +329,23 @@ class AgentGenerator:
                     "src/prompts",
                     "prompt.prompt",
                     f"{self.config['agent_layer'][agent_name]['runtime_name']}.prompt",
-                ).create_file()
+                ).create_file(out)
 
             # Create Dockerfile
-            CopyPartGenerator(self.config, self.template_dir, "", "Dockerfile", "Dockerfile").create_file()
+            CopyPartGenerator(self.config, self.template_dir, "", "Dockerfile", "Dockerfile").create_file(out)
 
             # Create .gitignore
-            CopyPartGenerator(self.config, self.template_dir, "", "template_for_git_ignore.txt", ".gitignore").create_file()
+            CopyPartGenerator(self.config, self.template_dir, "", "template_for_git_ignore.txt", ".gitignore").create_file(out)
 
             # Create settings.toml
-            SettingsPartGenerator(self.config, self.template_dir, "").create_file()
+            SettingsPartGenerator(self.config, self.template_dir, "").create_file(out)
 
             # Create __init__ files with imports
-            InitPartGenerator(self.config, self.template_dir, "src").create_file()
-            InitPartGenerator(self.config, self.template_dir, "src/api").create_file()
-            InitPartGenerator(self.config, self.template_dir, "src/services").create_file()
-            InitPartGenerator(self.config, self.template_dir, "src/models").create_file()
-            InitPartGenerator(self.config, self.template_dir, "src/handlers").create_file()
+            InitPartGenerator(self.config, self.template_dir, "src", out).create_file(out)
+            InitPartGenerator(self.config, self.template_dir, "src/api", out).create_file(out)
+            InitPartGenerator(self.config, self.template_dir, "src/services", out).create_file(out)
+            InitPartGenerator(self.config, self.template_dir, "src/models", out).create_file(out)
+            InitPartGenerator(self.config, self.template_dir, "src/handlers", out).create_file(out)
 
             logger.info("Finished copying whitelisted template files")
 

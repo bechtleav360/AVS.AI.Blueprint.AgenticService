@@ -109,8 +109,8 @@ def run(args: Namespace) -> None:
     print("=== Blueprint Agents Project Setup ===")
     print("This will create a complete project structure with handlers, services, APIs, and agents.")
 
-    # Get project name
-    project_name = args.project_name
+    # Get project name, sanitizing it to a valid Python class name
+    project_name = PartGeneratorBase.to_class_name(args.project_name)
     output_dir = Path(args.output_dir).absolute()
     project_path = output_dir / project_name
 

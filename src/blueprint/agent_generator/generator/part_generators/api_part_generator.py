@@ -12,8 +12,9 @@ class APIPartGenerator(PartGeneratorBase):
         self.template_vars["imports"] = self._create_api_imports()
         self.template_vars["class_initialization"] = self._generate_class_initialization()
         self.template_vars["on_startup"] = self._generate_on_startup()
+        self.template_vars["on_shutdown"] = self._generate_on_shutdown()
         self.template_vars["endpoint_functions"] = self._generate_endpoint_functions()
-        self.template_vars["register_routes"] = self._generate_register_routes()
+        self.template_vars["register_routes"] = ""
 
     def _create_api_imports(self) -> str:
         """Generate import statements for routes.py."""
@@ -48,19 +49,19 @@ class APIPartGenerator(PartGeneratorBase):
         lines = []
         lines.extend(
             [
-                f"class {self.config['communication_layer']['rest_api']['name']}(RestApi):",
+                f"class {self.config['communication_layer']['rest_api']['name']}(RestApiBase):",
                 '    """',
                 f"    {self.config["communication_layer"]["rest_api"]["description"]}",
                 '    """',
-                f"    def __init__(self, name: str = \"{self.config['communication_layer']['rest_api']['name']}\") -> None:",
-                "        super().__init__(name=name)",
+                "    def __init__(self) -> None:",
+                "        super().__init__()",
             ]
         )
 
         service_classes = list(self.config["communication_layer"]["rest_api"]["uses_services"])
         if service_classes:
             for service_class in service_classes:
-                lines.append(f"        self._{self.camel_to_snake(service_class)} = {service_class}()")
+                lines.append(f"        self._{self.camel_to_snake(service_class)}: {service_class} | None = None")
 
         return "\n".join(lines)
 
@@ -80,10 +81,17 @@ class APIPartGenerator(PartGeneratorBase):
             for service_class in service_classes:
                 lines.append(
                     f"        self._{self.camel_to_snake(service_class)} = "
-                    f"self.get_registry().get_service('{self.camel_to_snake(service_class)}')"
+                    f"self.registry.get_service('{self.camel_to_snake(service_class)}')"
                 )
 
         return "\n".join(lines)
+
+    def _generate_on_shutdown(self) -> str:
+        """Generate a no-op on_shutdown method for the REST API class."""
+        return "\n".join([
+            "    async def on_shutdown(self) -> None:",
+            '        """Clean up REST API resources on shutdown."""',
+        ])
 
     def _generate_endpoint_functions(self) -> str:
         """Generate endpoint functions for routes.py."""
@@ -91,6 +99,11 @@ class APIPartGenerator(PartGeneratorBase):
         endpoint_functions = self.config["communication_layer"]["rest_api"]["endpoint_functions"]
         lines = []
         for endpoint, endpoint_parameters in endpoint_functions.items():
+            method = endpoint_parameters["method"].lower()
+            lines.append(
+                f"    @RestApiBase.{method}('/{endpoint}', response_model={endpoint_parameters['output_dto']},"
+                f" summary='Process a {endpoint} request')"
+            )
             lines.append(
                 f"    async def {endpoint}(self, "
                 f"{self.camel_to_snake(endpoint_parameters['input_dto'])}: "
@@ -135,24 +148,3 @@ class APIPartGenerator(PartGeneratorBase):
 
         return "\n".join(lines)
 
-    def _generate_register_routes(self) -> str:
-        """Generate register_routes code for routes.py."""
-
-        endpoint_functions = self.config["communication_layer"]["rest_api"]["endpoint_functions"]
-        lines = []
-        lines.extend(["    def _register_routes(self) -> None:", '        """Register the routes for the REST API."""'])
-        for endpoint in endpoint_functions:
-            lines.extend(
-                [
-                    "        self.router.add_api_route(",
-                    f"            '/{endpoint}',",
-                    f"            self.{endpoint},",
-                    f"            methods=['{endpoint_functions[endpoint]['method']}'],",
-                    f"            response_model={endpoint_functions[endpoint]['output_dto']},",
-                    "            summary='Process a request',",
-                    "            description='Processes the incoming request and returns a response'",
-                    "        )",
-                ]
-            )
-
-        return "\n".join(lines)

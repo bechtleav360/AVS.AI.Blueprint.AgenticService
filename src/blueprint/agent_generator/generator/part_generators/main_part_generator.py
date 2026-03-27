@@ -23,12 +23,12 @@ class MainPartGenerator(PartGeneratorBase):
             lines.append("from blueprint.agents.agent import AgentBuilder")
         lines.append("from blueprint.agents.app_builder import AppBuilder")
         if self.config["agent_layer"]:
-            lines.append("from blueprint.agents.base import AgentRuntime")
+            lines.append("from blueprint.agents.agent import AgentRuntime")
 
         lines.extend(["from blueprint.agents.config import Config", ""])
 
         if self.config["communication_layer"].get("rest_api", {}).get("add_rest_api", False):
-            lines.append(f"from .api import {self.config['name']}RESTApi")
+            lines.append(f"from .api import {self.config['communication_layer']['rest_api']['name']}")
 
         if "handlers" in self.config["communication_layer"]:
             lines.append(f"from .handlers import {', '.join(h for h in self.config['communication_layer']['handlers'])}")
@@ -73,18 +73,17 @@ class MainPartGenerator(PartGeneratorBase):
 
         # Add services
         for service_name in self.config["service_layer"]:
-            lines.append(f'    .with_service({service_name}("{self.camel_to_snake(service_name)}"))')
+            lines.append(f"    .with_service({service_name}())")
 
         # Add handlers
         if "handlers" in self.config["communication_layer"]:
             for handler_name in self.config["communication_layer"]["handlers"]:
-                lines.append(f'    .with_handler({handler_name}("{self.camel_to_snake(handler_name)}"))')
+                lines.append(f"    .with_handler({handler_name}())")
 
         # Add REST API if needed
         if self.config["communication_layer"].get("rest_api", {}).get("add_rest_api", False):
             lines.append(
-                f"    .with_rest_api({self.config['communication_layer']['rest_api']['name']}"
-                f"(\"{self.camel_to_snake(self.config['name'])}_api\"))"
+                f"    .with_rest_api({self.config['communication_layer']['rest_api']['name']}())"
             )
 
         lines.append("    .build()")

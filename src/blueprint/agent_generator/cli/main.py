@@ -3,7 +3,7 @@
 import argparse
 import sys
 
-from .commands import create, dev, setup, validate, windsurf
+from .commands import claude, create, dev, setup, validate
 
 
 def main() -> None:
@@ -79,30 +79,6 @@ def main() -> None:
     scheduler_parser.add_argument("--cron", default="0 * * * *", help="Cron expression (default: '0 * * * *')")
     scheduler_parser.add_argument("--output-dir", default="src/schedulers", help="Output directory")
 
-    # Windsurf command
-    windsurf_parser = subparsers.add_parser(
-        "windsurf",
-        help="Generate Windsurf IDE integration files",
-        description="Create .windsurf/ directory with rules and workflows",
-    )
-    windsurf_parser.add_argument(
-        "output_dir",
-        nargs="?",
-        default=".",
-        help="Project root directory (default: current directory)",
-    )
-    windsurf_parser.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="Overwrite existing files",
-    )
-    windsurf_parser.add_argument(
-        "--verbose",
-        "-v",
-        action="store_true",
-        help="Enable verbose logging",
-    )
-
     # Validate command
     validate_parser = subparsers.add_parser(
         "validate",
@@ -134,6 +110,30 @@ def main() -> None:
         help="Host to bind to (default: 127.0.0.1)",
     )
 
+    # Claude command
+    claude_parser = subparsers.add_parser(
+        "claude",
+        help="Generate a CLAUDE.md for Claude Code integration",
+        description="Create a CLAUDE.md in the project root so Claude Code picks up coding guidelines automatically",
+    )
+    claude_parser.add_argument(
+        "output_dir",
+        nargs="?",
+        default=".",
+        help="Project root directory (default: current directory)",
+    )
+    claude_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing CLAUDE.md",
+    )
+    claude_parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        help="Enable verbose logging",
+    )
+
     # Parse arguments
     args = parser.parse_args()
 
@@ -147,8 +147,8 @@ def main() -> None:
             setup.run(args)
         elif args.command == "create":
             create.run(args)
-        elif args.command == "windsurf":
-            windsurf.run(args)
+        elif args.command == "claude":
+            claude.run(args)
         elif args.command == "validate":
             validate.run(args)
         elif args.command == "dev":

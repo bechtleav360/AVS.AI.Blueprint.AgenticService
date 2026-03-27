@@ -31,6 +31,16 @@ class PartGeneratorBase:
         return f"{self.template_file_name.split('.')[0]}.py"
 
     @staticmethod
+    def to_class_name(name: str) -> str:
+        """Convert any string to a valid UpperCamelCase Python class name.
+
+        Splits on non-alphanumeric characters and capitalizes each part.
+        Example: 'my-cool-agent' -> 'MyCoolAgent'
+        """
+        parts = re.split(r"[^a-zA-Z0-9]", name)
+        return "".join(part.capitalize() for part in parts if part)
+
+    @staticmethod
     def camel_to_snake(name: str) -> str:
         """
         Convert a CamelCase class name to snake_case variable name.
