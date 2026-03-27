@@ -36,9 +36,7 @@ class SupportQAService(ServiceBase):
     async def on_shutdown(self) -> None:
         pass
 
-    async def answer_question(
-        self, question: str, category: str = "general", context: str = ""
-    ) -> SupportResponse:
+    async def answer_question(self, question: str, category: str = "general", context: str = "") -> SupportResponse:
         """Answer a customer question with junior-senior collaboration.
 
         Args:
@@ -76,9 +74,7 @@ class SupportQAService(ServiceBase):
             status=senior_validation.status,
         )
 
-    async def _get_junior_answer(
-        self, session_id: str, question: str, category: str, context: str
-    ) -> SupportAnswer:
+    async def _get_junior_answer(self, session_id: str, question: str, category: str, context: str) -> SupportAnswer:
         """Get detailed answer from junior support agent.
 
         Args:
@@ -93,8 +89,7 @@ class SupportQAService(ServiceBase):
         logger.info(f"Junior agent generating answer for session {session_id}")
 
         prompt = (
-            self.registry
-            .get_agent("junior_support")
+            self.registry.get_agent("junior_support")
             .get_prompt("answer_question")
             .format(question=question, category=category, context=context)
         )
@@ -106,9 +101,7 @@ class SupportQAService(ServiceBase):
             usage = AgentBuilder.extract_usage_info(result)
 
             if usage:
-                logger.info(
-                    f"Junior answer generation - Tokens: input={usage.get('input_tokens')}, output={usage.get('output_tokens')}"
-                )
+                logger.info(f"Junior answer generation - Tokens: input={usage.get('input_tokens')}, output={usage.get('output_tokens')}")
 
             try:
                 llm_response = json.loads(response_text)
@@ -137,9 +130,7 @@ class SupportQAService(ServiceBase):
                 sources=[],
             )
 
-    async def _validate_answer(
-        self, session_id: str, question: str, junior_answer: SupportAnswer
-    ) -> ValidationResult:
+    async def _validate_answer(self, session_id: str, question: str, junior_answer: SupportAnswer) -> ValidationResult:
         """Validate answer from senior support agent.
 
         Args:
@@ -153,8 +144,7 @@ class SupportQAService(ServiceBase):
         logger.info(f"Senior agent validating answer for session {session_id}")
 
         prompt = (
-            self.registry
-            .get_agent("senior_support")
+            self.registry.get_agent("senior_support")
             .get_prompt("validate_answer")
             .format(
                 question=question,
@@ -170,9 +160,7 @@ class SupportQAService(ServiceBase):
             usage = AgentBuilder.extract_usage_info(result)
 
             if usage:
-                logger.info(
-                    f"Senior validation - Tokens: input={usage.get('input_tokens')}, output={usage.get('output_tokens')}"
-                )
+                logger.info(f"Senior validation - Tokens: input={usage.get('input_tokens')}, output={usage.get('output_tokens')}")
 
             try:
                 llm_response = json.loads(response_text)

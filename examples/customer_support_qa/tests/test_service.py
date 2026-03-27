@@ -18,8 +18,7 @@ class TestSupportQAService:
     @pytest.mark.asyncio
     async def test_answer_question(self, service: SupportQAService) -> None:
         """Test answering a question."""
-        with patch.object(service, "_get_junior_answer") as mock_junior, \
-             patch.object(service, "_validate_answer") as mock_senior:
+        with patch.object(service, "_get_junior_answer") as mock_junior, patch.object(service, "_validate_answer") as mock_senior:
 
             mock_junior.return_value = SupportAnswer(
                 session_id="test-123",

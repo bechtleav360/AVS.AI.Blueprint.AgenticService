@@ -63,10 +63,7 @@ class AgentInvokerHandler(EventHandlerBase):
             logger.info("Agent processing completed: status=%s, invoice_id=%s")
 
             # Return original data
-            return HandlerResult(
-                data=event.data,
-                event_type=event.type
-            )
+            return HandlerResult(data=event.data, event_type=event.type)
 
         except Exception as e:
             logger.error("Agent processing failed: %s", str(e), exc_info=True)

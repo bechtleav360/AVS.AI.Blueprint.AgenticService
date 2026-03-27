@@ -39,21 +39,17 @@ class EventHandlingBase(RestApiBase, ABC):
 
     @abstractmethod
     async def publish(self, topic: str, event: CloudEvent) -> dict[str, Any]:
-        """Abstract method for publishing events (output)
-        """
+        """Abstract method for publishing events (output)"""
 
         raise NotImplementedError()
 
     @abstractmethod
     async def subscribe(self, topic: str, queue_group: str | None = None) -> dict[str, Any]:
-        """Abstract method for subscribing for events (input)
-        """
+        """Abstract method for subscribing for events (input)"""
 
         raise NotImplementedError()
 
-    async def _process_cloud_event(
-        self, cloud_event: CloudEvent, context: dict[str, Any]
-    ) -> ProcessingResult:
+    async def _process_cloud_event(self, cloud_event: CloudEvent, context: dict[str, Any]) -> ProcessingResult:
         """Process a CloudEvent with common error handling and tracing.
 
         Args:
@@ -81,11 +77,13 @@ class EventHandlingBase(RestApiBase, ABC):
                 correlation_token = self.registry.correlation_context.set(getattr(cloud_event, "id", None))
 
             # Update context with event details
-            context.update({
-                "original_event_type": original_event_type,
-                "inner_event_type": cloud_event.type,
-                "was_unwrapped": was_unwrapped,
-            })
+            context.update(
+                {
+                    "original_event_type": original_event_type,
+                    "inner_event_type": cloud_event.type,
+                    "was_unwrapped": was_unwrapped,
+                }
+            )
 
             span.set_attribute("event.original_type", original_event_type)
             span.set_attribute("event.inner_type", cloud_event.type)

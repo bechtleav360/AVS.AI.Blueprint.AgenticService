@@ -43,9 +43,7 @@ class ActuatorApi(RestApiBase):
 
     async def on_startup(self) -> None:
         """Start the health check cache."""
-        self._health_cache = HealthCheckCache(
-            check_interval_seconds=self.config.get("health_check_interval_seconds", 30)
-        )
+        self._health_cache = HealthCheckCache(check_interval_seconds=self.config.get("health_check_interval_seconds", 30))
         if hasattr(self, "_pending_providers") and self._pending_providers:
             self._health_cache.set_health_check_provider(self._pending_providers)
         await self._health_cache.start()
@@ -55,12 +53,7 @@ class ActuatorApi(RestApiBase):
         if self._health_cache is not None:
             await self._health_cache.stop()
 
-    @RestApiBase.get(
-        "/info",
-        response_model=ServiceInfo,
-        tags=["Status"],
-        summary="Returns service information and dependencies."
-    )
+    @RestApiBase.get("/info", response_model=ServiceInfo, tags=["Status"], summary="Returns service information and dependencies.")
     async def info(self) -> ServiceInfo:
         """Expose service information and dependencies."""
         config = self._ensure_config()
@@ -74,10 +67,7 @@ class ActuatorApi(RestApiBase):
         )
 
     @RestApiBase.get(
-        "/health/ready",
-        response_model=ReadinessResponse,
-        tags=["Health"],
-        summary="Performs a readiness probe of the service."
+        "/health/ready", response_model=ReadinessResponse, tags=["Health"], summary="Performs a readiness probe of the service."
     )
     @traced()
     async def readiness_probe(self) -> ReadinessResponse:
@@ -115,12 +105,7 @@ class ActuatorApi(RestApiBase):
                 detail="Readiness probe failed",
             ) from exc
 
-    @RestApiBase.get(
-        "/health/live",
-        response_model=LivenessResponse,
-        tags=["Health"],
-        summary="Performs a liveness probe of the service."
-    )
+    @RestApiBase.get("/health/live", response_model=LivenessResponse, tags=["Health"], summary="Performs a liveness probe of the service.")
     async def liveness_probe(self) -> LivenessResponse:
         """Liveness probe to indicate the service is running.
 
@@ -141,10 +126,7 @@ class ActuatorApi(RestApiBase):
         return LivenessResponse(status="UP")
 
     @RestApiBase.get(
-        "/status/env",
-        response_model=EnvironmentStatus,
-        tags=["Status"],
-        summary="Returns a snapshot of the current configuration."
+        "/status/env", response_model=EnvironmentStatus, tags=["Status"], summary="Returns a snapshot of the current configuration."
     )
     async def env_status(self) -> EnvironmentStatus:
         """Expose the current configuration state (with secrets masked)."""
@@ -162,12 +144,7 @@ class ActuatorApi(RestApiBase):
             settings=self._sanitize_config(raw_config),
         )
 
-    @RestApiBase.get(
-        "/status/llm",
-        response_model=LLMStatus,
-        tags=["Status"],
-        summary="Returns AI provider configuration and diagnostics."
-    )
+    @RestApiBase.get("/status/llm", response_model=LLMStatus, tags=["Status"], summary="Returns AI provider configuration and diagnostics.")
     async def llm_status(self) -> LLMStatus:
         """Expose AI configuration and provider diagnostics."""
 
@@ -222,12 +199,7 @@ class ActuatorApi(RestApiBase):
 
         return LLMStatus(config=ai_config, vllm=vllm_info_data)
 
-    @RestApiBase.get(
-        "/status/build",
-        response_model=BuildStatus,
-        tags=["Status"],
-        summary="Returns build and runtime information."
-    )
+    @RestApiBase.get("/status/build", response_model=BuildStatus, tags=["Status"], summary="Returns build and runtime information.")
     async def build_status(self) -> BuildStatus:
         """Expose build and runtime metadata."""
 

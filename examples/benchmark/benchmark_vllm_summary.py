@@ -26,7 +26,7 @@ class VLLMBenchmark:
         model_name: str,
         max_tokens: int,
         temperature: float,
-        focus_question: str
+        focus_question: str,
     ):
         """
         Initialize the benchmark configuration.
@@ -43,7 +43,7 @@ class VLLMBenchmark:
         self.source_file = Path(source_file)
         self.vllm_instances = [
             {"name": "Instance 1", "url": vllm_base_url_1, "api_key": vllm_api_key_1},
-            {"name": "Instance 2", "url": vllm_base_url_2, "api_key": vllm_api_key_2}
+            {"name": "Instance 2", "url": vllm_base_url_2, "api_key": vllm_api_key_2},
         ]
         self.model_name = model_name
         self.max_tokens = max_tokens
@@ -55,7 +55,7 @@ class VLLMBenchmark:
         if not self.source_file.exists():
             raise FileNotFoundError(f"Source file not found: {self.source_file}")
 
-        with open(self.source_file, encoding='utf-8') as f:
+        with open(self.source_file, encoding="utf-8") as f:
             return f.read()
 
     def create_prompt(self, source_text: str) -> str:
@@ -91,13 +91,10 @@ Complete Summary:"""
             "temperature": self.temperature,
             "stream": True,
             "repetition_penalty": 1.1,
-            "frequency_penalty": 0.5
+            "frequency_penalty": 0.5,
         }
 
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {instance['api_key']}"
-        }
+        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {instance['api_key']}"}
 
         print(f"\n{'='*80}")
         print(f"Calling {instance['name']}: {instance['url']}")
@@ -116,26 +113,27 @@ Complete Summary:"""
 
             for line in response.iter_lines():
                 if line:
-                    line_str = line.decode('utf-8')
-                    if line_str.startswith('data: '):
+                    line_str = line.decode("utf-8")
+                    if line_str.startswith("data: "):
                         data_str = line_str[6:]
-                        if data_str.strip() == '[DONE]':
+                        if data_str.strip() == "[DONE]":
                             break
 
                         try:
                             import json
+
                             data = json.loads(data_str)
 
                             if time_to_first_token is None:
                                 time_to_first_token = time.time() - start_time
 
-                            if 'choices' in data and len(data['choices']) > 0:
-                                choice = data['choices'][0]
-                                if 'text' in choice:
-                                    text_chunk = choice['text']
+                            if "choices" in data and len(data["choices"]) > 0:
+                                choice = data["choices"][0]
+                                if "text" in choice:
+                                    text_chunk = choice["text"]
                                     generated_text += text_chunk
                                     token_count += 1
-                                    print(text_chunk, end='', flush=True)
+                                    print(text_chunk, end="", flush=True)
 
                                     # Detect repetition
                                     if len(generated_text) > 200:
@@ -150,7 +148,7 @@ Complete Summary:"""
                                             last_100_chars = current_tail
 
                                     # Check for finish reason
-                                    if 'finish_reason' in choice and choice['finish_reason'] is not None:
+                                    if "finish_reason" in choice and choice["finish_reason"] is not None:
                                         break
                         except json.JSONDecodeError:
                             continue
@@ -169,33 +167,30 @@ Complete Summary:"""
             print(f"Tokens per second: {token_count / total_time:.2f}" if total_time > 0 else "Tokens per second: N/A")
             print(f"{'='*80}\n")
 
-            self._save_summary_to_file(instance['name'], generated_text, token_count, time_to_first_token, total_time)
+            self._save_summary_to_file(instance["name"], generated_text, token_count, time_to_first_token, total_time)
 
             return {
-                "instance_name": instance['name'],
+                "instance_name": instance["name"],
                 "success": True,
                 "generated_text": generated_text,
                 "token_count": token_count,
                 "time_to_first_token": time_to_first_token,
                 "total_time": total_time,
-                "tokens_per_second": token_count / total_time if total_time > 0 else 0
+                "tokens_per_second": token_count / total_time if total_time > 0 else 0,
             }
 
         except requests.exceptions.RequestException as e:
             print(f"\nError calling {instance['name']}: {e}")
-            return {
-                "instance_name": instance['name'],
-                "success": False,
-                "error": str(e)
-            }
+            return {"instance_name": instance["name"], "success": False, "error": str(e)}
 
-    def _save_summary_to_file(self, instance_name: str, summary: str, token_count: int,
-                              time_to_first_token: float, total_time: float) -> None:
+    def _save_summary_to_file(
+        self, instance_name: str, summary: str, token_count: int, time_to_first_token: float, total_time: float
+    ) -> None:
         """Save the generated summary to a text file."""
         safe_name = instance_name.replace(" ", "_").lower()
         output_file = self.source_file.parent / f"summary_{safe_name}.txt"
 
-        with open(output_file, 'w', encoding='utf-8') as f:
+        with open(output_file, "w", encoding="utf-8") as f:
             f.write(f"{'='*80}\n")
             f.write(f"Summary generated by {instance_name}\n")
             f.write(f"{'='*80}\n\n")
@@ -240,7 +235,7 @@ Complete Summary:"""
         print(f"{'='*80}")
 
         for result in results:
-            if result['success']:
+            if result["success"]:
                 print(f"\n{result['instance_name']}:")
                 print(f"  Tokens generated: {result['token_count']}")
                 print(f"  Time to first token: {result['time_to_first_token']:.3f}s")
@@ -290,7 +285,7 @@ if __name__ == "__main__":
         model_name=MODEL_NAME,
         max_tokens=MAX_TOKENS,
         temperature=TEMPERATURE,
-        focus_question=FOCUS_QUESTION
+        focus_question=FOCUS_QUESTION,
     )
 
     benchmark.run_benchmark()

@@ -85,10 +85,12 @@ class ServicePartGenerator(PartGeneratorBase):
 
     def _generate_on_shutdown(self) -> str:
         """Generate a no-op on_shutdown method for the service class."""
-        return "\n".join([
-            "    async def on_shutdown(self) -> None:",
-            '        """Clean up service resources on shutdown."""',
-        ])
+        return "\n".join(
+            [
+                "    async def on_shutdown(self) -> None:",
+                '        """Clean up service resources on shutdown."""',
+            ]
+        )
 
     def _generate_process_function(self) -> str:
         """

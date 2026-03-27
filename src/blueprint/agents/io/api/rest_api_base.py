@@ -125,8 +125,7 @@ class RestApiBase(IOBase, ABC):
 
     @traced()
     async def _process_resource(self, request: Request, payload: Any) -> ProcessResourceResponse | JSONResponse:
-        """Generic endpoint for processing resources with illustrative payloads.
-        """
+        """Generic endpoint for processing resources with illustrative payloads."""
         span = trace.get_current_span()
         request_id = str(uuid4())
         request.state.trace_id = request_id

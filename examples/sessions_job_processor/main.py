@@ -24,11 +24,7 @@ def create_app():
     )
 
     # Build application with handler
-    app = (
-        AppBuilder(config)
-        .with_handler(TextExtractionHandler())
-        .build()
-    )
+    app = AppBuilder(config).with_handler(TextExtractionHandler()).build()
 
     logger.info("Sessions job processor application created")
     return app

@@ -31,9 +31,7 @@ class HandlerChain(Component):
         """No shutdown actions required."""
 
     @traced("event")
-    async def process(
-        self, event: CloudEvent, context: dict[str, Any]
-    ) -> Any | HandlerResult | list[HandlerResult] | None:
+    async def process(self, event: CloudEvent, context: dict[str, Any]) -> Any | HandlerResult | list[HandlerResult] | None:
         """Process event through all registered handlers in priority order.
 
         Args:

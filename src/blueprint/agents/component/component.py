@@ -83,6 +83,7 @@ class Component(ABC, metaclass=_ComponentMeta):
         if Component.shared_registry is None:
             # Import here to avoid circular dependency
             from .registry import Registry
+
             Component.init_registry(Registry(Component))
 
         self._name = camel_to_snake(self.__class__.__name__)
@@ -142,11 +143,7 @@ class Component(ABC, metaclass=_ComponentMeta):
 
 def _is_cloud_event(value: Any) -> bool:
     """Duck-type check for CloudEvent — avoids circular imports."""
-    return (
-        hasattr(value, "type")
-        and hasattr(value, "source")
-        and hasattr(value, "specversion")
-    )
+    return hasattr(value, "type") and hasattr(value, "source") and hasattr(value, "specversion")
 
 
 def _stamp_span(span: trace.Span, name: str, value: Any) -> None:
@@ -211,6 +208,7 @@ def traced(*extract: str) -> Callable:
             return span
 
         if asyncio.iscoroutinefunction(func):
+
             @functools.wraps(func)
             async def async_wrapper(self: Component, *args: Any, **kwargs: Any) -> Any:
                 bound = sig.bind(self, *args, **kwargs)
@@ -221,12 +219,12 @@ def traced(*extract: str) -> Callable:
                     try:
                         return await func(self, *args, **kwargs)
                     except Exception as e:
-                        trace.get_current_span().set_status(
-                            trace.Status(trace.StatusCode.ERROR, str(e))
-                        )
+                        trace.get_current_span().set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
                         raise
+
             return async_wrapper
         else:
+
             @functools.wraps(func)
             def sync_wrapper(self: Component, *args: Any, **kwargs: Any) -> Any:
                 bound = sig.bind(self, *args, **kwargs)
@@ -237,10 +235,9 @@ def traced(*extract: str) -> Callable:
                     try:
                         return func(self, *args, **kwargs)
                     except Exception as e:
-                        trace.get_current_span().set_status(
-                            trace.Status(trace.StatusCode.ERROR, str(e))
-                        )
+                        trace.get_current_span().set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
                         raise
+
             return sync_wrapper
 
     return decorator

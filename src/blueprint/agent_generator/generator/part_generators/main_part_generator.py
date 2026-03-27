@@ -82,9 +82,7 @@ class MainPartGenerator(PartGeneratorBase):
 
         # Add REST API if needed
         if self.config["communication_layer"].get("rest_api", {}).get("add_rest_api", False):
-            lines.append(
-                f"    .with_rest_api({self.config['communication_layer']['rest_api']['name']}())"
-            )
+            lines.append(f"    .with_rest_api({self.config['communication_layer']['rest_api']['name']}())")
 
         lines.append("    .build()")
         lines.append(")")

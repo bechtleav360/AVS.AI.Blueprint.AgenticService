@@ -88,10 +88,12 @@ class APIPartGenerator(PartGeneratorBase):
 
     def _generate_on_shutdown(self) -> str:
         """Generate a no-op on_shutdown method for the REST API class."""
-        return "\n".join([
-            "    async def on_shutdown(self) -> None:",
-            '        """Clean up REST API resources on shutdown."""',
-        ])
+        return "\n".join(
+            [
+                "    async def on_shutdown(self) -> None:",
+                '        """Clean up REST API resources on shutdown."""',
+            ]
+        )
 
     def _generate_endpoint_functions(self) -> str:
         """Generate endpoint functions for routes.py."""
@@ -147,4 +149,3 @@ class APIPartGenerator(PartGeneratorBase):
             )
 
         return "\n".join(lines)
-

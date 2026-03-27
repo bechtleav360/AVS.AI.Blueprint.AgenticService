@@ -35,11 +35,7 @@ class RootApi(RestApiBase):
         docs_url = getattr(self._app, "docs_url", None)
         redoc_url = getattr(self._app, "redoc_url", None)
 
-        doc_links = " | ".join(
-            f'<a href="{url}">{label}</a>'
-            for label, url in [("Swagger UI", docs_url), ("ReDoc", redoc_url)]
-            if url
-        )
+        doc_links = " | ".join(f'<a href="{url}">{label}</a>' for label, url in [("Swagger UI", docs_url), ("ReDoc", redoc_url)] if url)
 
         rows = []
         for route in self._app.routes:

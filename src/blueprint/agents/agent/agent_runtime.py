@@ -38,8 +38,8 @@ class AgentRuntime(Agent[AgentDepsT, Any], Component):
     @name.setter
     def name(self, value: str | None) -> None:
         """Update name in both the pydantic_ai Agent and the Component registry."""
-        Agent.name.fset(self, value)       # pydantic_ai side-effects (future-proof)
-        Component.name.fset(self, value)   # registry update + self._name
+        Agent.name.fset(self, value)  # pydantic_ai side-effects (future-proof)
+        Component.name.fset(self, value)  # registry update + self._name
 
     def __init__(
         self,

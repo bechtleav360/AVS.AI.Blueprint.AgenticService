@@ -112,4 +112,3 @@ class DaprEventing(EventHandlingBase):
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Dapr event handling failed",
             ) from exc
-

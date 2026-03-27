@@ -169,10 +169,10 @@ class AppBuilder:
         if registry.get_event_handler():
             event_bus_type = self._config.get("event_bus", "").lower()
             if event_bus_type == "dapr":
-                DaprClient()                              # auto-registers
+                DaprClient()  # auto-registers
                 self._eventing_component = DaprEventing()
             elif event_bus_type == "nats":
-                NATSClient()                              # auto-registers
+                NATSClient()  # auto-registers
                 self._eventing_component = NatsEventing()
             else:
                 logger.warning(
@@ -187,10 +187,7 @@ class AppBuilder:
 
         # 4. Create ActuatorApi and wire health checkers from all registered clients
         self._actuator_api = ActuatorApi()
-        health_providers: dict[str, HealthCheckerBase] = {
-            client.name: ClientHealthChecker([client])
-            for client in registry.get_clients()
-        }
+        health_providers: dict[str, HealthCheckerBase] = {client.name: ClientHealthChecker([client]) for client in registry.get_clients()}
         if hasattr(self, "_custom_health_checkers"):
             health_providers.update(self._custom_health_checkers)
         if health_providers:

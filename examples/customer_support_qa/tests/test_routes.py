@@ -33,9 +33,7 @@ class TestSupportQARoutes:
     """Test cases for customer support Q&A REST API routes."""
 
     @pytest.mark.asyncio
-    async def test_ask_question_success(
-        self, client: TestClient, mock_support_response: SupportResponse
-    ) -> None:
+    async def test_ask_question_success(self, client: TestClient, mock_support_response: SupportResponse) -> None:
         """Test successful question answering."""
         with patch("src.services.code_review_service.SupportQAService.answer_question") as mock_answer:
             mock_answer.return_value = mock_support_response

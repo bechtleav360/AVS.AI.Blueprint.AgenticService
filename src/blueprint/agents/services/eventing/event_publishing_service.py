@@ -156,9 +156,7 @@ class EventPublishingService(ServiceBase):
                 extra={"event_type": event_type, "error": str(e), "metadata": metadata},
             )
 
-    async def publish_status_event(
-        self, status_data: dict[str, Any], status: str, event_id: str | None = ""
-    ) -> dict[str, Any]:
+    async def publish_status_event(self, status_data: dict[str, Any], status: str, event_id: str | None = "") -> dict[str, Any]:
         """Convenience method to publish status events.
 
         Args:

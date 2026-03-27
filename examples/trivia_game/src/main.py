@@ -10,7 +10,6 @@ from pydantic_ai import Agent
 from .services.trivia_service import TriviaService
 from .api import TriviaGameRestApi
 
-
 # ============================================================================
 # Step 1: Build Trivia Game Agent
 # ============================================================================

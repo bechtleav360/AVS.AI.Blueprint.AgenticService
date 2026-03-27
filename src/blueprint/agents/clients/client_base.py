@@ -68,9 +68,7 @@ class ClientBase(Component, ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def subscribe(
-        self, topic: str, callback: Callable[[CloudEvent], Awaitable[None]]
-    ) -> None:
+    async def subscribe(self, topic: str, callback: Callable[[CloudEvent], Awaitable[None]]) -> None:
         """Subscribe to a topic with a callback for incoming events."""
         raise NotImplementedError
 

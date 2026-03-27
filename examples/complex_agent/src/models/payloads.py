@@ -35,8 +35,7 @@ class CustomPayload(BaseModel):
     invoice_text: str = Field(
         ...,
         description="Unstructured invoice text from OCR or document extraction",
-        examples=[
-            """ Invoice #INV-2025-001
+        examples=[""" Invoice #INV-2025-001
                 Date: 2025-01-15
                 Customer: Bechtle AG
 
@@ -47,8 +46,7 @@ class CustomPayload(BaseModel):
                 Subtotal: 2000.00 EUR
                 Tax (19%): 380.00 EUR
                 Total: 2380.00 EUR
-            """
-        ],
+            """],
     )
     details: dict = Field(
         default_factory=dict,

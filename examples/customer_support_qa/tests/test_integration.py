@@ -19,8 +19,10 @@ class TestSupportQAIntegration:
     @pytest.mark.asyncio
     async def test_complete_qa_workflow(self, client: TestClient) -> None:
         """Test complete workflow from question to validated answer."""
-        with patch("src.services.code_review_service.SupportQAService._get_junior_answer") as mock_junior, \
-             patch("src.services.code_review_service.SupportQAService._validate_answer") as mock_senior:
+        with (
+            patch("src.services.code_review_service.SupportQAService._get_junior_answer") as mock_junior,
+            patch("src.services.code_review_service.SupportQAService._validate_answer") as mock_senior,
+        ):
 
             from src.models import SupportAnswer, ValidationResult, ValidationStatus
 
@@ -67,8 +69,10 @@ class TestSupportQAIntegration:
     @pytest.mark.asyncio
     async def test_rejected_answer_workflow(self, client: TestClient) -> None:
         """Test workflow where senior rejects junior's answer."""
-        with patch("src.services.code_review_service.SupportQAService._get_junior_answer") as mock_junior, \
-             patch("src.services.code_review_service.SupportQAService._validate_answer") as mock_senior:
+        with (
+            patch("src.services.code_review_service.SupportQAService._get_junior_answer") as mock_junior,
+            patch("src.services.code_review_service.SupportQAService._validate_answer") as mock_senior,
+        ):
 
             from src.models import SupportAnswer, ValidationResult, ValidationStatus
 
@@ -104,8 +108,10 @@ class TestSupportQAIntegration:
     @pytest.mark.asyncio
     async def test_multiple_questions_session_tracking(self, client: TestClient) -> None:
         """Test that multiple questions create separate sessions."""
-        with patch("src.services.code_review_service.SupportQAService._get_junior_answer") as mock_junior, \
-             patch("src.services.code_review_service.SupportQAService._validate_answer") as mock_senior:
+        with (
+            patch("src.services.code_review_service.SupportQAService._get_junior_answer") as mock_junior,
+            patch("src.services.code_review_service.SupportQAService._validate_answer") as mock_senior,
+        ):
 
             from src.models import SupportAnswer, ValidationResult, ValidationStatus
 
@@ -153,8 +159,10 @@ class TestSupportQAIntegration:
     @pytest.mark.asyncio
     async def test_different_categories(self, client: TestClient) -> None:
         """Test questions from different categories."""
-        with patch("src.services.code_review_service.SupportQAService._get_junior_answer") as mock_junior, \
-             patch("src.services.code_review_service.SupportQAService._validate_answer") as mock_senior:
+        with (
+            patch("src.services.code_review_service.SupportQAService._get_junior_answer") as mock_junior,
+            patch("src.services.code_review_service.SupportQAService._validate_answer") as mock_senior,
+        ):
 
             from src.models import SupportAnswer, ValidationResult, ValidationStatus
 

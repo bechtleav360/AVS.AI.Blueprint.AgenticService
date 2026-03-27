@@ -37,9 +37,7 @@ class DaprClient(IOClientBase):
             await self._client.aclose()
             self._client = None
 
-    async def subscribe(
-        self, topic: str, callback: Callable[[CloudEvent], Awaitable[None]]
-    ) -> None:
+    async def subscribe(self, topic: str, callback: Callable[[CloudEvent], Awaitable[None]]) -> None:
         """Subscribe to a topic.
 
         Note: Dapr subscriptions are typically configured declaratively,

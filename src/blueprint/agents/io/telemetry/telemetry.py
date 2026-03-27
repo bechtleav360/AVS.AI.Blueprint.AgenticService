@@ -87,15 +87,13 @@ class TelemetryManager(IOBase):
         return exporters
 
     def on_startup(self) -> None:
-        """Startup OpenTelemetry.
-        """
+        """Startup OpenTelemetry."""
 
         # OpenTelemetry does not have a startup method
         pass
 
     def on_shutdown(self) -> None:
-        """Shutdown OpenTelemetry.
-        """
+        """Shutdown OpenTelemetry."""
 
         # OpenTelemetry does not have a shutdown method
         pass

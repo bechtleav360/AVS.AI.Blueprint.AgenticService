@@ -2,6 +2,4 @@
 
 from .rest_api_base import RestApiBase
 
-__all__ = [
-    "RestApiBase"
-]
+__all__ = ["RestApiBase"]

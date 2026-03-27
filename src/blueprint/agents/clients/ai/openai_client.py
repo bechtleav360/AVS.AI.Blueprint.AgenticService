@@ -29,9 +29,7 @@ class OpenAIClient(AIClientBase):
             await self._client.close()
             self._client = None
 
-    async def subscribe(
-        self, topic: str, callback: Callable[[CloudEvent], Awaitable[None]]
-    ) -> None:
+    async def subscribe(self, topic: str, callback: Callable[[CloudEvent], Awaitable[None]]) -> None:
         logger.warning("OpenAI client does not support subscriptions")
 
     async def publish(self, topic: str, event: CloudEvent, routing_key: str | None = None) -> None:

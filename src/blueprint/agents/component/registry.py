@@ -37,11 +37,11 @@ class Registry:
 
     Business logic belongs in service classes.
     """
+
     _component_class = None
 
     def __init__(self, component_class: Any) -> None:
-        """Initialize the component registry.
-        """
+        """Initialize the component registry."""
 
         if not isinstance(component_class, type):
             raise ValueError("component_class must be a class")
@@ -163,7 +163,7 @@ class Registry:
 
         return self._components[name_or_class]
 
-    def get_components_by_type(self, component_type: Any) -> list[Any]:#
+    def get_components_by_type(self, component_type: Any) -> list[Any]:  #
         """Get all components from the registry of a specific type.
 
         Args:
@@ -175,7 +175,7 @@ class Registry:
 
         return [component for component in self._components.values() if isinstance(component, component_type)]
 
-    def get_component_names_by_type(self, component_type: Any) -> list[str]:#
+    def get_component_names_by_type(self, component_type: Any) -> list[str]:  #
         """Get all component names from the registry of a specific type.
 
         Args:
@@ -202,7 +202,7 @@ class Registry:
         else:
             return any(isinstance(component, name_or_class) for component in self._components.values())
 
-    def has_component_of_type(self, component_type: Any , name: str = None) -> bool:
+    def has_component_of_type(self, component_type: Any, name: str = None) -> bool:
         """Check if a component is registered.
 
         Args:
@@ -225,8 +225,7 @@ class Registry:
             return any(isinstance(component, component_type) for component in self._components.values())
 
     def clear_components(self) -> None:
-        """Clear all registered components (useful for testing).
-        """
+        """Clear all registered components (useful for testing)."""
 
         logger.info("Clearing all registered components")
         self._components.clear()
@@ -266,8 +265,7 @@ class Registry:
         return self.has_component_of_type(EventHandlerBase, name)
 
     def get_event_handler(self) -> list[EventHandlerBase]:
-        """Get all registered handlers.
-        """
+        """Get all registered handlers."""
 
         return self.get_components_by_type(EventHandlerBase)
 
@@ -282,7 +280,6 @@ class Registry:
         """
 
         return self.has_component_of_type(AgentRuntime, name)
-
 
     def get_agent(self, name: str) -> AgentRuntime:
         """Get a registered agent by name.
@@ -303,8 +300,7 @@ class Registry:
         return component
 
     def get_agents(self) -> list[str]:
-        """Get list of all registered agent names.
-        """
+        """Get list of all registered agent names."""
 
         return self.get_component_names_by_type(AgentRuntime)
 
@@ -321,8 +317,7 @@ class Registry:
         return self.has_component_of_type(RestApiBase, name)
 
     def get_rest_api_names(self) -> list[str]:
-        """Get list of all registered REST API names.
-        """
+        """Get list of all registered REST API names."""
 
         return self.get_component_names_by_type(RestApiBase)
 
@@ -342,8 +337,7 @@ class Registry:
         return self._resolve_single(name_or_class, RestApiBase)
 
     def get_rest_apis(self) -> list[RestApiBase]:
-        """Get all registered REST APIs.
-        """
+        """Get all registered REST APIs."""
 
         return self.get_components_by_type(RestApiBase)
 
@@ -375,8 +369,7 @@ class Registry:
         return self._resolve_single(name_or_class, ServiceBase)
 
     def get_services(self) -> list[ServiceBase]:
-        """Get all registered business services.
-        """
+        """Get all registered business services."""
 
         return self.get_components_by_type(ServiceBase)
 
@@ -408,8 +401,7 @@ class Registry:
         return self._resolve_single(name_or_class, SchedulerBase)
 
     def get_schedulers(self) -> list[SchedulerBase]:
-        """Get all registered schedulers.
-        """
+        """Get all registered schedulers."""
 
         return self.get_components_by_type(SchedulerBase)
 
@@ -459,19 +451,16 @@ class Registry:
         return self._resolve_single(name_or_class, AIClientBase)
 
     def get_clients(self) -> list[ClientBase]:
-        """Get all registered clients (IO and AI).
-        """
+        """Get all registered clients (IO and AI)."""
 
         return self.get_components_by_type(ClientBase)
 
     def get_io_clients(self) -> list[IOClientBase]:
-        """Get all registered IO transport clients (Dapr, NATS, etc.).
-        """
+        """Get all registered IO transport clients (Dapr, NATS, etc.)."""
 
         return self.get_components_by_type(IOClientBase)
 
     def get_ai_clients(self) -> list[AIClientBase]:
-        """Get all registered AI provider clients (vLLM, OpenAI, etc.).
-        """
+        """Get all registered AI provider clients (vLLM, OpenAI, etc.)."""
 
         return self.get_components_by_type(AIClientBase)

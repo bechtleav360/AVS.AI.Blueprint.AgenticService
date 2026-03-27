@@ -27,11 +27,7 @@ class NATSClient(IOClientBase):
         self._subscriptions: list[Any] = []
 
     def _is_connected(self) -> bool:
-        return (
-            self._nats_client is not None
-            and not self._nats_client.is_closed
-            and self._nats_client.is_connected
-        )
+        return self._nats_client is not None and not self._nats_client.is_closed and self._nats_client.is_connected
 
     async def connect(self) -> None:
         """Connect to NATS server."""
@@ -74,9 +70,7 @@ class NATSClient(IOClientBase):
             self._js = None
             self._client = None
 
-    async def subscribe(
-        self, topic: str, callback: Callable[[CloudEvent], Awaitable[None]]
-    ) -> None:
+    async def subscribe(self, topic: str, callback: Callable[[CloudEvent], Awaitable[None]]) -> None:
         """Subscribe to a topic and call callback with parsed CloudEvents."""
         client = await self.client
 

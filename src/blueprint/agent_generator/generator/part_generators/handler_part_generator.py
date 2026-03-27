@@ -67,9 +67,7 @@ class HandlerPartGenerator(PartGeneratorBase):
             "",
         ]
         for service in self.config["communication_layer"]["handlers"][self.handler_name]["uses_services"]:
-            lines.append(
-                f"        self.{self.camel_to_snake(service)} = self.registry.get_service('{self.camel_to_snake(service)}')"
-            )
+            lines.append(f"        self.{self.camel_to_snake(service)} = self.registry.get_service('{self.camel_to_snake(service)}')")
         lines.extend(
             [
                 "",
@@ -85,7 +83,9 @@ class HandlerPartGenerator(PartGeneratorBase):
 
     def _generate_on_shutdown(self) -> str:
         """Generate a no-op on_shutdown method for the handler class."""
-        return "\n".join([
-            "    async def on_shutdown(self) -> None:",
-            '        """Clean up handler resources on shutdown."""',
-        ])
+        return "\n".join(
+            [
+                "    async def on_shutdown(self) -> None:",
+                '        """Clean up handler resources on shutdown."""',
+            ]
+        )
