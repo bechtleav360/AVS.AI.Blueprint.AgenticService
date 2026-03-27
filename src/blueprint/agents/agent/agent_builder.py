@@ -8,7 +8,6 @@ from typing import Any
 
 from pydantic import BaseModel
 from pydantic_ai import Agent, Tool
-from pydantic_ai.models import Model
 from pydantic_ai.run import AgentRunResult
 
 from .agent_runtime import AgentRuntime
@@ -76,7 +75,7 @@ class AgentBuilder:
         self._config = config
         self._runtime_name = runtime_name
         self._ai_config: AIConfig | None = None
-        self._model: Model | None = None
+        self._ai_client: AIClientBase | None = None
         self._system_prompt: str | None = None
         self._tools: list[Tool] = []
         self._result_type: type[BaseModel] = BaseModel
@@ -240,9 +239,8 @@ class AgentBuilder:
         if self._built:
             raise RuntimeError("AgentBuilder.build() has already been called. Create a new builder instance.")
 
-        # Create AI client and model — client reads config via self.config
-        client = _CLIENT_MAP[self._ai_config.provider](self._runtime_name)  # type: ignore[index]
-        self._model = client.create_model()
+        # Create AI client Component — registers in registry; model is created in AgentRuntime.on_startup()
+        self._ai_client = _CLIENT_MAP[self._ai_config.provider](self._runtime_name)  # type: ignore[index]
 
         # Resolve system prompt either from explicit configuration or runtime config defaults
         prompt_name = self._system_prompt
@@ -286,15 +284,15 @@ class AgentBuilder:
                     raise ValueError(f"Unexpected keyword argument for Agent: {kwarg}")
 
         runtime = AgentRuntime(
-            model=self._model,
             system_prompt=self._system_prompt,
             tools=self._tools if self._tools else [],
             **kwargs,
         )
+        runtime._ai_client = self._ai_client
 
         self._built = True
         if self._metrics_enabled:
-            self._recorder = MetricsRecorder(self._config, self._meter, self._model)
+            self._recorder = MetricsRecorder(self._config, self._meter)
             runtime._recorder = self._recorder
 
         runtime._model_settings = self.get_model_settings()  # type: ignore[assignment]

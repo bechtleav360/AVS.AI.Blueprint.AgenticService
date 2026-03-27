@@ -13,6 +13,7 @@ from pydantic_ai.tools import AgentDepsT
 
 from .metrics import MetricsRecorder
 from .prompt_loader import PromptLoader
+from ..clients.ai.ai_client_base import AIClientBase
 from ..component.component import Component
 
 if TYPE_CHECKING:
@@ -57,6 +58,7 @@ class AgentRuntime(Agent[AgentDepsT, Any], Component):  # type: ignore[misc]
         self._name = name
         self.registry.add_component(name, self)
 
+        self._ai_client: AIClientBase | None = None
         self._prompt_cache: dict[str, str] = {}
         self._model_settings: ModelSettings = {}
         self._recorder: MetricsRecorder | None = None
@@ -123,7 +125,9 @@ class AgentRuntime(Agent[AgentDepsT, Any], Component):  # type: ignore[misc]
         return await super().run(user_prompt, model_settings=model_settings, **kwargs)
 
     async def on_startup(self) -> None:
-        """No startup actions required; lifecycle is managed by AgentBuilder."""
+        """Create the model from the registered AI client."""
+        if self._ai_client is not None:
+            self.model = self._ai_client.create_model()
 
     async def on_shutdown(self) -> None:
         """No shutdown actions required; lifecycle is managed by AgentBuilder."""
