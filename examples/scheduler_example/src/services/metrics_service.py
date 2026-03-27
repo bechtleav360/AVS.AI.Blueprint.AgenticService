@@ -2,7 +2,7 @@
 
 import logging
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 
 from blueprint.agents.base import BusinessService
 
@@ -37,7 +37,7 @@ class MetricsService(BusinessService):
             The created MetricSnapshot
         """
         snapshot = MetricSnapshot(
-            timestamp=datetime.now(tz=timezone.utc),
+            timestamp=datetime.now(tz=UTC),
             value=value,
             label=label,
         )

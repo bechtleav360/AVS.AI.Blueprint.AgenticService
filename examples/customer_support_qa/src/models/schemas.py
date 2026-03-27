@@ -1,12 +1,11 @@
 """Request and response schemas for the customer support Q&A collaboration."""
 
-from enum import Enum
-from typing import Optional
+from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
 
-class ValidationStatus(str, Enum):
+class ValidationStatus(StrEnum):
     """Status of answer validation."""
 
     APPROVED = "approved"
@@ -45,8 +44,8 @@ class SupportSession(BaseModel):
     session_id: str = Field(..., description="Unique session identifier")
     question: str = Field(..., description="Original question")
     category: str = Field(..., description="Question category")
-    junior_answer: Optional[SupportAnswer] = Field(None, description="Junior's answer")
-    senior_validation: Optional[ValidationResult] = Field(None, description="Senior's validation")
+    junior_answer: SupportAnswer | None = Field(None, description="Junior's answer")
+    senior_validation: ValidationResult | None = Field(None, description="Senior's validation")
 
 
 class SupportResponse(BaseModel):

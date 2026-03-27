@@ -1,7 +1,8 @@
 """Base class for eventing clients providing common interface for messaging systems."""
 
 from abc import ABC, abstractmethod
-from typing import Any, Awaitable, Callable, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
+from collections.abc import Awaitable, Callable
 
 from ..component.component import Component
 from ..models.events import CloudEvent

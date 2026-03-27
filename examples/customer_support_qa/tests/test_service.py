@@ -1,7 +1,7 @@
 """Tests for customer support Q&A service."""
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 from src.services.code_review_service import SupportQAService
 from src.models import SupportAnswer, ValidationResult, ValidationStatus

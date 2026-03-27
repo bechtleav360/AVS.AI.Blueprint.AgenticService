@@ -180,7 +180,7 @@ class TestTriviaGameIntegration:
         games = []
 
         # Start multiple games
-        for i in range(3):
+        for _ in range(3):
             response = client.post(
                 "/api/game/start",
                 json={"difficulty": "medium", "num_questions": 2},
@@ -332,6 +332,6 @@ class TestTriviaGameScenarios:
 
         # Verify all sessions are independent
         assert len(sessions) == 3
-        for i, session in enumerate(sessions):
+        for _, session in enumerate(sessions):
             assert "game_id" in session
             assert session["status"] == "started"

@@ -14,7 +14,8 @@ import functools
 import inspect
 from abc import ABC, ABCMeta, abstractmethod
 from functools import cached_property
-from typing import Any, Callable, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
+from collections.abc import Callable
 
 from opentelemetry import trace
 
@@ -29,14 +30,14 @@ class _ComponentMeta(ABCMeta):
     """Metaclass owning class-level config/registry state and their one-time initialisation."""
 
     shared_config: Config | None = None
-    shared_registry: "Registry | None" = None
+    shared_registry: Registry | None = None
 
     @property
-    def config(cls) -> "Config | None":
+    def config(cls) -> Config | None:
         return cls.shared_config
 
     @property
-    def registry(cls) -> "Registry | None":
+    def registry(cls) -> Registry | None:
         return cls.shared_registry
 
     def configure(cls, config: Config) -> None:
@@ -48,7 +49,7 @@ class _ComponentMeta(ABCMeta):
             raise RuntimeError("Config is already set — can only be configured once")
         cls.shared_config = config
 
-    def init_registry(cls, value: "Registry") -> None:
+    def init_registry(cls, value: Registry) -> None:
         """Initialise the shared registry. Called lazily on the first Component.__init__().
 
         Raises RuntimeError if called more than once.
@@ -100,7 +101,7 @@ class Component(ABC, metaclass=_ComponentMeta):
         self._name = value
 
     @property
-    def registry(self) -> "Registry":
+    def registry(self) -> Registry:
         """Get the component registry for accessing other components."""
         return Component.shared_registry
 

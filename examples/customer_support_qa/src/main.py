@@ -2,7 +2,6 @@
 
 from pathlib import Path
 
-from examples.customer_support_qa.src.handlers.agent_invoker import AgentInvokerHandler
 from src.blueprint.agents.agent import AgentBuilder
 from src.blueprint.agents.app_builder import AppBuilder
 from src.blueprint.agents.config import Config

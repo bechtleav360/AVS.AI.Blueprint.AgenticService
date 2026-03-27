@@ -43,7 +43,7 @@ class TriviaGameRestApi(RestApi):
             return {"game_id": game_id, "status": "started"}
         except Exception as e:
             logger.error(f"Error starting game: {e}")
-            raise HTTPException(status_code=400, detail=str(e))
+            raise HTTPException(status_code=400, detail=str(e)) from e
 
     @RestApi.get("/game/{game_id}/question", response_model=GameQuestion)
     async def get_question(self, game_id: str) -> GameQuestion:
@@ -60,10 +60,10 @@ class TriviaGameRestApi(RestApi):
             return GameQuestion(**question)
         except ValueError as e:
             logger.error(f"Error getting question: {e}")
-            raise HTTPException(status_code=404, detail=str(e))
+            raise HTTPException(status_code=404, detail=str(e)) from e
         except Exception as e:
             logger.error(f"Unexpected error: {e}")
-            raise HTTPException(status_code=500, detail="Internal server error")
+            raise HTTPException(status_code=500, detail="Internal server error") from e
 
     @RestApi.post("/game/answer", response_model=AnswerResult)
     async def submit_answer(self, request: AnswerRequest) -> AnswerResult:
@@ -84,10 +84,10 @@ class TriviaGameRestApi(RestApi):
             return AnswerResult(**result)
         except ValueError as e:
             logger.error(f"Error evaluating answer: {e}")
-            raise HTTPException(status_code=404, detail=str(e))
+            raise HTTPException(status_code=404, detail=str(e)) from e
         except Exception as e:
             logger.error(f"Unexpected error: {e}")
-            raise HTTPException(status_code=500, detail="Internal server error")
+            raise HTTPException(status_code=500, detail="Internal server error") from e
 
     @RestApi.get("/game/{game_id}/score", response_model=dict)
     async def get_score(self, game_id: str) -> dict:
@@ -104,4 +104,4 @@ class TriviaGameRestApi(RestApi):
             return score
         except ValueError as e:
             logger.error(f"Error getting score: {e}")
-            raise HTTPException(status_code=404, detail=str(e))
+            raise HTTPException(status_code=404, detail=str(e)) from e

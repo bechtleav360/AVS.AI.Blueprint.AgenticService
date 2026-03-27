@@ -1,7 +1,7 @@
 """VLLM client implementation."""
 
 import logging
-from typing import Awaitable, Callable
+from collections.abc import Awaitable, Callable
 
 from openai import AsyncOpenAI
 from pydantic_ai.models import Model

@@ -1,7 +1,7 @@
 """Custom result models for the agent outputs."""
 
 from decimal import Decimal
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -41,7 +41,7 @@ class HandlerResult(BaseModel):
     """
 
     data: Any = Field(..., description="The result data from processing")
-    event_type: Optional[str] = Field(
+    event_type: str | None = Field(
         None,
         description="Optional event type to publish. If provided, triggers event publishing.",
     )

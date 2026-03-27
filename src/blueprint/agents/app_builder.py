@@ -1,7 +1,7 @@
 """Generic FastAPI application setup and configuration."""
 
 import logging
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -143,7 +143,7 @@ class AppBuilder:
         else:
             # Stored temporarily; flushed into ActuatorApi during build()
             if not hasattr(self, "_custom_health_checkers"):
-                self._custom_health_checkers: dict[str, "HealthCheckerBase"] = {}
+                self._custom_health_checkers: dict[str, HealthCheckerBase] = {}
             self._custom_health_checkers[name] = checker
         return self
 
@@ -187,7 +187,7 @@ class AppBuilder:
 
         # 4. Create ActuatorApi and wire health checkers from all registered clients
         self._actuator_api = ActuatorApi()
-        health_providers: dict[str, "HealthCheckerBase"] = {
+        health_providers: dict[str, HealthCheckerBase] = {
             client.name: ClientHealthChecker([client])
             for client in registry.get_clients()
         }

@@ -2,7 +2,8 @@
 
 import json
 import logging
-from typing import Any, Awaitable, Callable
+from typing import Any
+from collections.abc import Awaitable, Callable
 
 import nats
 from nats.aio.client import Client as NatsClient

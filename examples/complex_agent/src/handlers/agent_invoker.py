@@ -14,9 +14,8 @@ the event and return a result (stops chain), or return None (continues chain).
 """
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
-from blueprint.agents.agent import PromptLoader
 from blueprint.agents.base import EventHandler
 from blueprint.agents.models import CloudEvent
 
@@ -49,7 +48,7 @@ class AgentInvokerHandler(EventHandler):
 
         return False
 
-    async def handle_event(self, event: CloudEvent, context: dict[str, Any]) -> Optional[HandlerResult]:
+    async def handle_event(self, event: CloudEvent, context: dict[str, Any]) -> HandlerResult | None:
         """Validate the payload, invoke the agent, and return structured result.
 
         Returns:
@@ -71,10 +70,8 @@ class AgentInvokerHandler(EventHandler):
         # Handle both CustomPayload objects and plain dictionaries
         if isinstance(payload, CustomPayload):
             invoice_text = payload.invoice_text
-            metadata = payload.details
         elif isinstance(payload, dict):
             invoice_text = payload.get("invoice_text")
-            metadata = payload.get("details", {})
         else:
             logger.error("Invalid payload format")
             return HandlerResult(

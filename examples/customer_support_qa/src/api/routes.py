@@ -49,7 +49,7 @@ class SupportQARestApi(RestApiBase):
             return result
         except Exception as e:
             logger.error(f"Error processing question: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail=str(e)) from e
 
     @RestApiBase.get("/support/{session_id}", response_model=dict)
     async def get_session(self, session_id: str) -> dict:
@@ -66,10 +66,10 @@ class SupportQARestApi(RestApiBase):
             return session.model_dump()
         except ValueError as e:
             logger.error(f"Session not found: {e}")
-            raise HTTPException(status_code=404, detail=str(e))
+            raise HTTPException(status_code=404, detail=str(e)) from e
         except Exception as e:
             logger.error(f"Error getting session: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail=str(e)) from e
 
     @RestApiBase.get("/support/sessions/list", response_model=list)
     async def list_sessions(self) -> list:
@@ -82,4 +82,4 @@ class SupportQARestApi(RestApiBase):
             return self._support_service.list_sessions()
         except Exception as e:
             logger.error(f"Error listing sessions: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail=str(e)) from e

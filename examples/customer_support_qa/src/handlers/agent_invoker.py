@@ -14,12 +14,10 @@ the event and return a result (stops chain), or return None (continues chain).
 """
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from src.blueprint.agents.handler import EventHandlerBase
-from src.blueprint.agents.models import CloudEvent
-
-from src.blueprint.agents.models import HandlerResult
+from src.blueprint.agents.models import CloudEvent, HandlerResult
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +38,11 @@ class AgentInvokerHandler(EventHandlerBase):
     async def on_shutdown(self) -> None:
         """No shutdown actions required."""
 
-    async def can_handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> bool:
+    async def can_handle_event(self, event: CloudEvent, context: dict[str, Any]) -> bool:
         """Handle events with 'invoke_agent' action."""
         return True
 
-    async def handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> Optional[HandlerResult]:
+    async def handle_event(self, event: CloudEvent, context: dict[str, Any]) -> HandlerResult | None:
         """Validate the payload, invoke the agent, and return structured result.
 
         Returns:

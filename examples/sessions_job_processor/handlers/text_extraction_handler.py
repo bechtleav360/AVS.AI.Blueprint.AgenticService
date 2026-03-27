@@ -7,7 +7,6 @@ client and session key in the context.
 
 import logging
 from typing import Any
-from uuid import UUID
 
 from blueprint.agents.base import EventHandler
 from blueprint.agents.models.events import GenericCloudEvent
@@ -85,6 +84,8 @@ class TextExtractionHandler(EventHandler):
         """
         job_id = event.data.get("job_id")
         session_id = event.data.get("session_id")
+        api_client = context.get("sessions_api_client")
+        session_key = context.get("session_key")
 
         logger.info("Processing text extraction job: job_id=%s, session_id=%s", job_id, session_id)
 
