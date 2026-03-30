@@ -18,7 +18,7 @@ from .part_generators import (
     MapperPartGenerator,
     ServicePartGenerator,
     SettingsPartGenerator,
-    SecretsPartGenerator
+    SecretsPartGenerator,
 )
 
 # Configure logging

@@ -27,11 +27,7 @@ def create_basic_config(name: str) -> dict[str, Any]:
     name_normalized = name.lower().replace("-", "").replace("_", "")
     has_agent_suffix = name_normalized.endswith("agent")
     agent_class_name = name if has_agent_suffix else f"{name}Agent"
-    agent_runtime_name = (
-        PartGeneratorBase.camel_to_snake(name)
-        if has_agent_suffix
-        else f"{PartGeneratorBase.camel_to_snake(name)}_agent"
-    )
+    agent_runtime_name = PartGeneratorBase.camel_to_snake(name) if has_agent_suffix else f"{PartGeneratorBase.camel_to_snake(name)}_agent"
 
     return {
         "name": name,
