@@ -158,30 +158,6 @@ def main() -> None:
         help="Host to bind to (default: 127.0.0.1)",
     )
 
-    # Claude command
-    claude_parser = subparsers.add_parser(
-        "claude",
-        help="Generate a CLAUDE.md for Claude Code integration",
-        description="Create a CLAUDE.md in the project root so Claude Code picks up coding guidelines automatically",
-    )
-    claude_parser.add_argument(
-        "output_dir",
-        nargs="?",
-        default=".",
-        help="Project root directory (default: current directory)",
-    )
-    claude_parser.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="Overwrite existing CLAUDE.md",
-    )
-    claude_parser.add_argument(
-        "--verbose",
-        "-v",
-        action="store_true",
-        help="Enable verbose logging",
-    )
-
     # Parse arguments
     args = parser.parse_args()
 
