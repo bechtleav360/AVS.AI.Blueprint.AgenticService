@@ -1,7 +1,8 @@
 """Claude Code resource generator.
 
-Copies the Blueprint Agents CLAUDE.md into a target project's .claude/ directory
-so that Claude Code picks it up as persistent project context.
+Copies the Blueprint Agents Claude Code resources (CLAUDE.md, agents/, skills/)
+into a target project's .claude/ directory so that Claude Code picks them up
+as persistent project context.
 """
 
 import importlib.resources
@@ -13,16 +14,24 @@ logger = logging.getLogger(__name__)
 
 
 class ClaudeGenerator:
-    """Generates the Claude Code context file for a Blueprint Agents project.
+    """Generates Claude Code integration files for a Blueprint Agents project.
 
-    Copies ``CLAUDE.md`` from the framework's ``claude_docs/`` directory into
-    the target project's ``.claude/`` directory so that Claude Code loads it
-    automatically as project instructions.
+    Copies ``CLAUDE.md``, ``agents/``, and ``skills/`` from the framework's
+    ``claude_docs/`` directory into the target project's ``.claude/`` directory
+    so that Claude Code loads them automatically as project context.
 
     Output layout in the target project::
 
         .claude/
-        └── CLAUDE.md
+        ├── CLAUDE.md
+        ├── agents/
+        │   ├── blueprint-architect.md
+        │   └── blueprint-builder.md
+        └── skills/
+            ├── new-agent-service/
+            │   └── SKILL.md
+            └── add-component/
+                └── SKILL.md
     """
 
     def __init__(self, output_dir: str | Path) -> None:
@@ -46,40 +55,63 @@ class ClaudeGenerator:
     # ------------------------------------------------------------------
 
     def generate(self, overwrite: bool = False) -> None:
-        """Copy CLAUDE.md into the target project's .claude/ directory.
+        """Copy Claude Code resources into the target project's .claude/ directory.
+
+        Copies CLAUDE.md, agents/, and skills/ from the framework's claude_docs/
+        source. Existing files are skipped unless overwrite=True.
 
         Args:
-            overwrite: When *True*, an existing CLAUDE.md is replaced.
-                When *False* (default), an existing file is left untouched
+            overwrite: When *True*, existing files are replaced.
+                When *False* (default), existing files are left untouched
                 and a warning is logged.
         """
         claude_dir = self.output_dir / ".claude"
         claude_dir.mkdir(parents=True, exist_ok=True)
 
-        src_file = self._source_dir / "CLAUDE.md"
-        dst_file = claude_dir / "CLAUDE.md"
-
-        if dst_file.exists() and not overwrite:
-            logger.warning("Skipping existing file (use --overwrite to replace): %s", dst_file)
-            print(f"\nClaude Code resources generated in: {claude_dir}")
-            print("  Files written : 0")
-            print(f"  Files skipped : 1  (use --overwrite to replace)")
-            return
-
-        shutil.copy2(src_file, dst_file)
-        logger.info("Wrote %s", dst_file.relative_to(self.output_dir))
+        written, skipped = self._copy_tree(self._source_dir, claude_dir, overwrite=overwrite)
 
         print(f"\nClaude Code resources generated in: {claude_dir}")
-        print("  Files written : 1")
+        print(f"  Files written : {written}")
+        if skipped:
+            print(f"  Files skipped : {skipped}  (use --overwrite to replace)")
         print("\nNext steps:")
         print("  1. Open the project in Claude Code — it will pick up CLAUDE.md automatically.")
-        print("  2. Use slash commands in the chat:")
-        print("       /create-handler   /create-service   /create-agent-runtime")
-        print("       /create-scheduler /create-rest-api  /new-agent-service")
+        print("  2. Use slash commands:")
+        print("       /new-agent-service   /add-component")
+        print("  3. Use agents:")
+        print("       @blueprint-architect   @blueprint-builder")
 
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _copy_tree(self, src: Path, dst: Path, overwrite: bool) -> tuple[int, int]:
+        """Recursively copy all files from src into dst.
+
+        Returns:
+            Tuple of (written_count, skipped_count).
+        """
+        written = 0
+        skipped = 0
+
+        for src_path in src.rglob("*"):
+            if not src_path.is_file():
+                continue
+
+            relative = src_path.relative_to(src)
+            dst_path = dst / relative
+            dst_path.parent.mkdir(parents=True, exist_ok=True)
+
+            if dst_path.exists() and not overwrite:
+                logger.warning("Skipping existing file (use --overwrite to replace): %s", dst_path)
+                skipped += 1
+                continue
+
+            shutil.copy2(src_path, dst_path)
+            logger.info("Wrote %s", dst_path.relative_to(self.output_dir))
+            written += 1
+
+        return written, skipped
 
     def _locate_source(self) -> Path:
         """Locate the ``claude_docs/`` directory inside the installed package.

@@ -5,29 +5,29 @@ This file is read automatically by Claude Code at the start of every session.
 ## Framework
 
 This project uses the **Blueprint Agents** framework. All application components extend
-one of five base classes from `blueprint.agents.base`:
+base classes from the framework:
 
-| Class | Purpose |
-|---|---|
-| `BusinessService` | Domain logic and state |
-| `EventHandler` | CloudEvent processing |
-| `RestApi` | HTTP endpoints via FastAPI |
-| `AgentRuntime` | LLM agents (wraps pydantic-ai) |
-| `Scheduler` | Background cron tasks |
+| Class | Import | Purpose |
+|---|---|---|
+| `EventHandlerBase` | `blueprint.agents.handler` | CloudEvent processing (chain-of-responsibility) |
+| `ServiceBase` | `blueprint.agents.services` | Domain logic, state, orchestration |
+| `AgentRuntime` | via `AgentBuilder` from `blueprint.agents` | LLM agents (wraps pydantic-ai) |
+| `RestApiBase` | `blueprint.agents.io.api` | HTTP endpoints via FastAPI |
+| `SchedulerBase` | `blueprint.agents.io.api.scheduling` | Background cron tasks |
 
 ## Key Architecture Rules
 
-- **Never instantiate dependencies in `__init__`** — resolve them via the registry in `on_startup()`
-- **Never access config or registry in `__init__`** — they are not linked until after construction
-- Dependencies flow downward only: handlers/APIs/schedulers → services → external I/O
-- No global state, no module-level component instances
-- `main.py` is for wiring only — no business logic
+- **Never access `self.registry` or `self.config` in `__init__`** — they are not linked until after construction. Always resolve dependencies in `on_startup()`.
+- **Register dependencies before dependents** — services before handlers/agents that use them.
+- **`main.py` is wiring only** — no business logic.
+- **Services contain ALL business logic** — handlers and APIs are thin delegation layers with one method per responsibility.
+- No global state, no module-level component instances.
 
 ```python
-# Correct
-class MyHandler(EventHandler):
+# Correct — resolve in on_startup()
+class MyHandler(EventHandlerBase):
     async def on_startup(self) -> None:
-        self._service = self.get_registry().get_service(MyService)
+        self._service = self.registry.get_service(MyService)
 ```
 
 ## Code Style
@@ -37,7 +37,13 @@ class MyHandler(EventHandler):
 - Every public method needs a docstring (one-liner is fine for simple methods)
 - Use `%s`-style args in log calls, not f-strings (deferred formatting)
 - Validate all external input with Pydantic at system boundaries
-- Never hardcode secrets — use environment variables via `settings.toml`
+- Never hardcode secrets — use environment variables via `secrets.toml`
+
+## Agent Prompts
+
+- **System prompt** (`system.prompt`): Static context — no dynamic inputs
+- **Instruction prompt** (`instruction.prompt`): Contains dynamic inputs with `{placeholders}`
+- Files go in `src/prompts/` as `.prompt` files
 
 ## Error Handling
 
@@ -52,20 +58,19 @@ class MyHandler(EventHandler):
 - Use `MagicMock(spec=...)` for sync deps, `AsyncMock()` for async deps
 - Shared fixtures in `conftest.py`
 - `asyncio_mode = auto` in `pytest.ini`
-- 80% line coverage is the minimum floor for business logic — not a target to chase
 
 ## Project Structure
 
 ```
 src/
 ├── main.py          # AppBuilder wiring only
-├── api/             # RestApi subclasses
-├── handlers/        # EventHandler subclasses
-├── services/        # BusinessService subclasses
-├── schedulers/      # Scheduler subclasses
-├── agents/          # AgentRuntime builder code
+├── api/             # RestApiBase subclasses
+├── handlers/        # EventHandlerBase subclasses
+├── services/        # ServiceBase subclasses
+├── schedulers/      # SchedulerBase subclasses
+├── agents/          # AgentBuilder setup code
 ├── models/          # Pydantic models
-└── prompts/         # Prompt files
+└── prompts/         # .prompt files (system + instruction)
 ```
 
 ## Running the Service
@@ -74,5 +79,5 @@ src/
 pip install -e .
 uvicorn src.main:app --reload     # development
 pytest tests/                      # run tests
-pytest -m "not slow"               # fast suite only
+asbs validate                      # validate project structure
 ```

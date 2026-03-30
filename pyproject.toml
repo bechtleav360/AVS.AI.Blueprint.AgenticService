@@ -99,7 +99,7 @@ packages = [
 
 [tool.setuptools.package-data]
 "blueprint.agents" = ["py.typed"]
-"blueprint.agent_generator" = ["base_files/**/*", "assistant_integrations/**/*"]
+"blueprint.agent_generator" = ["base_files/**/*", "assistant_integrations/**/*", "claude_docs/**/*"]
 
 [tool.black]
 line-length = 140

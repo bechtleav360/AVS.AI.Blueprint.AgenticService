@@ -34,7 +34,11 @@ def run(args: Namespace) -> None:
         generator.generate(overwrite=args.overwrite)
 
         print("\nCreated:")
-        print("  .claude/CLAUDE.md  - Blueprint framework context for Claude Code")
+        print("  .claude/CLAUDE.md                          - Blueprint framework context")
+        print("  .claude/agents/blueprint-architect.md      - Architecture planning agent")
+        print("  .claude/agents/blueprint-builder.md        - Component implementation agent")
+        print("  .claude/skills/new-agent-service/SKILL.md  - /new-agent-service command")
+        print("  .claude/skills/add-component/SKILL.md      - /add-component command")
 
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
