@@ -68,7 +68,7 @@ class SessionKeyProvider(ServiceBase):
 
     async def on_shutdown(self) -> None:
         """Clean up resources."""
-        if self._cache:
+        if self._cache is not None:
             self._cache.clear()
         logger.info("SessionKeyProvider shut down")
 
@@ -199,7 +199,7 @@ class SessionKeyProvider(ServiceBase):
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(url, headers={"X-Api-Key": self._api_key})
             response.raise_for_status()
+            data = response.json()
 
-        data = response.json()
         logger.debug("Session key retrieved from remote: session_id=%s", session_id)
         return data["session_key"]
