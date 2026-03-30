@@ -104,13 +104,15 @@ class SessionsApiClient(ServiceBase):
         session_id: UUID,
         job_id: UUID,
         agent_id: str,
+        session_key: str,
     ) -> dict[str, Any]:
-        """Mark job as running (uses public envelope, no session key needed).
+        """Mark job as running.
 
         Args:
             session_id: UUID of the session
             job_id: UUID of the job
             agent_id: ID of the agent starting the job
+            session_key: Session key for private envelope access
 
         Returns:
             Updated job details
@@ -124,16 +126,47 @@ class SessionsApiClient(ServiceBase):
 
         url = f"{self._base_url}/sessions/{session_id}/jobs/{job_id}/start"
         payload = {"agent_id": agent_id}
+        headers = {"X-Session-Key": session_key}
 
         logger.info("Starting job: session_id=%s, job_id=%s, agent_id=%s", session_id, job_id, agent_id)
 
-        response = await self._client.post(url, json=payload)
+        response = await self._client.post(url, json=payload, headers=headers)
         response.raise_for_status()
 
         job_data = response.json()
         logger.info("Job started successfully: job_id=%s", job_id)
 
         return job_data
+
+    async def get_job_detail(
+        self,
+        session_id: UUID,
+        job_id: UUID,
+        session_key: str,
+    ) -> dict[str, Any]:
+        """Fetch a single job's full detail.
+
+        Args:
+            session_id: UUID of the session
+            job_id: UUID of the job
+            session_key: Session key for decrypting private envelope data
+
+        Returns:
+            Job detail dictionary with decrypted payload
+
+        Raises:
+            httpx.HTTPStatusError: If the request fails
+            ValueError: If client not initialized
+        """
+        if not self._client:
+            raise ValueError("SessionsApiClient not initialized. Call on_startup() first.")
+
+        url = f"{self._base_url}/sessions/{session_id}/jobs/{job_id}"
+        headers = {"X-Session-Key": session_key}
+
+        response = await self._client.get(url, headers=headers)
+        response.raise_for_status()
+        return response.json()
 
     async def complete_job(
         self,
