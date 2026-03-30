@@ -63,42 +63,6 @@ class SessionsApiClient(ServiceBase):
             await self._client.aclose()
             logger.info("SessionsApiClient HTTP client closed")
 
-    async def get_job_details(
-        self,
-        session_id: UUID,
-        job_id: UUID,
-        session_key: str,
-    ) -> dict[str, Any]:
-        """Fetch full job details including encrypted payload.
-
-        Args:
-            session_id: UUID of the session
-            job_id: UUID of the job
-            session_key: Session key for decrypting private envelope data
-
-        Returns:
-            Job details dictionary with decrypted payload
-
-        Raises:
-            httpx.HTTPStatusError: If the request fails
-            ValueError: If client not initialized
-        """
-        if not self._client:
-            raise ValueError("SessionsApiClient not initialized. Call on_startup() first.")
-
-        url = f"{self._base_url}/sessions/{session_id}/jobs/{job_id}"
-        headers = {"X-Session-Key": session_key}
-
-        logger.debug("Fetching job details: session_id=%s, job_id=%s", session_id, job_id)
-
-        response = await self._client.get(url, headers=headers)
-        response.raise_for_status()
-
-        job_data = response.json()
-        logger.debug("Job details fetched successfully: job_id=%s", job_id)
-
-        return job_data
-
     async def start_job(
         self,
         session_id: UUID,
@@ -164,9 +128,12 @@ class SessionsApiClient(ServiceBase):
         url = f"{self._base_url}/sessions/{session_id}/jobs/{job_id}"
         headers = {"X-Session-Key": session_key}
 
+        logger.debug("Fetching job detail: session_id=%s, job_id=%s", session_id, job_id)
         response = await self._client.get(url, headers=headers)
         response.raise_for_status()
-        return response.json()
+        job_data = response.json()
+        logger.debug("Job detail fetched: job_id=%s", job_id)
+        return job_data
 
     async def complete_job(
         self,
