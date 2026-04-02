@@ -131,9 +131,7 @@ class MonitorService(ServiceBase):
             successful_count,
             namespace=CACHE_NAMESPACE,
         )
-        status.uptime_percentage = round(
-            (successful_count / status.total_checks) * 100, 2
-        )
+        status.uptime_percentage = round((successful_count / status.total_checks) * 100, 2)
 
         self._cache.set(
             f"status:{result.endpoint_name}",
@@ -168,19 +166,13 @@ class MonitorService(ServiceBase):
             if status is not None:
                 statuses.append(status)
             else:
-                statuses.append(
-                    EndpointStatus(endpoint_name=endpoint.name, url=endpoint.url)
-                )
+                statuses.append(EndpointStatus(endpoint_name=endpoint.name, url=endpoint.url))
         return statuses
 
     async def generate_report(self) -> UptimeReport:
         """Generate a full uptime report across all monitored endpoints."""
         statuses = await self.get_all_statuses()
-        overall_healthy = all(
-            s.current_health is not None and s.current_health.healthy
-            for s in statuses
-            if s.current_health is not None
-        )
+        overall_healthy = all(s.current_health is not None and s.current_health.healthy for s in statuses if s.current_health is not None)
         return UptimeReport(
             generated_at=datetime.now(timezone.utc).isoformat(),
             endpoints=statuses,

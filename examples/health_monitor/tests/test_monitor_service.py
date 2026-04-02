@@ -118,16 +118,11 @@ class TestStoreResult:
 
         # Verify cache was called to store the status
         mock_cache.set.assert_called()
-        stored_calls = [
-            call for call in mock_cache.set.call_args_list
-            if call[0][0].startswith("status:")
-        ]
+        stored_calls = [call for call in mock_cache.set.call_args_list if call[0][0].startswith("status:")]
         assert len(stored_calls) > 0
 
     @pytest.mark.asyncio
-    async def test_store_unhealthy_result_increments_failures(
-        self, service: MonitorService, mock_cache: MagicMock
-    ) -> None:
+    async def test_store_unhealthy_result_increments_failures(self, service: MonitorService, mock_cache: MagicMock) -> None:
         """Storing an unhealthy result should increment consecutive failures."""
         result = HealthResult(
             endpoint_name="httpbin",

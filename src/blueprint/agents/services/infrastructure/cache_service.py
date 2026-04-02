@@ -478,10 +478,7 @@ class DiskCacheService(CacheService):
             with self._acquire_lock():
                 prefix = f"{namespace}:"
                 # Exclude TTL metadata keys (they end with ":__ttl__")
-                data_keys = [
-                    k for k in self._cache.keys()
-                    if k.startswith(prefix) and not k.endswith(":__ttl__")
-                ]
+                data_keys = [k for k in self._cache.keys() if k.startswith(prefix) and not k.endswith(":__ttl__")]
                 results: list[Any] = []
                 for key in data_keys[:limit]:
                     value = self._cache.get(key)

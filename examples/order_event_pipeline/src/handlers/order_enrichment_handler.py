@@ -31,14 +31,10 @@ class OrderEnrichmentHandler(EventHandlerBase):
     async def on_shutdown(self) -> None:
         pass
 
-    async def can_handle_event(
-        self, event: GenericCloudEvent, context: dict[str, Any]
-    ) -> bool:
+    async def can_handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> bool:
         return event.type == "order.created"
 
-    async def handle_event(
-        self, event: GenericCloudEvent, context: dict[str, Any]
-    ) -> HandlerResult:
+    async def handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> HandlerResult:
         assert self._order_service is not None
         payload = OrderPayload(**event.data)
 

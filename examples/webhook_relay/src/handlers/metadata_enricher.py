@@ -50,23 +50,17 @@ class MetadataEnricher(EventHandlerBase):
     async def on_shutdown(self) -> None:
         """No handler-specific shutdown needed."""
 
-    async def can_handle_event(
-        self, event: GenericCloudEvent, context: dict[str, Any]
-    ) -> bool:
+    async def can_handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> bool:
         return event.type == "webhook.received"
 
-    async def handle_event(
-        self, event: GenericCloudEvent, context: dict[str, Any]
-    ) -> HandlerResult | None:
-        webhook_service: WebhookService = self.registry.get_service(WebhookService) # type: ignore
+    async def handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> HandlerResult | None:
+        webhook_service: WebhookService = self.registry.get_service(WebhookService)  # type: ignore
         normalized = context.get("normalized_event", event.data)
         webhook_id = context.get("webhook_id", event.id)
 
         # Enrich
         enriched: dict[str, Any] = {**normalized}
-        enriched["priority_score"] = _score_priority(
-            normalized.get("event_category", "")
-        )
+        enriched["priority_score"] = _score_priority(normalized.get("event_category", ""))
         enriched["processed_at"] = datetime.now(UTC).isoformat()
         enriched["webhook_id"] = webhook_id
 
@@ -74,9 +68,7 @@ class MetadataEnricher(EventHandlerBase):
         webhook_service.mark_processed(webhook_id)
         webhook_service.store_recent(webhook_id, enriched)
 
-        logger.info(
-            "Enriched webhook %s (priority=%s)", webhook_id, enriched["priority_score"]
-        )
+        logger.info("Enriched webhook %s (priority=%s)", webhook_id, enriched["priority_score"])
 
         return HandlerResult(
             event_type="webhook.processed",

@@ -3,7 +3,6 @@
 import re
 from pathlib import Path
 
-
 # ============================================================================
 # Naming Conversion Functions
 # ============================================================================
@@ -82,9 +81,7 @@ def to_snake_case(name: str) -> str:
     return camel_to_snake(name)
 
 
-def normalize_component_name(
-    name: str, component_type: str
-) -> tuple[str, str, str]:
+def normalize_component_name(name: str, component_type: str) -> tuple[str, str, str]:
     """
     Normalize a component name according to naming conventions.
 
@@ -163,9 +160,7 @@ def write_main_py(project_root: Path, content: str) -> None:
     main_file.write_text(content, encoding="utf-8")
 
 
-def add_import_to_main(
-    main_content: str, import_statement: str, component_type: str
-) -> str:
+def add_import_to_main(main_content: str, import_statement: str, component_type: str) -> str:
     """
     Add an import statement to main.py in the appropriate section.
 

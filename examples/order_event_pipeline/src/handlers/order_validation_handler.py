@@ -31,14 +31,10 @@ class OrderValidationHandler(EventHandlerBase):
     async def on_shutdown(self) -> None:
         pass
 
-    async def can_handle_event(
-        self, event: GenericCloudEvent, context: dict[str, Any]
-    ) -> bool:
+    async def can_handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> bool:
         return event.type == "order.created"
 
-    async def handle_event(
-        self, event: GenericCloudEvent, context: dict[str, Any]
-    ) -> HandlerResult | None:
+    async def handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> HandlerResult | None:
         assert self._order_service is not None
         payload = OrderPayload(**event.data)
 
@@ -46,9 +42,7 @@ class OrderValidationHandler(EventHandlerBase):
 
         if not is_valid:
             error_dicts = [e.model_dump() for e in errors]
-            logger.warning(
-                "Order %s rejected: %s", payload.order_id, error_dicts
-            )
+            logger.warning("Order %s rejected: %s", payload.order_id, error_dicts)
             self._order_service.cache_order_status(
                 payload.order_id,
                 "rejected",

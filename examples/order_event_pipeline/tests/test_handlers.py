@@ -23,9 +23,7 @@ def _make_event(data: dict, event_type: str = "order.created") -> GenericCloudEv
 VALID_ORDER_DATA = {
     "order_id": "order-100",
     "customer_id": "cust-1",
-    "items": [
-        {"product_id": "p1", "name": "Widget", "quantity": 1, "unit_price": 25.0}
-    ],
+    "items": [{"product_id": "p1", "name": "Widget", "quantity": 1, "unit_price": 25.0}],
     "shipping_address": "456 Test Ave",
     "total_amount": 25.0,
 }
@@ -42,6 +40,7 @@ INVALID_ORDER_DATA = {
 # ---------------------------------------------------------------------------
 # OrderValidationHandler
 # ---------------------------------------------------------------------------
+
 
 class TestOrderValidationHandler:
     @pytest.fixture
@@ -106,6 +105,7 @@ class TestOrderValidationHandler:
 # ---------------------------------------------------------------------------
 # OrderEnrichmentHandler
 # ---------------------------------------------------------------------------
+
 
 class TestOrderEnrichmentHandler:
     @pytest.fixture

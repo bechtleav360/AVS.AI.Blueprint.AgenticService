@@ -32,15 +32,11 @@ class WebhookNormalizer(EventHandlerBase):
     async def on_shutdown(self) -> None:
         """No handler-specific shutdown needed."""
 
-    async def can_handle_event(
-        self, event: GenericCloudEvent, context: dict[str, Any]
-    ) -> bool:
+    async def can_handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> bool:
         return event.type == "webhook.received"
 
-    async def handle_event(
-        self, event: GenericCloudEvent, context: dict[str, Any]
-    ) -> HandlerResult | None:
-        webhook_service: WebhookService = self.registry.get_service(WebhookService) # type: ignore
+    async def handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> HandlerResult | None:
+        webhook_service: WebhookService = self.registry.get_service(WebhookService)  # type: ignore
 
         # Parse incoming data into the domain model
         payload = WebhookPayload.model_validate(event.data)

@@ -24,9 +24,9 @@ config = Config(
 app = (
     AppBuilder(config)
     # Handler chain -- priority determines execution order (low first)
-    .with_handler(WebhookNormalizer)   # priority 5  -- normalize
-    .with_handler(ContentFilter)       # priority 10 -- filter
-    .with_handler(MetadataEnricher)    # priority 15 -- enrich & publish
+    .with_handler(WebhookNormalizer)  # priority 5  -- normalize
+    .with_handler(ContentFilter)  # priority 10 -- filter
+    .with_handler(MetadataEnricher)  # priority 15 -- enrich & publish
     # Business service
     .with_service(WebhookService)
     # REST API

@@ -10,10 +10,10 @@ import pytest
 from src.models.schemas import NormalizedEvent, WebhookPayload
 from src.services.webhook_service import WebhookService
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_service(*, with_cache: bool = False) -> WebhookService:
     """Instantiate a WebhookService without touching the real registry."""
@@ -33,6 +33,7 @@ def _make_service(*, with_cache: bool = False) -> WebhookService:
 # ---------------------------------------------------------------------------
 # Normalisation tests
 # ---------------------------------------------------------------------------
+
 
 class TestNormalizePayload:
     def test_github_push(self):
@@ -116,6 +117,7 @@ class TestNormalizePayload:
 # Deduplication tests
 # ---------------------------------------------------------------------------
 
+
 class TestDeduplication:
     def test_not_duplicate_without_cache(self):
         svc = _make_service(with_cache=False)
@@ -123,19 +125,19 @@ class TestDeduplication:
 
     def test_not_duplicate_with_cache(self):
         svc = _make_service(with_cache=True)
-        svc._cache.exists.return_value = False # type: ignore
+        svc._cache.exists.return_value = False  # type: ignore
         assert svc.is_duplicate("wh-1") is False
 
     def test_duplicate_detected(self):
         svc = _make_service(with_cache=True)
-        svc._cache.exists.return_value = True # type: ignore
+        svc._cache.exists.return_value = True  # type: ignore
         assert svc.is_duplicate("wh-1") is True
 
     def test_mark_processed_calls_cache_set(self):
         svc = _make_service(with_cache=True)
         svc.mark_processed("wh-2")
-        svc._cache.set.assert_called_once() # type: ignore
-        call_args = svc._cache.set.call_args # type: ignore
+        svc._cache.set.assert_called_once()  # type: ignore
+        call_args = svc._cache.set.call_args  # type: ignore
         assert call_args[0][0] == "wh-2"
 
     def test_mark_processed_noop_without_cache(self):
@@ -148,12 +150,13 @@ class TestDeduplication:
 # Recent tracking tests
 # ---------------------------------------------------------------------------
 
+
 class TestRecentTracking:
     def test_store_recent_with_cache(self):
         svc = _make_service(with_cache=True)
         data = {"webhook_id": "wh-10", "event_category": "push"}
         svc.store_recent("wh-10", data)
-        svc._cache.set.assert_called_once() # type: ignore
+        svc._cache.set.assert_called_once()  # type: ignore
 
     def test_store_recent_noop_without_cache(self):
         svc = _make_service(with_cache=False)

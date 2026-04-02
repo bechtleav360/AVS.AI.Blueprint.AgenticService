@@ -33,11 +33,4 @@ agent = (
     .build()
 )
 
-app = (
-    AppBuilder(config)
-    .with_agent(agent)
-    .with_service(SummarizerService)
-    .with_rest_api(SummarizerApi())
-    .with_cache()
-    .build()
-)
+app = AppBuilder(config).with_agent(agent).with_service(SummarizerService).with_rest_api(SummarizerApi()).with_cache().build()

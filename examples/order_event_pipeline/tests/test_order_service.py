@@ -22,9 +22,7 @@ def _make_payload(**overrides) -> OrderPayload:
     defaults = {
         "order_id": "order-001",
         "customer_id": "cust-001",
-        "items": [
-            OrderItem(product_id="p1", name="Widget", quantity=1, unit_price=10.0)
-        ],
+        "items": [OrderItem(product_id="p1", name="Widget", quantity=1, unit_price=10.0)],
         "shipping_address": "123 Test St",
         "total_amount": 10.0,
     }
@@ -64,9 +62,7 @@ class TestValidateOrder:
         assert any(e.field == "shipping_address" for e in errors)
 
     def test_multiple_errors(self, service: OrderService):
-        is_valid, errors = service.validate_order(
-            _make_payload(items=[], total_amount=-1, shipping_address="")
-        )
+        is_valid, errors = service.validate_order(_make_payload(items=[], total_amount=-1, shipping_address=""))
         assert is_valid is False
         assert len(errors) == 3
 
@@ -84,17 +80,13 @@ class TestEnrichOrder:
         assert "shipping_estimate" in result
 
     def test_small_order_fast_shipping(self, service: OrderService):
-        items = [
-            OrderItem(product_id="p1", name="Widget", quantity=2, unit_price=5.0)
-        ]
+        items = [OrderItem(product_id="p1", name="Widget", quantity=2, unit_price=5.0)]
         payload = _make_payload(items=items, total_amount=10.0)
         result = service.enrich_order(payload)
         assert result["shipping_estimate"] == "3-5 business days"
 
     def test_large_order_slow_shipping(self, service: OrderService):
-        items = [
-            OrderItem(product_id="p1", name="Widget", quantity=10, unit_price=5.0)
-        ]
+        items = [OrderItem(product_id="p1", name="Widget", quantity=10, unit_price=5.0)]
         payload = _make_payload(items=items, total_amount=50.0)
         result = service.enrich_order(payload)
         assert result["shipping_estimate"] == "5-7 business days"

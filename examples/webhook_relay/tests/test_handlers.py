@@ -17,10 +17,10 @@ from src.handlers.webhook_normalizer import WebhookNormalizer
 from src.models.schemas import NormalizedEvent
 from src.services.webhook_service import WebhookService
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 def _make_event(data: dict[str, Any], event_type: str = "webhook.received") -> GenericCloudEvent:
     return GenericCloudEvent(
@@ -29,7 +29,7 @@ def _make_event(data: dict[str, Any], event_type: str = "webhook.received") -> G
         source="/tests",
         time=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         data=data,
-    ) # type: ignore
+    )  # type: ignore
 
 
 def _github_push_data() -> dict[str, Any]:
@@ -98,6 +98,7 @@ def mock_registry():
 # WebhookNormalizer
 # ---------------------------------------------------------------------------
 
+
 class TestWebhookNormalizer:
     @pytest.mark.asyncio
     async def test_can_handle_correct_event_type(self):
@@ -118,7 +119,7 @@ class TestWebhookNormalizer:
         handler = WebhookNormalizer.__new__(WebhookNormalizer)
         handler._priority = 5
         handler._name = "webhook_normalizer"
-        type(handler).registry = property(lambda self: mock_registry) # type: ignore
+        type(handler).registry = property(lambda self: mock_registry)  # type: ignore
 
         event = _make_event(_github_push_data())
         context: dict[str, Any] = {}
@@ -135,7 +136,7 @@ class TestWebhookNormalizer:
         handler = WebhookNormalizer.__new__(WebhookNormalizer)
         handler._priority = 5
         handler._name = "webhook_normalizer"
-        type(handler).registry = property(lambda self: mock_registry) # type: ignore
+        type(handler).registry = property(lambda self: mock_registry)  # type: ignore
 
         event = _make_event(_github_push_data())
         context: dict[str, Any] = {}
@@ -148,6 +149,7 @@ class TestWebhookNormalizer:
 # ---------------------------------------------------------------------------
 # ContentFilter
 # ---------------------------------------------------------------------------
+
 
 class TestContentFilter:
     @pytest.mark.asyncio
@@ -185,7 +187,7 @@ class TestContentFilter:
 
         assert isinstance(result, HandlerResult)
         assert result.event_type == "webhook.filtered"
-        assert "bot" in result.data["reason"].lower() # type: ignore
+        assert "bot" in result.data["reason"].lower()  # type: ignore
 
     @pytest.mark.asyncio
     async def test_filters_stripe_test(self):
@@ -205,12 +207,13 @@ class TestContentFilter:
 
         assert isinstance(result, HandlerResult)
         assert result.event_type == "webhook.filtered"
-        assert "test" in result.data["reason"].lower() # type: ignore
+        assert "test" in result.data["reason"].lower()  # type: ignore
 
 
 # ---------------------------------------------------------------------------
 # MetadataEnricher
 # ---------------------------------------------------------------------------
+
 
 class TestMetadataEnricher:
     @pytest.mark.asyncio
@@ -218,7 +221,7 @@ class TestMetadataEnricher:
         handler = MetadataEnricher.__new__(MetadataEnricher)
         handler._priority = 15
         handler._name = "metadata_enricher"
-        type(handler).registry = property(lambda self: mock_registry) # type: ignore
+        type(handler).registry = property(lambda self: mock_registry)  # type: ignore
 
         context = {
             "normalized_event": {
@@ -235,7 +238,7 @@ class TestMetadataEnricher:
         assert isinstance(result, HandlerResult)
         assert result.event_type == "webhook.processed"
         assert result.data["priority_score"] == 50  # "push" keyword # type: ignore
-        assert "processed_at" in result.data # type: ignore
+        assert "processed_at" in result.data  # type: ignore
         mock_registry.get_service.return_value.mark_processed.assert_called_once_with("wh-4")
 
     @pytest.mark.asyncio
@@ -243,7 +246,7 @@ class TestMetadataEnricher:
         handler = MetadataEnricher.__new__(MetadataEnricher)
         handler._priority = 15
         handler._name = "metadata_enricher"
-        type(handler).registry = property(lambda self: mock_registry) # type: ignore
+        type(handler).registry = property(lambda self: mock_registry)  # type: ignore
 
         context = {
             "normalized_event": {

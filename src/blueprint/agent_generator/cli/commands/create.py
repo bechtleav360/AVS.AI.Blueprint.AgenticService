@@ -84,9 +84,7 @@ def create_handler(args: Namespace) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Use naming utilities to normalize the handler name
-    class_name, snake_name, file_name = normalize_component_name(
-        args.name, "handler"
-    )
+    class_name, snake_name, file_name = normalize_component_name(args.name, "handler")
 
     # Ensure filename doesn't contain hyphens (convert to snake_case for imports)
     file_name = file_name.replace("-", "_")
@@ -143,14 +141,10 @@ def create_handler(args: Namespace) -> None:
 
         # Add import statement (use snake_case module name)
         import_statement = f"from src.handlers.{module_name} import {class_name}"
-        main_content = add_import_to_main(
-            main_content, import_statement, "handler"
-        )
+        main_content = add_import_to_main(main_content, import_statement, "handler")
 
         # Add component registration
-        main_content = add_component_registration_to_main(
-            main_content, class_name, "handler"
-        )
+        main_content = add_component_registration_to_main(main_content, class_name, "handler")
 
         # Write updated main.py
         write_main_py(project_root, main_content)
@@ -184,9 +178,7 @@ def create_service(args: Namespace) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Use naming utilities to normalize the service name
-    class_name, snake_name, file_name = normalize_component_name(
-        args.name, "service"
-    )
+    class_name, snake_name, file_name = normalize_component_name(args.name, "service")
 
     # Ensure filename doesn't contain hyphens (convert to snake_case for imports)
     file_name = file_name.replace("-", "_")
@@ -244,14 +236,10 @@ def create_service(args: Namespace) -> None:
 
         # Add import statement (use snake_case module name)
         import_statement = f"from src.services.{module_name} import {class_name}"
-        main_content = add_import_to_main(
-            main_content, import_statement, "service"
-        )
+        main_content = add_import_to_main(main_content, import_statement, "service")
 
         # Add component registration
-        main_content = add_component_registration_to_main(
-            main_content, class_name, "service"
-        )
+        main_content = add_component_registration_to_main(main_content, class_name, "service")
 
         # Write updated main.py
         write_main_py(project_root, main_content)
@@ -292,9 +280,7 @@ def create_api(args: Namespace) -> None:
     api_output_dir.mkdir(parents=True, exist_ok=True)
 
     # Use naming utilities to normalize the API name
-    class_name, _, file_name = normalize_component_name(
-        args.name, "api"
-    )
+    class_name, _, file_name = normalize_component_name(args.name, "api")
 
     # Ensure filename doesn't contain hyphens (convert to snake_case for imports)
     file_name = file_name.replace("-", "_")
@@ -490,10 +476,7 @@ class {class_name}(RestApiBase):
         main_content = read_main_py(project_root)
 
         # Add models import (use snake_case module name)
-        models_import_statement = (
-            f"from src.models.{models_module_name} import "
-            f"{request_class_name}, {response_class_name}"
-        )
+        models_import_statement = f"from src.models.{models_module_name} import " f"{request_class_name}, {response_class_name}"
         main_content = add_import_to_main(main_content, models_import_statement, "api")
 
         # Add API import (use snake_case module name)
@@ -501,9 +484,7 @@ class {class_name}(RestApiBase):
         main_content = add_import_to_main(main_content, api_import_statement, "api")
 
         # Add component registration
-        main_content = add_component_registration_to_main(
-            main_content, class_name, "api"
-        )
+        main_content = add_component_registration_to_main(main_content, class_name, "api")
 
         # Write updated main.py
         write_main_py(project_root, main_content)
@@ -551,9 +532,7 @@ def create_agent(args: Namespace) -> None:
     """
 
     # Use naming utilities to normalize the agent name
-    class_name, snake_name, file_name = normalize_component_name(
-        args.name, "agent"
-    )
+    class_name, snake_name, file_name = normalize_component_name(args.name, "agent")
 
     # Ensure filename doesn't contain hyphens (convert to snake_case for imports)
     file_name = file_name.replace("-", "_")
@@ -607,7 +586,7 @@ Provide a clear and actionable response."""
         if settings_file.exists():
             settings_content = settings_file.read_text(encoding="utf-8")
         else:
-            settings_content = "[default]\napp_name = \"generated-agent\"\n\n"
+            settings_content = '[default]\napp_name = "generated-agent"\n\n'
 
         # Check if runtime section already exists
         runtime_section = f"[default.runtimes.{snake_name}]"
@@ -663,9 +642,7 @@ Provide a clear and actionable response."""
         # Add component registration to AppBuilder
         # For agents, pass the variable name as instantiation (e.g., document_analyzer_agent)
         instantiation = f"{agent_name}"
-        main_content = add_component_registration_to_main(
-            main_content, agent_name, "agent", instantiation=instantiation
-        )
+        main_content = add_component_registration_to_main(main_content, agent_name, "agent", instantiation=instantiation)
 
         # Write updated main.py
         write_main_py(project_root, main_content)
@@ -707,9 +684,7 @@ def create_scheduler(args: Namespace) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Use naming utilities to normalize the scheduler name
-    class_name, snake_name, file_name = normalize_component_name(
-        args.name, "scheduler"
-    )
+    class_name, snake_name, file_name = normalize_component_name(args.name, "scheduler")
 
     # Ensure filename doesn't contain hyphens (convert to snake_case for imports)
     file_name = file_name.replace("-", "_")
@@ -777,14 +752,10 @@ class {class_name}(SchedulerBase):
 
         # Add import statement (use snake_case module name)
         import_statement = f"from src.schedulers.{module_name} import {class_name}"
-        main_content = add_import_to_main(
-            main_content, import_statement, "scheduler"
-        )
+        main_content = add_import_to_main(main_content, import_statement, "scheduler")
 
         # Add component registration
-        main_content = add_component_registration_to_main(
-            main_content, class_name, "scheduler"
-        )
+        main_content = add_component_registration_to_main(main_content, class_name, "scheduler")
 
         # Write updated main.py
         write_main_py(project_root, main_content)

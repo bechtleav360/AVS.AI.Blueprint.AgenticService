@@ -35,14 +35,18 @@ class APIPartGenerator(PartGeneratorBase):
         model_classes = list(self.config["communication_layer"]["rest_api"]["dto_classes"])
         if len(model_classes) < 4:
             lines.append(f"from {model_path} import {', '.join(model_classes)}")
-            lines.append(f"from ..models.{self.camel_to_snake(component_name)}.mapper import {self.config["communication_layer"]["rest_api"]["mapper"]["name"]}")
+            lines.append(
+                f"from ..models.{self.camel_to_snake(component_name)}.mapper import {self.config["communication_layer"]["rest_api"]["mapper"]["name"]}"
+            )
         else:
             lines.append(f"from {model_path} import (")
             for dto_class in model_classes:
                 lines.append(f"    {dto_class},")
             lines[-1] = lines[-1][:-1]
             lines.append(")")
-            lines.append(f"from ..models.{self.camel_to_snake(component_name)}.mapper import {self.config['communication_layer']['rest_api']['mapper']['name']}")
+            lines.append(
+                f"from ..models.{self.camel_to_snake(component_name)}.mapper import {self.config['communication_layer']['rest_api']['mapper']['name']}"
+            )
 
         service_classes = list(self.config["communication_layer"]["rest_api"]["uses_services"])
         if len(service_classes) < 4:

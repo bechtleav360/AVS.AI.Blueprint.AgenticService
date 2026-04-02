@@ -32,14 +32,10 @@ class ContentFilter(EventHandlerBase):
     async def on_shutdown(self) -> None:
         """No handler-specific shutdown needed."""
 
-    async def can_handle_event(
-        self, event: GenericCloudEvent, context: dict[str, Any]
-    ) -> bool:
+    async def can_handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> bool:
         return event.type == "webhook.received"
 
-    async def handle_event(
-        self, event: GenericCloudEvent, context: dict[str, Any]
-    ) -> HandlerResult | None:
+    async def handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> HandlerResult | None:
         normalized = context.get("normalized_event", event.data)
         webhook_id = context.get("webhook_id", event.id)
 

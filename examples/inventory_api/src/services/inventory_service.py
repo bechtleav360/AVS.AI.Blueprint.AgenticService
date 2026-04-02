@@ -88,9 +88,7 @@ class InventoryService(ServiceBase):
         logger.info("Created product %s (%s)", product.id, product.name)
         return product
 
-    def update_product(
-        self, product_id: str, request: UpdateProductRequest
-    ) -> Product | None:
+    def update_product(self, product_id: str, request: UpdateProductRequest) -> Product | None:
         """Update an existing product. Returns None if not found."""
         product = self._products.get(product_id)
         if product is None:
@@ -126,11 +124,7 @@ class InventoryService(ServiceBase):
     def search_products(self, query: str) -> ProductSearchResult:
         """Search products by name or description (case-insensitive)."""
         q = query.lower()
-        matches = [
-            p
-            for p in self._products.values()
-            if q in p.name.lower() or q in p.description.lower()
-        ]
+        matches = [p for p in self._products.values() if q in p.name.lower() or q in p.description.lower()]
         return ProductSearchResult(products=matches, total=len(matches))
 
     def update_stock(self, product_id: str, quantity: int) -> Product | None:

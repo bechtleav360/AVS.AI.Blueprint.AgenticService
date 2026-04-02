@@ -7,10 +7,4 @@ from src.services.inventory_service import InventoryService
 
 config = Config(settings_files=["settings.toml"])
 
-app = (
-    AppBuilder(config)
-    .with_service(InventoryService)
-    .with_rest_api(InventoryApi())
-    .with_cache()
-    .build()
-)
+app = AppBuilder(config).with_service(InventoryService).with_rest_api(InventoryApi()).with_cache().build()

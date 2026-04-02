@@ -26,9 +26,7 @@ class OrderService(ServiceBase):
     async def on_shutdown(self) -> None:
         """No-op shutdown."""
 
-    def validate_order(
-        self, payload: OrderPayload
-    ) -> tuple[bool, list[ValidationError]]:
+    def validate_order(self, payload: OrderPayload) -> tuple[bool, list[ValidationError]]:
         """Validate an order payload.
 
         Checks:
@@ -42,19 +40,13 @@ class OrderService(ServiceBase):
         errors: list[ValidationError] = []
 
         if not payload.items:
-            errors.append(
-                ValidationError(field="items", message="Order must contain at least one item")
-            )
+            errors.append(ValidationError(field="items", message="Order must contain at least one item"))
 
         if payload.total_amount <= 0:
-            errors.append(
-                ValidationError(field="total_amount", message="Total amount must be greater than zero")
-            )
+            errors.append(ValidationError(field="total_amount", message="Total amount must be greater than zero"))
 
         if not payload.shipping_address or not payload.shipping_address.strip():
-            errors.append(
-                ValidationError(field="shipping_address", message="Shipping address is required")
-            )
+            errors.append(ValidationError(field="shipping_address", message="Shipping address is required"))
 
         is_valid = len(errors) == 0
         return is_valid, errors

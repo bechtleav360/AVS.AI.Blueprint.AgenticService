@@ -35,11 +35,7 @@ class ReportScheduler(SchedulerBase):
             return
 
         report = await self._monitor_service.generate_report()
-        healthy_count = sum(
-            1
-            for ep in report.endpoints
-            if ep.current_health is not None and ep.current_health.healthy
-        )
+        healthy_count = sum(1 for ep in report.endpoints if ep.current_health is not None and ep.current_health.healthy)
         logger.info(
             "ReportScheduler: uptime report generated at %s -- %d/%d endpoints healthy, overall_healthy=%s",
             report.generated_at,

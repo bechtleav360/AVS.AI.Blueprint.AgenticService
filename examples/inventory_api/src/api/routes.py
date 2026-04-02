@@ -98,9 +98,7 @@ class InventoryApi(RestApiBase):
         tags=["Products"],
         summary="Update a product",
     )
-    async def update_product(
-        self, product_id: str, request: UpdateProductRequest
-    ) -> Product:
+    async def update_product(self, product_id: str, request: UpdateProductRequest) -> Product:
         """Update an existing product."""
         product = self.service.update_product(product_id, request)
         if product is None:
@@ -125,9 +123,7 @@ class InventoryApi(RestApiBase):
         tags=["Products"],
         summary="Adjust product stock",
     )
-    async def adjust_stock(
-        self, product_id: str, body: StockAdjustment
-    ) -> Product:
+    async def adjust_stock(self, product_id: str, body: StockAdjustment) -> Product:
         """Adjust the stock level of a product."""
         product = self.service.update_stock(product_id, body.quantity)
         if product is None:

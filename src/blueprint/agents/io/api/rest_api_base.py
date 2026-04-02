@@ -161,7 +161,7 @@ class RestApiBase(IOBase, ABC):
             result_event = await event_processing_service.process_rest_request(payload, context)
 
             # Extract result data from CloudEvent
-            result = result_event.data # type: ignore[attr-defined]
+            result = result_event.data  # type: ignore[attr-defined]
 
             # Determine success based on processing result
             success = result["status"] == "processed"

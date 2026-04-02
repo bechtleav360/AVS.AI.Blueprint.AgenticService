@@ -1,6 +1,5 @@
 """Unit tests for naming utilities module."""
 
-
 from blueprint.agent_generator.cli.utils.naming_utils import (
     get_component_suffix,
     to_class_name,
@@ -106,9 +105,7 @@ class TestNormalizeComponentName:
 
     def test_normalize_agent_snake_case(self) -> None:
         """Should normalize agent name from snake_case."""
-        class_name, snake_name, filename = normalize_component_name(
-            "test_agent", "agent"
-        )
+        class_name, snake_name, filename = normalize_component_name("test_agent", "agent")
         assert snake_name == "test_agent"
         assert filename == "test_agent.py"
 
@@ -120,36 +117,28 @@ class TestNormalizeComponentName:
 
     def test_normalize_service_snake_case(self) -> None:
         """Should normalize service name from snake_case."""
-        class_name, snake_name, filename = normalize_component_name(
-            "order_processor", "service"
-        )
+        class_name, snake_name, filename = normalize_component_name("order_processor", "service")
         assert class_name == "OrderProcessorService"
         assert snake_name == "order_processor_service"
         assert filename == "order_processor_service.py"
 
     def test_normalize_handler_camel_case(self) -> None:
         """Should normalize handler name from CamelCase."""
-        class_name, snake_name, filename = normalize_component_name(
-            "OrderHandler", "handler"
-        )
+        class_name, snake_name, filename = normalize_component_name("OrderHandler", "handler")
         assert class_name == "OrderHandler"
         assert snake_name == "order_handler"
         assert filename == "order_handler.py"
 
     def test_normalize_api_snake_case(self) -> None:
         """Should normalize api name from snake_case."""
-        class_name, snake_name, filename = normalize_component_name(
-            "order_routes", "api"
-        )
+        class_name, snake_name, filename = normalize_component_name("order_routes", "api")
         assert class_name == "OrderRoutesApi"
         assert snake_name == "order_routes_api"
         assert filename == "order_routes_api.py"
 
     def test_normalize_scheduler_kebab_case(self) -> None:
         """Should normalize scheduler name from kebab-case."""
-        class_name, snake_name, filename = normalize_component_name(
-            "cleanup-job", "scheduler"
-        )
+        class_name, snake_name, filename = normalize_component_name("cleanup-job", "scheduler")
         # camel_to_snake treats kebab-case differently, preserving the dash
         assert class_name == "CleanupJobScheduler"
         assert snake_name == "cleanup-job_scheduler"
@@ -161,16 +150,9 @@ class TestAddImportToMain:
 
     def test_add_import_after_existing_imports(self) -> None:
         """Should add import after last existing import."""
-        main_content = (
-            "from pathlib import Path\n"
-            "from blueprint.agents import AppBuilder\n"
-            "\n"
-            "app = AppBuilder(config).build()\n"
-        )
+        main_content = "from pathlib import Path\n" "from blueprint.agents import AppBuilder\n" "\n" "app = AppBuilder(config).build()\n"
 
-        result = add_import_to_main(
-            main_content, "from src.services.order_service import OrderService", "service"
-        )
+        result = add_import_to_main(main_content, "from src.services.order_service import OrderService", "service")
 
         lines = result.split("\n")
         # Find the new import
@@ -187,9 +169,7 @@ class TestAddImportToMain:
         """Should add import at beginning if no imports exist."""
         main_content = "app = AppBuilder(config).build()\n"
 
-        result = add_import_to_main(
-            main_content, "from src.services.order_service import OrderService", "service"
-        )
+        result = add_import_to_main(main_content, "from src.services.order_service import OrderService", "service")
 
         lines = result.split("\n")
         assert lines[0] == "from src.services.order_service import OrderService"
@@ -198,12 +178,8 @@ class TestAddImportToMain:
         """Should add multiple imports in order after existing imports."""
         main_content = "from pathlib import Path\n\napp = AppBuilder(config).build()\n"
 
-        result1 = add_import_to_main(
-            main_content, "from src.services.order_service import OrderService", "service"
-        )
-        result2 = add_import_to_main(
-            result1, "from src.handlers.order_handler import OrderHandler", "handler"
-        )
+        result1 = add_import_to_main(main_content, "from src.services.order_service import OrderService", "service")
+        result2 = add_import_to_main(result1, "from src.handlers.order_handler import OrderHandler", "handler")
 
         assert "from src.services.order_service import OrderService" in result2
         assert "from src.handlers.order_handler import OrderHandler" in result2
@@ -214,16 +190,9 @@ class TestAddComponentRegistrationToMain:
 
     def test_add_service_registration(self) -> None:
         """Should add service registration before .build()."""
-        main_content = (
-            "app = (\n"
-            "    AppBuilder(config)\n"
-            "    .build()\n"
-            ")\n"
-        )
+        main_content = "app = (\n" "    AppBuilder(config)\n" "    .build()\n" ")\n"
 
-        result = add_component_registration_to_main(
-            main_content, "OrderService", "service"
-        )
+        result = add_component_registration_to_main(main_content, "OrderService", "service")
 
         lines = result.split("\n")
         # Find service registration
@@ -241,64 +210,35 @@ class TestAddComponentRegistrationToMain:
 
     def test_add_handler_registration(self) -> None:
         """Should add handler registration before .build()."""
-        main_content = (
-            "app = (\n"
-            "    AppBuilder(config)\n"
-            "    .with_service(OrderService())\n"
-            "    .build()\n"
-            ")\n"
-        )
+        main_content = "app = (\n" "    AppBuilder(config)\n" "    .with_service(OrderService())\n" "    .build()\n" ")\n"
 
-        result = add_component_registration_to_main(
-            main_content, "OrderHandler", "handler"
-        )
+        result = add_component_registration_to_main(main_content, "OrderHandler", "handler")
 
         assert ".with_handler(OrderHandler())" in result
         assert result.index(".with_handler(OrderHandler())") < result.rindex(".build()")
 
     def test_add_agent_registration_no_instantiation(self) -> None:
         """Should add agent registration without () for agents."""
-        main_content = (
-            "app = (\n"
-            "    AppBuilder(config)\n"
-            "    .build()\n"
-            ")\n"
-        )
+        main_content = "app = (\n" "    AppBuilder(config)\n" "    .build()\n" ")\n"
 
-        result = add_component_registration_to_main(
-            main_content, "order_agent", "agent"
-        )
+        result = add_component_registration_to_main(main_content, "order_agent", "agent")
 
         assert ".with_agent(order_agent)" in result
         # Agents are registered without ()
 
     def test_add_api_registration(self) -> None:
         """Should add API registration before .build()."""
-        main_content = (
-            "app = (\n"
-            "    AppBuilder(config)\n"
-            "    .build()\n"
-            ")\n"
-        )
+        main_content = "app = (\n" "    AppBuilder(config)\n" "    .build()\n" ")\n"
 
-        result = add_component_registration_to_main(
-            main_content, "OrderApi", "api"
-        )
+        result = add_component_registration_to_main(main_content, "OrderApi", "api")
 
         assert ".with_rest_api(OrderApi())" in result
 
     def test_add_scheduler_registration(self) -> None:
         """Should add scheduler registration before .build()."""
-        main_content = (
-            "app = (\n"
-            "    AppBuilder(config)\n"
-            "    .build()\n"
-            ")\n"
-        )
+        main_content = "app = (\n" "    AppBuilder(config)\n" "    .build()\n" ")\n"
 
-        result = add_component_registration_to_main(
-            main_content, "CleanupScheduler", "scheduler"
-        )
+        result = add_component_registration_to_main(main_content, "CleanupScheduler", "scheduler")
 
         assert ".with_scheduler(CleanupScheduler())" in result
 
@@ -312,9 +252,7 @@ class TestAddComponentRegistrationToMain:
             ")\n"
         )
 
-        result = add_component_registration_to_main(
-            main_content, "TestHandler", "handler"
-        )
+        result = add_component_registration_to_main(main_content, "TestHandler", "handler")
 
         lines = result.split("\n")
         # Find the actual .build() line (last one)
@@ -336,12 +274,7 @@ class TestAddComponentRegistrationToMain:
 
     def test_custom_instantiation(self) -> None:
         """Should use custom instantiation if provided."""
-        main_content = (
-            "app = (\n"
-            "    AppBuilder(config)\n"
-            "    .build()\n"
-            ")\n"
-        )
+        main_content = "app = (\n" "    AppBuilder(config)\n" "    .build()\n" ")\n"
 
         result = add_component_registration_to_main(
             main_content,
@@ -356,9 +289,7 @@ class TestAddComponentRegistrationToMain:
         """Should append registration at end if no .build() found."""
         main_content = "app = AppBuilder(config)\n"
 
-        result = add_component_registration_to_main(
-            main_content, "OrderService", "service"
-        )
+        result = add_component_registration_to_main(main_content, "OrderService", "service")
 
         lines = result.split("\n")
         # Last non-empty line should be the registration
@@ -367,22 +298,11 @@ class TestAddComponentRegistrationToMain:
 
     def test_multiple_registrations_maintain_order(self) -> None:
         """Should add multiple registrations in the correct order."""
-        main_content = (
-            "app = (\n"
-            "    AppBuilder(config)\n"
-            "    .build()\n"
-            ")\n"
-        )
+        main_content = "app = (\n" "    AppBuilder(config)\n" "    .build()\n" ")\n"
 
-        result = add_component_registration_to_main(
-            main_content, "OrderService", "service"
-        )
-        result = add_component_registration_to_main(
-            result, "OrderHandler", "handler"
-        )
-        result = add_component_registration_to_main(
-            result, "OrderApi", "api"
-        )
+        result = add_component_registration_to_main(main_content, "OrderService", "service")
+        result = add_component_registration_to_main(result, "OrderHandler", "handler")
+        result = add_component_registration_to_main(result, "OrderApi", "api")
 
         service_idx = result.index(".with_service")
         handler_idx = result.index(".with_handler")
