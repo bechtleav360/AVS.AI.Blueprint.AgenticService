@@ -1,6 +1,5 @@
 """Unit tests for naming utilities module."""
 
-import pytest
 
 from blueprint.agent_generator.cli.utils.naming_utils import (
     get_component_suffix,

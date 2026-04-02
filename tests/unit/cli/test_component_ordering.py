@@ -1,6 +1,5 @@
 """Tests for dependency-aware AppBuilder component registration ordering."""
 
-import pytest
 
 from blueprint.agent_generator.cli.utils.naming_utils import (
     add_component_registration_to_main,
@@ -147,8 +146,8 @@ class TestAddComponentRegistration:
         )
         assert ".with_service(MyService())" in result
         lines = result.split("\n")
-        build_line = next(i for i, l in enumerate(lines) if ".build()" in l)
-        service_line = next(i for i, l in enumerate(lines) if "with_service" in l)
+        build_line = next(index for index, line  in enumerate(lines) if ".build()" in line)
+        service_line = next(index for index, line  in enumerate(lines) if "with_service" in line)
         assert service_line < build_line
 
     def test_add_handler_reorders_before_api(self):
@@ -165,8 +164,8 @@ class TestAddComponentRegistration:
         )
         assert ".with_handler(MyHandler())" in result
         lines = result.split("\n")
-        handler_line = next(i for i, l in enumerate(lines) if "with_handler" in l)
-        api_line = next(i for i, l in enumerate(lines) if "with_rest_api" in l)
+        handler_line = next(index for index, line  in enumerate(lines) if "with_handler" in line)
+        api_line = next(index for index, line  in enumerate(lines) if "with_rest_api" in line)
         assert handler_line < api_line, "Handler should be re-ordered before API"
 
     def test_add_agent_reorders_entire_chain(self):
@@ -184,9 +183,9 @@ class TestAddComponentRegistration:
         )
         assert ".with_agent(MyAgent)" in result
         lines = result.split("\n")
-        agent_line = next(i for i, l in enumerate(lines) if "with_agent" in l)
-        handler_line = next(i for i, l in enumerate(lines) if "with_handler" in l)
-        api_line = next(i for i, l in enumerate(lines) if "with_rest_api" in l)
+        agent_line = next(index for index, line  in enumerate(lines) if "with_agent" in line)
+        handler_line = next(index for index, line  in enumerate(lines) if "with_handler" in line)
+        api_line = next(index for index, line  in enumerate(lines) if "with_rest_api" in line)
         # Agent should come before handler (not after)
         assert agent_line < handler_line < api_line
 
@@ -208,10 +207,10 @@ class TestAddComponentRegistration:
 
         # Verify correct order is restored: service, agent, handler, api
         lines = result.split("\n")
-        service_line = next(i for i, l in enumerate(lines) if "with_service" in l)
-        agent_line = next(i for i, l in enumerate(lines) if "with_agent" in l)
-        handler_line = next(i for i, l in enumerate(lines) if "with_handler" in l)
-        api_line = next(i for i, l in enumerate(lines) if "with_rest_api" in l)
+        service_line = next(index for index, line  in enumerate(lines) if "with_service" in line)
+        agent_line = next(index for index, line  in enumerate(lines) if "with_agent" in line)
+        handler_line = next(index for index, line  in enumerate(lines) if "with_handler" in line)
+        api_line = next(index for index, line  in enumerate(lines) if "with_rest_api" in line)
 
         assert service_line < agent_line < handler_line < api_line, (
             f"Order not corrected: service={service_line}, agent={agent_line}, "
@@ -241,10 +240,10 @@ class TestAddComponentRegistration:
         # Even though added in order: api, service, handler, agent
         # Should be re-ordered to: service, agent, handler, api
         lines = content.split("\n")
-        service_line = next(i for i, l in enumerate(lines) if "with_service" in l)
-        agent_line = next(i for i, l in enumerate(lines) if "with_agent" in l)
-        handler_line = next(i for i, l in enumerate(lines) if "with_handler" in l)
-        api_line = next(i for i, l in enumerate(lines) if "with_rest_api" in l)
+        service_line = next(index for index, line  in enumerate(lines) if "with_service" in  line)
+        agent_line = next(index for index, line  in enumerate(lines) if "with_agent" in line)
+        handler_line = next(index for index, line  in enumerate(lines) if "with_handler" in line)
+        api_line = next(index for index, line  in enumerate(lines) if "with_rest_api" in line)
 
         assert service_line < agent_line < handler_line < api_line, (
             f"Order not corrected: service={service_line}, agent={agent_line}, "
@@ -279,8 +278,8 @@ class TestAddComponentRegistration:
 
         # Handlers should come before API
         lines = content.split("\n")
-        handler_lines = [i for i, l in enumerate(lines) if "with_handler" in l]
-        api_line = next(i for i, l in enumerate(lines) if "with_rest_api" in l)
+        handler_lines = [index for index, line  in enumerate(lines) if "with_handler" in line]
+        api_line = next(index for index, line  in enumerate(lines) if "with_rest_api" in line)
         assert all(h < api_line for h in handler_lines)
 
     def test_cache_stays_last(self):
@@ -298,10 +297,10 @@ class TestAddComponentRegistration:
         )
 
         lines = result.split("\n")
-        service_line = next(i for i, l in enumerate(lines) if "with_service" in l)
-        cache_line = next(i for i, l in enumerate(lines) if "with_cache" in l)
-        api_line = next(i for i, l in enumerate(lines) if "with_rest_api" in l)
-        build_line = next(i for i, l in enumerate(lines) if ".build()" in l)
+        service_line = next(index for index, line  in enumerate(lines) if "with_service" in line)
+        cache_line = next(index for index, line  in enumerate(lines) if "with_cache" in line)
+        api_line = next(index for index, line  in enumerate(lines) if "with_rest_api" in line)
+        build_line = next(index for index, line  in enumerate(lines) if ".build()" in line)
 
         # Correct order: service, api, cache, build
         assert service_line < api_line < cache_line < build_line
