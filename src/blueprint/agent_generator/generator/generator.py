@@ -329,7 +329,15 @@ class AgentGenerator:
                     self.template_dir,
                     "src/prompts",
                     "prompt.prompt",
-                    f"{self.config['agent_layer'][agent_name]['runtime_name']}.prompt",
+                    f"{self.config['agent_layer'][agent_name]['runtime_name']}_system.prompt",
+                ).create_file(out)
+
+                CopyPartGenerator(
+                    self.config,
+                    self.template_dir,
+                    "src/prompts",
+                    "prompt.prompt",
+                    f"{self.config['agent_layer'][agent_name]['runtime_name']}_instruction.prompt",
                 ).create_file(out)
 
             # Create Dockerfile

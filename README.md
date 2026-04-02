@@ -1,105 +1,271 @@
-# Bechtle Index of Sovereignty Agent Blueprint
+# Blueprint Agents
 
-**A Python framework for building production-ready AI agents**
+[![PyPI version](https://img.shields.io/pypi/v/avs-blueprint-agents)](https://pypi.org/project/avs-blueprint-agents/)
+[![Python 3.13+](https://img.shields.io/badge/python-3.13%2B-blue)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![CI](https://github.com/2SpeakAI/blueprint-agents/actions/workflows/ci.yml/badge.svg)](https://github.com/2SpeakAI/blueprint-agents/actions)
 
-## Purpose
+**A Python framework for building production-ready AI agent microservices with event-driven architecture.**
 
-The Agent Blueprint framework helps you build intelligent, event-driven microservices powered by AI. It's designed for teams who need to:
+Blueprint Agents gives you a component-based toolkit for building intelligent microservices that process events, call LLMs, expose REST APIs, and run scheduled tasks -- all wired together with a fluent builder API and backed by production-grade observability.
 
-- **Process events at scale** - Handle CloudEvents from message brokers (RabbitMQ, Kafka, Azure Service Bus)
-- **Integrate AI seamlessly** - Build LLM-powered agents with structured outputs and tool calling
-- **Deploy with confidence** - Production-ready patterns with observability, testing, and containerization
-- **Maintain code quality** - Enforce best practices through component-based architecture
+---
 
-## Why Use This Framework?
+## Key Features
 
-### Built for Production
-Stop reinventing the wheel. Get event processing, AI integration, observability, and deployment patterns out of the box.
+- **Component Architecture** -- Five composable base classes (`EventHandlerBase`, `ServiceBase`, `RestApiBase`, `AgentRuntime`, `SchedulerBase`) assembled via a fluent `AppBuilder`
+- **Event-Driven Processing** -- CloudEvents v1.0 with chain-of-responsibility handlers, Dapr and NATS pub/sub support
+- **LLM Integration** -- AI agents powered by [Pydantic AI](https://ai.pydantic.dev/) with structured outputs, tool calling, and multi-model support (OpenAI, vLLM)
+- **Built-in Observability** -- OpenTelemetry tracing, metrics, and structured logging out of the box
+- **CLI Scaffolding** -- Generate complete project structures and individual components with the `asbs` CLI
+- **Deployment Ready** -- Docker, Kubernetes with Helm charts, health checks, and CI/CD patterns included
 
-### Component-Based Architecture
-Clear separation of concerns with five base components: BusinessService, EventHandler, RestApi, AgentRuntime, and Scheduler.
-
-### AI-First Design
-Native integration with Pydantic AI for structured outputs, tool calling, and multi-model support (OpenAI, vLLM, Anthropic).
-
-### Developer Experience
-CLI tools for scaffolding, Windsurf IDE integration, comprehensive testing patterns, and extensive documentation.
+---
 
 ## Quick Start
-
-### Install and Create Your First Agent
 
 ```bash
 # Install the framework
 pip install avs-blueprint-agents
 
-# Create a new project
+# Scaffold a new project
 asbs setup my-agent
 
-# Start building
+# Start developing
 cd my-agent
 pip install -e .
 asbs dev
 ```
 
-**Next:** Follow the [Getting Started Guide](docs/guides/getting-started.md) for a complete walkthrough.
-
-## Documentation
-
-### 🚀 Getting Started
-
-- **[Getting Started Guide](docs/guides/getting-started.md)** - Complete setup in 15 minutes
-- **[Agent Generator Guide](docs/guides/agent-generator.md)** - Scaffold new projects with CLI tools
-- **[Core Concepts](docs/guides/core-concepts.md)** - Understand the framework patterns
-- **[Architecture Overview](docs/guides/architecture.md)** - See how components fit together
-
-### 🔨 Building Your Agent
-
-- **[Creating Handlers](docs/guides/handlers.md)** - Process events with chain-of-responsibility
-- **[Building LLM Agents](docs/guides/llm-agents.md)** - Integrate AI models with structured outputs
-- **[Using Services](docs/guides/services.md)** - Implement business logic and state management
-- **[REST APIs](docs/guides/rest-apis.md)** - Expose HTTP endpoints with FastAPI
-- **[Background Tasks](docs/guides/schedulers.md)** - Run scheduled jobs with cron
-
-### 📚 Operations & Reference
-
-- **[Testing Guide](docs/guides/testing.md)** - Write unit and integration tests
-- **[Deployment Guide](docs/guides/deployment.md)** - Deploy to Kubernetes with Helm
-- **[Configuration](docs/guides/configuration.md)** - Manage settings and secrets
-- **[Observability](docs/guides/observability.md)** - Tracing, logging, and metrics
-- **[Troubleshooting](docs/guides/troubleshooting.md)** - Fix common issues
-- **[API Reference](docs/reference/api.md)** - Complete API documentation
-- **[Full Documentation Index](docs/README.md)** - Browse all documentation
-
-## Examples
-
-Explore complete example applications in the `examples/` directory:
-
-- **[Invoice Analyzer](examples/invoice_analyzer/)** - Extract structured data from invoices using LLMs
-- **[Customer Support QA](examples/customer_support_qa/)** - Answer customer questions with RAG
-- **[REST Microservice](examples/rest_microservice/)** - Build HTTP APIs with FastAPI integration
-
-## Requirements
-
-- Python 3.13+
-- Docker & Docker Compose (for local development)
-- Dapr CLI (for event processing)
-- API keys for AI providers (OpenAI, Anthropic, or vLLM endpoint)
-
-## Contributing
-
-We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-## Support
-
-- **Documentation:** [docs/README.md](docs/README.md)
-- **Troubleshooting:** [docs/guides/troubleshooting.md](docs/guides/troubleshooting.md)
-- **Issues:** Open an issue on Azure DevOps
-
-## License
-
-Copyright © 2025 Bechtle AG. All rights reserved.
+Your service is now running at `http://localhost:8000` with interactive API docs at `/docs`.
 
 ---
 
-**Ready to build your agent?** Start with the [Getting Started Guide](docs/guides/getting-started.md) →
+## Installation
+
+### Stable Release (PyPI)
+
+```bash
+pip install avs-blueprint-agents
+```
+
+Or with [uv](https://docs.astral.sh/uv/):
+
+```bash
+uv add avs-blueprint-agents
+```
+
+### Alpha Release (TestPyPI)
+
+To install the latest alpha version for testing, add the TestPyPI index to your `pyproject.toml`:
+
+```toml
+[[tool.uv.index]]
+name = "test-pypi"
+url = "https://test.pypi.org/simple/"
+priority = "supplemental"
+```
+
+Then install:
+
+```bash
+uv add avs-blueprint-agents
+```
+
+Or with pip:
+
+```bash
+pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ avs-blueprint-agents
+```
+
+### From Source
+
+```bash
+git clone https://github.com/2SpeakAI/blueprint-agents.git
+cd blueprint-agents
+pip install -e ".[dev]"
+```
+
+---
+
+## How It Works
+
+Blueprint Agents uses five composable component types, wired together with the `AppBuilder`:
+
+```python
+from blueprint.agents import AppBuilder, AgentBuilder, Config
+
+from src.handlers.order_handler import OrderHandler
+from src.services.order_service import OrderService
+from src.api.routes import OrderApi
+
+config = Config(settings_files=["settings.toml", "secrets.toml"])
+
+app = (
+    AppBuilder(config)
+    .with_handler(OrderHandler)
+    .with_service(OrderService)
+    .with_rest_api(OrderApi())
+    .with_cache()
+    .build()
+)
+```
+
+### The Five Components
+
+| Component | Base Class | Purpose |
+|-----------|-----------|---------|
+| **Event Handler** | `EventHandlerBase` | Process CloudEvents via chain-of-responsibility with priority ordering |
+| **Service** | `ServiceBase` | Encapsulate business logic with full registry access |
+| **REST API** | `RestApiBase` | Define HTTP endpoints with `@get()`, `@post()`, `@put()`, `@delete()`, `@patch()` decorators |
+| **Agent** | `AgentRuntime` | Run LLM agents with structured outputs, tool calling, and prompt management |
+| **Scheduler** | `SchedulerBase` | Execute cron-based background tasks with auto-registered trigger endpoints |
+
+### Component Lifecycle
+
+All components follow a consistent lifecycle managed by the framework:
+
+```
+__init__()     -->  Register with component registry
+on_startup()   -->  Resolve dependencies, connect to external services
+[running]      -->  Process events, handle requests, run tasks
+on_shutdown()  -->  Clean up resources, close connections
+```
+
+---
+
+## Examples
+
+Explore complete, runnable examples in the [`examples/`](examples/) directory:
+
+| Example | Description | Components Used |
+|---------|-------------|-----------------|
+| [**inventory_api**](examples/inventory_api/) | Product inventory CRUD REST API | RestApiBase, ServiceBase, Cache |
+| [**order_event_pipeline**](examples/order_event_pipeline/) | E-commerce order processing with Dapr pub/sub | EventHandlerBase, ServiceBase, Dapr |
+| [**document_summarizer**](examples/document_summarizer/) | LLM-powered document summarization with structured output | AgentRuntime, AgentBuilder, Tools |
+| [**webhook_relay**](examples/webhook_relay/) | Webhook ingestion and normalization pipeline with NATS | EventHandlerBase, NATS, Cache |
+| [**health_monitor**](examples/health_monitor/) | System health monitoring with scheduled checks | SchedulerBase, ServiceBase, Cache |
+
+---
+
+## Configuration
+
+Blueprint Agents uses [Dynaconf](https://www.dynaconf.com/) for hierarchical configuration via TOML files:
+
+**settings.toml** (checked into version control):
+
+```toml
+[default]
+app_name = "my-agent"
+app_port = 8000
+event_bus = "dapr"          # "dapr" or "nats"
+log_level = "INFO"
+
+[default.runtimes.my_agent]
+model_provider = "openai"
+model_name = "gpt-4o-mini"
+model_max_tokens = 1000
+model_temperature = 0.3
+
+[default.cache]
+cache_dir = ".cache/my-agent"
+default_ttl = 3600
+```
+
+**secrets.toml** (never commit this file):
+
+```toml
+[default.runtimes.my_agent]
+model_api_key = "sk-your-api-key"
+```
+
+See the [Configuration Reference](docs/concepts/configuration.md) for all available settings.
+
+---
+
+## CLI Reference
+
+The `asbs` CLI scaffolds projects and components:
+
+```bash
+asbs setup <project-name>                        # Create a new project
+asbs create handler <name> [--event-type <type>]  # Add an event handler
+asbs create service <name>                        # Add a business service
+asbs create api <name>                            # Add a REST API
+asbs create agent <name>                          # Add an AI agent
+asbs create scheduler <name> [--cron <expr>]      # Add a scheduler
+asbs validate                                     # Validate project structure
+asbs dev [--port <port>]                          # Run development server
+```
+
+See the full [CLI Reference](docs/guides/cli-reference.md).
+
+---
+
+## Deployment
+
+Blueprint Agents services deploy as standard Python containers:
+
+- **Docker** -- Multi-stage Dockerfile included with scaffolded projects
+- **Kubernetes** -- Helm charts with Dapr sidecar injection, health probes, and ConfigMap/Secret management
+- **CI/CD** -- GitHub Actions workflows for linting, testing, and publishing
+
+See the [Deployment Guide](docs/guides/deployment.md) for detailed instructions.
+
+---
+
+## Documentation
+
+### Getting Started
+- [Getting Started Guide](docs/getting-started.md) -- Installation, first project, and walkthrough
+
+### Core Concepts
+- [Architecture](docs/concepts/architecture.md) -- Component model, registry, and lifecycle
+- [Event Processing](docs/concepts/event-processing.md) -- CloudEvents, handler chain, Dapr/NATS
+- [Configuration](docs/concepts/configuration.md) -- Settings, secrets, and environment variables
+- [Caching](docs/concepts/caching.md) -- Persistent disk cache with TTL and namespaces
+- [Observability](docs/concepts/observability.md) -- OpenTelemetry tracing, metrics, and logging
+
+### Component Guides
+- [Event Handlers](docs/components/event-handlers.md)
+- [Services](docs/components/services.md)
+- [REST APIs](docs/components/rest-apis.md)
+- [Agents](docs/components/agents.md)
+- [Schedulers](docs/components/schedulers.md)
+
+### Operations
+- [CLI Reference](docs/guides/cli-reference.md)
+- [Testing Guide](docs/guides/testing.md)
+- [Deployment Guide](docs/guides/deployment.md)
+- [Troubleshooting](docs/guides/troubleshooting.md)
+
+### Reference
+- [API Reference](docs/reference/api.md)
+- [Configuration Keys](docs/reference/configuration-keys.md)
+- [Data Models](docs/reference/models.md)
+
+---
+
+## Requirements
+
+- **Python 3.13+**
+- **Docker** (optional, for containerized deployment)
+- **Dapr CLI** (optional, for Dapr pub/sub event processing)
+- **NATS Server** (optional, for NATS event processing)
+- **API keys** for AI providers (optional, only for LLM agent features)
+
+---
+
+## Contributing
+
+We welcome contributions! See [CONTRIBUTE.md](CONTRIBUTE.md) for guidelines on:
+
+- Setting up the development environment
+- Running tests and linting
+- Submitting pull requests
+
+---
+
+## License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.

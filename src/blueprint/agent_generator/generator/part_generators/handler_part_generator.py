@@ -5,7 +5,7 @@ from .part_generator_base import PartGeneratorBase
 
 
 class HandlerPartGenerator(PartGeneratorBase):
-    def __init__(self, config: dict[str, Any], template_dir: str | Path, src_path: str, handler_name: str) -> None:
+    def __init__(self, config: dict[str, Any], template_dir: str | Path, src_path: str, handler_name: str = "") -> None:
         super().__init__(config, template_dir, src_path)
         self.template_file_name = "handler.txt"
         self.handler_name = handler_name
@@ -14,6 +14,16 @@ class HandlerPartGenerator(PartGeneratorBase):
         self.template_vars["handler_class"] = self._generate_handler_class()
         self.template_vars["on_startup"] = self._generate_on_startup()
         self.template_vars["on_shutdown"] = self._generate_on_shutdown()
+
+    def to_py_file_name(self) -> str:
+        """Converts a file name to a corresponding Python file name.
+
+        Uses component_name if available, otherwise falls back to handler_name.
+        """
+        component_name = self.config.get("component_name", "")
+        if component_name:
+            return f"{self.camel_to_snake(component_name)}_handler.py"
+        return f"{self.camel_to_snake(self.handler_name)}_handler.py"
 
     def _create_handler_imports(self) -> str:
         """

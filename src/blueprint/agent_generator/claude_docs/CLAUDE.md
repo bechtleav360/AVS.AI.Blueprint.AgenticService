@@ -168,8 +168,18 @@ agent = (
 ```
 
 **Prompt files** in `src/prompts/`:
-- **System prompt** (`system.prompt`): Static context — no dynamic inputs
-- **Instruction prompt** (`instruction.prompt`): Contains dynamic inputs with `{placeholders}`
+- **System prompt** (`system.prompt`): Static context — no dynamic inputs. Loaded by `AgentBuilder.with_system_prompt()`.
+- **Instruction prompt** (`instruction.prompt`): Contains `{placeholders}` for dynamic inputs.
+
+**Always use `agent.get_prompt().format()` for user prompts with variable inputs:**
+
+```python
+prompt = self._agent.get_prompt("instruction").format(
+    ticket_text=ticket_text,
+    customer_tier=customer_tier,
+)
+result = await self._agent.run(user_prompt=prompt)
+```
 
 ## Registry Lookup
 
@@ -222,6 +232,8 @@ asbs dev [--port 8000]                             # Run dev server
 - Pydantic validation at system boundaries
 - Secrets via `secrets.toml` — never hardcoded
 - Context managers (`async with`) for external resources
+- **No `assert` statements in production code** — `assert` is only permitted in test files (`tests/`)
+- **All imports at the top of the file** — never inside methods, functions, or classes
 
 ## Testing
 
@@ -238,7 +250,6 @@ src/
 ├── services/        # ServiceBase subclasses
 ├── api/             # RestApiBase subclasses
 ├── schedulers/      # SchedulerBase subclasses
-├── agents/          # AgentBuilder setup code
 ├── models/          # Pydantic domain models + DTOs
 └── prompts/         # .prompt files (system + instruction)
 ```

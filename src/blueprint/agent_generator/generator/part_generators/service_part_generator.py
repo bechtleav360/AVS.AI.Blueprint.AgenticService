@@ -19,6 +19,9 @@ class ServicePartGenerator(PartGeneratorBase):
 
     def to_py_file_name(self) -> str:
         """Converts a file name to a corresponding Python file name."""
+        component_name = self.config.get("component_name", "")
+        if component_name:
+            return f"{self.camel_to_snake(component_name)}_service.py"
         return f"{self.camel_to_snake(self.service_name)}.py"
 
     def _create_service_imports(self) -> str:
@@ -30,7 +33,7 @@ class ServicePartGenerator(PartGeneratorBase):
         if self.config["service_layer"][self.service_name]["uses_domain_models"]:
             if len(self.config["service_layer"][self.service_name]["uses_domain_models"]) < 4:
                 lines.append(
-                    f"from ..models.domain_models import {', '.join(self.config['service_layer'][self.service_name]['uses_domain_models'])}"
+                    f"from ..models.{self.camel_to_snake(self.config.get("component_name", ""))}.domain_models import {', '.join(self.config['service_layer'][self.service_name]['uses_domain_models'])}"
                 )
             else:
                 lines.append("from ..models.domain_models import (")

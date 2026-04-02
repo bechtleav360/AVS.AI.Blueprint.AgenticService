@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "webhook-relay"
+version = "0.1.0"
+description = "Non-LLM event processing example using Blueprint Agents with NATS"
+requires-python = ">=3.13"
+dependencies = [
+    "avs-blueprint-agents>=0.6.0a3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]

@@ -121,6 +121,18 @@ class CacheService(ServiceBase):
     def list_namespaces(self) -> list[str]:
         """List all namespaces currently present in the cache."""
 
+    @abstractmethod
+    def list_values(self, namespace: str = "default", limit: int = 100) -> list[Any]:
+        """List all values stored in a namespace.
+
+        Args:
+            namespace: Namespace to list values from (default: "default")
+            limit: Maximum number of values to return (default: 100)
+
+        Returns:
+            List of cached values in the namespace. Order is not guaranteed.
+        """
+
 
 class DiskCacheService(CacheService):
     """Persistent disk-based cache implementation using diskcache-rs.
@@ -458,6 +470,27 @@ class DiskCacheService(CacheService):
             return result
         except Exception as e:
             logger.warning("Error listing cache namespaces: %s", e)
+            return []
+
+    def list_values(self, namespace: str = "default", limit: int = 100) -> list[Any]:
+        """List all values stored in a namespace."""
+        try:
+            with self._acquire_lock():
+                prefix = f"{namespace}:"
+                # Exclude TTL metadata keys (they end with ":__ttl__")
+                data_keys = [
+                    k for k in self._cache.keys()
+                    if k.startswith(prefix) and not k.endswith(":__ttl__")
+                ]
+                results: list[Any] = []
+                for key in data_keys[:limit]:
+                    value = self._cache.get(key)
+                    if value is not None:
+                        results.append(value)
+                logger.debug("Listed %d values from namespace '%s'", len(results), namespace)
+                return results
+        except Exception as e:
+            logger.warning("Error listing values from cache namespace '%s': %s", namespace, e)
             return []
 
     def close(self) -> None:

@@ -8,6 +8,8 @@ ProcessingService.
 import logging
 from typing import Any, TypeVar
 
+ServiceT = TypeVar("ServiceT", bound="ServiceBase")
+
 from ..agent.agent_runtime import AgentRuntime
 from ..clients.ai.ai_client_base import AIClientBase
 from ..clients.client_base import ClientBase
@@ -353,7 +355,7 @@ class Registry:
 
         return self.has_component_of_type(ServiceBase, name)
 
-    def get_service(self, name_or_class: str | type[ServiceBase]) -> ServiceBase:
+    def get_service(self, name_or_class: str | type[ServiceT]) -> ServiceT:
         """Get a registered service by name or class.
 
         Args:
@@ -366,7 +368,7 @@ class Registry:
             ValueError: If not found, wrong type, or multiple matches exist
         """
 
-        return self._resolve_single(name_or_class, ServiceBase)  # type: ignore[type-abstract]
+        return self._resolve_single(name_or_class, ServiceBase)  # type: ignore[arg-type,return-value]
 
     def get_services(self) -> list[ServiceBase]:
         """Get all registered business services."""

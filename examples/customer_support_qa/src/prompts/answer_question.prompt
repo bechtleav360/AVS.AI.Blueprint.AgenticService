@@ -1,9 +1,0 @@
-Answer the following customer support question:
-
-Question: {question}
-Category: {category}
-Context: {context}
-
-Provide a detailed, comprehensive answer that fully addresses the customer's question. Include examples, step-by-step instructions, or clarifications as needed.
-
-Remember to respond in JSON format with "answer", "confidence", and "sources" fields.

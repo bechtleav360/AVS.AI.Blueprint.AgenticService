@@ -83,7 +83,7 @@ def main() -> None:
     claude_parser = subparsers.add_parser(
         "claude",
         help="Generate Claude Code integration files",
-        description="Create .claude/CLAUDE.md with Blueprint framework context",
+        description="Create src/CLAUDE.md and .claude/ with Blueprint framework context, agents, and skills",
     )
     claude_parser.add_argument(
         "output_dir",

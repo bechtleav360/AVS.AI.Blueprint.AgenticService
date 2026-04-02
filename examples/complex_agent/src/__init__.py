@@ -1,1 +1,0 @@
-# Asset Backup Checker Microservice

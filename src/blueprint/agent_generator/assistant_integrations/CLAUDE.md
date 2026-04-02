@@ -38,12 +38,24 @@ class MyHandler(EventHandlerBase):
 - Use `%s`-style args in log calls, not f-strings (deferred formatting)
 - Validate all external input with Pydantic at system boundaries
 - Never hardcode secrets — use environment variables via `secrets.toml`
+- **No `assert` statements in production code** — `assert` is only permitted in test files (`tests/`)
+- **All imports at the top of the file** — never inside methods, functions, or classes
 
 ## Agent Prompts
 
-- **System prompt** (`system.prompt`): Static context — no dynamic inputs
-- **Instruction prompt** (`instruction.prompt`): Contains dynamic inputs with `{placeholders}`
+- **System prompt** (`system.prompt`): Static context — no dynamic inputs. Loaded by `AgentBuilder.with_system_prompt()`.
+- **Instruction prompt** (`instruction.prompt`): Contains `{placeholders}` for dynamic inputs.
 - Files go in `src/prompts/` as `.prompt` files
+
+**Always use `agent.get_prompt().format()` for user prompts with variable inputs:**
+
+```python
+prompt = self._agent.get_prompt("instruction").format(
+    ticket_text=ticket_text,
+    customer_tier=customer_tier,
+)
+result = await self._agent.run(user_prompt=prompt)
+```
 
 ## Error Handling
 

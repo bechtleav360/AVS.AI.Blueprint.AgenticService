@@ -1,299 +1,56 @@
 # API Reference
 
-Complete reference for the Agent Blueprint framework.
+Public API for the `avs-blueprint-agents` framework (Python 3.13+).
+
+All primary classes are exported from `blueprint.agents`:
+
+```python
+from blueprint.agents import AppBuilder, AgentBuilder, AgentRuntime, Config
+```
 
 ---
 
 ## AppBuilder
 
-Main entry point for building FastAPI applications.
+**Module:** `blueprint.agents.app_builder`
+
+Fluent builder that assembles a FastAPI application from handlers, services, agents, APIs, and schedulers.
+
+### Constructor
+
+```python
+AppBuilder(config: Config)
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `config` | `Config` | Application configuration instance. |
 
 ### Methods
 
-#### `with_handler(handler: type[EventHandler] | EventHandler) -> AppBuilder`
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `with_handler(handler, *, name=None)` | `AppBuilder` | Register an event handler. |
+| `with_service(service, *, name=None)` | `AppBuilder` | Register a service component. |
+| `with_agent(agent, *, name=None)` | `AppBuilder` | Register an agent component. |
+| `with_rest_api(api, *, name=None)` | `AppBuilder` | Register a REST API controller. |
+| `with_scheduler(scheduler, *, name=None)` | `AppBuilder` | Register a scheduled task. |
+| `with_cache(enabled=True, enable_locking=True)` | `AppBuilder` | Enable or configure the disk cache. |
+| `with_health_checker(name, checker)` | `AppBuilder` | Add a named health-check probe. |
+| `build()` | `FastAPI` | Finalize and return the configured FastAPI application. |
 
-Register an event handler.
-
-```python
-app_builder.with_handler(MyEventHandler)
-```
-
-#### `with_service(service: BusinessService) -> AppBuilder`
-
-Register a business service.
-
-```python
-app_builder.with_service(MyService())
-```
-
-#### `with_agent(agent: AgentRuntime) -> AppBuilder`
-
-Register an LLM agent.
+### Usage
 
 ```python
-app_builder.with_agent(my_agent)
-```
-
-#### `with_rest_api(api: RestApi) -> AppBuilder`
-
-Register a custom REST API.
-
-```python
-app_builder.with_rest_api(MyRestApi())
-```
-
-#### `with_cache(enabled: bool = True) -> AppBuilder`
-
-Enable persistent caching.
-
-```python
-app_builder.with_cache()
-```
-
-#### `build() -> FastAPI`
-
-Build and return the FastAPI application.
-
-```python
-app = app_builder.build()
-```
-
----
-
-## EventHandler
-
-Base class for event handlers.
-
-### Abstract Methods
-
-#### `async can_handle_event(event: CloudEvent, context) -> bool`
-
-Determine if this handler can process the event.
-
-```python
-async def can_handle_event(self, event: CloudEvent, context) -> bool:
-    return event.get_type() == "user.created"
-```
-
-#### `async handle_event(event: CloudEvent, context) -> HandlerResult | list[HandlerResult] | None`
-
-Process the event and optionally return results to publish.
-
-```python
-async def handle_event(self, event: CloudEvent, context) -> HandlerResult:
-    # Process event
-    result = await self.process(event.get_data())
-
-    # Return result to publish new event
-    return HandlerResult(
-        event_type="user.processed",
-        data=result
-    )
-```
-
-### Properties
-
-#### `_component_registry: ComponentRegistry`
-
-Access other registered components.
-
-```python
-agent = self._registry.get_agent("my_agent")
-service = self._registry.get_service("my_service")
-```
-
----
-
-## RestApi
-
-Base class for REST API endpoints.
-
-### Abstract Methods
-
-#### `def _register_routes()`
-
-Register FastAPI routes.
-
-```python
-def _register_routes(self):
-    @self.router.post("/users")
-    async def create_user(request: UserRequest):
-        service = self._registry.get_service("user_service")
-        return await service.create_user(request)
-```
-
-#### `async on_startup()`
-
-Called when service starts.
-
-```python
-async def on_startup(self):
-    # Initialize resources
-    pass
-```
-
-#### `async on_shutdown()`
-
-Called when service stops.
-
-```python
-async def on_shutdown(self):
-    # Clean up resources
-    pass
-```
-
-### Properties
-
-#### `router: APIRouter`
-
-FastAPI router for registering routes.
-
-```python
-@self.router.get("/health")
-async def health():
-    return {"status": "ok"}
-```
-
-#### `_component_registry: ComponentRegistry`
-
-Access other registered components.
-
----
-
-## BusinessService
-
-Base class for business logic services.
-
-### Abstract Methods
-
-#### `def get_name() -> str`
-
-Return the service name.
-
-```python
-def get_name(self) -> str:
-    return "user_service"
-```
-
-#### `async on_startup()`
-
-Called when service starts.
-
-```python
-async def on_startup(self):
-    # Connect to database
-    pass
-```
-
-#### `async on_shutdown()`
-
-Called when service stops.
-
-```python
-async def on_shutdown(self):
-    # Close database connection
-    pass
-```
-
----
-
-## AgentBuilder
-
-Builder for creating LLM agents.
-
-### Methods
-
-#### `with_model(model_name: str) -> AgentBuilder`
-
-Configure with a specific model name.
-
-```python
-builder.with_model("gpt-4")
-```
-
-#### `with_model_from_config(runtime_name: str | None = None) -> AgentBuilder`
-
-Load model from configuration.
-
-```python
-builder.with_model_from_config("invoice_analyzer")
-```
-
-#### `with_system_prompt_text(text: str) -> AgentBuilder`
-
-Set system prompt as inline text.
-
-```python
-builder.with_system_prompt_text("You are a helpful assistant")
-```
-
-#### `with_system_prompt_file(name: str) -> AgentBuilder`
-
-Load system prompt from file.
-
-```python
-builder.with_system_prompt_file("system")
-```
-
-#### `with_tools(tools: list[Tool]) -> AgentBuilder`
-
-Register tools the agent can call.
-
-```python
-builder.with_tools([calculate_tool, search_tool])
-```
-
-#### `with_result_type(result_type: type[BaseModel]) -> AgentBuilder`
-
-Set Pydantic model for structured outputs.
-
-```python
-builder.with_result_type(InvoiceData)
-```
-
-#### `with_metrics(enabled: bool = True) -> AgentBuilder`
-
-Enable/disable metrics logging.
-
-```python
-builder.with_metrics(True)
-```
-
-#### `build(**kwargs) -> AgentRuntime`
-
-Build and return the agent.
-
-```python
-agent = builder.build()
-```
-
----
-
-## HandlerResult
-
-Result returned from event handlers.
-
-### Fields
-
-#### `event_type: str`
-
-Type of event to publish (e.g., "user.processed").
-
-#### `data: dict[str, Any]`
-
-Event data payload.
-
-#### `metadata: dict[str, Any] | None`
-
-Optional metadata.
-
-### Example
-
-```python
-return HandlerResult(
-    event_type="user.processed",
-    data={"user_id": 123, "status": "active"},
-    metadata={"source": "handler"}
+config = Config()
+app = (
+    AppBuilder(config)
+    .with_service(MyService)
+    .with_agent(MyAgent)
+    .with_handler(MyHandler)
+    .with_rest_api(MyApi)
+    .with_cache()
+    .build()
 )
 ```
 
@@ -301,188 +58,283 @@ return HandlerResult(
 
 ## Config
 
-Application configuration loader.
+**Module:** `blueprint.agents.config`
+
+Loads and provides access to application settings from `settings.toml` files and environment variables.
+
+### Constructor
+
+```python
+Config(settings_files=None, root_path=None)
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `settings_files` | `list[str] \| None` | `None` | Paths to settings files. Uses default discovery when `None`. |
+| `root_path` | `str \| None` | `None` | Root directory for resolving relative paths. |
 
 ### Methods
 
-#### `get_ai_config(runtime_name: str) -> AIConfig`
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `get(key, default=None)` | `Any` | Retrieve a raw configuration value by key. |
+| `get_ai_config(runtime_name="default")` | `AIConfig` | Get AI/model configuration for a named runtime. |
+| `get_prompt_config(runtime_name=None)` | `PromptConfig` | Get prompt file configuration. |
+| `get_cache_config()` | `CacheConfig` | Get disk cache configuration. |
+| `get_event_publishing_config()` | `EventPublishingConfig` | Get event publishing / topic mapping configuration. |
+| `get_observability_config()` | `ObservabilityConfig` | Get OpenTelemetry and logging configuration. |
+| `get_runtime_config(runtime_name="default")` | `dict` | Get the raw runtime configuration dict for a named runtime. |
+| `validate()` | `bool` | Validate the configuration. Returns `True` if valid. |
+| `get_package_root()` | `Path` | Return the resolved package root directory. |
 
-Get AI model configuration.
+---
+
+## AgentBuilder
+
+**Module:** `blueprint.agents.agent.agent_builder`
+
+Fluent builder for constructing an `AgentRuntime` instance with a model, prompts, tools, and metrics.
+
+### Constructor
 
 ```python
-ai_config = config.get_ai_config("invoice_analyzer")
+AgentBuilder(config, runtime_name="default", meter=None, package_root=None)
 ```
 
-#### `get_cache_config() -> CacheConfig`
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `config` | `Config` | -- | Application configuration instance. |
+| `runtime_name` | `str` | `"default"` | Name of the runtime configuration section to use. |
+| `meter` | `Meter \| None` | `None` | OpenTelemetry meter for recording metrics. |
+| `package_root` | `Path \| None` | `None` | Root path for locating prompt files. |
 
-Get cache configuration.
+### Methods
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `with_model_from_config(model_name="")` | `AgentBuilder` | Configure the model from the runtime config section. Optional `model_name` override. |
+| `with_system_prompt(name=None)` | `AgentBuilder` | Load a system prompt file by name. Uses the configured default when `None`. |
+| `with_tools(tools: list[Tool])` | `AgentBuilder` | Register a list of pydantic-ai `Tool` objects. |
+| `with_tool(name, function)` | `AgentBuilder` | Register a single tool by name and callable. |
+| `with_result_type(result_type: type[BaseModel])` | `AgentBuilder` | Set the structured result type (Pydantic model). |
+| `with_deps_type(deps_type)` | `AgentBuilder` | Set the dependency-injection type for the agent. |
+| `with_metrics(enabled=True)` | `AgentBuilder` | Enable or disable automatic metrics recording. |
+| `build(**kwargs)` | `AgentRuntime` | Build and return the configured `AgentRuntime`. |
+
+### Static Methods
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `extract_response_text(result)` | `str` | Extract the text content from an `AgentRunResult`. |
+| `extract_usage_info(result)` | `dict` | Extract token usage information from an `AgentRunResult`. |
+
+### Usage
 
 ```python
-cache_config = config.get_cache_config()
-```
-
-#### `get_prompt_config(runtime_name: str) -> PromptConfig`
-
-Get prompt configuration.
-
-```python
-prompt_config = config.get_prompt_config("invoice_analyzer")
-```
-
-#### `get(key: str, default: Any = None) -> Any`
-
-Get configuration value by key.
-
-```python
-app_name = config.get("app_name", "my-app")
+agent = (
+    AgentBuilder(config, runtime_name="default")
+    .with_model_from_config()
+    .with_system_prompt()
+    .with_tools([my_tool])
+    .with_metrics()
+    .build()
+)
 ```
 
 ---
 
-## Cache API Endpoints
+## AgentRuntime
 
-### GET /api/cache/stats
+**Module:** `blueprint.agents.agent.agent_runtime`
 
-Get cache statistics.
+**Extends:** `pydantic_ai.Agent`, `Component`
 
-**Response:**
-```json
-{
-  "size": 42,
-  "cache_dir": "/path/to/cache",
-  "ttl_tracked_keys": 10,
-  "size_limit": 1000000000,
-  "eviction_policy": "least-recently-used"
-}
-```
+Runtime wrapper around a pydantic-ai Agent. Adds prompt loading, metric recording, and lifecycle hooks.
 
-### GET /api/cache/namespaces
+### Methods
 
-List all cache namespaces.
-
-**Response:**
-```json
-{
-  "namespaces": ["default", "users", "invoices"],
-  "count": 3
-}
-```
-
-### POST /api/cache/evict
-
-Clear cache for a namespace.
-
-**Request:**
-```json
-{
-  "namespace": "users"
-}
-```
-
-**Response:**
-```json
-{
-  "status": "ok",
-  "namespace": "users",
-  "message": "Cache cleared for namespace 'users'"
-}
-```
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `async run(user_prompt, *, model_settings=None, **kwargs)` | `AgentRunResult` | Execute the agent with a user prompt. Accepts optional `model_settings` override and additional keyword arguments forwarded to the underlying agent. |
+| `get_model_settings()` | `ModelSettings` | Return the current model settings (temperature, max tokens, etc.). |
+| `record_metrics(result, duration_ms, model_name=None)` | `None` | Record execution metrics (latency, token usage) for a completed run. |
+| `get_prompt(prompt_name, path="")` | `str` | Load a prompt template by name and optional subdirectory path. |
+| `on_startup()` | `None` | Lifecycle hook called when the application starts. |
+| `on_shutdown()` | `None` | Lifecycle hook called when the application shuts down. |
 
 ---
 
-## Environment Variables
+## EventHandlerBase
 
-### Required
+**Module:** `blueprint.agents.handler.event_handler_base`
 
-- `OPENAI_API_KEY` — OpenAI API key (if using OpenAI models)
+Abstract base class for event handlers. Subclass this to process incoming events from the event bus.
 
-### Optional
-
-- `LOG_LEVEL` — Logging level (DEBUG, INFO, WARNING, ERROR)
-- `DAPR_HTTP_PORT` — Dapr HTTP port (default: 3500)
-- `DAPR_GRPC_PORT` — Dapr gRPC port (default: 50001)
-
----
-
-## Configuration File Format
-
-### settings.toml
-
-```toml
-[default]
-app_name = "my-app"
-log_level = "INFO"
-
-[default.ai.default]
-provider = "openai"
-model_name = "gpt-4"
-
-[default.cache]
-cache_dir = ".cache/blueprint"
-size_limit = 1000000000
-eviction_policy = "least-recently-used"
-
-[default.event_publishing]
-enabled = true
-dapr_http_port = 3500
-
-[[default.event_publishing.topic_mapping]]
-topic = "user.created"
-subscription_path = "/dapr/subscribe/user.created"
-```
-
-### secrets.toml
-
-```toml
-[default.ai.default]
-api_key = "${OPENAI_API_KEY}"
-```
-
----
-
-## Error Handling
-
-### Common Exceptions
-
-#### `ValueError`
-
-Raised when configuration is invalid or required fields are missing.
+### Constructor
 
 ```python
-try:
-    agent = builder.build()
-except ValueError as e:
-    print(f"Build failed: {e}")
+EventHandlerBase(priority=100)
 ```
 
-#### `RuntimeError`
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `priority` | `int` | `100` | Handler execution priority. Lower values execute first. |
 
-Raised when component is not registered.
+### Abstract Methods
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `can_handle_event(event, context)` | `bool` | Return `True` if this handler should process the given event. |
+| `handle_event(event, context)` | `Any \| HandlerResult \| list[HandlerResult] \| None` | Process the event. Return a `HandlerResult` to publish follow-up events, or `None`. |
+
+### Methods
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `get_published_event_types()` | `tuple[str, str] \| None` | Declare the event types this handler publishes. Returns `(event_type, topic)` or `None`. |
+
+### Usage
 
 ```python
-try:
-    agent = registry.get_agent("missing")
-except RuntimeError as e:
-    print(f"Agent not found: {e}")
+class MyHandler(EventHandlerBase):
+    def can_handle_event(self, event, context):
+        return event.type == "my.event.v1"
+
+    def handle_event(self, event, context):
+        # process event
+        return HandlerResult(event_type="my.result.v1", data={"ok": True})
 ```
 
 ---
 
-## Logging
+## ServiceBase
 
-Enable debug logging in `settings.toml`:
+**Module:** `blueprint.agents.services.service_base`
 
-```toml
-log_level = "DEBUG"
-```
+Base class for long-lived service components. Provides lifecycle hooks and access to the component registry.
 
-Access logger in your code:
+### Constructor
 
 ```python
-import logging
-
-logger = logging.getLogger(__name__)
-logger.info("Processing event: %s", event_type)
-logger.debug("Event data: %s", event.get_data())
-logger.error("Failed to process: %s", error)
+ServiceBase()
 ```
+
+### Inherited Members
+
+| Member | Type | Description |
+|--------|------|-------------|
+| `self.registry` | `Registry` | Access to the shared component registry. |
+| `self.config` | `Config` | Application configuration. |
+| `on_startup()` | method | Called when the application starts. Override for initialization logic. |
+| `on_shutdown()` | method | Called when the application shuts down. Override for cleanup logic. |
+
+---
+
+## RestApiBase
+
+**Module:** `blueprint.agents.io.api.rest_api_base`
+
+Base class for REST API controllers. Routes are declared with static decorators and automatically mounted on the FastAPI application.
+
+### Constructor
+
+```python
+RestApiBase()
+```
+
+### Static Decorators
+
+Use these to decorate methods on your subclass:
+
+| Decorator | Description |
+|-----------|-------------|
+| `@RestApiBase.get(path, **kwargs)` | Register a GET endpoint. |
+| `@RestApiBase.post(path, **kwargs)` | Register a POST endpoint. |
+| `@RestApiBase.put(path, **kwargs)` | Register a PUT endpoint. |
+| `@RestApiBase.delete(path, **kwargs)` | Register a DELETE endpoint. |
+| `@RestApiBase.patch(path, **kwargs)` | Register a PATCH endpoint. |
+
+`**kwargs` are forwarded to the underlying FastAPI route registration.
+
+### Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `router` | `APIRouter` | The FastAPI router containing all declared routes. |
+
+### Inherited Members
+
+| Member | Type | Description |
+|--------|------|-------------|
+| `self.registry` | `Registry` | Component registry. |
+| `get_registry()` | method | Returns the component registry. |
+
+### Usage
+
+```python
+class ItemsApi(RestApiBase):
+    @RestApiBase.get("/items")
+    async def list_items(self):
+        return {"items": []}
+
+    @RestApiBase.post("/items")
+    async def create_item(self, body: ItemCreate):
+        return {"id": "new"}
+```
+
+---
+
+## SchedulerBase
+
+**Module:** `blueprint.agents.io.api.scheduling.scheduler`
+
+Base class for cron-scheduled tasks. Each scheduler automatically exposes a manual trigger endpoint.
+
+### Constructor
+
+```python
+SchedulerBase(crontab: str)
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `crontab` | `str` | Cron expression defining the schedule (e.g., `"*/5 * * * *"`). |
+
+### Abstract Methods
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `tick()` | `None` | Called on each scheduled invocation. Implement your task logic here. |
+
+### Auto-generated Endpoint
+
+Each registered scheduler exposes:
+
+```
+POST /{name}/trigger
+```
+
+This endpoint allows manual invocation of the `tick()` method outside the cron schedule.
+
+---
+
+## Registry
+
+**Module:** `blueprint.agents.component.registry`
+
+Central component registry. Provides lookup for services, agents, and other components by name or class.
+
+### Methods
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `get_service(name_or_class)` | `ServiceBase` | Retrieve a registered service by name (str) or class. |
+| `get_agent(name)` | `AgentRuntime` | Retrieve a registered agent by name. |
+| `get_component(name_or_class)` | `Component` | Retrieve any registered component by name or class. |
+
+### Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `cache_service` | `CacheService` | The shared cache service instance. |
+| `correlation_context` | `CorrelationContext` | The current correlation/trace context. |
