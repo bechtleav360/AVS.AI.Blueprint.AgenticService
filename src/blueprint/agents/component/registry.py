@@ -8,8 +8,6 @@ ProcessingService.
 import logging
 from typing import Any, TypeVar
 
-ServiceT = TypeVar("ServiceT", bound="ServiceBase")
-
 from ..agent.agent_runtime import AgentRuntime
 from ..clients.ai.ai_client_base import AIClientBase
 from ..clients.client_base import ClientBase
@@ -21,6 +19,9 @@ from ..io.api.scheduling.scheduler import SchedulerBase
 from ..services.infrastructure.cache_service import CacheService
 from ..services.service_base import ServiceBase
 from ..utils import camel_to_snake
+
+ServiceT = TypeVar("ServiceT", bound="ServiceBase")
+
 
 T = TypeVar("T")
 
@@ -368,7 +369,7 @@ class Registry:
             ValueError: If not found, wrong type, or multiple matches exist
         """
 
-        return self._resolve_single(name_or_class, ServiceBase)  # type: ignore[arg-type,return-value]
+        return self._resolve_single(name_or_class, ServiceBase)  # type: ignore
 
     def get_services(self) -> list[ServiceBase]:
         """Get all registered business services."""

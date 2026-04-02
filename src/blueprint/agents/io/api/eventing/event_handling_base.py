@@ -93,7 +93,7 @@ class EventHandlingBase(RestApiBase, ABC):
             # Process through the unified service
             processing_service = self.registry.get_service(EventProcessingService)
 
-            processing_result = await processing_service.process_event(cloud_event, context)  # type: ignore[attr-defined]
+            processing_result = await processing_service.process_event(cloud_event, context)
 
             if not isinstance(processing_result, ProcessingResult):
                 logger.error(

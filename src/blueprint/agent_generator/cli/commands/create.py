@@ -99,8 +99,6 @@ def create_handler(args: Namespace) -> None:
 
     # Validate project root has reasonable structure
     project_root = Path.cwd()
-    main_py_path = project_root / "src" / "main.py"
-    handlers_dir = project_root / "src" / "handlers"
 
     # Create minimal config for generator
     config: dict[str, Any] = {
@@ -604,7 +602,6 @@ Provide a clear and actionable response."""
 
     # Update settings.toml with agent configuration
     settings_file = project_root / "settings.toml"
-    settings_updated = False
 
     try:
         if settings_file.exists():
@@ -629,12 +626,11 @@ Provide a clear and actionable response."""
                 settings_content += 'openai_reasoning_summary = "detailed"\n'
 
             settings_file.write_text(settings_content, encoding="utf-8")
-            settings_updated = True
-            print(f"✓ Updated settings.toml with runtime config")
+            print("✓ Updated settings.toml with runtime config")
         else:
             print(f"⚠ Runtime [{runtime_section}] already exists in settings.toml")
 
-    except (FileNotFoundError, IOError) as e:
+    except (OSError, FileNotFoundError) as e:
         logger.debug("Could not update settings.toml: %s", e)
         print(f"⚠ Could not update settings.toml: {e}")
 

@@ -113,7 +113,7 @@ def normalize_component_name(
     # Step 3: Build class name and snake_name
     class_name_base = to_class_name(snake_name_base)
 
-    # Remove component_type suffix if already present in the input 
+    # Remove component_type suffix if already present in the input
     if suffix_lower:  # Only remove suffix if there is one
         if class_name_base.lower().endswith(suffix_lower):
             class_name_base = class_name_base[: -len(suffix)]

@@ -103,9 +103,9 @@ class ClaudeGenerator:
         total_skipped = written_agents[1] + written_skills[1]
 
         print("\nClaude Code resources generated:")
-        print(f"  ✓ src/CLAUDE.md (framework documentation)")
-        print(f"  ✓ .claude/agents/ (architecture agents)")
-        print(f"  ✓ .claude/skills/ (CLI skills)")
+        print("  ✓ src/CLAUDE.md (framework documentation)")
+        print("  ✓ .claude/agents/ (architecture agents)")
+        print("  ✓ .claude/skills/ (CLI skills)")
         print(f"\n  Files written : {total_written}")
         if total_skipped:
             print(f"  Files skipped : {total_skipped}  (use --overwrite to replace)")
