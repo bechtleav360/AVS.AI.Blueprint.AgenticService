@@ -8,7 +8,7 @@ import time
 from abc import abstractmethod
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from diskcache_rs import Cache
 
@@ -122,15 +122,16 @@ class CacheService(ServiceBase):
         """List all namespaces currently present in the cache."""
 
     @abstractmethod
-    def list_values(self, namespace: str = "default", limit: int = 100) -> list[Any]:
-        """List all values stored in a namespace.
+    def list_values(self, namespace: str = "default", limit: int = 100, offset: int = 0) -> Iterator[Any]:
+        """Iterate over values stored in a namespace with pagination support.
 
         Args:
             namespace: Namespace to list values from (default: "default")
-            limit: Maximum number of values to return (default: 100)
+            limit: Maximum number of values to yield (default: 100)
+            offset: Number of values to skip before yielding (default: 0)
 
-        Returns:
-            List of cached values in the namespace. Order is not guaranteed.
+        Yields:
+            Cached values in the namespace one at a time. Order is not guaranteed.
         """
 
 
@@ -472,23 +473,30 @@ class DiskCacheService(CacheService):
             logger.warning("Error listing cache namespaces: %s", e)
             return []
 
-    def list_values(self, namespace: str = "default", limit: int = 100) -> list[Any]:
-        """List all values stored in a namespace."""
+    def list_values(self, namespace: str = "default", limit: int = 100, offset: int = 0) -> Iterator[Any]:
+        """Iterate over values stored in a namespace."""
         try:
+            prefix = f"{namespace}:"
             with self._acquire_lock():
-                prefix = f"{namespace}:"
-                # Exclude TTL metadata keys (they end with ":__ttl__")
-                data_keys = [k for k in self._cache.keys() if k.startswith(prefix) and not k.endswith(":__ttl__")]
-                results: list[Any] = []
-                for key in data_keys[:limit]:
-                    value = self._cache.get(key)
-                    if value is not None:
-                        results.append(value)
-                logger.debug("Listed %d values from namespace '%s'", len(results), namespace)
-                return results
+                # Snapshot keys only — release the lock before fetching values
+                keys = [
+                    k for k in self._cache.keys()
+                    if k.startswith(prefix) and not k.endswith(":__ttl__")
+                ][offset:offset + limit]
         except Exception as e:
-            logger.warning("Error listing values from cache namespace '%s': %s", namespace, e)
-            return []
+            logger.warning("Error listing keys from cache namespace '%s': %s", namespace, e)
+            return
+
+        yielded = 0
+        for key in keys:
+            try:
+                value = self._cache.get(key)
+                if value is not None:
+                    yield value
+                    yielded += 1
+            except Exception as e:
+                logger.warning("Error reading cache key '%s': %s", key, e)
+        logger.debug("Iterated %d values from namespace '%s'", yielded, namespace)
 
     def close(self) -> None:
         """Close the cache and flush to disk."""

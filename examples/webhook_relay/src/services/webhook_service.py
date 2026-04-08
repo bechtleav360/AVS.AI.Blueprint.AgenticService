@@ -133,4 +133,4 @@ class WebhookService(ServiceBase):
         """Return the most recently stored webhook summaries."""
         if self._cache is None:
             return []
-        return self._cache.list_values(namespace=RECENT_NAMESPACE, limit=limit)  # type: ignore[return-value]
+        return list(self._cache.list_values(namespace=RECENT_NAMESPACE, limit=limit))
