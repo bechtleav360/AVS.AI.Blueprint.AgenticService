@@ -480,10 +480,7 @@ class DiskCacheService(CacheService):
             prefix = f"{namespace}:"
             with self._acquire_lock():
                 # Snapshot keys only — release the lock before fetching values
-                keys = [
-                    k for k in self._cache.keys()
-                    if k.startswith(prefix) and not k.endswith(":__ttl__")
-                ][offset:offset + limit]
+                keys = [k for k in self._cache.keys() if k.startswith(prefix) and not k.endswith(":__ttl__")][offset : offset + limit]
         except Exception as e:
             logger.warning("Error listing keys from cache namespace '%s': %s", namespace, e)
             return
