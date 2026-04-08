@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from uuid import uuid4
 
 from blueprint.agents.services.service_base import ServiceBase
@@ -74,7 +74,7 @@ class InventoryService(ServiceBase):
             price=request.price,
             stock=request.stock,
             category=request.category,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
         self._products[product.id] = product
 

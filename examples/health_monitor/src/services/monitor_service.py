@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from time import perf_counter
 
 import httpx
@@ -62,7 +62,7 @@ class MonitorService(ServiceBase):
 
     async def check_endpoint(self, endpoint: EndpointConfig) -> HealthResult:
         """Perform an HTTP GET against a single endpoint and return the result."""
-        checked_at = datetime.now(timezone.utc).isoformat()
+        checked_at = datetime.now(UTC).isoformat()
         try:
             async with httpx.AsyncClient(timeout=self._check_timeout) as client:
                 start = perf_counter()
@@ -174,7 +174,7 @@ class MonitorService(ServiceBase):
         statuses = await self.get_all_statuses()
         overall_healthy = all(s.current_health is not None and s.current_health.healthy for s in statuses if s.current_health is not None)
         return UptimeReport(
-            generated_at=datetime.now(timezone.utc).isoformat(),
+            generated_at=datetime.now(UTC).isoformat(),
             endpoints=statuses,
             overall_healthy=overall_healthy,
         )

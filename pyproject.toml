@@ -92,6 +92,7 @@ packages = [
     "blueprint.agent_generator.generator.part_generators",
     "blueprint.agent_generator.cli",
     "blueprint.agent_generator.cli.commands",
+    "blueprint.agent_generator.cli.utils",
 ]
 
 [tool.setuptools.package-dir]

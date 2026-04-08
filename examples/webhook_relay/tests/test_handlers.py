@@ -4,17 +4,15 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
-import pytest_asyncio
 
 from blueprint.agents.models.events import GenericCloudEvent, HandlerResult
 
 from src.handlers.content_filter import ContentFilter
 from src.handlers.metadata_enricher import MetadataEnricher
 from src.handlers.webhook_normalizer import WebhookNormalizer
-from src.models.schemas import NormalizedEvent
 from src.services.webhook_service import WebhookService
 
 # ---------------------------------------------------------------------------

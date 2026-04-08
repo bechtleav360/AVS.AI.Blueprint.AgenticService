@@ -2,7 +2,7 @@
 
 import pytest
 
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import MagicMock
 
 from blueprint.agents.models.events import GenericCloudEvent, HandlerResult
 

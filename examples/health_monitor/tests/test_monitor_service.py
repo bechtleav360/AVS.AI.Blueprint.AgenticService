@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.models.schemas import EndpointConfig, EndpointStatus, HealthResult
-from src.services.monitor_service import CACHE_NAMESPACE, MonitorService
+from src.models.schemas import EndpointConfig, HealthResult
+from src.services.monitor_service import MonitorService
 
 
 @pytest.fixture

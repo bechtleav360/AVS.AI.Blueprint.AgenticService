@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -17,7 +17,7 @@ class Product(BaseModel):
     price: float
     stock: int
     category: str
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class CreateProductRequest(BaseModel):
