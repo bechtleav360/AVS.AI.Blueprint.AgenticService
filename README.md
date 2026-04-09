@@ -24,6 +24,7 @@ asbs create agent <name>                          # Add an AI agent
 asbs create scheduler <name> [--cron <expr>]      # Add a scheduler
 asbs validate                                     # Validate project structure
 asbs dev [--port <port>]                          # Run development server
+asbs claude create|update                         # Creates Claude context files
 ```
 
 See the full [CLI Reference](docs/guides/cli-reference.md).
