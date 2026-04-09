@@ -16,20 +16,37 @@ class APIPartGenerator(PartGeneratorBase):
         self.template_vars["endpoint_functions"] = self._generate_endpoint_functions()
         self.template_vars["register_routes"] = ""
 
+    def to_py_file_name(self) -> str:
+        """Converts a file name to a corresponding Python file name."""
+        component_name = self.config.get("component_name", "")
+        if component_name:
+            return f"{self.camel_to_snake(component_name)}_api.py"
+        return "routes.py"
+
     def _create_api_imports(self) -> str:
         """Generate import statements for routes.py."""
+        component_name = self.config.get("component_name", "")
+        if component_name:
+            model_path = f"..models.{self.camel_to_snake(component_name)}.dto"
+        else:
+            model_path = "..models"
 
         lines = []
         model_classes = list(self.config["communication_layer"]["rest_api"]["dto_classes"])
-        model_classes.append(self.config["communication_layer"]["rest_api"]["mapper"]["name"])
         if len(model_classes) < 4:
-            lines.append(f"from ..models import {', '.join(model_classes)}")
+            lines.append(f"from {model_path} import {', '.join(model_classes)}")
+            lines.append(
+                f"from ..models.{self.camel_to_snake(component_name)}.mapper import {self.config["communication_layer"]["rest_api"]["mapper"]["name"]}"
+            )
         else:
-            lines.append("from ..models import (")
+            lines.append(f"from {model_path} import (")
             for dto_class in model_classes:
                 lines.append(f"    {dto_class},")
             lines[-1] = lines[-1][:-1]
             lines.append(")")
+            lines.append(
+                f"from ..models.{self.camel_to_snake(component_name)}.mapper import {self.config['communication_layer']['rest_api']['mapper']['name']}"
+            )
 
         service_classes = list(self.config["communication_layer"]["rest_api"]["uses_services"])
         if len(service_classes) < 4:

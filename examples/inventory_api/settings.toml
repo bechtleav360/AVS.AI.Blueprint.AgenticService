@@ -1,0 +1,10 @@
+[default]
+app_name = "Inventory API"
+app_port = 8000
+app_environment = "development"
+log_level = "INFO"
+
+[default.cache]
+cache_dir = ".cache/inventory"
+size_limit = 100000000
+default_ttl = 300

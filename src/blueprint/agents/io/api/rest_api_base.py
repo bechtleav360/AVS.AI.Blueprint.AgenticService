@@ -158,10 +158,10 @@ class RestApiBase(IOBase, ABC):
             from ...services.eventing.event_processing_service import EventProcessingService  # noqa: PLC0415
 
             event_processing_service = self.registry.get_service(EventProcessingService)
-            result_event = await event_processing_service.process_rest_request(payload, context)  # type: ignore[attr-defined]
+            result_event = await event_processing_service.process_rest_request(payload, context)
 
             # Extract result data from CloudEvent
-            result = result_event.data
+            result = result_event.data  # type: ignore[attr-defined]
 
             # Determine success based on processing result
             success = result["status"] == "processed"

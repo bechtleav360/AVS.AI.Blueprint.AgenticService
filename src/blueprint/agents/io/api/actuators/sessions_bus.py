@@ -100,8 +100,8 @@ class SessionsBus:
             raise ValueError("sessions_service.api_key is required")
 
         # Get services from registry
-        self._api_client = self._component_registry.get_service(SessionsApiClient)  # type: ignore[assignment]
-        self._key_provider = self._component_registry.get_service(SessionKeyProvider)  # type: ignore[assignment]
+        self._api_client = self._component_registry.get_service(SessionsApiClient)
+        self._key_provider = self._component_registry.get_service(SessionKeyProvider)
 
         # Initialize concurrency control
         self._semaphore = asyncio.Semaphore(self._max_concurrent_jobs)
@@ -274,7 +274,7 @@ class SessionsBus:
 
                 # Get ProcessingService and delegate to handlers
                 processing_service = self._component_registry.get_service(EventProcessingService)
-                result = await processing_service.process_event(event, context)  # type: ignore[attr-defined]
+                result = await processing_service.process_event(event, context)
 
                 # Check if any handler processed it
                 if result.status.value == "no_handler_found":
@@ -319,7 +319,7 @@ class SessionsBus:
                         session_key = await self._key_provider.get_session_key(session_id)
                         context["session_key"] = session_key
                         processing_service = self._component_registry.get_service(EventProcessingService)
-                        await processing_service.process_event(event, context)  # type: ignore[attr-defined]
+                        await processing_service.process_event(event, context)
                     except Exception as retry_error:
                         logger.error("Retry failed for job %s: %s", job_id, retry_error)
                         raise InvalidEventError(status="invalid_session_key", reason=f"Session key invalid: {str(e)}") from e

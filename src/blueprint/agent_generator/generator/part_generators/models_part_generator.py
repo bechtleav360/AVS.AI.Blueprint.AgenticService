@@ -9,6 +9,21 @@ class ModelPartGenerator(PartGeneratorBase):
         super().__init__(config, template_dir, src_path)
         self.template_file_name = "dto.txt"
 
+    def get_models_subfolder(self) -> str:
+        """Get models subfolder based on component_name, or empty string."""
+        component_name = self.config.get("component_name", "")
+        if component_name:
+            return self.camel_to_snake(component_name)
+        return ""
+
+    def to_py_file_name(self) -> str:
+        """Include subfolder in filename when component_name is set."""
+        base_name = super().to_py_file_name()
+        subfolder = self.get_models_subfolder()
+        if subfolder:
+            return f"{subfolder}/{base_name}"
+        return base_name
+
     @staticmethod
     def _generate_model_classes(model_classes: dict[str, Any]) -> str:
         """Generate the model classes based on the configuration and the template file.

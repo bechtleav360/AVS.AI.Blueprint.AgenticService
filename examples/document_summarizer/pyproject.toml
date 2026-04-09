@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "document-summarizer"
+version = "0.1.0"
+description = "Document summarization service using Blueprint Agents"
+requires-python = ">=3.13"
+dependencies = [
+    "avs-blueprint-agents>=0.6.0a3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]

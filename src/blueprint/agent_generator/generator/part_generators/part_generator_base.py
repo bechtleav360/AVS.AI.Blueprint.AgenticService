@@ -38,7 +38,7 @@ class PartGeneratorBase:
         Example: 'my-cool-agent' -> 'MyCoolAgent'
         """
         parts = re.split(r"[^a-zA-Z0-9]", name)
-        return "".join(part.capitalize() for part in parts if part)
+        return "".join(part[0].upper() + part[1:] if part else "" for part in parts if part)
 
     @staticmethod
     def camel_to_snake(name: str) -> str:
@@ -79,3 +79,21 @@ class PartGeneratorBase:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         with open(out_path, "w") as f:
             f.write(template)
+
+    def get_output_filename(self, component_type: str) -> str:
+        """Get output filename with component_name prefix if available.
+
+        Args:
+            component_type: Type of component (e.g., 'handler', 'service', 'api', 'scheduler')
+
+        Returns:
+            Filename with component_name prefix, e.g., 'order_validation_handler.py'
+        """
+        component_name = self.config.get("component_name", "")
+        if not component_name:
+            # Fallback to existing filename generation method
+            return self.to_py_file_name()
+
+        # Convert component_name to snake_case
+        snake_name = self.camel_to_snake(component_name)
+        return f"{snake_name}_{component_type}.py"

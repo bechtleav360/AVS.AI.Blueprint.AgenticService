@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=80.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "inventory-api"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = ["avs-blueprint-agents>=0.6.0a5"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0", "pytest-asyncio>=1.0.0", "httpx>=0.28.0"]
+
+[tool.setuptools]
+packages = ["src", "src.api", "src.services", "src.models"]
+
+[tool.setuptools.package-dir]
+"" = "."

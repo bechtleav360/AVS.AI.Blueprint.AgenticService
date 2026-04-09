@@ -20,6 +20,9 @@ from ..services.infrastructure.cache_service import CacheService
 from ..services.service_base import ServiceBase
 from ..utils import camel_to_snake
 
+ServiceT = TypeVar("ServiceT", bound="ServiceBase")
+
+
 T = TypeVar("T")
 
 logger = logging.getLogger(__name__)
@@ -353,7 +356,7 @@ class Registry:
 
         return self.has_component_of_type(ServiceBase, name)
 
-    def get_service(self, name_or_class: str | type[ServiceBase]) -> ServiceBase:
+    def get_service(self, name_or_class: str | type[ServiceT]) -> ServiceT:
         """Get a registered service by name or class.
 
         Args:
@@ -366,7 +369,7 @@ class Registry:
             ValueError: If not found, wrong type, or multiple matches exist
         """
 
-        return self._resolve_single(name_or_class, ServiceBase)  # type: ignore[type-abstract]
+        return self._resolve_single(name_or_class, ServiceBase)  # type: ignore
 
     def get_services(self) -> list[ServiceBase]:
         """Get all registered business services."""

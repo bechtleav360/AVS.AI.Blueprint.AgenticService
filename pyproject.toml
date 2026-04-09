@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "avs-blueprint-agents"
-version = "0.6.0a3"
+version = "0.6.0a6"
 description = "Microservice blueprint for creating agents"
 authors = [
     { name = "Blueprint Team", email = "patrick.maue@bechtle.com" },
@@ -92,6 +92,7 @@ packages = [
     "blueprint.agent_generator.generator.part_generators",
     "blueprint.agent_generator.cli",
     "blueprint.agent_generator.cli.commands",
+    "blueprint.agent_generator.cli.utils",
 ]
 
 [tool.setuptools.package-dir]

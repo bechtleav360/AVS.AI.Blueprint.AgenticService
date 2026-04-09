@@ -49,7 +49,7 @@ class AgentBuilder:
         agent = await (
             AgentBuilder(config, runtime_name="invoice_analyzer")
             .with_model_from_config()
-            .with_system_prompt("invoice_analyzer")
+            .with_system_prompt("invoice_analyzer_system")
             .with_tools([calculate_tool, validate_tool])
             .with_result_type(InvoiceOutput)
             .build()

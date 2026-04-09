@@ -31,6 +31,7 @@ def create_basic_config(name: str) -> dict[str, Any]:
 
     return {
         "name": name,
+        "component_name": name,
         "description": f"{name} agent microservice",
         "communication_layer": {
             "rest_api": {
@@ -84,7 +85,7 @@ def create_basic_config(name: str) -> dict[str, Any]:
         "service_layer": {
             f"{name}Service": {
                 "description": f"Service for {name}",
-                "uses_agents": [f"{name}Agent"],
+                "uses_agents": [name if has_agent_suffix else f"{name}Agent"],
                 "uses_domain_models": [f"{name}Model"],
                 "process_function": {"name": "process_something", "input_type": f"{name}Model", "output_type": f"{name}Model"},
             }

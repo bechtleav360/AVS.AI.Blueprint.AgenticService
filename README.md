@@ -1,105 +1,56 @@
-# Bechtle Index of Sovereignty Agent Blueprint
+# AVS Agent Blueprint
 
-**A Python framework for building production-ready AI agents**
-
-## Purpose
-
-The Agent Blueprint framework helps you build intelligent, event-driven microservices powered by AI. It's designed for teams who need to:
-
-- **Process events at scale** - Handle CloudEvents from message brokers (RabbitMQ, Kafka, Azure Service Bus)
-- **Integrate AI seamlessly** - Build LLM-powered agents with structured outputs and tool calling
-- **Deploy with confidence** - Production-ready patterns with observability, testing, and containerization
-- **Maintain code quality** - Enforce best practices through component-based architecture
-
-## Why Use This Framework?
-
-### Built for Production
-Stop reinventing the wheel. Get event processing, AI integration, observability, and deployment patterns out of the box.
-
-### Component-Based Architecture
-Clear separation of concerns with five base components: BusinessService, EventHandler, RestApi, AgentRuntime, and Scheduler.
-
-### AI-First Design
-Native integration with Pydantic AI for structured outputs, tool calling, and multi-model support (OpenAI, vLLM, Anthropic).
-
-### Developer Experience
-CLI tools for scaffolding, Windsurf IDE integration, comprehensive testing patterns, and extensive documentation.
-
-## Quick Start
-
-### Install and Create Your First Agent
+The Agent Blueprint is a Python framework for building event-driven AI agents with a consistent application structure, handler pipeline, and shared infrastructure for configuration, observability, and deployment.
 
 ```bash
-# Install the framework
-pip install avs-blueprint-agents
-
-# Create a new project
-asbs setup my-agent
-
-# Start building
-cd my-agent
-pip install -e .
-asbs dev
+uv add avs-blueprint-agents
 ```
 
-**Next:** Follow the [Getting Started Guide](docs/guides/getting-started.md) for a complete walkthrough.
+Guides: [Getting Started](docs/guides/getting-started.md), [Core Concepts](docs/guides/core-concepts.md), [Architecture Overview](docs/guides/architecture.md), [Events Setup](docs/guides/events-setup.md), [App Builder](docs/guides/app-builder.md), [Handlers](docs/guides/handlers.md), [LLM Agents](docs/guides/llm-agents.md)
 
-## Documentation
+Reference: [Testing Guide](docs/testing-guide.md), [Deployment Guide](docs/deployment-guide.md), [Troubleshooting](docs/guides/troubleshooting.md), [Full Documentation Index](docs/README.md)
 
-### 🚀 Getting Started
 
-- **[Getting Started Guide](docs/guides/getting-started.md)** - Complete setup in 15 minutes
-- **[Agent Generator Guide](docs/guides/agent-generator.md)** - Scaffold new projects with CLI tools
-- **[Core Concepts](docs/guides/core-concepts.md)** - Understand the framework patterns
-- **[Architecture Overview](docs/guides/architecture.md)** - See how components fit together
+## CLI Reference
 
-### 🔨 Building Your Agent
+The `asbs` CLI scaffolds projects and components:
 
-- **[Creating Handlers](docs/guides/handlers.md)** - Process events with chain-of-responsibility
-- **[Building LLM Agents](docs/guides/llm-agents.md)** - Integrate AI models with structured outputs
-- **[Using Services](docs/guides/services.md)** - Implement business logic and state management
-- **[REST APIs](docs/guides/rest-apis.md)** - Expose HTTP endpoints with FastAPI
-- **[Background Tasks](docs/guides/schedulers.md)** - Run scheduled jobs with cron
+```bash
+asbs setup <project-name>                        # Create a new project
+asbs create handler <name> [--event-type <type>]  # Add an event handler
+asbs create service <name>                        # Add a business service
+asbs create api <name>                            # Add a REST API
+asbs create agent <name>                          # Add an AI agent
+asbs create scheduler <name> [--cron <expr>]      # Add a scheduler
+asbs validate                                     # Validate project structure
+asbs dev [--port <port>]                          # Run development server
+asbs claude create|update                         # Creates Claude context files
+```
 
-### 📚 Operations & Reference
+See the full [CLI Reference](docs/guides/cli-reference.md).
 
-- **[Testing Guide](docs/guides/testing.md)** - Write unit and integration tests
-- **[Deployment Guide](docs/guides/deployment.md)** - Deploy to Kubernetes with Helm
-- **[Configuration](docs/guides/configuration.md)** - Manage settings and secrets
-- **[Observability](docs/guides/observability.md)** - Tracing, logging, and metrics
-- **[Troubleshooting](docs/guides/troubleshooting.md)** - Fix common issues
-- **[API Reference](docs/reference/api.md)** - Complete API documentation
-- **[Full Documentation Index](docs/README.md)** - Browse all documentation
 
-## Examples
+## Directory Layout
 
-Explore complete example applications in the `examples/` directory:
-
-- **[Invoice Analyzer](examples/invoice_analyzer/)** - Extract structured data from invoices using LLMs
-- **[Customer Support QA](examples/customer_support_qa/)** - Answer customer questions with RAG
-- **[REST Microservice](examples/rest_microservice/)** - Build HTTP APIs with FastAPI integration
-
-## Requirements
-
-- Python 3.13+
-- Docker & Docker Compose (for local development)
-- Dapr CLI (for event processing)
-- API keys for AI providers (OpenAI, Anthropic, or vLLM endpoint)
-
-## Contributing
-
-We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-## Support
-
-- **Documentation:** [docs/README.md](docs/README.md)
-- **Troubleshooting:** [docs/guides/troubleshooting.md](docs/guides/troubleshooting.md)
-- **Issues:** Open an issue on Azure DevOps
-
-## License
-
-Copyright © 2025 Bechtle AG. All rights reserved.
-
----
-
-**Ready to build your agent?** Start with the [Getting Started Guide](docs/guides/getting-started.md) →
+```
+AVS.AI.Blueprint.AgenticService/
+├── src/
+│   └── blueprint/
+│       └── agents/              # Framework package (avs-blueprint-agents)
+│           ├── agent/           # Base agent classes
+│           ├── api/             # API endpoints
+│           ├── config/          # Configuration management
+│           ├── models/          # Data models
+│           ├── services/        # Processing services
+│           └── py.typed         # PEP 561 type hints marker
+├── examples/
+│   └── complex_agent/        # Example agent service
+│       ├── src/                 # App code (api, handlers, models, services)
+│       ├── tests/               # Example tests
+│       └── pyproject.toml       # Example dependencies
+├── tests/                       # Framework tests
+├── docs/                        # Documentation
+├── pyproject.toml               # Framework package config
+├── pytest.ini                   # Test configuration
+└── README.md                    # This file
+```
