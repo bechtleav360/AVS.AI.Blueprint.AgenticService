@@ -9,7 +9,6 @@ injection methods. Subclasses only need to override what is domain-specific.
 
 from __future__ import annotations
 
-import asyncio
 import functools
 import inspect
 from abc import ABC, ABCMeta, abstractmethod
@@ -207,7 +206,7 @@ def traced(*extract: str) -> Callable[..., Any]:
                         break
             return span
 
-        if asyncio.iscoroutinefunction(func):
+        if inspect.iscoroutinefunction(func):
 
             @functools.wraps(func)
             async def async_wrapper(self: Component, *args: Any, **kwargs: Any) -> Any:
