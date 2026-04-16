@@ -341,6 +341,22 @@ class Config:
             topic_mapping=self.get("event_publishing.topic_mapping", {}),
         )
 
+    def get_nats_subscription_config(self) -> list[str]:
+        """Return NATS topics to auto-subscribe to from the ``nats_subscriptions`` config key.
+
+        Returns an empty list if the key is absent or misconfigured.
+
+        Example settings.toml::
+
+            nats_subscriptions = ["governance.>", "orders.created"]
+        """
+
+        raw = self.get("nats_subscriptions", [])
+        if not isinstance(raw, list):
+            logger.warning("nats_subscriptions must be a list; got %s — ignoring", type(raw).__name__)
+            return []
+        return [str(t) for t in raw if t]
+
     def get_cache_config(self) -> CacheConfig:
         """Get cache-related configuration.
 
