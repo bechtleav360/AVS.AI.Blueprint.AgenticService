@@ -18,14 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.13
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
-          cache: 'pip'
-
-      - name: Install dependencies
-        run: pip install -e ".[dev]"
+      - uses: ./.github/actions/setup-python-env
 
       - name: ruff check
         run: ruff check src tests
@@ -40,14 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.13
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
-          cache: 'pip'
-
-      - name: Install dependencies
-        run: pip install -e ".[dev]"
+      - uses: ./.github/actions/setup-python-env
 
       - name: mypy
         run: mypy src
@@ -59,14 +45,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.13
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
-          cache: 'pip'
-
-      - name: Install dependencies
-        run: pip install -e ".[dev]"
+      - uses: ./.github/actions/setup-python-env
 
       - name: Run unit tests
         run: python -m pytest tests/unit -v --tb=short

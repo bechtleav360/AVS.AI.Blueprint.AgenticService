@@ -38,20 +38,6 @@
             ]
         },
         {
-            "label": "format:isort",
-            "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python",
-            "args": [
-                "-m",
-                "isort",
-                "src"
-            ],
-            "presentation": {
-                "reveal": "always",
-                "panel": "shared"
-            }
-        },
-        {
             "label": "format:black-check",
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/python",
