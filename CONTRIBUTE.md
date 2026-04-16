@@ -206,15 +206,17 @@ mypy src/
 black src/ tests/ && ruff check src/ tests/ && mypy src/
 ```
 
-## Pre-commit Hooks
+## Pre-commit & Pre-push Hooks
 
-To automatically run linting and formatting before each commit:
+Set up both commit and push hooks:
 
 ```bash
 pre-commit install
+pre-commit install --hook-type pre-push
 ```
 
-This will run configured checks on staged files before allowing commits.
+- **Pre-commit** runs linting and formatting checks on staged files before each commit.
+- **Pre-push** runs the unit test suite before pushing, so CI won't fail on basic issues.
 
 ## Troubleshooting
 

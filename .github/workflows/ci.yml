@@ -11,8 +11,8 @@ on:
       - '**'
 
 jobs:
-  lint:
-    name: Lint
+  ci:
+    name: Lint, Type Check & Test
     runs-on: ubuntu-latest
 
     steps:
@@ -26,26 +26,8 @@ jobs:
       - name: black check
         run: black --check src tests
 
-  typecheck:
-    name: Type Check
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: ./.github/actions/setup-python-env
-
       - name: mypy
         run: mypy src
-
-  test:
-    name: Run Tests
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: ./.github/actions/setup-python-env
 
       - name: Run unit tests
         run: python -m pytest tests/unit -v --tb=short
