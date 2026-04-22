@@ -130,6 +130,9 @@ venv.bak/
 .dmypy.json
 dmypy.json
 
+# bandit
+bandit-report.json
+
 # Pyre type checker
 .pyre/
 

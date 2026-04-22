@@ -9,6 +9,7 @@ Custom implementations MUST override the abstract methods:
 
 Handlers can also declare published event types by overriding:
 - `get_published_event_types()` - Return (success_event_type, error_event_type)
+- `get_subscribed_topics()` - Return list of NATS topics to auto-subscribe on startup
 
 The framework provides automatic OpenTelemetry tracing for all handlers.
 """
@@ -154,6 +155,25 @@ class EventHandlerBase(Component, ABC):
         """
 
         return None
+
+    def get_subscribed_topics(self) -> list[str]:
+        """Declare the NATS topics this handler subscribes to.
+
+        Override this method to have the framework automatically subscribe to
+        the listed topics on startup. Topics are deduplicated across all handlers
+        and the ``nats_subscriptions`` config list before subscribing.
+
+        Returns:
+            List of NATS topic strings (supports wildcards: ``entity.>``).
+            Default is an empty list — no auto-subscription.
+
+        Example::
+
+            def get_subscribed_topics(self) -> list[str]:
+                return ["entity.created", "entity.updated", "entity.deleted"]
+        """
+
+        return []
 
     def __lt__(self, other: EventHandlerBase) -> bool:
         """Support sorting by priority."""

@@ -20,8 +20,54 @@ class NatsEventing(EventHandlingBase):
         self._client: NATSClient | None = None
 
     async def on_startup(self) -> None:
-        """Fetch the registered NATSClient from the registry."""
+        """Fetch the registered NATSClient and auto-subscribe to declared topics.
+
+        Topics are collected from two sources (handler-declared topics first,
+        then config-declared topics). Duplicates are silently dropped — the
+        first occurrence wins, so handler declarations take priority.
+        """
         self._client = self.registry.get_component(NATSClient)
+
+        seen: dict[str, None] = {}
+        for handler in self.registry.get_event_handler():
+            for topic in handler.get_subscribed_topics():
+                if topic and topic not in seen:
+                    seen[topic] = None
+        for topic in self.config.get_nats_subscription_config():
+            if topic and topic not in seen:
+                seen[topic] = None
+
+        if not seen:
+            logger.info("NatsEventing: no auto-subscriptions configured")
+            return
+
+        for topic in seen:
+            await self._subscribe_to_topic(topic)
+
+    async def _subscribe_to_topic(self, topic: str) -> None:
+        """Subscribe to a single NATS topic using the standard processing callback.
+
+        Extracted as a method so the closure correctly captures ``topic`` by
+        value at call time, avoiding the loop late-binding pitfall.
+        """
+        if not self._client:
+            raise RuntimeError("NATS client not initialized")
+
+        async def _process_event(event: CloudEvent[Any]) -> None:
+            try:
+                context = {"nats_topic": topic}
+                processing_result = await self._process_cloud_event(event, context)
+                logger.debug(
+                    "Processed CloudEvent %s on topic %s with status %s",
+                    event.id,
+                    topic,
+                    processing_result.status.value,
+                )
+            except (RetryableHandlerError, InvalidEventError, CriticalHandlerError) as exc:
+                logger.error("Event processing failed: %s", str(exc), exc_info=True)
+
+        await self._client.subscribe(topic, _process_event)
+        logger.info("NatsEventing: auto-subscribed to topic '%s'", topic)
 
     async def on_shutdown(self) -> None:
         """No shutdown actions required — NATSClient lifecycle is managed separately."""
