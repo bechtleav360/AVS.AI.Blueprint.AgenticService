@@ -6,7 +6,6 @@ and resolves API keys for different runtimes.
 
 from pathlib import Path
 
-import pytest
 
 from blueprint.agents.config import Config
 
@@ -14,26 +13,21 @@ from blueprint.agents.config import Config
 class TestAPIKeyResolution:
     """Test suite for API key resolution with runtime-specific overrides."""
 
-    @pytest.fixture
-    def settings_file(self) -> Path:
-        """Return path to the test settings file."""
-        return Path(__file__).parent / "fixtures" / "settings_api_key_test.toml"
-
-    def test_global_api_key_loaded_from_settings(self, settings_file: Path) -> None:
+    def test_global_api_key_loaded_from_settings(self, api_key_settings_file: Path) -> None:
         """Test that global API key is loaded from settings file."""
         config = Config(
-            settings_files=[str(settings_file)],
-            root_path=settings_file.parent,
+            settings_files=[str(api_key_settings_file)],
+            root_path=str(api_key_settings_file.parent),
         )
 
         assert config.get("model_api_key") == "vllm-global-key-12345"
         assert config.get("model_provider") == "vllm"
 
-    def test_runtime_specific_settings_accessible(self, settings_file: Path) -> None:
+    def test_runtime_specific_settings_accessible(self, api_key_settings_file: Path) -> None:
         """Test that runtime-specific settings are accessible from settings."""
         config = Config(
-            settings_files=[str(settings_file)],
-            root_path=settings_file.parent,
+            settings_files=[str(api_key_settings_file)],
+            root_path=str(api_key_settings_file.parent),
         )
 
         evaluator_settings = config.settings.get("runtimes.evaluator")
@@ -41,11 +35,11 @@ class TestAPIKeyResolution:
         assert evaluator_settings.get("model_provider") == "openai"
         assert evaluator_settings.get("model_api_key") == "openai-evaluator-key-67890"
 
-    def test_search_runtime_settings_accessible(self, settings_file: Path) -> None:
+    def test_search_runtime_settings_accessible(self, api_key_settings_file: Path) -> None:
         """Test that search runtime settings are accessible."""
         config = Config(
-            settings_files=[str(settings_file)],
-            root_path=settings_file.parent,
+            settings_files=[str(api_key_settings_file)],
+            root_path=str(api_key_settings_file.parent),
         )
 
         search_settings = config.settings.get("runtimes.search")
@@ -53,11 +47,11 @@ class TestAPIKeyResolution:
         assert search_settings.get("model_provider") == "vllm"
         assert search_settings.get("model_base_url") == "https://avs-embed.q14.net/v1"
 
-    def test_multiple_runtimes_have_different_configurations(self, settings_file: Path) -> None:
+    def test_multiple_runtimes_have_different_configurations(self, api_key_settings_file: Path) -> None:
         """Test that multiple runtimes can have different configurations."""
         config = Config(
-            settings_files=[str(settings_file)],
-            root_path=settings_file.parent,
+            settings_files=[str(api_key_settings_file)],
+            root_path=str(api_key_settings_file.parent),
         )
 
         evaluator = config.settings.get("runtimes.evaluator")
@@ -70,11 +64,11 @@ class TestAPIKeyResolution:
 
         assert evaluator.get("model_api_key") != search.get("model_api_key", config.get("model_api_key"))
 
-    def test_global_defaults_are_available(self, settings_file: Path) -> None:
+    def test_global_defaults_are_available(self, api_key_settings_file: Path) -> None:
         """Test that global defaults are available for all runtimes."""
         config = Config(
-            settings_files=[str(settings_file)],
-            root_path=settings_file.parent,
+            settings_files=[str(api_key_settings_file)],
+            root_path=str(api_key_settings_file.parent),
         )
 
         assert config.get("model_provider") == "vllm"
