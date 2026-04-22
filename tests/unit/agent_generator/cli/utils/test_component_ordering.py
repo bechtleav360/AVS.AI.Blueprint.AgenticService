@@ -50,7 +50,7 @@ class TestExtractComponentRegistrations:
 
     def test_with_cache(self):
         """Test extracting with cache component."""
-        content = "app = (\n" "    AppBuilder(config)\n" "    .with_service(MyService())\n" "    .with_cache()\n" "    .build()\n" ")"
+        content = "app = (\n    AppBuilder(config)\n    .with_service(MyService())\n    .with_cache()\n    .build()\n)"
         components, _, _ = extract_component_registrations(content)
         assert len(components) == 2
         types = [c[0] for c in components]
@@ -140,7 +140,7 @@ class TestAddComponentRegistration:
 
     def test_add_handler_reorders_before_api(self):
         """Test adding handler re-orders the entire chain before API."""
-        content = "app = (\n" "    AppBuilder(config)\n" "    .with_rest_api(MyApi())\n" "    .build()\n" ")"
+        content = "app = (\n    AppBuilder(config)\n    .with_rest_api(MyApi())\n    .build()\n)"
         result = add_component_registration_to_main(content, "MyHandler", "handler")
         assert ".with_handler(MyHandler())" in result
         lines = result.split("\n")
@@ -150,9 +150,7 @@ class TestAddComponentRegistration:
 
     def test_add_agent_reorders_entire_chain(self):
         """Test adding agent re-orders the entire chain correctly."""
-        content = (
-            "app = (\n" "    AppBuilder(config)\n" "    .with_handler(MyHandler())\n" "    .with_rest_api(MyApi())\n" "    .build()\n" ")"
-        )
+        content = "app = (\n    AppBuilder(config)\n    .with_handler(MyHandler())\n    .with_rest_api(MyApi())\n    .build()\n)"
         result = add_component_registration_to_main(content, "MyAgent", "agent")
         assert ".with_agent(MyAgent)" in result
         lines = result.split("\n")
@@ -184,7 +182,7 @@ class TestAddComponentRegistration:
         api_line = next(index for index, line in enumerate(lines) if "with_rest_api" in line)
 
         assert service_line < agent_line < handler_line < api_line, (
-            f"Order not corrected: service={service_line}, agent={agent_line}, " f"handler={handler_line}, api={api_line}"
+            f"Order not corrected: service={service_line}, agent={agent_line}, handler={handler_line}, api={api_line}"
         )
 
     def test_out_of_order_creation_sequence_complete_reordering(self):
@@ -210,7 +208,7 @@ class TestAddComponentRegistration:
         api_line = next(index for index, line in enumerate(lines) if "with_rest_api" in line)
 
         assert service_line < agent_line < handler_line < api_line, (
-            f"Order not corrected: service={service_line}, agent={agent_line}, " f"handler={handler_line}, api={api_line}"
+            f"Order not corrected: service={service_line}, agent={agent_line}, handler={handler_line}, api={api_line}"
         )
 
     def test_agent_custom_instantiation_preserved(self):
@@ -241,7 +239,7 @@ class TestAddComponentRegistration:
 
     def test_cache_stays_last(self):
         """Test that cache component stays before .build()."""
-        content = "app = (\n" "    AppBuilder(config)\n" "    .with_cache()\n" "    .with_rest_api(MyApi())\n" "    .build()\n" ")"
+        content = "app = (\n    AppBuilder(config)\n    .with_cache()\n    .with_rest_api(MyApi())\n    .build()\n)"
         result = add_component_registration_to_main(content, "MyService", "service")
 
         lines = result.split("\n")

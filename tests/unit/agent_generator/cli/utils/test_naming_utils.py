@@ -150,7 +150,7 @@ class TestAddImportToMain:
 
     def test_add_import_after_existing_imports(self) -> None:
         """Should add import after last existing import."""
-        main_content = "from pathlib import Path\n" "from blueprint.agents import AppBuilder\n" "\n" "app = AppBuilder(config).build()\n"
+        main_content = "from pathlib import Path\nfrom blueprint.agents import AppBuilder\n\napp = AppBuilder(config).build()\n"
 
         result = add_import_to_main(main_content, "from src.services.order_service import OrderService", "service")
 
@@ -190,7 +190,7 @@ class TestAddComponentRegistrationToMain:
 
     def test_add_service_registration(self) -> None:
         """Should add service registration before .build()."""
-        main_content = "app = (\n" "    AppBuilder(config)\n" "    .build()\n" ")\n"
+        main_content = "app = (\n    AppBuilder(config)\n    .build()\n)\n"
 
         result = add_component_registration_to_main(main_content, "OrderService", "service")
 
@@ -210,7 +210,7 @@ class TestAddComponentRegistrationToMain:
 
     def test_add_handler_registration(self) -> None:
         """Should add handler registration before .build()."""
-        main_content = "app = (\n" "    AppBuilder(config)\n" "    .with_service(OrderService())\n" "    .build()\n" ")\n"
+        main_content = "app = (\n    AppBuilder(config)\n    .with_service(OrderService())\n    .build()\n)\n"
 
         result = add_component_registration_to_main(main_content, "OrderHandler", "handler")
 
@@ -219,7 +219,7 @@ class TestAddComponentRegistrationToMain:
 
     def test_add_agent_registration_no_instantiation(self) -> None:
         """Should add agent registration without () for agents."""
-        main_content = "app = (\n" "    AppBuilder(config)\n" "    .build()\n" ")\n"
+        main_content = "app = (\n    AppBuilder(config)\n    .build()\n)\n"
 
         result = add_component_registration_to_main(main_content, "order_agent", "agent")
 
@@ -228,7 +228,7 @@ class TestAddComponentRegistrationToMain:
 
     def test_add_api_registration(self) -> None:
         """Should add API registration before .build()."""
-        main_content = "app = (\n" "    AppBuilder(config)\n" "    .build()\n" ")\n"
+        main_content = "app = (\n    AppBuilder(config)\n    .build()\n)\n"
 
         result = add_component_registration_to_main(main_content, "OrderApi", "api")
 
@@ -236,7 +236,7 @@ class TestAddComponentRegistrationToMain:
 
     def test_add_scheduler_registration(self) -> None:
         """Should add scheduler registration before .build()."""
-        main_content = "app = (\n" "    AppBuilder(config)\n" "    .build()\n" ")\n"
+        main_content = "app = (\n    AppBuilder(config)\n    .build()\n)\n"
 
         result = add_component_registration_to_main(main_content, "CleanupScheduler", "scheduler")
 
@@ -245,11 +245,7 @@ class TestAddComponentRegistrationToMain:
     def test_build_in_comment_does_not_break_insertion(self) -> None:
         """Should use last .build() call and ignore earlier ones in comments."""
         main_content = (
-            "app = (\n"
-            "    AppBuilder(config)  # Note: this calls .build() at the end\n"
-            "    .with_service(OrderService())\n"
-            "    .build()\n"
-            ")\n"
+            "app = (\n    AppBuilder(config)  # Note: this calls .build() at the end\n    .with_service(OrderService())\n    .build()\n)\n"
         )
 
         result = add_component_registration_to_main(main_content, "TestHandler", "handler")
@@ -274,7 +270,7 @@ class TestAddComponentRegistrationToMain:
 
     def test_custom_instantiation(self) -> None:
         """Should use custom instantiation if provided."""
-        main_content = "app = (\n" "    AppBuilder(config)\n" "    .build()\n" ")\n"
+        main_content = "app = (\n    AppBuilder(config)\n    .build()\n)\n"
 
         result = add_component_registration_to_main(
             main_content,
@@ -298,7 +294,7 @@ class TestAddComponentRegistrationToMain:
 
     def test_multiple_registrations_maintain_order(self) -> None:
         """Should add multiple registrations in the correct order."""
-        main_content = "app = (\n" "    AppBuilder(config)\n" "    .build()\n" ")\n"
+        main_content = "app = (\n    AppBuilder(config)\n    .build()\n)\n"
 
         result = add_component_registration_to_main(main_content, "OrderService", "service")
         result = add_component_registration_to_main(result, "OrderHandler", "handler")
