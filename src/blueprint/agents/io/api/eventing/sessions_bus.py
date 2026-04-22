@@ -1,66 +1,58 @@
-"""Sessions service event bus implementation for the agent service (framework-level).
+"""Sessions service event bus implementation (framework-level).
 
 This module provides the SessionsBus that connects to the sessions service via SSE,
 receives job notifications, converts them to CloudEvents, and delegates to EventHandlers
-for processing.
+for processing via the CloudEventProcessorMixin dispatch pipeline.
 """
 
 import asyncio
 import json
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from uuid import UUID
 
 import httpx
 from httpx_sse import aconnect_sse
 from opentelemetry import trace
 
-from ....config import Config
+from ....component.component import Component
 from ....models.errors import InvalidEventError, RetryableHandlerError
 from ....models.events import GenericCloudEvent
 from ....services.eventing.event_processing_service import EventProcessingService
 from ....services.sessions import SessionKeyProvider, SessionsApiClient
-
-if TYPE_CHECKING:
-    from ....component.registry import Registry
+from .cloud_event_processor_mixin import CloudEventProcessorMixin
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
 
 
-class SessionsBus:
+class SessionsBus(Component, CloudEventProcessorMixin):
     """Implements job handling using sessions service SSE as the event source.
 
-    Similar to NatsEventBus, this class:
-    - Connects to an external event source (sessions service SSE)
-    - Receives events (job notifications)
-    - Converts to CloudEvents
-    - Delegates to ProcessingService/EventHandlers for processing
+    Connects to an external SSE stream, receives job notifications, converts
+    them to CloudEvents, and delegates to the processing pipeline via
+    ``_dispatch_cloud_event``.
+
+    Lifecycle is managed via ``on_startup`` / ``on_shutdown`` and integrates
+    with the standard Component registry.
     """
 
-    def __init__(self, component_registry: "Registry", config: Config) -> None:
-        """Initialize the sessions event bus.
-
-        Args:
-            component_registry: The component registry to get processing service from
-            config: Configuration object containing sessions service settings
-        """
-        self._component_registry = component_registry
-        self._correlation_context = component_registry.correlation_context
-        self._config = config
+    def __init__(self) -> None:
+        """Initialize the sessions event bus."""
+        super().__init__()
 
         # SSE connection
         self._sse_task: asyncio.Task[None] | None = None
         self._shutdown_event: asyncio.Event = asyncio.Event()
 
-        # Services (will be resolved on connect)
+        # Services (resolved on startup)
         self._api_client: SessionsApiClient | None = None
         self._key_provider: SessionKeyProvider | None = None
 
         # Concurrency control
         self._semaphore: asyncio.Semaphore | None = None
 
-        # Configuration
+        # Configuration (loaded on startup)
         self._base_url: str | None = None
         self._agent_id: str | None = None
         self._agent_type: str | None = None
@@ -71,14 +63,13 @@ class SessionsBus:
         self._reconnect_delay: int = 5
         self._max_reconnect_attempts: int = -1
 
-    async def connect(self) -> None:
-        """Connect to sessions service SSE endpoint and start consuming events."""
+    async def on_startup(self) -> None:
+        """Connect to the sessions service SSE endpoint and start consuming events."""
         if self._sse_task is not None and not self._sse_task.done():
             logger.warning("SessionsBus already connected")
             return
 
-        # Load configuration
-        sessions_config = self._config.get("sessions_service")
+        sessions_config = self.config.get("sessions_service")
         if not sessions_config:
             raise ValueError("sessions_service configuration not found")
 
@@ -99,17 +90,11 @@ class SessionsBus:
         if not self._api_key:
             raise ValueError("sessions_service.api_key is required")
 
-        # Get services from registry
-        self._api_client = self._component_registry.get_service(SessionsApiClient)
-        self._key_provider = self._component_registry.get_service(SessionKeyProvider)
+        self._api_client = self.registry.get_service(SessionsApiClient)
+        self._key_provider = self.registry.get_service(SessionKeyProvider)
 
-        # Initialize concurrency control
         self._semaphore = asyncio.Semaphore(self._max_concurrent_jobs)
-
-        # Reset shutdown event
         self._shutdown_event.clear()
-
-        # Start SSE connection task
         self._sse_task = asyncio.create_task(self._consume_sse_stream())
 
         logger.info(
@@ -119,14 +104,12 @@ class SessionsBus:
             self._max_concurrent_jobs,
         )
 
-    async def close(self) -> None:
-        """Close SSE connection and clean up resources."""
+    async def on_shutdown(self) -> None:
+        """Close the SSE connection and clean up resources."""
         logger.info("SessionsBus closing...")
 
-        # Signal shutdown
         self._shutdown_event.set()
 
-        # Cancel SSE task
         if self._sse_task and not self._sse_task.done():
             self._sse_task.cancel()
             try:
@@ -137,7 +120,7 @@ class SessionsBus:
         logger.info("SessionsBus closed")
 
     async def _consume_sse_stream(self) -> None:
-        """Connect to SSE endpoint and process events with reconnection logic."""
+        """Connect to the SSE endpoint and process events with reconnection logic."""
         attempt = 0
 
         while not self._shutdown_event.is_set():
@@ -160,7 +143,6 @@ class SessionsBus:
                 if self._shutdown_event.is_set():
                     break
 
-                # Wait before reconnecting
                 logger.info("Reconnecting in %d seconds...", self._reconnect_delay)
                 try:
                     await asyncio.wait_for(
@@ -173,9 +155,7 @@ class SessionsBus:
     async def _connect_and_consume(self) -> None:
         """Establish SSE connection and consume events."""
         url = f"{self._base_url}/jobs/stream/sse"
-        params: dict[str, Any] = {
-            "agent_id": self._agent_id,
-        }
+        params: dict[str, Any] = {"agent_id": self._agent_id}
 
         if self._agent_type:
             params["agent_type"] = self._agent_type
@@ -204,8 +184,6 @@ class SessionsBus:
                                 job_data.get("job_id"),
                                 job_data.get("job_type"),
                             )
-
-                            # Process job asynchronously with concurrency control
                             asyncio.create_task(self._handle_job_notification(job_data))
 
                         elif sse.event == "heartbeat":
@@ -218,11 +196,7 @@ class SessionsBus:
                         logger.error("Error processing SSE event: %s", e, exc_info=True)
 
     async def _handle_job_notification(self, job_data: dict[str, Any]) -> None:
-        """Handle job notification with concurrency control.
-
-        Args:
-            job_data: Job notification data from SSE
-        """
+        """Handle job notification with concurrency control."""
         assert self._semaphore is not None, "Semaphore not initialized"
         async with self._semaphore:
             try:
@@ -238,10 +212,12 @@ class SessionsBus:
                 )
 
     async def _process_job_notification(self, job_data: dict[str, Any]) -> None:
-        """Process job notification by converting to CloudEvent and delegating to handlers.
+        """Process a job notification by converting to CloudEvent and delegating to handlers.
 
-        This is similar to NatsEventBus._handle_nats_message() - it converts the
-        incoming event to CloudEvent format and delegates to ProcessingService.
+        Uses the CloudEventProcessorMixin dispatch pipeline for the primary call.
+        Applies sessions-specific error handling: permanent failures cancel the job,
+        transient failures leave it pending, 403 auth errors invalidate the session key
+        and retry once.
 
         Args:
             job_data: Job notification data from SSE
@@ -256,14 +232,11 @@ class SessionsBus:
             span.set_attribute("job_type", job_type)
 
             try:
-                # Get session key from provider
                 assert self._key_provider is not None, "SessionKeyProvider not initialized"
                 session_key = await self._key_provider.get_session_key(session_id)
 
-                # Convert to CloudEvent
                 event = self._convert_to_cloud_event(job_data)
 
-                # Build context with session key and job metadata
                 context = {
                     "session_id": str(session_id),
                     "job_id": str(job_id),
@@ -272,11 +245,8 @@ class SessionsBus:
                     "sessions_key_provider": self._key_provider,
                 }
 
-                # Get ProcessingService and delegate to handlers
-                processing_service = self._component_registry.get_service(EventProcessingService)
-                result = await processing_service.process_event(event, context)
+                result = await self._dispatch_cloud_event(event, context)
 
-                # Check if any handler processed it
                 if result.status.value == "no_handler_found":
                     logger.warning(
                         "No handler found for job type %s (job_id=%s)",
@@ -285,7 +255,6 @@ class SessionsBus:
                     )
 
             except InvalidEventError as e:
-                # Permanent failure - cancel job
                 logger.error("Invalid job %s: %s. Cancelling.", job_id, e)
                 try:
                     assert self._key_provider is not None, "SessionKeyProvider not initialized"
@@ -301,7 +270,6 @@ class SessionsBus:
                     logger.error("Failed to cancel job %s: %s", job_id, cancel_error)
 
             except RetryableHandlerError as e:
-                # Transient failure - log and leave job pending
                 logger.warning(
                     "Retryable error for job %s: %s. Job remains pending.",
                     job_id,
@@ -310,7 +278,6 @@ class SessionsBus:
 
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 403:
-                    # Invalid session key - invalidate cache and retry once
                     logger.error("Invalid session key for session %s", session_id)
                     assert self._key_provider is not None, "SessionKeyProvider not initialized"
                     self._key_provider.invalidate_cache(session_id)
@@ -318,16 +285,18 @@ class SessionsBus:
                     try:
                         session_key = await self._key_provider.get_session_key(session_id)
                         context["session_key"] = session_key
-                        processing_service = self._component_registry.get_service(EventProcessingService)
+                        processing_service = self.registry.get_service(EventProcessingService)
                         await processing_service.process_event(event, context)
                     except Exception as retry_error:
                         logger.error("Retry failed for job %s: %s", job_id, retry_error)
-                        raise InvalidEventError(status="invalid_session_key", reason=f"Session key invalid: {str(e)}") from e
+                        raise InvalidEventError(
+                            status="invalid_session_key",
+                            reason=f"Session key invalid: {str(e)}",
+                        ) from e
                 else:
                     raise
 
             except Exception as e:
-                # Unexpected error - log and continue
                 logger.exception("Unexpected error processing job %s: %s", job_id, e)
 
     def _convert_to_cloud_event(self, job_data: dict[str, Any]) -> GenericCloudEvent:

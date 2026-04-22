@@ -1,18 +1,13 @@
-"""Health checker for sessions service connectivity.
-
-This module provides the SessionsServiceHealthChecker that monitors the health
-of the sessions service integration, including REST API connectivity and SSE
-connection status.
-"""
+"""Health checker for sessions service connectivity."""
 
 import logging
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
 
-from ...models.api import ComponentHealth
-from ...io.api.actuators.health.health_base import HealthCheckerBase
+from .....models.api import ComponentHealth
+from .health_base import HealthCheckerBase
 
 logger = logging.getLogger(__name__)
 
