@@ -44,7 +44,7 @@ source .venv/bin/activate
 Install the framework package in editable mode with development dependencies:
 
 ```bash
-pip install -e ".[dev]"
+uv pip install -e ".[dev]"
 ```
 
 This installs:
@@ -56,13 +56,13 @@ This installs:
 ### Run All Tests
 
 ```bash
-pytest tests/
+python pytest tests/
 ```
 
 ### Run Tests with Coverage
 
 ```bash
-pytest tests/ --cov=blueprint.agents --cov-report=html
+python pytest tests/ --cov=blueprint.agents --cov-report=html
 ```
 
 This generates an HTML coverage report in `htmlcov/index.html`.
@@ -70,7 +70,7 @@ This generates an HTML coverage report in `htmlcov/index.html`.
 ### Run Tests for a Specific Module
 
 ```bash
-pytest tests/unit/test_agent_builder.py
+python pytest tests/unit/test_agent_builder.py
 ```
 
 ### Run Tests in Watch Mode (with pytest-watch)

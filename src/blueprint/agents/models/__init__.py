@@ -14,7 +14,7 @@ from .api import (
 )
 from .config import AIConfig, CacheConfig, EventPublishingConfig, ObservabilityConfig, PromptConfig, RuntimeConfig, TopicConfig, UsageLimits
 from .errors import CriticalHandlerError, HandlerError, InvalidEventError, RetryableHandlerError
-from .events import CloudEvent, GenericCloudEvent, HandlerResult
+from .events import CloudEvent, GenericCloudEvent, HandlerResult, create_cloud_event
 from .result import AgentOutput, Evidence, ProcessingResult, ProcessingStatus
 from .status import BuildStatus, EnvironmentStatus, LLMStatus, ServiceInfo, VLLMInfo
 
@@ -53,4 +53,5 @@ __all__ = [
     "VLLMInfo",
     "CacheStatsResponse",
     "CacheEvictRequest",
+    "create_cloud_event",
 ]

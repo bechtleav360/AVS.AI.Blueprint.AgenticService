@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 from typing import Any, Literal
+from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic.config import ConfigDict
@@ -91,3 +92,37 @@ class HandlerResult(BaseModel):
     subject: str | None = None
     data: dict[str, Any] | None = None
     metadata: dict[str, Any] | None = None
+
+
+def create_cloud_event(
+    event_type: str,
+    data: BaseModel | dict[str, Any],
+    *,
+    source: str | None = None,
+    subject: str | None = None,
+    event_id: str | None = None,
+) -> GenericCloudEvent:
+    """Create a GenericCloudEvent from a domain payload.
+
+    Convenience factory that handles Pydantic model serialization and
+    ID generation, reducing boilerplate when constructing events from
+    REST endpoints or service code.
+
+    Args:
+        event_type: The CloudEvent ``type`` field (e.g., ``"order.created"``).
+        data: Event payload — a Pydantic model (auto-dumped to dict) or a plain dict.
+        source: URI reference identifying the event producer. Defaults to ``"/api"``.
+        subject: Optional subject of the event.
+        event_id: Optional explicit event ID. A UUID is generated if omitted.
+
+    Returns:
+        A fully populated :class:`GenericCloudEvent`.
+    """
+    payload = data.model_dump() if isinstance(data, BaseModel) else data
+    return GenericCloudEvent(
+        id=event_id or str(uuid4()),
+        type=event_type,
+        source=source or "/api",
+        subject=subject,
+        data=payload,
+    )

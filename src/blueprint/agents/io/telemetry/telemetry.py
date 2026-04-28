@@ -110,7 +110,6 @@ class TracingContext:
 
     def __enter__(self) -> trace.Span:
         self.span = self.tracer.start_span(self.name)
-        assert self.span is not None
         self._add_span_attributes(self.span, self.attributes)
         return self.span
 

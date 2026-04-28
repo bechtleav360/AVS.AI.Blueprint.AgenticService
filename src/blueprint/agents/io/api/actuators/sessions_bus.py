@@ -223,7 +223,8 @@ class SessionsBus:
         Args:
             job_data: Job notification data from SSE
         """
-        assert self._semaphore is not None, "Semaphore not initialized"
+        if self._semaphore is None:
+            raise RuntimeError("Semaphore not initialized")
         async with self._semaphore:
             try:
                 await asyncio.wait_for(
@@ -257,7 +258,8 @@ class SessionsBus:
 
             try:
                 # Get session key from provider
-                assert self._key_provider is not None, "SessionKeyProvider not initialized"
+                if self._key_provider is None:
+                    raise RuntimeError("SessionKeyProvider not initialized")
                 session_key = await self._key_provider.get_session_key(session_id)
 
                 # Convert to CloudEvent
@@ -288,8 +290,10 @@ class SessionsBus:
                 # Permanent failure - cancel job
                 logger.error("Invalid job %s: %s. Cancelling.", job_id, e)
                 try:
-                    assert self._key_provider is not None, "SessionKeyProvider not initialized"
-                    assert self._api_client is not None, "SessionsApiClient not initialized"
+                    if self._key_provider is None:
+                        raise RuntimeError("SessionKeyProvider not initialized")
+                    if self._api_client is None:
+                        raise RuntimeError("SessionsApiClient not initialized")
                     session_key = await self._key_provider.get_session_key(session_id)
                     await self._api_client.cancel_job(
                         session_id=session_id,
@@ -312,7 +316,8 @@ class SessionsBus:
                 if e.response.status_code == 403:
                     # Invalid session key - invalidate cache and retry once
                     logger.error("Invalid session key for session %s", session_id)
-                    assert self._key_provider is not None, "SessionKeyProvider not initialized"
+                    if self._key_provider is None:
+                        raise RuntimeError("SessionKeyProvider not initialized") from None
                     self._key_provider.invalidate_cache(session_id)
 
                     try:

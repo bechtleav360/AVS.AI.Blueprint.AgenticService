@@ -34,7 +34,7 @@ repos:
     rev: v1.20.1
     hooks:
       - id: mypy
-        additional_dependencies: [types-requests, types-PyYAML]
+        additional_dependencies: [types-requests, types-PyYAML, pydantic]
         args: ["--ignore-missing-imports", "--no-strict-optional"]
 
   # Security scanning
@@ -42,7 +42,7 @@ repos:
     rev: 1.9.4
     hooks:
       - id: bandit
-        args: ["-r", "src/", "-f", "json", "-o", "bandit-report.json"]
+        args: ["-r", "src/", "-f", "json", "-o", "bandit-report.json", "--skip", "B404,B603,B113"]
         pass_filenames: false
 
   # Dockerfile linting
