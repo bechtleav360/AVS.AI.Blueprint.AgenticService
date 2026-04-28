@@ -18,6 +18,7 @@ class RootApi(RestApiBase):
         """Initialize RootApi."""
         super().__init__(should_register=False)
         self._app = app
+        self._html_cache: str | None = None
 
     async def on_startup(self) -> None:
         """No startup actions required."""
@@ -28,6 +29,9 @@ class RootApi(RestApiBase):
     @RestApiBase.get("/", summary="Service metadata", tags=["root"], response_class=HTMLResponse)
     async def root(self) -> Any:
         """Return an HTML page listing service metadata and all registered endpoints."""
+        if self._html_cache is not None:
+            return self._html_cache
+
         service_name = self.config.get("app_name") or "agent-service"
         service_version = self.config.get("app_version") or "0.0.0"
         service_description = self.config.get("app_description") or "Generic microservice blueprint for building intelligent agents"
@@ -52,7 +56,7 @@ class RootApi(RestApiBase):
 
         rows_html = "\n".join(rows)
 
-        return f"""<!DOCTYPE html>
+        self._html_cache = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -81,3 +85,4 @@ class RootApi(RestApiBase):
     </table>
 </body>
 </html>"""
+        return self._html_cache

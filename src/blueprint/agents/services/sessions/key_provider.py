@@ -81,7 +81,7 @@ class SessionKeyProvider(ServiceBase):
         cache_key = str(session_id) if session_id else "default"
 
         # Check cache first
-        if self._cache and cache_key in self._cache:
+        if self._cache is not None and cache_key in self._cache:
             logger.debug("Session key cache hit: session_id=%s", session_id)
             return self._cache[cache_key]
 
@@ -96,7 +96,7 @@ class SessionKeyProvider(ServiceBase):
             raise ValueError(f"Unknown session key source: {self._source}")
 
         # Cache the key
-        if self._cache:
+        if self._cache is not None:
             self._cache[cache_key] = session_key
             logger.debug("Session key cached: session_id=%s", session_id)
 
@@ -166,4 +166,4 @@ class SessionKeyProvider(ServiceBase):
         # - HashiCorp Vault
         # - Azure Key Vault
         # - AWS Secrets Manager
-        raise NotImplementedError("Vault integration not yet implemented. " "Use session_key_source='env' or 'config' for now.")
+        raise NotImplementedError("Vault integration not yet implemented. Use session_key_source='env' or 'config' for now.")

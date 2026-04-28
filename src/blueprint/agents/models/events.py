@@ -51,8 +51,8 @@ class CloudEvent[T](BaseModel):
         },
     )
 
-    @classmethod
     @field_validator("time")
+    @classmethod
     def validate_time_format(cls, v: str | None) -> str | None:
         """Validate that the time is in ISO 8601 format with timezone."""
         if not isinstance(v, str):
@@ -65,8 +65,8 @@ class CloudEvent[T](BaseModel):
         except ValueError as e:
             raise ValueError("Time must be in ISO 8601 format with timezone") from e
 
-    @classmethod
     @model_validator(mode="before")
+    @classmethod
     def validate_data_exclusivity(cls, values: dict[str, Any]) -> dict[str, Any]:
         """Validate that CloudEvent cannot include both 'data' and 'data_base64'."""
         if values.get("data") is not None and values.get("data_base64") is not None:

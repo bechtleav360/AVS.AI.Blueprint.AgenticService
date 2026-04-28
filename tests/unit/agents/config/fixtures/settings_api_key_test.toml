@@ -1,0 +1,26 @@
+[development]
+app_name = "test-app"
+app_port = 8000
+app_environment = "development"
+
+# Global vLLM configuration
+model_provider = "vllm"
+model_api_key = "vllm-global-key-12345"
+model_base_url = "https://avs-vllm.q14.net/v1"
+model_name = "default"
+model_max_tokens = 3000
+model_temperature = 0.1
+
+# Evaluator runtime - OpenAI override
+[development.runtimes.evaluator]
+model_provider = "openai"
+model_api_key = "openai-evaluator-key-67890"
+model_name = "gpt-4"
+
+# Search runtime - vLLM with different endpoint
+[development.runtimes.search]
+model_provider = "vllm"
+model_base_url = "https://avs-embed.q14.net/v1"
+model_name = "embedding-model"
+
+# Unknown runtime - uses global defaults (no specific config)
