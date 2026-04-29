@@ -40,7 +40,8 @@ dependencies = [
     "apscheduler>=3.11.2",
     "diskcache-rs>=0.4.4",
     "nats-py>=2.13.1",
-    "croniter>=6.0.0"
+    "croniter>=6.0.0",
+    "pytest"
 ]
 
 [project.optional-dependencies]
