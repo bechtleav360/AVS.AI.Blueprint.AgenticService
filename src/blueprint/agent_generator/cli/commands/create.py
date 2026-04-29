@@ -476,7 +476,7 @@ class {class_name}(RestApiBase):
         main_content = read_main_py(project_root)
 
         # Add models import (use snake_case module name)
-        models_import_statement = f"from src.models.{models_module_name} import " f"{request_class_name}, {response_class_name}"
+        models_import_statement = f"from src.models.{models_module_name} import {request_class_name}, {response_class_name}"
         main_content = add_import_to_main(main_content, models_import_statement, "api")
 
         # Add API import (use snake_case module name)
@@ -696,7 +696,7 @@ def create_scheduler(args: Namespace) -> None:
         sys.exit(1)
 
     # Simple template for scheduler (generators don't support schedulers yet)
-    code = f'''"""Scheduler for {snake_name.replace('_scheduler', '')} operations."""
+    code = f'''"""Scheduler for {snake_name.replace("_scheduler", "")} operations."""
 
 import logging
 
@@ -707,7 +707,7 @@ logger = logging.getLogger(__name__)
 
 
 class {class_name}(SchedulerBase):
-    """Scheduler for {snake_name.replace('_scheduler', '')} operations."""
+    """Scheduler for {snake_name.replace("_scheduler", "")} operations."""
 
     def __init__(self) -> None:
         """Initialize the scheduler.

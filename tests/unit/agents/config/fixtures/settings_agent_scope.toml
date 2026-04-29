@@ -1,0 +1,38 @@
+[development]
+app_environment = "development"
+
+# Shared infra at root
+nats_url = "nats://shared:4222"
+event_bus = "nats"
+model_provider = "vllm"
+model_base_url = "https://shared.example.com/v1"
+model_api_key = "shared-key"
+
+[development.cache]
+cache_dir = ".cache/shared"
+
+# Legacy single-agent runtime block (used by backward-compat tests)
+[development.runtimes.legacy_runtime]
+model_name = "legacy-model"
+model_max_tokens = 1234
+
+# --- Scoped agent: foo ---
+[development.foo]
+app_name = "foo-app"
+app_port = 8101
+nats_url = "nats://foo-override:4222"
+
+[development.foo.cache]
+cache_dir = ".cache/foo"
+
+[development.foo.runtimes.my_agent]
+model_name = "foo-model"
+model_max_tokens = 9999
+
+[development.foo.runtimes.my_agent.model_settings]
+temperature_override = 0.42
+
+# --- Scoped agent: bar (only required keys; everything else falls back) ---
+[development.bar]
+app_name = "bar-app"
+app_port = 8102

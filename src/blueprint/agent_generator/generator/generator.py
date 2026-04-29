@@ -165,8 +165,7 @@ class AgentGenerator:
             for service_name in rest_api.get("uses_services", []):
                 if service_name not in service_names:
                     logger.error(
-                        f"REST API references undefined service '{service_name}'. "
-                        f"Available services: {', '.join(service_names) or 'none'}"
+                        f"REST API references undefined service '{service_name}'. Available services: {', '.join(service_names) or 'none'}"
                     )
                     has_errors = True
 

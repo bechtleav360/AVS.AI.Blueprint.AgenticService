@@ -8,8 +8,8 @@ class SettingsPartGenerator(PartGeneratorBase):
     def __init__(self, config: dict[str, Any], template_dir: str | Path, src_path: str) -> None:
         super().__init__(config, template_dir, src_path)
         self.template_file_name = "settings.txt"
-        self.template_vars["app_name"] = f"app_name = \"{self.config['name']}\""
-        self.template_vars["app_description"] = f"app_description = \"{self.config['description']}\""
+        self.template_vars["app_name"] = f'app_name = "{self.config["name"]}"'
+        self.template_vars["app_description"] = f'app_description = "{self.config["description"]}"'
         self.template_vars["agent_runtime_configs"] = self._create_agent_runtime_configs()
 
     def to_py_file_name(self) -> str:

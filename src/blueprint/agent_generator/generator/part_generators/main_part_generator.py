@@ -55,7 +55,7 @@ class MainPartGenerator(PartGeneratorBase):
             lines.extend(
                 [
                     f"{agent['runtime_name']}: AgentRuntime = (",
-                    f"    AgentBuilder(config, runtime_name=\"{agent['runtime_name']}\")",
+                    f'    AgentBuilder(config, runtime_name="{agent["runtime_name"]}")',
                     "    .with_model_from_config()",
                     f'    .with_system_prompt("{self.camel_to_snake(agent_name)}_system")',
                     f'    .build(name="{self.camel_to_snake(agent_name)}")',
@@ -69,7 +69,7 @@ class MainPartGenerator(PartGeneratorBase):
 
         # Add agents
         for agent in self.config["agent_layer"]:
-            lines.append(f"    .with_agent({self.config["agent_layer"][agent]['runtime_name']})")
+            lines.append(f"    .with_agent({self.config['agent_layer'][agent]['runtime_name']})")
 
         # Add services
         for service_name in self.config["service_layer"]:

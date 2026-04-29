@@ -36,7 +36,7 @@ class APIPartGenerator(PartGeneratorBase):
         if len(model_classes) < 4:
             lines.append(f"from {model_path} import {', '.join(model_classes)}")
             lines.append(
-                f"from ..models.{self.camel_to_snake(component_name)}.mapper import {self.config["communication_layer"]["rest_api"]["mapper"]["name"]}"
+                f"from ..models.{self.camel_to_snake(component_name)}.mapper import {self.config['communication_layer']['rest_api']['mapper']['name']}"
             )
         else:
             lines.append(f"from {model_path} import (")
@@ -68,7 +68,7 @@ class APIPartGenerator(PartGeneratorBase):
             [
                 f"class {self.config['communication_layer']['rest_api']['name']}(RestApiBase):",
                 '    """',
-                f"    {self.config["communication_layer"]["rest_api"]["description"]}",
+                f"    {self.config['communication_layer']['rest_api']['description']}",
                 '    """',
                 "    def __init__(self) -> None:",
                 "        super().__init__()",
@@ -141,7 +141,7 @@ class APIPartGenerator(PartGeneratorBase):
                     f"The incoming data, parsed into the domain input model.",
                     "",
                     "        Returns:",
-                    f"            {endpoint_parameters['output_dto']}: " f"The processed data parsed into the domain output model.",
+                    f"            {endpoint_parameters['output_dto']}: The processed data parsed into the domain output model.",
                     '        """',
                     "",
                     "        try:",

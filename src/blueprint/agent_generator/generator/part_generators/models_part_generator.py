@@ -43,7 +43,7 @@ class ModelPartGenerator(PartGeneratorBase):
                     f"    {field_name}: {field['type']} = Field("
                     + ("..., " if not field.get("default", None) else "")
                     + f"description='{field['description']}'"
-                    + (f", default=\"{field.get('default', None)}\")" if field.get("default", None) else ")")
+                    + (f', default="{field.get("default", None)}")' if field.get("default", None) else ")")
                 )
             lines.append("")
 
