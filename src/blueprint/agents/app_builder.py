@@ -27,7 +27,7 @@ from .clients.io.nats_client import NATSClient
 from .services.service_base import ServiceBase
 from .services.eventing.event_processing_service import EventProcessingService
 from .services.eventing.event_publishing_service import EventPublishingService
-from .services.infrastructure.cache_service import DiskCacheService
+from .services.infrastructure.cache_backend_factory import CacheBackendFactory
 from .config import Config, TelemetryManager
 
 HandlerT = TypeVar("HandlerT", bound=EventHandlerBase)
@@ -116,15 +116,11 @@ class AppBuilder:
         """
         if enabled:
             cache_config = self._config.get_cache_config()
-            cache_service = DiskCacheService(
-                cache_dir=cache_config.cache_dir,
-                size_limit=cache_config.size_limit,
-                eviction_policy=cache_config.eviction_policy,
-                enable_locking=enable_locking,
-            )
+            cache_service = CacheBackendFactory.create(cache_config, enable_locking=enable_locking)
             Component.shared_registry.cache_service = cache_service  # type: ignore[union-attr]
             logger.info(
-                "Registered DiskCacheService with cache_dir=%s (locking=%s)",
+                "Registered %s with cache_dir=%s (locking=%s)",
+                type(cache_service).__name__,
                 cache_config.cache_dir,
                 enable_locking,
             )

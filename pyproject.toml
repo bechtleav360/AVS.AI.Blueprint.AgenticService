@@ -52,7 +52,10 @@ ci = [
     "ruff>=0.14.4",
     "mypy>=1.18.2",
     "httpx>=0.28.1",
+    "fakeredis>=2.26.0",
+    "redis[hiredis]>=5.0.0",
 ]
+redis = ["redis[hiredis]>=5.0.0"]
 dev = [
     "avs-blueprint-agents[ci]",
     "debugpy>=1.8.17",
@@ -166,6 +169,10 @@ module = [
     "dapr.*",
     "nats.*",
 ]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["redis", "redis.*", "fakeredis", "fakeredis.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
