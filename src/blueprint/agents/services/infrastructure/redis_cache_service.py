@@ -9,8 +9,7 @@ try:
     import redis
 except ImportError as e:
     raise ImportError(
-        "Redis backend requires 'avs-blueprint-agents[redis]'. "
-        "Install with: pip install 'avs-blueprint-agents[redis]'"
+        "Redis backend requires 'avs-blueprint-agents[redis]'. " "Install with: pip install 'avs-blueprint-agents[redis]'"
     ) from e
 
 from .cache_key_mixin import _CacheKeyMixin

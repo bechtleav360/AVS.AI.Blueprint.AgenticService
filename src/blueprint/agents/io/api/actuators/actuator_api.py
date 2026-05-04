@@ -159,9 +159,7 @@ class ActuatorApi(RestApiBase):
         ai_config_dict = (
             ai_config_model.model_dump()
             if hasattr(ai_config_model, "model_dump")
-            else ai_config_model.dict()
-            if hasattr(ai_config_model, "dict")
-            else {}
+            else ai_config_model.dict() if hasattr(ai_config_model, "dict") else {}
         )
         ai_config = self._sanitize_config(ai_config_dict)
 
