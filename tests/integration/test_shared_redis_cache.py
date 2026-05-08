@@ -86,6 +86,7 @@ def _run_reader(redis_url: str, key: str, namespace: str, key_prefix: str) -> di
         return None
     try:
         import json
+
         return json.loads(result.stdout.strip())
     except Exception:
         return None
@@ -134,9 +135,7 @@ def test_namespace_isolation_across_instances(redis_url: str) -> None:
         instance_a.set(key, {"owner": "a"}, namespace=namespace)
 
         assert instance_a.get(key, namespace=namespace) == {"owner": "a"}
-        assert instance_b.get(key, namespace=namespace) is None, (
-            "Instance B should not see Instance A's key (different key_prefix)"
-        )
+        assert instance_b.get(key, namespace=namespace) is None, "Instance B should not see Instance A's key (different key_prefix)"
     finally:
         instance_a.clear()
         instance_b.clear()
@@ -161,8 +160,6 @@ def test_ttl_expiry_is_enforced(redis_url: str) -> None:
 
         time.sleep(2)
 
-        assert not cache.exists(key, namespace=namespace), (
-            "Entry should have expired after TTL elapsed"
-        )
+        assert not cache.exists(key, namespace=namespace), "Entry should have expired after TTL elapsed"
     finally:
         cache.close()

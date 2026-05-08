@@ -115,33 +115,23 @@ def two_services_sharing_cache(
 
 
 class TestTwoServicesShareCacheViaRegistry:
-    def test_both_services_resolve_the_same_cache_instance(
-        self, two_services_sharing_cache: tuple[WriterService, ReaderService]
-    ) -> None:
+    def test_both_services_resolve_the_same_cache_instance(self, two_services_sharing_cache: tuple[WriterService, ReaderService]) -> None:
         writer, reader = two_services_sharing_cache
-        assert writer._cache is reader._cache, (
-            "Both services should pull the SAME cache instance from the registry"
-        )
+        assert writer._cache is reader._cache, "Both services should pull the SAME cache instance from the registry"
 
-    def test_reader_sees_writers_write(
-        self, two_services_sharing_cache: tuple[WriterService, ReaderService]
-    ) -> None:
+    def test_reader_sees_writers_write(self, two_services_sharing_cache: tuple[WriterService, ReaderService]) -> None:
         writer, reader = two_services_sharing_cache
         writer.write("user:42", {"name": "Alice"})
 
         assert reader.read("user:42") == {"name": "Alice"}
 
-    def test_writer_sees_readers_write(
-        self, two_services_sharing_cache: tuple[WriterService, ReaderService]
-    ) -> None:
+    def test_writer_sees_readers_write(self, two_services_sharing_cache: tuple[WriterService, ReaderService]) -> None:
         writer, reader = two_services_sharing_cache
         reader.write("session:xyz", {"token": "abc-123"})
 
         assert writer.read("session:xyz") == {"token": "abc-123"}
 
-    def test_bidirectional_write_read_round_trip(
-        self, two_services_sharing_cache: tuple[WriterService, ReaderService]
-    ) -> None:
+    def test_bidirectional_write_read_round_trip(self, two_services_sharing_cache: tuple[WriterService, ReaderService]) -> None:
         """The full practical case: each service writes, the other reads.
 
         Mirrors what cache-consumer-demo's PricingService and RecommendationService do
@@ -160,9 +150,7 @@ class TestTwoServicesShareCacheViaRegistry:
         assert writer.read("price:laptop") == {"amount": 49.99}
         assert reader.read("recommendation:laptop") == {"verdict": "BUY"}
 
-    def test_registry_setter_rejects_double_registration(
-        self, shared_cache: DiskCacheService, tmp_path: Path
-    ) -> None:
+    def test_registry_setter_rejects_double_registration(self, shared_cache: DiskCacheService, tmp_path: Path) -> None:
         """AC-protection: assigning a 2nd cache to the registry raises, ensuring
         a single source of truth across all services."""
         Component.shared_registry = Registry(Component)

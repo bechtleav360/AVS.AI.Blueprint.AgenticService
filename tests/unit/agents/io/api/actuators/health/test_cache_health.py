@@ -10,12 +10,9 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock
 
-import pytest
-
 from blueprint.agents.io.api.actuators.health.cache_health import CacheHealthChecker
 from blueprint.agents.services.infrastructure.cache_service import DiskCacheService
 from blueprint.agents.services.infrastructure.redis_cache_service import RedisCacheService
-
 
 # ---------------------------------------------------------------------------
 # Fixture-style helpers
@@ -94,9 +91,7 @@ class TestRedisBackend:
         result = await CacheHealthChecker(cache).health_check()
 
         assert result.status == "healthy"
-        assert observed["thread_id"] != main_thread, (
-            "ping() should run on a worker thread to avoid blocking the event loop"
-        )
+        assert observed["thread_id"] != main_thread, "ping() should run on a worker thread to avoid blocking the event loop"
 
 
 # ---------------------------------------------------------------------------

@@ -47,7 +47,7 @@ class RedisCacheService(_CacheKeyMixin, CacheService):
         # accepting an ssl= kwarg in from_url(). Upgrade the scheme when tls=True.
         effective_url = redis_url
         if tls and redis_url.startswith("redis://"):
-            effective_url = "rediss://" + redis_url[len("redis://"):]
+            effective_url = "rediss://" + redis_url[len("redis://") :]
         # Typed as Any: redis-py's sync methods are statically declared as ``Awaitable | T``
         # (the same Redis class is used for sync and async), which trips mypy on every call.
         self._client: Any = redis.Redis.from_url(
