@@ -17,7 +17,7 @@ from .handler.event_handler_base import EventHandlerBase
 from .io.api.rest_api_base import RestApiBase
 from .io.api.scheduling.scheduler import SchedulerBase
 from .io.api.actuators.actuator_api import ActuatorApi
-from .io.api.actuators.health import ClientHealthChecker
+from .io.api.actuators.health import CacheHealthChecker, ClientHealthChecker
 from .io.api.eventing.dapr import DaprEventing
 from .io.api.eventing.nats import NatsEventing
 from .io.api.utilities.root import RootApi
@@ -184,6 +184,11 @@ class AppBuilder:
         # 4. Create ActuatorApi and wire health checkers from all registered clients
         self._actuator_api = ActuatorApi()
         health_providers: dict[str, HealthCheckerBase] = {client.name: ClientHealthChecker([client]) for client in registry.get_clients()}
+        # Pull the registered cache (if any) into the readiness probe so a Redis
+        # outage takes the pod out of service rotation instead of letting it
+        # silently serve cache misses.
+        if registry.has_cache():
+            health_providers["cache"] = CacheHealthChecker(registry.cache_service)
         if hasattr(self, "_custom_health_checkers"):
             health_providers.update(self._custom_health_checkers)
         if health_providers:

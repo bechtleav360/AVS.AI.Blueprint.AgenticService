@@ -51,7 +51,8 @@ class CloudEvent[T](BaseModel):
     )
 
     @field_validator("time")
-    def validate_time_format(v: str | None) -> str | None:
+    @classmethod
+    def validate_time_format(cls, v: str | None) -> str | None:
         """Validate that the time is in ISO 8601 format with timezone."""
         if not isinstance(v, str):
             raise ValueError("Time must be a string in ISO 8601 format")

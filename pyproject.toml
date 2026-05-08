@@ -183,6 +183,9 @@ asyncio_mode = "auto"
 pythonpath = [
     "src",
 ]
+markers = [
+    "integration: requires external services (e.g. Redis) — skipped in offline CI",
+]
 
 [tool.uv.workspace]
 members = [
