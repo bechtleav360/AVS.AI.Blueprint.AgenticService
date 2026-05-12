@@ -33,7 +33,7 @@ class ServicePartGenerator(PartGeneratorBase):
         if self.config["service_layer"][self.service_name]["uses_domain_models"]:
             if len(self.config["service_layer"][self.service_name]["uses_domain_models"]) < 4:
                 lines.append(
-                    f"from ..models.{self.camel_to_snake(self.config.get("component_name", ""))}.domain_models import {', '.join(self.config['service_layer'][self.service_name]['uses_domain_models'])}"
+                    f"from ..models.{self.camel_to_snake(self.config.get('component_name', ''))}.domain_models import {', '.join(self.config['service_layer'][self.service_name]['uses_domain_models'])}"
                 )
             else:
                 lines.append("from ..models.domain_models import (")
@@ -105,7 +105,7 @@ class ServicePartGenerator(PartGeneratorBase):
         lines.append("")
         lines.append(
             f"    async def {function_parameters['name']}(self, "
-            f"{self.camel_to_snake(function_parameters["input_type"])}"
+            f"{self.camel_to_snake(function_parameters['input_type'])}"
             f": {function_parameters['input_type']}) -> {function_parameters['output_type']}:"
         )
         lines.extend(
@@ -117,7 +117,7 @@ class ServicePartGenerator(PartGeneratorBase):
                 f"({function_parameters['input_type']}): The incoming data, parsed into the domain input model.",
                 "",
                 "        Returns:",
-                f"            {function_parameters['output_type']}: " f"The processed data parsed into the domain output model.",
+                f"            {function_parameters['output_type']}: The processed data parsed into the domain output model.",
                 '        """',
                 "",
             ]

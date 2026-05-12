@@ -16,7 +16,7 @@ from blueprint.agents.handler import EventHandlerBase
 from blueprint.agents.services import ServiceBase
 from blueprint.agents.io.api import RestApiBase
 from blueprint.agents.io.api.scheduling import SchedulerBase
-from blueprint.agents.models import GenericCloudEvent, HandlerResult, CloudEvent
+from blueprint.agents.models import GenericCloudEvent, HandlerResult, CloudEvent, create_cloud_event
 ```
 
 **Registry access** (only in `on_startup()`, NEVER in `__init__`):
@@ -65,9 +65,12 @@ class MyHandler(EventHandlerBase):
     async def handle_event(
         self, event: GenericCloudEvent, context: dict[str, Any]
     ) -> HandlerResult | list[HandlerResult] | None:
-        result = await self._service.process(event.data)
+        payload = self.extract_payload(event, MyModel)  # Typed extraction with validation
+        result = await self._service.process(payload)
         return HandlerResult(event_type="my.result.type", data=result)
 ```
+
+**`self.extract_payload(event, ModelType)`** validates `event.data` against a Pydantic model and returns a typed instance. Raises `InvalidEventError` if data is missing or invalid.
 
 #### Service
 
@@ -93,7 +96,7 @@ class OrderService(ServiceBase):
     async def analyze_order(self, order: OrderModel) -> AnalysisResult:
         """Run LLM analysis on the order."""
         result = await self._agent.run(str(order.model_dump()))
-        return AnalysisResult.model_validate(result.data)
+        return AnalysisResult.model_validate(result.output)
 
     async def save_order(self, order: OrderModel) -> str:
         """Persist the order and return its ID."""
@@ -124,6 +127,15 @@ class OrderApi(RestApiBase):
     async def list_orders(self) -> list[OrderResponse]:
         """List all orders."""
         return await self._service.list_all()
+```
+
+**Creating CloudEvents from REST payloads** — use `create_cloud_event()` when an API endpoint needs to feed a payload into the event processing pipeline:
+
+```python
+from blueprint.agents.models import create_cloud_event
+
+cloud_event = create_cloud_event("order.created", payload, source="/api/orders")
+result = await event_processing.process_event(cloud_event)
 ```
 
 #### Scheduler

@@ -196,8 +196,13 @@ class SessionsBus(Component, CloudEventProcessorMixin):
                         logger.error("Error processing SSE event: %s", e, exc_info=True)
 
     async def _handle_job_notification(self, job_data: dict[str, Any]) -> None:
-        """Handle job notification with concurrency control."""
-        assert self._semaphore is not None, "Semaphore not initialized"
+        """Handle job notification with concurrency control.
+
+        Args:
+            job_data: Job notification data from SSE
+        """
+        if self._semaphore is None:
+            raise RuntimeError("Semaphore not initialized")
         async with self._semaphore:
             try:
                 await asyncio.wait_for(
@@ -232,7 +237,9 @@ class SessionsBus(Component, CloudEventProcessorMixin):
             span.set_attribute("job_type", job_type)
 
             try:
-                assert self._key_provider is not None, "SessionKeyProvider not initialized"
+                # Get session key from provider
+                if self._key_provider is None:
+                    raise RuntimeError("SessionKeyProvider not initialized")
                 session_key = await self._key_provider.get_session_key(session_id)
 
                 event = self._convert_to_cloud_event(job_data)
@@ -257,8 +264,10 @@ class SessionsBus(Component, CloudEventProcessorMixin):
             except InvalidEventError as e:
                 logger.error("Invalid job %s: %s. Cancelling.", job_id, e)
                 try:
-                    assert self._key_provider is not None, "SessionKeyProvider not initialized"
-                    assert self._api_client is not None, "SessionsApiClient not initialized"
+                    if self._key_provider is None:
+                        raise RuntimeError("SessionKeyProvider not initialized")
+                    if self._api_client is None:
+                        raise RuntimeError("SessionsApiClient not initialized")
                     session_key = await self._key_provider.get_session_key(session_id)
                     await self._api_client.cancel_job(
                         session_id=session_id,
@@ -279,7 +288,8 @@ class SessionsBus(Component, CloudEventProcessorMixin):
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 403:
                     logger.error("Invalid session key for session %s", session_id)
-                    assert self._key_provider is not None, "SessionKeyProvider not initialized"
+                    if self._key_provider is None:
+                        raise RuntimeError("SessionKeyProvider not initialized") from None
                     self._key_provider.invalidate_cache(session_id)
 
                     try:

@@ -1,12 +1,16 @@
 """Shared fixtures for config unit tests."""
 
 import textwrap
-from pathlib import Path
-from unittest.mock import patch
-
 import pytest
 
+from collections.abc import Callable, Generator
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
 from blueprint.agents.config import Config
+
+WriteSettings = Callable[..., Path]
+
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -24,7 +28,7 @@ def api_key_settings_file() -> Path:
 
 
 @pytest.fixture
-def write_settings(tmp_path):
+def write_settings(tmp_path: Path) -> WriteSettings:
     """Write TOML content to a temporary file and return its Path.
 
     Usage::
@@ -56,7 +60,7 @@ def base_config(base_settings_file: Path) -> Config:
 
 
 @pytest.fixture(autouse=True)
-def mock_logging_configure(request):
+def mock_logging_configure(request: pytest.FixtureRequest) -> Generator[MagicMock | None]:
     """Prevent Config.__init__ from mutating global logging state during config tests.
 
     Skipped automatically for test_logging_manager tests that exercise

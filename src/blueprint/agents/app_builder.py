@@ -172,8 +172,7 @@ class AppBuilder:
                 self._eventing_component = NatsEventing()
             else:
                 logger.warning(
-                    "Event handlers are registered but no valid event_bus configured "
-                    "('dapr' or 'nats'). Event handling will be disabled."
+                    "Event handlers are registered but no valid event_bus configured ('dapr' or 'nats'). Event handling will be disabled."
                 )
 
         # 3. Create internal services (auto-register)

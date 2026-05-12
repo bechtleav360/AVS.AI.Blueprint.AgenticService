@@ -27,7 +27,8 @@ class PartGeneratorBase:
 
     def to_py_file_name(self) -> str:
         """Converts a file name to a corresponding Python file name."""
-        assert self.template_file_name is not None
+        if self.template_file_name is None:
+            raise RuntimeError("template_file_name is not set")
         return f"{self.template_file_name.split('.')[0]}.py"
 
     @staticmethod

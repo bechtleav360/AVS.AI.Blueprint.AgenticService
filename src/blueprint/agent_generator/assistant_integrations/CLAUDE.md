@@ -28,6 +28,10 @@ base classes from the framework:
 class MyHandler(EventHandlerBase):
     async def on_startup(self) -> None:
         self._service = self.registry.get_service(MyService)
+
+    async def handle_event(self, event, context):
+        payload = self.extract_payload(event, MyModel)  # Typed extraction with validation
+        return await self._service.process(payload)
 ```
 
 ## Code Style
