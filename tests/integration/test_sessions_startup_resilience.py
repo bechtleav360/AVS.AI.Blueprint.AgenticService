@@ -123,6 +123,6 @@ sse_max_reconnect_attempts = 1
         "SessionsBus.on_startup did not run — its 'connected' log line is missing. "
         "Test would pass trivially if on_startup were a no-op; that defeats the point."
     )
-    assert any(
-        "Lifecycle component SessionsBus startup completed" in rec.getMessage() for rec in caplog.records
-    ), "AppBuilder lifespan never awaited SessionsBus.on_startup."
+    assert any("Lifecycle component SessionsBus startup completed" in rec.getMessage() for rec in caplog.records), (
+        "AppBuilder lifespan never awaited SessionsBus.on_startup."
+    )
