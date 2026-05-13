@@ -325,14 +325,18 @@ class TestBuildSessionsBranch:
         # Constrain the SessionsBus mock so accessing `.router` raises AttributeError,
         # mirroring the real class. Without spec=[], MagicMock auto-creates child mocks
         # on attribute access, which would defeat the getattr-default guard under test.
-        all_build_mocks.sessions_bus.return_value = MagicMock(spec=[])
+        sessions_bus_instance = MagicMock(spec=[])
+        all_build_mocks.sessions_bus.return_value = sessions_bus_instance
 
         app = builder_for_build.build()
 
-        # _build_rest_endpoints mounts RootApi and ActuatorApi unconditionally and skips
-        # the eventing router when SessionsBus has no `.router` attribute. With cache
-        # disabled and no user REST APIs registered, those are the only two includes.
-        assert app.include_router.call_count == 2
+        # The guard `getattr(self._eventing_component, "router", None) is not None`
+        # must skip the include_router call entirely. Assert directly: no None was
+        # passed (which would indicate the guard returned but the call still fired),
+        # and the SessionsBus instance was never passed (defensive for refactors).
+        routers_mounted = [call.args[0] for call in app.include_router.call_args_list]
+        assert None not in routers_mounted
+        assert sessions_bus_instance not in routers_mounted
 
 
 class TestBuildDaprRegression:
