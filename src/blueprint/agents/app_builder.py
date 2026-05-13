@@ -228,7 +228,7 @@ class AppBuilder:
             app.include_router(rest_api.router, prefix="/api", tags=["rest"])
 
         if self._eventing_component is not None and getattr(self._eventing_component, "router", None) is not None:
-            app.include_router(self._eventing_component.router)
+            app.include_router(self._eventing_component.router)  # type: ignore[union-attr]
 
         if registry.has_cache():
             app.include_router(CacheManagementApi().router, prefix="/api", tags=["cache"])

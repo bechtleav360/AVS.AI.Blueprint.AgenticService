@@ -85,11 +85,7 @@ sse_max_reconnect_attempts = 1
 
     config = Config(settings_files=[str(settings)])
 
-    app = (
-        AppBuilder(config)
-        .with_handler(_NullHandler)
-        .build()
-    )
+    app = AppBuilder(config).with_handler(_NullHandler).build()
 
     # TestClient triggers the lifespan startup → shutdown around the request.
     # If SessionsBus.on_startup blocked or raised, this would hang or fail.

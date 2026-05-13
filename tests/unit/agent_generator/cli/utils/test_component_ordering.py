@@ -181,9 +181,9 @@ class TestAddComponentRegistration:
         handler_line = next(index for index, line in enumerate(lines) if "with_handler" in line)
         api_line = next(index for index, line in enumerate(lines) if "with_rest_api" in line)
 
-        assert (
-            service_line < agent_line < handler_line < api_line
-        ), f"Order not corrected: service={service_line}, agent={agent_line}, handler={handler_line}, api={api_line}"
+        assert service_line < agent_line < handler_line < api_line, (
+            f"Order not corrected: service={service_line}, agent={agent_line}, handler={handler_line}, api={api_line}"
+        )
 
     def test_out_of_order_creation_sequence_complete_reordering(self):
         """Test realistic scenario: components created in arbitrary order are completely re-ordered."""
@@ -207,9 +207,9 @@ class TestAddComponentRegistration:
         handler_line = next(index for index, line in enumerate(lines) if "with_handler" in line)
         api_line = next(index for index, line in enumerate(lines) if "with_rest_api" in line)
 
-        assert (
-            service_line < agent_line < handler_line < api_line
-        ), f"Order not corrected: service={service_line}, agent={agent_line}, handler={handler_line}, api={api_line}"
+        assert service_line < agent_line < handler_line < api_line, (
+            f"Order not corrected: service={service_line}, agent={agent_line}, handler={handler_line}, api={api_line}"
+        )
 
     def test_agent_custom_instantiation_preserved(self):
         """Test that custom agent instantiation is preserved during re-ordering."""
