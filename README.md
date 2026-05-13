@@ -158,7 +158,7 @@ Blueprint Agents uses [Dynaconf](https://www.dynaconf.com/) for hierarchical con
 [default]
 app_name = "my-agent"
 app_port = 8000
-event_bus = "dapr"          # "dapr" or "nats"
+event_bus = "dapr"          # "dapr", "nats", or "sessions"
 log_level = "INFO"
 
 [default.runtimes.my_agent]
@@ -178,6 +178,24 @@ default_ttl = 3600
 [default.runtimes.my_agent]
 model_api_key = "sk-your-api-key"
 ```
+
+For the **sessions transport** (consumes SSE jobs from `service-sessions`):
+
+```toml
+[default]
+event_bus = "sessions"
+
+[default.sessions_service]
+base_url = "http://sessions:8000"
+agent_id = "my-agent"
+agent_type = "analyser"
+capabilities = ["analyse_documents"]
+api_key = "@format {env[SESSIONS_API_KEY]}"
+max_concurrent_jobs = 5
+job_timeout_seconds = 300
+```
+
+No `SessionsBus`, `SessionsApiClient`, or `SessionKeyProvider` references in service `main.py` — `AppBuilder.build()` wires them automatically.
 
 See the [Configuration Reference](docs/concepts/configuration.md) for all available settings.
 
