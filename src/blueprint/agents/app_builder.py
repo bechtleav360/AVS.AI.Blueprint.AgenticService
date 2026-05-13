@@ -20,6 +20,7 @@ from .io.api.actuators.actuator_api import ActuatorApi
 from .io.api.actuators.health import CacheHealthChecker, ClientHealthChecker
 from .io.api.eventing.dapr import DaprEventing
 from .io.api.eventing.nats import NatsEventing
+from .io.api.eventing.sessions_bus import SessionsBus
 from .io.api.utilities.root import RootApi
 from .io.api.utilities.cache import CacheManagementApi
 from .clients.io.dapr_client import DaprClient
@@ -27,6 +28,7 @@ from .clients.io.nats_client import NATSClient
 from .services.service_base import ServiceBase
 from .services.eventing.event_processing_service import EventProcessingService
 from .services.eventing.event_publishing_service import EventPublishingService
+from .services.sessions import SessionKeyProvider, SessionsApiClient
 from .services.infrastructure.cache_backend_factory import CacheBackendFactory
 from .config import Config, TelemetryManager
 
@@ -60,7 +62,7 @@ class AppBuilder:
     def __init__(self, config: Config) -> None:
         self._config = config
         self._telemetry_manager = TelemetryManager()
-        self._eventing_component: DaprEventing | NatsEventing | None = None
+        self._eventing_component: DaprEventing | NatsEventing | SessionsBus | None = None
         self._actuator_api: ActuatorApi | None = None
 
     # ------------------------------------------------------------------
@@ -170,9 +172,17 @@ class AppBuilder:
             elif event_bus_type == "nats":
                 NATSClient()  # auto-registers
                 self._eventing_component = NatsEventing()
+            elif event_bus_type == "sessions":
+                SessionsApiClient()  # ServiceBase → auto-registers
+                SessionKeyProvider()  # ServiceBase → auto-registers
+                # SessionsBus inherits Component directly (no router). Assign to
+                # _eventing_component so the lifespan hook drives its on_startup
+                # / on_shutdown; the router-mount path is guarded below.
+                self._eventing_component = SessionsBus()
             else:
                 logger.warning(
-                    "Event handlers are registered but no valid event_bus configured ('dapr' or 'nats'). Event handling will be disabled."
+                    "Event handlers are registered but no valid event_bus configured "
+                    "('dapr', 'nats', or 'sessions'). Event handling will be disabled."
                 )
 
         # 3. Create internal services (auto-register)
@@ -217,7 +227,7 @@ class AppBuilder:
         for rest_api in registry.get_rest_apis():
             app.include_router(rest_api.router, prefix="/api", tags=["rest"])
 
-        if self._eventing_component is not None:
+        if self._eventing_component is not None and getattr(self._eventing_component, "router", None) is not None:
             app.include_router(self._eventing_component.router)
 
         if registry.has_cache():
