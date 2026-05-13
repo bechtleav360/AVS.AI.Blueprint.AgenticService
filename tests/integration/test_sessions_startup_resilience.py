@@ -3,6 +3,7 @@ FastAPI app whose lifespan completes even when the sessions service URL is
 unreachable. Standard REST endpoints (the framework root API) must respond.
 """
 
+import logging
 import socket
 import threading
 
@@ -26,6 +27,13 @@ def _closed_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         return sock.getsockname()[1]
+
+
+# SessionsBus.on_startup spawns the SSE consumer as an asyncio task and returns
+# without awaiting any TCP I/O. Lifespan completion therefore does not depend on
+# the connection succeeding; it depends only on on_startup itself being awaited
+# without raising. 5s is generous for that work on a loaded CI runner.
+_LIFESPAN_TIMEOUT_SECONDS = 5
 
 
 class _NullHandler(EventHandlerBase):
@@ -55,15 +63,16 @@ def _reset_component_state():
 
 # Not marked @pytest.mark.integration — this test is fully offline (it deliberately
 # targets a closed local port) and must run in the offline CI matrix.
-def test_app_starts_when_sessions_service_unreachable(tmp_path, monkeypatch):
+def test_app_starts_when_sessions_service_unreachable(tmp_path, monkeypatch, caplog):
     """With sessions URL pointed at a closed port, build() returns and
     TestClient can hit the root endpoint."""
+
+    caplog.set_level(logging.INFO)
 
     # Build a Dynaconf Config rooted in a tmp settings.toml
     closed_port = _closed_port()
     settings = tmp_path / "settings.toml"
-    settings.write_text(
-        f"""
+    settings.write_text(f"""
 [default]
 app_name = "resilience-test"
 event_bus = "sessions"
@@ -78,8 +87,7 @@ max_concurrent_jobs = 1
 job_timeout_seconds = 5
 sse_reconnect_delay_seconds = 60
 sse_max_reconnect_attempts = 1
-"""
-    )
+""")
     monkeypatch.setenv("SESSIONS_API_KEY", "test-key")
     monkeypatch.setenv("SESSION_KEY", "test-session-key")
 
@@ -100,10 +108,21 @@ sse_max_reconnect_attempts = 1
 
     runner = threading.Thread(target=_run, daemon=True)
     runner.start()
-    runner.join(timeout=15)
+    runner.join(timeout=_LIFESPAN_TIMEOUT_SECONDS)
 
-    assert not runner.is_alive(), "Startup blocked — lifespan did not complete within 15s"
+    assert not runner.is_alive(), f"Startup blocked — lifespan did not complete within {_LIFESPAN_TIMEOUT_SECONDS}s"
     assert result["error"] is None, f"Unexpected error during lifespan: {result['error']!r}"
     response = result["response"]
     assert response is not None
     assert response.status_code == 200
+
+    # Resilience claim is not just "TestClient survived" — it is "SessionsBus.on_startup
+    # was invoked and acknowledged the unreachable backend without raising". Assert both
+    # via the log channel so a future no-op on_startup cannot silently pass this test.
+    assert any("SessionsBus connected" in rec.getMessage() for rec in caplog.records), (
+        "SessionsBus.on_startup did not run — its 'connected' log line is missing. "
+        "Test would pass trivially if on_startup were a no-op; that defeats the point."
+    )
+    assert any(
+        "Lifecycle component SessionsBus startup completed" in rec.getMessage() for rec in caplog.records
+    ), "AppBuilder lifespan never awaited SessionsBus.on_startup."

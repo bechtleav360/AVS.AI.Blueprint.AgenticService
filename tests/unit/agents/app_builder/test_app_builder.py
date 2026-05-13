@@ -296,47 +296,43 @@ class TestBuildSessionsBranch:
         all_build_mocks.dapr_client.assert_not_called()
         all_build_mocks.nats_client.assert_not_called()
 
-    def test_eventing_component_is_sessions_bus_instance(
+    def test_sessions_bus_tracked_as_lifecycle_component(
         self,
         builder_for_build: AppBuilder,
         mock_registry: MagicMock,
         build_config: MagicMock,
         all_build_mocks,
     ) -> None:
+        """SessionsBus is routerless — must live in _lifecycle_components, not _eventing_component."""
         self._config_for_sessions(build_config)
         wire_empty_registry(mock_registry)
         mock_registry.get_event_handler.return_value = [MagicMock()]
 
         builder_for_build.build()
 
-        assert builder_for_build._eventing_component is all_build_mocks.sessions_bus.return_value
+        assert builder_for_build._eventing_component is None
+        assert all_build_mocks.sessions_bus.return_value in builder_for_build._lifecycle_components
 
-    def test_router_not_mounted_when_sessions_bus_has_no_router(
+    def test_sessions_bus_router_never_mounted(
         self,
         builder_for_build: AppBuilder,
         mock_registry: MagicMock,
         build_config: MagicMock,
         all_build_mocks,
     ) -> None:
+        """SessionsBus has no router; _build_rest_endpoints must not call include_router with it."""
         self._config_for_sessions(build_config)
         wire_empty_registry(mock_registry)
         mock_registry.get_event_handler.return_value = [MagicMock()]
 
-        # Constrain the SessionsBus mock so accessing `.router` raises AttributeError,
-        # mirroring the real class. Without spec=[], MagicMock auto-creates child mocks
-        # on attribute access, which would defeat the getattr-default guard under test.
         sessions_bus_instance = MagicMock(spec=[])
         all_build_mocks.sessions_bus.return_value = sessions_bus_instance
 
         app = builder_for_build.build()
 
-        # The guard `getattr(self._eventing_component, "router", None) is not None`
-        # must skip the include_router call entirely. Assert directly: no None was
-        # passed (which would indicate the guard returned but the call still fired),
-        # and the SessionsBus instance was never passed (defensive for refactors).
         routers_mounted = [call.args[0] for call in app.include_router.call_args_list]
-        assert None not in routers_mounted
         assert sessions_bus_instance not in routers_mounted
+        assert None not in routers_mounted
 
 
 class TestBuildDaprRegression:

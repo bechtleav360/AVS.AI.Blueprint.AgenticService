@@ -62,7 +62,12 @@ class AppBuilder:
     def __init__(self, config: Config) -> None:
         self._config = config
         self._telemetry_manager = TelemetryManager()
-        self._eventing_component: DaprEventing | NatsEventing | SessionsBus | None = None
+        self._eventing_component: DaprEventing | NatsEventing | None = None
+        # Components that need lifespan (on_startup / on_shutdown) but do not expose
+        # a FastAPI router. SessionsBus lives here because it is SSE-driven, not
+        # HTTP-driven; keeping it out of _eventing_component avoids the routerless
+        # special case in _build_rest_endpoints.
+        self._lifecycle_components: list[Component] = []
         self._actuator_api: ActuatorApi | None = None
 
     # ------------------------------------------------------------------
@@ -175,10 +180,10 @@ class AppBuilder:
             elif event_bus_type == "sessions":
                 SessionsApiClient()  # ServiceBase → auto-registers
                 SessionKeyProvider()  # ServiceBase → auto-registers
-                # SessionsBus inherits Component directly (no router). Assign to
-                # _eventing_component so the lifespan hook drives its on_startup
-                # / on_shutdown; the router-mount path is guarded below.
-                self._eventing_component = SessionsBus()
+                # SessionsBus has no router (SSE-driven). Track it via the
+                # lifecycle list so the lifespan hook still drives on_startup /
+                # on_shutdown without polluting the router-mount path.
+                self._lifecycle_components.append(SessionsBus())
             else:
                 logger.warning(
                     "Event handlers are registered but no valid event_bus configured "
@@ -227,8 +232,8 @@ class AppBuilder:
         for rest_api in registry.get_rest_apis():
             app.include_router(rest_api.router, prefix="/api", tags=["rest"])
 
-        if self._eventing_component is not None and getattr(self._eventing_component, "router", None) is not None:
-            app.include_router(self._eventing_component.router)  # type: ignore[union-attr]
+        if self._eventing_component is not None:
+            app.include_router(self._eventing_component.router)
 
         if registry.has_cache():
             app.include_router(CacheManagementApi().router, prefix="/api", tags=["cache"])
@@ -321,6 +326,20 @@ class AppBuilder:
                     logger.error("Eventing component startup failed: %s", e, exc_info=True)
                     raise
 
+            # Routerless lifecycle components (e.g. SessionsBus).
+            for lifecycle_component in self._lifecycle_components:
+                try:
+                    await lifecycle_component.on_startup()
+                    logger.info("Lifecycle component %s startup completed", type(lifecycle_component).__name__)
+                except Exception as e:
+                    logger.error(
+                        "Lifecycle component %s startup failed: %s",
+                        type(lifecycle_component).__name__,
+                        e,
+                        exc_info=True,
+                    )
+                    raise
+
             logger.info("Application startup completed")
             yield
 
@@ -328,6 +347,17 @@ class AppBuilder:
             # Shutdown — reverse order
             # ----------------------------------------------------------
             logger.info("Shutting down application components")
+
+            for lifecycle_component in reversed(self._lifecycle_components):
+                try:
+                    await lifecycle_component.on_shutdown()
+                except Exception as e:
+                    logger.error(
+                        "Lifecycle component %s shutdown failed: %s",
+                        type(lifecycle_component).__name__,
+                        e,
+                        exc_info=True,
+                    )
 
             if self._eventing_component is not None:
                 try:
