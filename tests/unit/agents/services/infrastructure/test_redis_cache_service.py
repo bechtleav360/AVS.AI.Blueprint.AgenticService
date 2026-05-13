@@ -274,10 +274,15 @@ class TestLifecycle:
             with pytest.raises(ConnectionError):
                 await redis_cache_service.on_startup()
 
-    async def test_on_startup_swallows_when_fallback_enabled(self, redis_cache_service: RedisCacheService) -> None:
+    async def test_on_startup_raises_even_when_fallback_enabled(self, redis_cache_service: RedisCacheService) -> None:
+        # Runtime fallback is the factory's job (CacheBackendFactory._create_redis
+        # probes the connection at construction time and swaps to disk). By the
+        # time on_startup runs, connectivity must already be valid, so any
+        # failure here is a real problem and must propagate.
         redis_cache_service._fallback_to_local = True
         with patch.object(redis_cache_service._client, "ping", side_effect=ConnectionError("boom")):
-            await redis_cache_service.on_startup()  # must not raise
+            with pytest.raises(ConnectionError):
+                await redis_cache_service.on_startup()
 
     async def test_on_shutdown_calls_close(self, redis_cache_service: RedisCacheService) -> None:
         with patch.object(redis_cache_service, "close") as mock_close:

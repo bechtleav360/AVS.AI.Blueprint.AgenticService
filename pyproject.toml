@@ -177,18 +177,6 @@ ignore_missing_imports = true
 module = ["redis", "redis.*", "fakeredis", "fakeredis.*"]
 ignore_missing_imports = true
 
-[tool.pytest.ini_options]
-minversion = "7.0"
-addopts = "-ra -q --strict-markers --ignore=docs/trials"
-testpaths = ["tests"]
-asyncio_mode = "auto"
-pythonpath = [
-    "src",
-]
-markers = [
-    "integration: requires external services (e.g. Redis) — skipped in offline CI",
-]
-
 [tool.uv.workspace]
 members = [
     "MyTestAgent",

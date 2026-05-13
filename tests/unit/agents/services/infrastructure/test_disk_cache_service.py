@@ -136,6 +136,38 @@ class TestTtl:
         assert exists is False
 
 
+class TestDefaultTtl:
+    def test_default_ttl_applied_when_set_omits_ttl(self, tmp_path, mock_registry, mock_config) -> None:
+        svc = DiskCacheService(cache_dir=str(tmp_path / "cache"), default_ttl=60)
+        try:
+            with patch(f"{_TIME_MODULE}.time") as mock_time:
+                mock_time.return_value = 1000.0
+                svc.set("key", "value")  # no explicit ttl → falls back to default_ttl
+                mock_time.return_value = 1100.0  # beyond default_ttl
+                assert svc.get("key") is None
+        finally:
+            svc.close()
+
+    def test_explicit_ttl_overrides_default_ttl(self, tmp_path, mock_registry, mock_config) -> None:
+        svc = DiskCacheService(cache_dir=str(tmp_path / "cache"), default_ttl=10)
+        try:
+            with patch(f"{_TIME_MODULE}.time") as mock_time:
+                mock_time.return_value = 1000.0
+                svc.set("key", "value", ttl=120)  # explicit ttl beats default
+                mock_time.return_value = 1050.0  # past default_ttl but inside explicit
+                assert svc.get("key") == "value"
+        finally:
+            svc.close()
+
+    def test_no_default_ttl_means_no_expiration(self, cache_service: DiskCacheService) -> None:
+        # Fixture is constructed without default_ttl; values must persist.
+        with patch(f"{_TIME_MODULE}.time") as mock_time:
+            mock_time.return_value = 1000.0
+            cache_service.set("key", "value")
+            mock_time.return_value = 10_000_000.0
+            assert cache_service.get("key") == "value"
+
+
 # ---------------------------------------------------------------------------
 # hash
 # ---------------------------------------------------------------------------

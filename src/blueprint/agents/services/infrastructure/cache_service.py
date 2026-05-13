@@ -162,6 +162,7 @@ class DiskCacheService(_CacheKeyMixin, CacheService):
         size_limit: int = 1_000_000_000,  # 1GB (informational, not enforced by diskcache-rs)
         eviction_policy: str = "least-recently-used",
         enable_locking: bool = True,
+        default_ttl: int | None = None,
     ):
         """Initialize DiskCacheService.
 
@@ -170,6 +171,10 @@ class DiskCacheService(_CacheKeyMixin, CacheService):
             size_limit: Maximum cache size in bytes (informational, diskcache-rs doesn't enforce this)
             eviction_policy: Eviction policy (informational, diskcache-rs uses its own strategy)
             enable_locking: Enable locking for thread-safe operations (default: True)
+            default_ttl: Cache-wide default TTL in seconds applied when ``set`` is
+                called without an explicit ``ttl``. ``None`` means no expiration.
+                Mirrors ``RedisCacheService`` so the choice of backend does not
+                silently change TTL behaviour.
         """
         super().__init__()
         self.cache_dir = Path(cache_dir)
@@ -178,6 +183,7 @@ class DiskCacheService(_CacheKeyMixin, CacheService):
         self._size_limit = size_limit
         self._eviction_policy = eviction_policy
         self._enable_locking = enable_locking
+        self._default_ttl = default_ttl
         self._lock = threading.RLock()  # Reentrant lock for thread-safe operations
 
         # Initialize diskcache-rs Cache with file locking for multi-process access
@@ -185,11 +191,12 @@ class DiskCacheService(_CacheKeyMixin, CacheService):
         self._cache = Cache(str(self.cache_dir), use_file_locking=True)
 
         logger.info(
-            "Initialized DiskCacheService at %s (size_limit=%s, policy=%s, locking=%s)",
+            "Initialized DiskCacheService at %s (size_limit=%s, policy=%s, locking=%s, default_ttl=%s)",
             self.cache_dir,
             size_limit,
             eviction_policy,
             enable_locking,
+            default_ttl,
         )
 
     async def on_startup(self) -> None:
@@ -291,15 +298,15 @@ class DiskCacheService(_CacheKeyMixin, CacheService):
                 namespaced_key = self._make_key(key, namespace)
                 self._cache.set(namespaced_key, value)
 
-                # Store TTL metadata persistently (Option 1)
-                if ttl is not None:
-                    ttl_key = self._make_ttl_key(namespaced_key)
-                    expiration_time = time.time() + ttl
+                # Fall back to the cache-wide default_ttl when the caller doesn't
+                # specify one, matching RedisCacheService's behaviour.
+                effective_ttl = ttl if ttl is not None else self._default_ttl
+                ttl_key = self._make_ttl_key(namespaced_key)
+                if effective_ttl is not None:
+                    expiration_time = time.time() + effective_ttl
                     self._cache.set(ttl_key, str(expiration_time))
-                    logger.debug("Cache set: %s (ttl=%s)", namespaced_key, ttl)
+                    logger.debug("Cache set: %s (ttl=%s)", namespaced_key, effective_ttl)
                 else:
-                    # Remove TTL metadata if no TTL specified
-                    ttl_key = self._make_ttl_key(namespaced_key)
                     if ttl_key in self._cache:
                         del self._cache[ttl_key]
                     logger.debug("Cache set: %s (no ttl)", namespaced_key)

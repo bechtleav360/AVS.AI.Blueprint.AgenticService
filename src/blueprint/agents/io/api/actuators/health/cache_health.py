@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
@@ -51,10 +50,8 @@ class CacheHealthChecker(HealthCheckerBase):
 
     @staticmethod
     async def _check_redis(cache: Any) -> ComponentHealth:
-        # redis-py's sync client blocks; offload to a thread so the event loop
-        # is not stalled while we wait for the ping.
         try:
-            await asyncio.to_thread(cache._client.ping)
+            await cache.ping()
             return ComponentHealth(
                 status="healthy",
                 message=f"Redis reachable at {cache._redis_url}",

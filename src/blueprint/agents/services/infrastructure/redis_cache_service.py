@@ -1,5 +1,6 @@
 """Redis-backed centralized cache service."""
 
+import asyncio
 import json
 import logging
 from collections.abc import Iterator
@@ -57,14 +58,24 @@ class RedisCacheService(_CacheKeyMixin, CacheService):
             decode_responses=True,
         )
 
+    async def ping(self) -> None:
+        """Verify connectivity to Redis.
+
+        Wraps the blocking redis-py sync ping in ``asyncio.to_thread`` so the
+        event loop is not stalled while we wait. Raises on connection failure.
+        """
+        await asyncio.to_thread(self._client.ping)
+
     async def on_startup(self) -> None:
+        # ``fallback_to_local`` is consulted only by ``CacheBackendFactory`` at
+        # construction time; if we got here, the connection has already been
+        # validated, so any failure now is a real problem and must propagate.
         try:
-            self._client.ping()
-            logger.info("RedisCacheService connected to %s (prefix=%r)", self._redis_url, self._key_prefix)
+            await self.ping()
         except Exception as e:
             logger.error("RedisCacheService cannot connect to Redis at %s: %s", self._redis_url, e)
-            if not self._fallback_to_local:
-                raise
+            raise
+        logger.info("RedisCacheService connected to %s (prefix=%r)", self._redis_url, self._key_prefix)
 
     async def on_shutdown(self) -> None:
         self.close()
@@ -208,30 +219,35 @@ class RedisCacheService(_CacheKeyMixin, CacheService):
             return []
 
     def list_values(self, namespace: str = "default", limit: int = 100, offset: int = 0) -> Iterator[Any]:
+        # Apply offset/limit during the SCAN loop so we never materialise the
+        # full key list — important for namespaces with millions of keys.
+        pattern = self._namespace_scan_pattern(namespace)
+        cursor = 0
+        skipped = 0
+        yielded = 0
         try:
-            pattern = self._namespace_scan_pattern(namespace)
-            keys: list[str] = []
-            cursor = 0
             while True:
                 cursor, batch = self._client.scan(cursor=cursor, match=pattern, count=500)
-                keys.extend(batch)
+                for key in batch:
+                    if skipped < offset:
+                        skipped += 1
+                        continue
+                    if yielded >= limit:
+                        logger.debug("Iterated %d values from Redis namespace '%s'", yielded, namespace)
+                        return
+                    try:
+                        raw = self._client.get(key)
+                        if raw is not None:
+                            try:
+                                yield json.loads(raw)
+                            except (json.JSONDecodeError, TypeError):
+                                yield raw
+                            yielded += 1
+                    except Exception as e:
+                        logger.warning("Error reading Redis key '%s': %s", key, e)
                 if cursor == 0:
                     break
-            keys = keys[offset : offset + limit]
         except Exception as e:
             logger.warning("Error scanning Redis keys for namespace '%s': %s", namespace, e)
             return
-
-        yielded = 0
-        for key in keys:
-            try:
-                raw = self._client.get(key)
-                if raw is not None:
-                    try:
-                        yield json.loads(raw)
-                    except (json.JSONDecodeError, TypeError):
-                        yield raw
-                    yielded += 1
-            except Exception as e:
-                logger.warning("Error reading Redis key '%s': %s", key, e)
         logger.debug("Iterated %d values from Redis namespace '%s'", yielded, namespace)
