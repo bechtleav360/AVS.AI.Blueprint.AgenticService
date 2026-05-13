@@ -257,3 +257,141 @@ class TestBuild:
         actuator_instance.add_health_providers.assert_called_once()
         call_kwargs = actuator_instance.add_health_providers.call_args[0][0]
         assert "my_svc" in call_kwargs
+
+
+# ----------------------------------------------------------------------
+# build() — sessions transport branch
+# ----------------------------------------------------------------------
+
+
+class TestBuildSessionsBranch:
+    """build() with event_bus = 'sessions' wires SessionsApiClient + SessionKeyProvider + SessionsBus."""
+
+    def _config_for_sessions(self, build_config: MagicMock) -> None:
+        def _get(key: str, default=None):
+            if key == "event_bus":
+                return "sessions"
+            if key == "app_name":
+                return "test-agent"
+            return "" if default is None else default
+
+        build_config.get.side_effect = _get
+
+    def test_instantiates_three_sessions_components(
+        self,
+        builder_for_build: AppBuilder,
+        mock_registry: MagicMock,
+        build_config: MagicMock,
+        all_build_mocks,
+    ) -> None:
+        self._config_for_sessions(build_config)
+        wire_empty_registry(mock_registry)
+        mock_registry.get_event_handler.return_value = [MagicMock()]
+
+        builder_for_build.build()
+
+        all_build_mocks.sessions_api_client.assert_called_once_with()
+        all_build_mocks.session_key_provider.assert_called_once_with()
+        all_build_mocks.sessions_bus.assert_called_once_with()
+        all_build_mocks.dapr_client.assert_not_called()
+        all_build_mocks.nats_client.assert_not_called()
+
+    def test_eventing_component_is_sessions_bus_instance(
+        self,
+        builder_for_build: AppBuilder,
+        mock_registry: MagicMock,
+        build_config: MagicMock,
+        all_build_mocks,
+    ) -> None:
+        self._config_for_sessions(build_config)
+        wire_empty_registry(mock_registry)
+        mock_registry.get_event_handler.return_value = [MagicMock()]
+
+        builder_for_build.build()
+
+        assert builder_for_build._eventing_component is all_build_mocks.sessions_bus.return_value
+
+    def test_router_not_mounted_when_sessions_bus_has_no_router(
+        self,
+        builder_for_build: AppBuilder,
+        mock_registry: MagicMock,
+        build_config: MagicMock,
+        all_build_mocks,
+    ) -> None:
+        self._config_for_sessions(build_config)
+        wire_empty_registry(mock_registry)
+        mock_registry.get_event_handler.return_value = [MagicMock()]
+
+        # Constrain the SessionsBus mock so accessing `.router` raises AttributeError,
+        # mirroring the real class. Without spec=[], MagicMock auto-creates child mocks
+        # on attribute access, which would defeat the getattr-default guard under test.
+        all_build_mocks.sessions_bus.return_value = MagicMock(spec=[])
+
+        app = builder_for_build.build()
+
+        # _build_rest_endpoints mounts RootApi and ActuatorApi unconditionally and skips
+        # the eventing router when SessionsBus has no `.router` attribute. With cache
+        # disabled and no user REST APIs registered, those are the only two includes.
+        assert app.include_router.call_count == 2
+
+
+class TestBuildDaprRegression:
+    """build() with event_bus = 'dapr' is unchanged after the sessions branch is added."""
+
+    def _config_for_dapr(self, build_config: MagicMock) -> None:
+        def _get(key: str, default=None):
+            if key == "event_bus":
+                return "dapr"
+            if key == "app_name":
+                return "test-agent"
+            return "" if default is None else default
+
+        build_config.get.side_effect = _get
+
+    def test_dapr_branch_still_wires_client_and_eventing(
+        self,
+        builder_for_build: AppBuilder,
+        mock_registry: MagicMock,
+        build_config: MagicMock,
+        all_build_mocks,
+    ) -> None:
+        self._config_for_dapr(build_config)
+        wire_empty_registry(mock_registry)
+        mock_registry.get_event_handler.return_value = [MagicMock()]
+
+        builder_for_build.build()
+
+        all_build_mocks.dapr_client.assert_called_once_with()
+        all_build_mocks.dapr_eventing.assert_called_once_with()
+        all_build_mocks.sessions_bus.assert_not_called()
+
+
+class TestBuildNatsRegression:
+    """build() with event_bus = 'nats' is unchanged after the sessions branch is added."""
+
+    def _config_for_nats(self, build_config: MagicMock) -> None:
+        def _get(key: str, default=None):
+            if key == "event_bus":
+                return "nats"
+            if key == "app_name":
+                return "test-agent"
+            return "" if default is None else default
+
+        build_config.get.side_effect = _get
+
+    def test_nats_branch_still_wires_client_and_eventing(
+        self,
+        builder_for_build: AppBuilder,
+        mock_registry: MagicMock,
+        build_config: MagicMock,
+        all_build_mocks,
+    ) -> None:
+        self._config_for_nats(build_config)
+        wire_empty_registry(mock_registry)
+        mock_registry.get_event_handler.return_value = [MagicMock()]
+
+        builder_for_build.build()
+
+        all_build_mocks.nats_client.assert_called_once_with()
+        all_build_mocks.nats_eventing.assert_called_once_with()
+        all_build_mocks.sessions_bus.assert_not_called()
