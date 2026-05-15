@@ -50,15 +50,19 @@ class CacheHealthChecker(HealthCheckerBase):
 
     @staticmethod
     async def _check_redis(cache: Any) -> ComponentHealth:
+        # Use the pre-sanitized URL: ComponentHealth.message is exposed via the
+        # /readiness probe and warning logs go to central aggregators — the raw
+        # URL may carry inline credentials.
+        safe_url = cache._safe_redis_url
         try:
             await cache.ping()
             return ComponentHealth(
                 status="healthy",
-                message=f"Redis reachable at {cache._redis_url}",
+                message=f"Redis reachable at {safe_url}",
             )
         except Exception as exc:
-            logger.warning("Cache health check failed: Redis unreachable: %s", exc)
+            logger.warning("Cache health check failed: Redis unreachable at %s: %s", safe_url, exc)
             return ComponentHealth(
                 status="unhealthy",
-                message=f"Redis unreachable at {cache._redis_url}: {exc}",
+                message=f"Redis unreachable at {safe_url}: {exc}",
             )

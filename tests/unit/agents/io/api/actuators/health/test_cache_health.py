@@ -10,6 +10,8 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock
 
+import pytest
+
 from blueprint.agents.io.api.actuators.health.cache_health import CacheHealthChecker
 from blueprint.agents.services.infrastructure.cache_service import DiskCacheService
 from blueprint.agents.services.infrastructure.redis_cache_service import RedisCacheService
@@ -28,6 +30,7 @@ def _make_redis_cache(*, ping_works: bool) -> RedisCacheService:
     else:
         cache._client.ping.side_effect = ConnectionError("simulated outage")
     cache._redis_url = "redis://test:6379/0"
+    cache._safe_redis_url = "redis://test:6379/0"
     cache._key_prefix = ""
     return cache
 
@@ -71,6 +74,43 @@ class TestRedisBackend:
 
         second = await CacheHealthChecker(cache).health_check()
         assert second.status == "healthy"
+
+    async def test_healthy_message_uses_safe_redis_url_attribute(self) -> None:
+        # Use a distinguishable marker on _safe_redis_url so the test fails
+        # immediately if a future regression reads the raw _redis_url instead.
+        cache = _make_redis_cache(ping_works=True)
+        cache._redis_url = "redis://:supersecret@test:6379/0"
+        cache._safe_redis_url = "<SAFE_REDIS_URL_MARKER>"
+
+        result = await CacheHealthChecker(cache).health_check()
+
+        assert result.status == "healthy"
+        assert "supersecret" not in (result.message or "")
+        assert "<SAFE_REDIS_URL_MARKER>" in (result.message or "")
+
+    async def test_unhealthy_message_uses_safe_redis_url_attribute(self) -> None:
+        cache = _make_redis_cache(ping_works=False)
+        cache._redis_url = "redis://user:supersecret@test:6379/0"
+        cache._safe_redis_url = "<SAFE_REDIS_URL_MARKER>"
+
+        result = await CacheHealthChecker(cache).health_check()
+
+        assert result.status == "unhealthy"
+        assert "supersecret" not in (result.message or "")
+        assert "user:" not in (result.message or "")
+        assert "<SAFE_REDIS_URL_MARKER>" in (result.message or "")
+
+    async def test_unhealthy_warning_log_uses_safe_redis_url_attribute(self, caplog: pytest.LogCaptureFixture) -> None:
+        cache = _make_redis_cache(ping_works=False)
+        cache._redis_url = "redis://user:supersecret@test:6379/0"
+        cache._safe_redis_url = "<SAFE_REDIS_URL_MARKER>"
+
+        with caplog.at_level("WARNING", logger="blueprint.agents.io.api.actuators.health.cache_health"):
+            await CacheHealthChecker(cache).health_check()
+
+        log_text = caplog.text
+        assert "supersecret" not in log_text
+        assert "<SAFE_REDIS_URL_MARKER>" in log_text
 
     async def test_redis_check_offloads_blocking_ping_to_thread(self) -> None:
         # The sync redis-py client must not block the event loop. We assert

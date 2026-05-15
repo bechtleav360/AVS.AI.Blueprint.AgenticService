@@ -3,6 +3,7 @@
 import logging
 
 from blueprint.agents.models.config import CacheConfig
+from blueprint.agents.services.infrastructure.redis_url_utils import _sanitize_redis_url
 from blueprint.agents.services.infrastructure.cache_service import CacheService
 
 logger = logging.getLogger(__name__)
@@ -14,21 +15,23 @@ class CacheBackendFactory:
     @staticmethod
     def create(config: CacheConfig, enable_locking: bool = True) -> CacheService:
         if config.backend == "redis":
-            return CacheBackendFactory._create_redis(config)
+            return CacheBackendFactory._create_redis(config, enable_locking)
         return CacheBackendFactory._create_disk(config, enable_locking)
 
     @staticmethod
-    def _create_redis(config: CacheConfig) -> CacheService:
+    def _create_redis(config: CacheConfig, enable_locking: bool) -> CacheService:
         try:
             from blueprint.agents.services.infrastructure.redis_cache_service import RedisCacheService
         except ImportError as e:
             if config.fallback_to_local:
                 logger.warning("Redis extra not installed, falling back to DiskCacheService: %s", e)
-                return CacheBackendFactory._create_disk(config)
+                return CacheBackendFactory._create_disk(config, enable_locking)
             raise
 
+        resolved_url = config.redis_url or "redis://localhost:6379/0"
+
         service = RedisCacheService(
-            redis_url=config.redis_url or "redis://localhost:6379/0",
+            redis_url=resolved_url,
             password=config.redis_password,
             db=config.redis_db,
             tls=config.redis_tls,
@@ -49,10 +52,10 @@ class CacheBackendFactory:
             if config.fallback_to_local:
                 logger.warning(
                     "Redis at %s unreachable, falling back to DiskCacheService: %s",
-                    config.redis_url,
+                    _sanitize_redis_url(resolved_url),
                     e,
                 )
-                return CacheBackendFactory._create_disk(config)
+                return CacheBackendFactory._create_disk(config, enable_locking)
             raise
 
         return service

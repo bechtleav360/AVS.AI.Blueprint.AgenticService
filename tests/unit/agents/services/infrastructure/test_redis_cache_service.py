@@ -18,6 +18,7 @@ def redis_cache_service(mock_registry, mock_config) -> Generator[RedisCacheServi
     svc._default_ttl = None
     svc._fallback_to_local = False
     svc._redis_url = "redis://fake:6379/0"
+    svc._safe_redis_url = "redis://fake:6379/0"
     svc._password = None
     svc._db = 0
     svc._tls = False
@@ -34,6 +35,7 @@ def prefixed_redis_cache_service(mock_registry, mock_config) -> Generator[RedisC
     svc._default_ttl = None
     svc._fallback_to_local = False
     svc._redis_url = "redis://fake:6379/0"
+    svc._safe_redis_url = "redis://fake:6379/0"
     svc._password = None
     svc._db = 0
     svc._tls = False
@@ -294,3 +296,40 @@ class TestLifecycle:
         redis_cache_service._client = mock_client
         redis_cache_service.close()
         mock_client.close.assert_called_once()
+
+    async def test_on_startup_info_log_does_not_leak_credentials(
+        self, redis_cache_service: RedisCacheService, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # The startup info log echoes the connection URL — it must never carry
+        # inline credentials from _redis_url.
+        redis_cache_service._redis_url = "redis://:supersecret@fake:6379/0"
+        redis_cache_service._safe_redis_url = "<SAFE_REDIS_URL_MARKER>"
+        with caplog.at_level("INFO", logger="blueprint.agents.services.infrastructure.redis_cache_service"):
+            await redis_cache_service.on_startup()
+        assert "supersecret" not in caplog.text
+        assert "<SAFE_REDIS_URL_MARKER>" in caplog.text
+
+    async def test_on_startup_error_log_does_not_leak_credentials(
+        self, redis_cache_service: RedisCacheService, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        redis_cache_service._fallback_to_local = False
+        redis_cache_service._redis_url = "redis://:supersecret@fake:6379/0"
+        redis_cache_service._safe_redis_url = "<SAFE_REDIS_URL_MARKER>"
+        with patch.object(redis_cache_service._client, "ping", side_effect=ConnectionError("boom")):
+            with caplog.at_level("ERROR", logger="blueprint.agents.services.infrastructure.redis_cache_service"):
+                with pytest.raises(ConnectionError):
+                    await redis_cache_service.on_startup()
+        assert "supersecret" not in caplog.text
+        assert "<SAFE_REDIS_URL_MARKER>" in caplog.text
+
+    def test_get_stats_redacts_credentials(self, redis_cache_service: RedisCacheService) -> None:
+        redis_cache_service._redis_url = "redis://:supersecret@fake:6379/0"
+        redis_cache_service._safe_redis_url = "<SAFE_REDIS_URL_MARKER>"
+        with patch.object(
+            redis_cache_service._client,
+            "info",
+            return_value={"redis_version": "7", "connected_clients": 1, "used_memory_human": "1M", "uptime_in_seconds": 1},
+        ):
+            stats = redis_cache_service.get_stats()
+        assert stats["redis_url"] == "<SAFE_REDIS_URL_MARKER>"
+        assert "supersecret" not in stats["redis_url"]

@@ -13,6 +13,7 @@ except ImportError as e:
         "Redis backend requires 'avs-blueprint-agents[redis]'. Install with: pip install 'avs-blueprint-agents[redis]'"
     ) from e
 
+from .redis_url_utils import _sanitize_redis_url
 from .cache_key_mixin import _CacheKeyMixin
 from .cache_service import CacheService
 
@@ -38,6 +39,8 @@ class RedisCacheService(_CacheKeyMixin, CacheService):
     ) -> None:
         super().__init__()
         self._redis_url = redis_url
+        # Cached credential-free variant for logs, /readiness payloads, and stats.
+        self._safe_redis_url = _sanitize_redis_url(redis_url)
         self._password = password
         self._db = db
         self._tls = tls
@@ -73,9 +76,9 @@ class RedisCacheService(_CacheKeyMixin, CacheService):
         try:
             await self.ping()
         except Exception as e:
-            logger.error("RedisCacheService cannot connect to Redis at %s: %s", self._redis_url, e)
+            logger.error("RedisCacheService cannot connect to Redis at %s: %s", self._safe_redis_url, e)
             raise
-        logger.info("RedisCacheService connected to %s (prefix=%r)", self._redis_url, self._key_prefix)
+        logger.info("RedisCacheService connected to %s (prefix=%r)", self._safe_redis_url, self._key_prefix)
 
     async def on_shutdown(self) -> None:
         self.close()
@@ -188,7 +191,7 @@ class RedisCacheService(_CacheKeyMixin, CacheService):
             return {
                 "backend": "redis",
                 "key_prefix": self._key_prefix,
-                "redis_url": self._redis_url,
+                "redis_url": self._safe_redis_url,
                 "redis_version": info.get("redis_version", "unknown"),
                 "connected_clients": info.get("connected_clients", 0),
                 "used_memory_human": info.get("used_memory_human", "unknown"),
