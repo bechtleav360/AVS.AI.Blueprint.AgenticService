@@ -176,7 +176,7 @@ Blueprint Agents supports two event bus backends: Dapr and NATS. The choice is m
 
 ```toml
 [default]
-event_bus = "dapr"   # or "nats"
+event_bus = "dapr"   # "dapr", "nats", or "sessions"
 ```
 
 ### Topic Mapping
@@ -232,6 +232,30 @@ default_pubsub_name = "default"
 [default.event_publishing.topic_mapping]
 "document.received" = "documents.inbound"
 "document.summarized" = "documents.processed"
+```
+
+## Sessions Transport
+
+When `event_bus = "sessions"`, `AppBuilder.build()` wires three components automatically:
+
+1. `SessionsApiClient` — REST client for the sessions service
+2. `SessionKeyProvider` — session-key resolution with TTL cache
+3. `SessionsBus` — outbound SSE consumer that converts job notifications into CloudEvents and dispatches them through the handler chain
+
+`SessionsBus` has no inbound HTTP surface — there is no router to mount. Connection to the sessions service is established asynchronously after startup; the framework tolerates a sessions service that is unreachable at boot and retries in the background.
+
+```toml
+[default]
+event_bus = "sessions"
+
+[default.sessions_service]
+base_url = "http://sessions:8000"
+agent_id = "my-agent"
+agent_type = "analyser"
+capabilities = ["analyse_documents"]
+api_key = "@format {env[SESSIONS_API_KEY]}"
+max_concurrent_jobs = 5
+job_timeout_seconds = 300
 ```
 
 ## Complete Handler Example

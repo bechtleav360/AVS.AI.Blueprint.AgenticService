@@ -1,7 +1,5 @@
 """Abstract cache service interface and DiskCache implementation."""
 
-import hashlib
-import json
 import logging
 import threading
 import time
@@ -14,6 +12,7 @@ from collections.abc import Iterator
 from diskcache_rs import Cache
 
 from ..service_base import ServiceBase
+from .cache_key_mixin import _CacheKeyMixin
 
 logger = logging.getLogger(__name__)
 
@@ -136,7 +135,7 @@ class CacheService(ServiceBase):
         """
 
 
-class DiskCacheService(CacheService):
+class DiskCacheService(_CacheKeyMixin, CacheService):
     """Persistent disk-based cache implementation using diskcache-rs.
 
     Features:
@@ -163,6 +162,7 @@ class DiskCacheService(CacheService):
         size_limit: int = 1_000_000_000,  # 1GB (informational, not enforced by diskcache-rs)
         eviction_policy: str = "least-recently-used",
         enable_locking: bool = True,
+        default_ttl: int | None = None,
     ):
         """Initialize DiskCacheService.
 
@@ -171,6 +171,10 @@ class DiskCacheService(CacheService):
             size_limit: Maximum cache size in bytes (informational, diskcache-rs doesn't enforce this)
             eviction_policy: Eviction policy (informational, diskcache-rs uses its own strategy)
             enable_locking: Enable locking for thread-safe operations (default: True)
+            default_ttl: Cache-wide default TTL in seconds applied when ``set`` is
+                called without an explicit ``ttl``. ``None`` means no expiration.
+                Mirrors ``RedisCacheService`` so the choice of backend does not
+                silently change TTL behaviour.
         """
         super().__init__()
         self.cache_dir = Path(cache_dir)
@@ -179,6 +183,7 @@ class DiskCacheService(CacheService):
         self._size_limit = size_limit
         self._eviction_policy = eviction_policy
         self._enable_locking = enable_locking
+        self._default_ttl = default_ttl
         self._lock = threading.RLock()  # Reentrant lock for thread-safe operations
 
         # Initialize diskcache-rs Cache with file locking for multi-process access
@@ -186,11 +191,12 @@ class DiskCacheService(CacheService):
         self._cache = Cache(str(self.cache_dir), use_file_locking=True)
 
         logger.info(
-            "Initialized DiskCacheService at %s (size_limit=%s, policy=%s, locking=%s)",
+            "Initialized DiskCacheService at %s (size_limit=%s, policy=%s, locking=%s, default_ttl=%s)",
             self.cache_dir,
             size_limit,
             eviction_policy,
             enable_locking,
+            default_ttl,
         )
 
     async def on_startup(self) -> None:
@@ -199,30 +205,6 @@ class DiskCacheService(CacheService):
     async def on_shutdown(self) -> None:
         """Close the cache on shutdown."""
         self.close()
-
-    def _make_key(self, key: str | list[str] | dict[str, Any], namespace: str) -> str:
-        """Create a namespaced cache key by hashing the input.
-
-        Args:
-            key: Base key (string, list of strings, or dict)
-            namespace: Namespace
-
-        Returns:
-            Namespaced key with hashed value
-        """
-        key_hash = self.hash(key)
-        return f"{namespace}:{key_hash}"
-
-    def _make_ttl_key(self, namespaced_key: str) -> str:
-        """Create a TTL metadata key for a cache entry.
-
-        Args:
-            namespaced_key: The namespaced cache key
-
-        Returns:
-            TTL metadata key (special format to avoid collisions)
-        """
-        return f"{namespaced_key}:__ttl__"
 
     @contextmanager
     def _acquire_lock(self) -> Any:
@@ -316,15 +298,15 @@ class DiskCacheService(CacheService):
                 namespaced_key = self._make_key(key, namespace)
                 self._cache.set(namespaced_key, value)
 
-                # Store TTL metadata persistently (Option 1)
-                if ttl is not None:
-                    ttl_key = self._make_ttl_key(namespaced_key)
-                    expiration_time = time.time() + ttl
+                # Fall back to the cache-wide default_ttl when the caller doesn't
+                # specify one, matching RedisCacheService's behaviour.
+                effective_ttl = ttl if ttl is not None else self._default_ttl
+                ttl_key = self._make_ttl_key(namespaced_key)
+                if effective_ttl is not None:
+                    expiration_time = time.time() + effective_ttl
                     self._cache.set(ttl_key, str(expiration_time))
-                    logger.debug("Cache set: %s (ttl=%s)", namespaced_key, ttl)
+                    logger.debug("Cache set: %s (ttl=%s)", namespaced_key, effective_ttl)
                 else:
-                    # Remove TTL metadata if no TTL specified
-                    ttl_key = self._make_ttl_key(namespaced_key)
                     if ttl_key in self._cache:
                         del self._cache[ttl_key]
                     logger.debug("Cache set: %s (no ttl)", namespaced_key)
@@ -388,59 +370,6 @@ class DiskCacheService(CacheService):
         except Exception as e:
             logger.warning("Error checking cache existence: %s", e)
             return False
-
-    def hash(self, value: str | list[str] | dict[str, Any]) -> str:
-        """Generate a SHA256 hash of a value.
-
-        Handles different input types with consistent ordering:
-        - Strings: Checks if JSON, converts to dict/list and sorts. Otherwise hashed directly.
-        - Lists: Sorted before hashing to ensure consistent results
-        - Dicts: Sorted by keys before hashing to ensure consistent results
-        """
-        try:
-            # Normalize input to dict or list for consistent hashing
-            normalized = self._normalize_for_hash(value)
-
-            # Serialize to JSON with consistent formatting
-            if isinstance(normalized, dict):
-                content = json.dumps(normalized, separators=(",", ":"), sort_keys=True)
-            elif isinstance(normalized, list):
-                content = json.dumps(normalized, separators=(",", ":"))
-            else:
-                content = str(normalized)
-
-            return hashlib.sha256(content.encode()).hexdigest()
-        except Exception as e:
-            logger.warning("Error generating hash: %s", e)
-            return hashlib.sha256(str(value).encode()).hexdigest()
-
-    def _normalize_for_hash(self, value: str | list[str] | dict[str, Any]) -> Any:
-        """Normalize input value for consistent hashing.
-
-        - None: Not supported (raises ValueError)
-        - Strings: Attempts JSON parsing, returns parsed dict/list or original string
-        - Lists: Removes ``None`` entries, sorts, and returns
-        - Dicts: Sorted by keys before returning
-        """
-        if value is None:
-            raise ValueError("Cache key value cannot be None")
-
-        if isinstance(value, str):
-            try:
-                parsed = json.loads(value)
-                # Recursively normalize parsed JSON
-                return self._normalize_for_hash(parsed)
-            except (json.JSONDecodeError, ValueError):
-                # Not JSON: return as-is
-                return value
-        elif isinstance(value, list):
-            # Remove null values before sorting for consistency
-            filtered_list = [item for item in value if item is not None]
-            return sorted(filtered_list)
-        elif isinstance(value, dict):
-            return dict(sorted(value.items()))
-        else:
-            return value
 
     def get_stats(self) -> dict[str, Any]:
         """Get cache statistics."""

@@ -113,3 +113,63 @@ class TestLifecycle:
     async def test_on_shutdown_is_safe_when_cache_none(self, actuator_api: ActuatorApi) -> None:
         actuator_api._health_cache = None
         await actuator_api.on_shutdown()  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# readiness_probe — HTTP code reflects aggregated health
+# ---------------------------------------------------------------------------
+
+
+class TestReadinessProbe:
+    @pytest.fixture
+    def actuator_with_cache(self, actuator_api: ActuatorApi, mock_config: MagicMock) -> ActuatorApi:
+        # Default to "no validation errors" so the validation branch doesn't
+        # fire in tests that exercise the aggregated-health branch.
+        mock_config.has_validation_errors = MagicMock(return_value=False)
+        actuator_api._health_cache = MagicMock()
+        return actuator_api
+
+    async def test_returns_response_when_status_is_up(self, actuator_with_cache: ActuatorApi) -> None:
+        from blueprint.agents.models.api import ReadinessResponse
+
+        ready = ReadinessResponse(status="UP", components={})
+        actuator_with_cache._health_cache.get_health_status = AsyncMock(return_value=ready)
+        actuator_with_cache._health_cache.get_cache_age_seconds = MagicMock(return_value=0.5)
+
+        result = await actuator_with_cache.readiness_probe()
+        assert result.status == "UP"
+
+    async def test_raises_503_when_aggregated_status_is_down(self, actuator_with_cache: ActuatorApi) -> None:
+        from fastapi import HTTPException, status
+
+        from blueprint.agents.models.api import ComponentHealth, ReadinessResponse
+
+        not_ready = ReadinessResponse(
+            status="DOWN",
+            components={"cache": ComponentHealth(status="unhealthy", message="Redis unreachable")},
+        )
+        actuator_with_cache._health_cache.get_health_status = AsyncMock(return_value=not_ready)
+        actuator_with_cache._health_cache.get_cache_age_seconds = MagicMock(return_value=0.5)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await actuator_with_cache.readiness_probe()
+
+        assert exc_info.value.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+        # Body retains the full diagnostic payload — not "Readiness probe failed".
+        assert exc_info.value.detail["status"] == "DOWN"
+        assert "cache" in exc_info.value.detail["components"]
+
+    async def test_validation_error_payload_is_preserved(self, actuator_with_cache: ActuatorApi, mock_config: MagicMock) -> None:
+        from fastapi import HTTPException, status
+
+        mock_config.has_validation_errors = MagicMock(return_value=True)
+        mock_config.get_validation_errors = MagicMock(return_value=["missing redis_url"])
+
+        with pytest.raises(HTTPException) as exc_info:
+            await actuator_with_cache.readiness_probe()
+
+        assert exc_info.value.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+        # Detail keeps the original error list — earlier the generic catch
+        # below would have overwritten it with "Readiness probe failed".
+        assert exc_info.value.detail["status"] == "DOWN"
+        assert exc_info.value.detail["errors"] == ["missing redis_url"]

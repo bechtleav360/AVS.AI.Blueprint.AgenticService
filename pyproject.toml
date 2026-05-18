@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "avs-blueprint-agents"
-version = "0.6.0a9"
+version = "0.6.0a10"
 description = "Microservice blueprint for creating agents"
 authors = [
     { name = "Blueprint Team", email = "patrick.maue@bechtle.com" },
@@ -54,7 +54,10 @@ ci = [
     "ruff>=0.14.4",
     "mypy>=1.18.2",
     "httpx>=0.28.1",
+    "fakeredis>=2.26.0",
+    "redis[hiredis]>=5.0.0",
 ]
+redis = ["redis[hiredis]>=5.0.0"]
 dev = [
     "avs-blueprint-agents[ci]",
     "debugpy>=1.8.17",
@@ -170,14 +173,9 @@ module = [
 ]
 ignore_missing_imports = true
 
-[tool.pytest.ini_options]
-minversion = "7.0"
-addopts = "-ra -q --strict-markers --ignore=docs/trials"
-testpaths = ["tests"]
-asyncio_mode = "auto"
-pythonpath = [
-    "src",
-]
+[[tool.mypy.overrides]]
+module = ["redis", "redis.*", "fakeredis", "fakeredis.*"]
+ignore_missing_imports = true
 
 [tool.uv.workspace]
 members = [

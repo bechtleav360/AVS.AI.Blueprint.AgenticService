@@ -17,9 +17,10 @@ from .handler.event_handler_base import EventHandlerBase
 from .io.api.rest_api_base import RestApiBase
 from .io.api.scheduling.scheduler import SchedulerBase
 from .io.api.actuators.actuator_api import ActuatorApi
-from .io.api.actuators.health import ClientHealthChecker
+from .io.api.actuators.health import CacheHealthChecker, ClientHealthChecker
 from .io.api.eventing.dapr import DaprEventing
 from .io.api.eventing.nats import NatsEventing
+from .io.api.eventing.sessions_bus import SessionsBus
 from .io.api.utilities.root import RootApi
 from .io.api.utilities.cache import CacheManagementApi
 from .clients.io.dapr_client import DaprClient
@@ -27,7 +28,8 @@ from .clients.io.nats_client import NATSClient
 from .services.service_base import ServiceBase
 from .services.eventing.event_processing_service import EventProcessingService
 from .services.eventing.event_publishing_service import EventPublishingService
-from .services.infrastructure.cache_service import DiskCacheService
+from .services.sessions import SessionKeyProvider, SessionsApiClient
+from .services.infrastructure.cache_backend_factory import CacheBackendFactory
 from .config import Config, TelemetryManager
 
 HandlerT = TypeVar("HandlerT", bound=EventHandlerBase)
@@ -61,6 +63,11 @@ class AppBuilder:
         self._config = config
         self._telemetry_manager = TelemetryManager()
         self._eventing_component: DaprEventing | NatsEventing | None = None
+        # Components that need lifespan (on_startup / on_shutdown) but do not expose
+        # a FastAPI router. SessionsBus lives here because it is SSE-driven, not
+        # HTTP-driven; keeping it out of _eventing_component avoids the routerless
+        # special case in _build_rest_endpoints.
+        self._lifecycle_components: list[Component] = []
         self._actuator_api: ActuatorApi | None = None
 
     # ------------------------------------------------------------------
@@ -116,15 +123,11 @@ class AppBuilder:
         """
         if enabled:
             cache_config = self._config.get_cache_config()
-            cache_service = DiskCacheService(
-                cache_dir=cache_config.cache_dir,
-                size_limit=cache_config.size_limit,
-                eviction_policy=cache_config.eviction_policy,
-                enable_locking=enable_locking,
-            )
+            cache_service = CacheBackendFactory.create(cache_config, enable_locking=enable_locking)
             Component.shared_registry.cache_service = cache_service  # type: ignore[union-attr]
             logger.info(
-                "Registered DiskCacheService with cache_dir=%s (locking=%s)",
+                "Registered %s with cache_dir=%s (locking=%s)",
+                type(cache_service).__name__,
                 cache_config.cache_dir,
                 enable_locking,
             )
@@ -174,9 +177,17 @@ class AppBuilder:
             elif event_bus_type == "nats":
                 NATSClient()  # auto-registers
                 self._eventing_component = NatsEventing()
+            elif event_bus_type == "sessions":
+                SessionsApiClient()  # ServiceBase → auto-registers
+                SessionKeyProvider()  # ServiceBase → auto-registers
+                # SessionsBus has no router (SSE-driven). Track it via the
+                # lifecycle list so the lifespan hook still drives on_startup /
+                # on_shutdown without polluting the router-mount path.
+                self._lifecycle_components.append(SessionsBus())
             else:
                 logger.warning(
-                    "Event handlers are registered but no valid event_bus configured ('dapr' or 'nats'). Event handling will be disabled."
+                    "Event handlers are registered but no valid event_bus configured "
+                    "('dapr', 'nats', or 'sessions'). Event handling will be disabled."
                 )
 
         # 3. Create internal services (auto-register)
@@ -187,6 +198,11 @@ class AppBuilder:
         # 4. Create ActuatorApi and wire health checkers from all registered clients
         self._actuator_api = ActuatorApi()
         health_providers: dict[str, HealthCheckerBase] = {client.name: ClientHealthChecker([client]) for client in registry.get_clients()}
+        # Pull the registered cache (if any) into the readiness probe so a Redis
+        # outage takes the pod out of service rotation instead of letting it
+        # silently serve cache misses.
+        if registry.has_cache():
+            health_providers["cache"] = CacheHealthChecker(registry.cache_service)
         if hasattr(self, "_custom_health_checkers"):
             health_providers.update(self._custom_health_checkers)
         if health_providers:
@@ -310,6 +326,20 @@ class AppBuilder:
                     logger.error("Eventing component startup failed: %s", e, exc_info=True)
                     raise
 
+            # Routerless lifecycle components (e.g. SessionsBus).
+            for lifecycle_component in self._lifecycle_components:
+                try:
+                    await lifecycle_component.on_startup()
+                    logger.info("Lifecycle component %s startup completed", type(lifecycle_component).__name__)
+                except Exception as e:
+                    logger.error(
+                        "Lifecycle component %s startup failed: %s",
+                        type(lifecycle_component).__name__,
+                        e,
+                        exc_info=True,
+                    )
+                    raise
+
             logger.info("Application startup completed")
             yield
 
@@ -317,6 +347,17 @@ class AppBuilder:
             # Shutdown — reverse order
             # ----------------------------------------------------------
             logger.info("Shutting down application components")
+
+            for lifecycle_component in reversed(self._lifecycle_components):
+                try:
+                    await lifecycle_component.on_shutdown()
+                except Exception as e:
+                    logger.error(
+                        "Lifecycle component %s shutdown failed: %s",
+                        type(lifecycle_component).__name__,
+                        e,
+                        exc_info=True,
+                    )
 
             if self._eventing_component is not None:
                 try:

@@ -417,6 +417,13 @@ class Config:
             size_limit=self.get("cache.size_limit", 1_000_000_000),
             eviction_policy=self.get("cache.eviction_policy", "least-recently-used"),
             default_ttl=self.get("cache.default_ttl", 3600),
+            backend=self.get("cache.backend", "disk"),
+            key_prefix=self.get("cache.key_prefix", ""),
+            redis_url=self.get("cache.redis_url"),
+            redis_password=self.get("cache.redis_password"),
+            redis_db=self.get("cache.redis_db", 0),
+            redis_tls=self.get("cache.redis_tls", False),
+            fallback_to_local=self.get("cache.fallback_to_local", False),
         )
 
     def validate(self) -> bool:
