@@ -1,16 +1,14 @@
 """Pydantic models for CloudEvents v1.0 specification."""
 
 from datetime import UTC, datetime
-from typing import Any, Generic, Literal, TypeVar
+from typing import Any, Literal
+from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic.config import ConfigDict
 
-# Generic type for the CloudEvent data payload.
-T = TypeVar("T")
 
-
-class CloudEvent(BaseModel, Generic[T]):
+class CloudEvent[T](BaseModel):
     """
     A Pydantic model for a CloudEvent, compliant with the v1.0 spec.
     This model is generic and can be used with any data payload type.
@@ -54,7 +52,8 @@ class CloudEvent(BaseModel, Generic[T]):
     )
 
     @field_validator("time")
-    def validate_time_format(cls, v):
+    @classmethod
+    def validate_time_format(cls, v: str | None) -> str | None:
         """Validate that the time is in ISO 8601 format with timezone."""
         if not isinstance(v, str):
             raise ValueError("Time must be a string in ISO 8601 format")
@@ -67,6 +66,7 @@ class CloudEvent(BaseModel, Generic[T]):
             raise ValueError("Time must be in ISO 8601 format with timezone") from e
 
     @model_validator(mode="before")
+    @classmethod
     def validate_data_exclusivity(cls, values: dict[str, Any]) -> dict[str, Any]:
         """Validate that CloudEvent cannot include both 'data' and 'data_base64'."""
         if values.get("data") is not None and values.get("data_base64") is not None:
@@ -92,3 +92,37 @@ class HandlerResult(BaseModel):
     subject: str | None = None
     data: dict[str, Any] | None = None
     metadata: dict[str, Any] | None = None
+
+
+def create_cloud_event(
+    event_type: str,
+    data: BaseModel | dict[str, Any],
+    *,
+    source: str | None = None,
+    subject: str | None = None,
+    event_id: str | None = None,
+) -> GenericCloudEvent:
+    """Create a GenericCloudEvent from a domain payload.
+
+    Convenience factory that handles Pydantic model serialization and
+    ID generation, reducing boilerplate when constructing events from
+    REST endpoints or service code.
+
+    Args:
+        event_type: The CloudEvent ``type`` field (e.g., ``"order.created"``).
+        data: Event payload — a Pydantic model (auto-dumped to dict) or a plain dict.
+        source: URI reference identifying the event producer. Defaults to ``"/api"``.
+        subject: Optional subject of the event.
+        event_id: Optional explicit event ID. A UUID is generated if omitted.
+
+    Returns:
+        A fully populated :class:`GenericCloudEvent`.
+    """
+    payload = data.model_dump() if isinstance(data, BaseModel) else data
+    return GenericCloudEvent(
+        id=event_id or str(uuid4()),
+        type=event_type,
+        source=source or "/api",
+        subject=subject,
+        data=payload,
+    )

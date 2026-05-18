@@ -1,365 +1,347 @@
-# Concept: Caching
+# Caching
 
-Learn how to use the persistent caching layer to improve performance.
+Blueprint Agents includes a built-in persistent key-value cache backed by diskcache-rs. The cache provides fast local storage with TTL expiration, namespace isolation, and a management REST API.
 
----
+## Enabling the Cache
 
-## What is Caching?
-
-Caching stores expensive computation results so you don't have to repeat them. Instead of calling an API or database every time, you return the cached result.
-
-**Example:** If you call an LLM to analyze an invoice, cache the result. Next time someone analyzes the same invoice, return the cached result instantly.
-
----
-
-## Enable Caching
-
-### Step 1: Configure Settings
-
-**File:** `settings.toml`
-
-```toml
-[default.cache]
-cache_dir = ".cache/blueprint"           # Where to store cache files
-size_limit = 1000000000                  # 1GB max size
-eviction_policy = "least-recently-used"  # Remove oldest items when full
-default_ttl = 3600                       # 1 hour expiration
-```
-
-### Step 2: Enable in AppBuilder
+Enable caching by calling `.with_cache()` on the `AppBuilder`:
 
 ```python
+from blueprint.agents import AppBuilder, Config
+
+config = Config(settings_files=["settings.toml", "secrets.toml"])
+
 app = (
     AppBuilder(config)
-    .with_cache()  # Enable caching
+    .with_service(MyService)
+    .with_handler(MyHandler)
+    .with_cache()
     .build()
 )
 ```
 
----
+Once enabled, the cache service is registered in the component registry and a management REST API is automatically mounted.
 
-## Using the Cache
+## Accessing the Cache
 
-### Basic Usage
-
-```python
-from blueprint.agents import BusinessService
-
-class InvoiceService(BusinessService):
-    def get_name(self) -> str:
-        return "invoice_service"
-
-    async def analyze_invoice(self, invoice_text: str) -> dict:
-        # Get cache from registry
-        cache = self._component_registry.get_cache()
-
-        # Create a cache key
-        cache_key = cache.hash(invoice_text)
-
-        # Check if result is cached
-        cached_result = cache.get("invoices", cache_key)
-        if cached_result:
-            return cached_result
-
-        # If not cached, do the expensive work
-        result = await self._call_llm(invoice_text)
-
-        # Store in cache with 1 hour TTL
-        cache.set("invoices", cache_key, result, ttl=3600)
-
-        return result
-```
-
----
-
-## Cache Keys
-
-### Automatic Hashing
-
-The cache automatically hashes keys for consistency:
+The cache is available through the component registry from `on_startup()` onward:
 
 ```python
-cache = self._component_registry.get_cache()
+from blueprint.agents.handler.event_handler_base import EventHandlerBase
+from blueprint.agents.models.events import CloudEvent, HandlerResult
 
-# String key
-key1 = cache.hash("user:123")
 
-# List key (order doesn't matter)
-key2 = cache.hash(["user", "123"])
+class DeduplicationHandler(EventHandlerBase):
+    priority = 1
 
-# Dict key (order doesn't matter)
-key3 = cache.hash({"user_id": 123, "type": "invoice"})
+    async def on_startup(self) -> None:
+        self.cache = self.registry.cache_service
 
-# JSON string (automatically parsed and sorted)
-key4 = cache.hash('{"user_id": 123, "type": "invoice"}')
-```
+    def can_handle_event(self, event: CloudEvent, context: dict[str, Any]) -> bool:
+        return event.type == "document.received"
 
-### Key Consistency
+    async def handle_event(self, event: CloudEvent, context: dict[str, Any]) -> HandlerResult | None:
+        doc_id = event.subject
 
-These all produce the **same** hash:
+        # Check if already processed
+        if await self.cache.get(doc_id, namespace="processed"):
+            return None  # Skip duplicate
 
-```python
-cache.hash({"a": 1, "b": 2})
-cache.hash({"b": 2, "a": 1})
-cache.hash('{"a": 1, "b": 2}')
-cache.hash('{"b": 2, "a": 1}')
-```
-
----
-
-## Namespaces
-
-Organize cache entries by namespace:
-
-```python
-cache = self._component_registry.get_cache()
-
-# Store in "users" namespace
-cache.set("users", key, user_data)
-
-# Store in "invoices" namespace
-cache.set("invoices", key, invoice_data)
-
-# Retrieve from namespace
-user = cache.get("users", key)
-invoice = cache.get("invoices", key)
-
-# List all namespaces
-namespaces = cache.list_namespaces()
-# Returns: ["users", "invoices"]
-```
-
----
-
-## TTL (Time-to-Live)
-
-Automatically expire cached entries:
-
-```python
-cache = self._component_registry.get_cache()
-
-# Cache for 1 hour (3600 seconds)
-cache.set("users", key, data, ttl=3600)
-
-# Cache for 1 day
-cache.set("invoices", key, data, ttl=86400)
-
-# Cache forever (no expiration)
-cache.set("config", key, data, ttl=None)
-
-# Check if entry is expired
-value = cache.get("users", key)  # Returns None if expired
-```
-
----
-
-## Cache Management API
-
-### Get Cache Statistics
-
-```bash
-curl http://localhost:8000/api/cache/stats
-```
-
-**Response:**
-```json
-{
-  "size": 42,
-  "cache_dir": "/path/to/.cache/blueprint",
-  "ttl_tracked_keys": 10,
-  "size_limit": 1000000000,
-  "eviction_policy": "least-recently-used"
-}
-```
-
-### List Namespaces
-
-```bash
-curl http://localhost:8000/api/cache/namespaces
-```
-
-**Response:**
-```json
-{
-  "namespaces": ["users", "invoices", "config"],
-  "count": 3
-}
-```
-
-### Clear Cache
-
-Clear entire cache:
-```bash
-curl -X POST http://localhost:8000/api/cache/evict \
-  -H "Content-Type: application/json" \
-  -d '{}'
-```
-
-Clear specific namespace:
-```bash
-curl -X POST http://localhost:8000/api/cache/evict \
-  -H "Content-Type: application/json" \
-  -d '{"namespace": "users"}'
-```
-
----
-
-## Real-World Example
-
-### Invoice Analyzer with Caching
-
-```python
-class InvoiceService(BusinessService):
-    def get_name(self) -> str:
-        return "invoice_service"
-
-    async def analyze_invoice(self, invoice_text: str) -> dict:
-        cache = self._component_registry.get_cache()
-        agent = self._component_registry.get_agent("invoice_analyzer")
-
-        # Create cache key from invoice text
-        cache_key = cache.hash(invoice_text)
-
-        # Try to get from cache
-        cached = cache.get("invoices", cache_key)
-        if cached:
-            logger.info("Cache hit for invoice")
-            return cached
-
-        # Not in cache, analyze with AI
-        logger.info("Cache miss, analyzing with AI")
-        result = await agent.run(invoice_text)
-
-        # Store in cache for 24 hours
-        cache.set("invoices", cache_key, result.data, ttl=86400)
-
-        return result.data
-```
-
-### Handler Using Cache
-
-```python
-class InvoiceHandler(EventHandler):
-    async def can_handle_event(self, event: CloudEvent, context) -> bool:
-        return event.get_type() == "invoice.submitted"
-
-    async def handle_event(self, event: CloudEvent, context) -> HandlerResult:
-        data = event.get_data()
-
-        service = self._component_registry.get_service("invoice_service")
-        result = await service.analyze_invoice(data["content"])
+        # Mark as processed with a 1-hour TTL
+        await self.cache.set(doc_id, True, namespace="processed", ttl=3600)
 
         return HandlerResult(
-            event_type="invoice.analyzed",
-            data=result
+            event_type="document.accepted",
+            data=event.data,
         )
 ```
 
----
+## Cache Operations
 
-## Performance Tips
+### get(key, namespace)
 
-1. **Use appropriate TTL** — Don't cache forever if data changes
-2. **Use namespaces** — Organize related cache entries
-3. **Monitor cache size** — Check stats endpoint regularly
-4. **Clear old data** — Periodically clear unused namespaces
-5. **Hash complex keys** — Use `cache.hash()` for consistent keys
-
----
-
-## Common Patterns
-
-### Cache-Aside Pattern
+Retrieve a value by key within a namespace. Returns `None` if the key does not exist or has expired.
 
 ```python
-async def get_user(user_id: str):
-    cache = self._component_registry.get_cache()
-
-    # Try cache first
-    cached = cache.get("users", user_id)
-    if cached:
-        return cached
-
-    # Load from database
-    user = await database.get_user(user_id)
-
-    # Store in cache
-    cache.set("users", user_id, user, ttl=3600)
-
-    return user
+value = await self.cache.get("user:12345", namespace="profiles")
+if value is None:
+    # Cache miss -- fetch from source
+    value = await self.fetch_profile(12345)
+    await self.cache.set("user:12345", value, namespace="profiles", ttl=900)
 ```
 
-### Invalidate on Update
+### set(key, value, namespace, ttl)
+
+Store a value under a key. The `ttl` parameter specifies the time-to-live in seconds. If omitted, the `default_ttl` from configuration is used.
 
 ```python
-async def update_user(user_id: str, data: dict):
-    cache = self._component_registry.get_cache()
+# Cache for 30 minutes
+await self.cache.set("result:abc", {"score": 0.95}, namespace="results", ttl=1800)
 
-    # Update database
-    user = await database.update_user(user_id, data)
-
-    # Invalidate cache
-    cache.delete("users", user_id)
-
-    return user
+# Cache using the default TTL from settings.toml
+await self.cache.set("result:def", {"score": 0.87}, namespace="results")
 ```
 
-### Batch Operations
+### delete(key, namespace)
+
+Remove a specific key from a namespace.
 
 ```python
-async def get_users(user_ids: list[str]):
-    cache = self._component_registry.get_cache()
-    results = []
-
-    for user_id in user_ids:
-        cached = cache.get("users", user_id)
-        if cached:
-            results.append(cached)
-        else:
-            # Load from database
-            user = await database.get_user(user_id)
-            cache.set("users", user_id, user, ttl=3600)
-            results.append(user)
-
-    return results
+await self.cache.delete("user:12345", namespace="profiles")
 ```
 
----
+### clear(namespace)
 
-## Troubleshooting
+Remove all entries in a namespace. Useful for bulk invalidation.
 
-### Cache Not Working
+```python
+# Purge all cached search results
+await self.cache.clear(namespace="search_results")
+```
 
-1. Verify caching is enabled:
-   ```python
-   app = AppBuilder(config).with_cache().build()
-   ```
+## TTL and Automatic Expiration
 
-2. Check cache directory exists:
-   ```bash
-   ls -la .cache/blueprint/
-   ```
+Every cached entry can have an individual TTL (time-to-live) in seconds. Once the TTL elapses, the entry is no longer returned by `get()` and is eligible for eviction.
 
-3. Verify cache is registered:
-   ```python
-   if self._component_registry.has_cache():
-       cache = self._component_registry.get_cache()
-   ```
+```python
+# Short-lived cache for rate limiting (60 seconds)
+await self.cache.set(f"rate:{client_ip}", request_count, namespace="rate_limit", ttl=60)
 
-### Cache Growing Too Large
+# Long-lived cache for expensive computations (24 hours)
+await self.cache.set(embedding_key, vector, namespace="embeddings", ttl=86400)
+```
 
-1. Reduce `size_limit` in settings
-2. Reduce `default_ttl` to expire entries faster
-3. Clear old namespaces:
-   ```bash
-   curl -X POST http://localhost:8000/api/cache/evict \
-     -d '{"namespace": "old_namespace"}'
-   ```
+If no TTL is provided, the `default_ttl` value from `[default.cache]` in `settings.toml` is applied.
 
----
+## Namespace Isolation
 
-## Next Steps
+Namespaces partition the cache into logical segments. Different components can use separate namespaces without risk of key collisions.
 
-- [Response Handling](response-handling.md) — Parse and validate AI responses
-- [Tools](tools.md) — Give agents functions to call
-- [Exception Handling](exception-handling.md) — Handle errors gracefully
+```python
+# Handler uses one namespace
+await self.cache.set("doc:1", metadata, namespace="documents")
+
+# Service uses a different namespace
+await self.cache.set("doc:1", embedding, namespace="embeddings")
+
+# No collision -- these are independent entries
+```
+
+Namespaces also allow targeted invalidation. Clearing one namespace does not affect others.
+
+## Key Hashing for Complex Keys
+
+The cache supports complex keys such as lists, dictionaries, and tuples. These are automatically hashed to produce a stable string key.
+
+```python
+# Dictionary key -- automatically hashed
+query_params = {"model": "gpt-4o", "prompt": "Summarize this document", "temperature": 0.3}
+cached_response = await self.cache.get(query_params, namespace="llm_responses")
+
+if cached_response is None:
+    response = await self.call_llm(query_params)
+    await self.cache.set(query_params, response, namespace="llm_responses", ttl=7200)
+
+# List key -- also automatically hashed
+chunk_ids = ["chunk-a", "chunk-b", "chunk-c"]
+await self.cache.set(chunk_ids, merged_result, namespace="merged_chunks")
+```
+
+## Cache Management REST API
+
+When the cache is enabled, the framework automatically registers a REST API for cache inspection and management at `/api/cache`.
+
+### Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/cache/{namespace}/{key}` | Retrieve a cached value |
+| `PUT` | `/api/cache/{namespace}/{key}` | Set a cached value (JSON body) |
+| `DELETE` | `/api/cache/{namespace}/{key}` | Delete a cached entry |
+| `DELETE` | `/api/cache/{namespace}` | Clear an entire namespace |
+
+### Example Usage
+
+```bash
+# Retrieve a cached value
+curl http://localhost:8000/api/cache/profiles/user:12345
+
+# Set a cached value with a TTL
+curl -X PUT http://localhost:8000/api/cache/results/query:abc \
+  -H "Content-Type: application/json" \
+  -d '{"value": {"score": 0.95}, "ttl": 1800}'
+
+# Delete a specific key
+curl -X DELETE http://localhost:8000/api/cache/profiles/user:12345
+
+# Clear all entries in a namespace
+curl -X DELETE http://localhost:8000/api/cache/search_results
+```
+
+## Configuration
+
+Cache settings are defined in `settings.toml` under the `[default.cache]` section:
+
+```toml
+[default.cache]
+cache_dir = "/tmp/blueprint-cache"
+size_limit = 1073741824              # Maximum cache size in bytes (1 GB)
+eviction_policy = "least-recently-used"  # Eviction strategy when size_limit is reached
+default_ttl = 3600                   # Default TTL in seconds (1 hour)
+```
+
+### Configuration Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `cache_dir` | `str` | Filesystem path where cache data is stored |
+| `size_limit` | `int` | Maximum total cache size in bytes |
+| `eviction_policy` | `str` | Strategy for removing entries when the cache is full |
+| `default_ttl` | `int` | Default time-to-live in seconds for entries without an explicit TTL |
+
+## Redis Backend
+
+For deployments where multiple service instances need to share cache state (e.g. horizontal scaling, blue/green deployments, multi-pod Kubernetes setups), Blueprint Agents ships with an optional Redis backend. Cache reads and writes flow through a central Redis server so every replica sees the same data.
+
+### Installation
+
+The Redis client is an optional extra. Install it explicitly:
+
+```bash
+pip install 'avs-blueprint-agents[redis]'
+```
+
+This pulls in `redis-py` with the `hiredis` parser for fast wire-protocol decoding. No code changes are required — the framework auto-selects the backend at startup based on `settings.toml`.
+
+### Configuration
+
+Switch backends by setting `backend = "redis"` and adding the connection fields:
+
+```toml
+[default.cache]
+backend = "redis"                         # "disk" (default) or "redis"
+default_ttl = 3600                        # Default TTL in seconds (used by both backends)
+key_prefix = "inventory-api"              # Prefix prepended to every cache key
+redis_url = "redis://localhost:6379/0"    # Connection URL (host, port, db)
+redis_password = "secret"                 # Optional password
+redis_db = 0                              # Database index (0–15 for default Redis)
+redis_tls = false                         # Set true for TLS (rediss://)
+fallback_to_local = false                 # If true: fall back to DiskCacheService when Redis is unreachable
+```
+
+### Field Reference
+
+| Field | Type | Description |
+|---|---|---|
+| `backend` | `str` | `"disk"` (default) or `"redis"`. Controls which cache implementation is instantiated. |
+| `key_prefix` | `str` | Global prefix prepended to every key in the form `{prefix}:{namespace}:{hash}`. Lets you safely share a single Redis database between multiple services without key collisions. Empty string disables prefixing. |
+| `redis_url` | `str` | Standard Redis URL (`redis://...` or `rediss://...` for TLS). Defaults to `redis://localhost:6379/0`. |
+| `redis_password` | `str \| None` | Password for Redis AUTH. Read this from a secrets file, never commit it. |
+| `redis_db` | `int` | Numeric database index. Default is `0`. |
+| `redis_tls` | `bool` | Enable TLS — equivalent to using `rediss://` in `redis_url`. |
+| `fallback_to_local` | `bool` | If `True`, the framework starts up with `DiskCacheService` when (a) the Redis extra is not installed or (b) the Redis server is unreachable on `on_startup()`. Useful for graceful degradation in non-production environments. |
+
+### Multi-Service Shared Redis
+
+When several microservices share one Redis cluster, set a unique `key_prefix` per service:
+
+```toml
+# Service A
+[default.cache]
+backend = "redis"
+key_prefix = "inventory-api"
+redis_url = "redis://shared-redis:6379/0"
+
+# Service B
+[default.cache]
+backend = "redis"
+key_prefix = "billing-api"
+redis_url = "redis://shared-redis:6379/0"
+```
+
+Each service's `clear()`, `list_namespaces()`, and `list_values()` calls only operate within its own prefix. `clear()` uses `SCAN` + `DELETE` (never `FLUSHDB`), so it never touches keys belonging to other services.
+
+### Graceful Degradation
+
+In development or non-critical environments, set `fallback_to_local = true` to keep the service running when Redis is unavailable:
+
+```toml
+[default.cache]
+backend = "redis"
+redis_url = "redis://localhost:6379/0"
+fallback_to_local = true
+```
+
+Behavior:
+- If the `redis` extra is not installed: factory returns a `DiskCacheService`.
+- If Redis is installed but unreachable on startup: `on_startup()` logs the failure and continues without raising.
+
+In production, leave `fallback_to_local = false` so startup fails loudly when the cache backend is misconfigured.
+
+## File-Based Locking
+
+The DiskCacheService uses file-based locking to ensure safe concurrent access across multiple processes or deployment replicas sharing the same `cache_dir`. This means multiple instances of the same service can safely read and write to a shared cache directory without corruption.
+
+```toml
+[default.cache]
+# Shared cache directory across replicas
+cache_dir = "/mnt/shared/blueprint-cache"
+```
+
+## Complete Example
+
+```python
+from blueprint.agents import AppBuilder, Config
+from blueprint.agents.services.service_base import ServiceBase
+from blueprint.agents.handler.event_handler_base import EventHandlerBase
+from blueprint.agents.models.events import CloudEvent, HandlerResult
+
+
+class EmbeddingService(ServiceBase):
+    async def on_startup(self) -> None:
+        self.cache = self.registry.cache_service
+        self.agent = self.registry.get_agent("embedder")
+
+    async def get_embedding(self, text: str) -> list[float]:
+        # Check cache first
+        cached = await self.cache.get(text, namespace="embeddings")
+        if cached is not None:
+            return cached
+
+        # Compute and cache
+        embedding = await self.agent.run(text)
+        await self.cache.set(text, embedding, namespace="embeddings", ttl=86400)
+        return embedding
+
+
+class DocumentHandler(EventHandlerBase):
+    priority = 10
+
+    async def on_startup(self) -> None:
+        self.embedding_svc = self.registry.get_service(EmbeddingService)
+
+    def can_handle_event(self, event: CloudEvent) -> bool:
+        return event.type == "document.received"
+
+    async def handle_event(self, event: CloudEvent) -> HandlerResult:
+        embedding = await self.embedding_svc.get_embedding(event.data["content"])
+        return HandlerResult(
+            event_type="document.embedded",
+            data={"doc_id": event.subject, "embedding": embedding},
+        )
+
+    def get_published_event_types(self) -> list[str]:
+        return ["document.embedded"]
+
+
+config = Config(settings_files=["settings.toml"])
+
+app = (
+    AppBuilder(config)
+    .with_service(EmbeddingService)
+    .with_handler(DocumentHandler)
+    .with_agent("embedder", EmbedderAgent)
+    .with_cache()
+    .build()
+)
+```

@@ -1,0 +1,18 @@
+[default]
+app_name = "Order Event Pipeline"
+app_port = 8000
+app_environment = "development"
+log_level = "INFO"
+event_bus = "dapr"
+
+[default.event_publishing]
+default_pubsub_name = "pubsub"
+
+[default.event_publishing.topic_mapping]
+"order.validated" = { topic = "orders-validated", routing_key = "valid" }
+"order.rejected" = { topic = "orders-rejected", routing_key = "rejected" }
+
+[default.cache]
+cache_dir = ".cache/orders"
+size_limit = 500000000
+default_ttl = 86400

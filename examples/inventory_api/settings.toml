@@ -1,0 +1,20 @@
+[default]
+app_name = "Inventory API"
+app_port = 8000
+app_environment = "development"
+log_level = "INFO"
+
+[default.cache]
+cache_dir = ".cache/inventory"
+size_limit = 100000000
+default_ttl = 300
+
+# --- Redis backend (centralized cache, shared across replicas) ---
+# Uncomment and install with: pip install 'avs-blueprint-agents[redis]'
+# backend = "redis"
+# key_prefix = "inventory-api"
+# redis_url = "redis://localhost:6379/0"
+# redis_password = ""
+# redis_db = 0
+# redis_tls = false
+# fallback_to_local = false

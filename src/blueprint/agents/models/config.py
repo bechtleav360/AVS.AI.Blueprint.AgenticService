@@ -17,30 +17,12 @@ class TopicConfig(BaseModel):
 class EventPublishingConfig(BaseModel):
     """Event publishing configuration."""
 
-    default_pubsub_name: str = Field(
-        default="pubsub",
-        description="Default pubsub component name (Dapr or NATS)"
-    )
-    topic_mapping: dict[str, TopicConfig] = Field(
-        default_factory=dict,
-        description="Mapping of event types to topics"
-    )
-    use_nats: bool = Field(
-        default=False,
-        description="Use NATS instead of Dapr for event publishing"
-    )
-    nats_url: str | None = Field(
-        default=None,
-        description="NATS server URL (e.g., 'nats://localhost:4222')"
-    )
-    nats_use_jetstream: bool = Field(
-        default=False,
-        description="Enable JetStream for NATS"
-    )
-    nats_stream_name: str | None = Field(
-        default="EVENTS",
-        description="NATS JetStream stream name"
-    )
+    default_pubsub_name: str = Field(default="pubsub", description="Default pubsub component name (Dapr or NATS)")
+    topic_mapping: dict[str, TopicConfig] = Field(default_factory=dict, description="Mapping of event types to topics")
+    use_nats: bool = Field(default=False, description="Use NATS instead of Dapr for event publishing")
+    nats_url: str | None = Field(default=None, description="NATS server URL (e.g., 'nats://localhost:4222')")
+    nats_use_jetstream: bool = Field(default=False, description="Enable JetStream for NATS")
+    nats_stream_name: str | None = Field(default="EVENTS", description="NATS JetStream stream name")
 
     @field_validator("topic_mapping", mode="before")
     @classmethod
@@ -146,10 +128,7 @@ class AIConfig(BaseModel):
     temperature: float | None = Field(None, description="Temperature for generation")
     concurrency_limit: int | None = Field(None, description="Max concurrent requests")
     usage_limits: UsageLimits = Field(default_factory=UsageLimits, description="Usage limits")
-    model_settings: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Additional model settings for specific providers"
-    )
+    model_settings: dict[str, Any] = Field(default_factory=dict, description="Additional model settings for specific providers")
 
 
 class PromptConfig(BaseModel):
@@ -181,6 +160,13 @@ class CacheConfig(BaseModel):
         default="least-recently-used", description="Eviction policy (least-recently-used or least-frequently-used)"
     )
     default_ttl: int = Field(default=3600, description="Default TTL in seconds")
+    backend: str = Field(default="disk", description="Cache backend: 'disk' or 'redis'")
+    key_prefix: str = Field(default="", description="Global key prefix for all cache keys (avoids collisions in shared Redis)")
+    redis_url: str | None = Field(default=None, description="Redis connection URL (e.g. redis://localhost:6379/0)")
+    redis_password: str | None = Field(default=None, description="Redis password")
+    redis_db: int = Field(default=0, description="Redis database index")
+    redis_tls: bool = Field(default=False, description="Enable TLS for Redis connection")
+    fallback_to_local: bool = Field(default=False, description="Fall back to DiskCacheService if Redis is unavailable at startup")
 
 
 class RuntimeConfig(BaseModel):
@@ -197,3 +183,28 @@ class RuntimeConfig(BaseModel):
     ai_concurrent_requests: int | None = Field(None, description="Concurrency limit override")
     prompt_directory: str | None = Field(None, description="Prompt directory override")
     prompt_search_paths: list[str] | None = Field(None, description="Prompt search paths override")
+
+
+class SessionsServiceConfig(BaseModel):
+    """Configuration for sessions service integration."""
+
+    base_url: str = Field(description="Base URL of sessions service")
+    api_key: str = Field(description="API key for authentication")
+    agent_id: str = Field(description="Unique agent identifier")
+    agent_type: str | None = Field(default=None, description="Type of agent")
+    capabilities: list[str] = Field(default_factory=list, description="Job types this agent can handle")
+
+    # Session key management
+    session_key_source: str = Field(default="env", description="Where to retrieve session keys from (env, vault, context)")
+    session_key_env_var: str = Field(default="SESSION_KEY", description="Environment variable name for session key")
+    session_key_cache_ttl_seconds: int = Field(default=3600, description="Cache TTL for session keys in seconds")
+
+    # Concurrency & Performance
+    max_concurrent_jobs: int = Field(default=10, description="Maximum concurrent job processing")
+    job_timeout_seconds: int = Field(default=300, description="Timeout per job in seconds")
+    sse_reconnect_delay_seconds: int = Field(default=5, description="Delay between SSE reconnection attempts")
+    sse_max_reconnect_attempts: int = Field(default=-1, description="Max SSE reconnect attempts (-1 = infinite)")
+
+    # Health checks
+    health_check_enabled: bool = Field(default=True, description="Enable health check integration")
+    health_check_interval_seconds: int = Field(default=30, description="Health check interval in seconds")

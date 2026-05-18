@@ -1,15 +1,31 @@
 from pathlib import Path
+from typing import Any
 
 from .part_generator_base import PartGeneratorBase
 
 
 class ModelPartGenerator(PartGeneratorBase):
-    def __init__(self, config: dict, template_dir: str | Path, src_path: str) -> None:
+    def __init__(self, config: dict[str, Any], template_dir: str | Path, src_path: str) -> None:
         super().__init__(config, template_dir, src_path)
         self.template_file_name = "dto.txt"
 
+    def get_models_subfolder(self) -> str:
+        """Get models subfolder based on component_name, or empty string."""
+        component_name = self.config.get("component_name", "")
+        if component_name:
+            return self.camel_to_snake(component_name)
+        return ""
+
+    def to_py_file_name(self) -> str:
+        """Include subfolder in filename when component_name is set."""
+        base_name = super().to_py_file_name()
+        subfolder = self.get_models_subfolder()
+        if subfolder:
+            return f"{subfolder}/{base_name}"
+        return base_name
+
     @staticmethod
-    def _generate_model_classes(model_classes: dict) -> str:
+    def _generate_model_classes(model_classes: dict[str, Any]) -> str:
         """Generate the model classes based on the configuration and the template file.
 
         Args:
@@ -21,18 +37,13 @@ class ModelPartGenerator(PartGeneratorBase):
         lines = []
 
         for model_class_name, model in model_classes.items():
-            lines.extend([
-                f"class {model_class_name}(BaseModel):",
-                '    """',
-                f"    {model['description']}",
-                '    """'
-            ])
+            lines.extend([f"class {model_class_name}(BaseModel):", '    """', f"    {model['description']}", '    """'])
             for field_name, field in model["fields"].items():
                 lines.append(
                     f"    {field_name}: {field['type']} = Field("
-                    + ("..., " if not field.get('default', None) else "")
+                    + ("..., " if not field.get("default", None) else "")
                     + f"description='{field['description']}'"
-                    + (f", default=\"{field.get('default', None)}\")" if field.get('default', None) else ")")
+                    + (f', default="{field.get("default", None)}")' if field.get("default", None) else ")")
                 )
             lines.append("")
 
@@ -40,23 +51,21 @@ class ModelPartGenerator(PartGeneratorBase):
 
 
 class DTOPartGenerator(ModelPartGenerator):
-    def __init__(self, config: dict, template_dir: str | Path, src_path: str) -> None:
+    def __init__(self, config: dict[str, Any], template_dir: str | Path, src_path: str) -> None:
         super().__init__(config, template_dir, src_path)
         self.template_file_name = "dto.txt"
-        self.template_vars["dto_classes"] = self._generate_model_classes(
-            self.config["communication_layer"]["rest_api"]["dto_classes"]
-        )
+        self.template_vars["dto_classes"] = self._generate_model_classes(self.config["communication_layer"]["rest_api"]["dto_classes"])
 
 
 class DomainModelPartGenerator(ModelPartGenerator):
-    def __init__(self, config: dict, template_dir: str | Path, src_path: str) -> None:
+    def __init__(self, config: dict[str, Any], template_dir: str | Path, src_path: str) -> None:
         super().__init__(config, template_dir, src_path)
         self.template_file_name = "domain_models.txt"
         self.template_vars["domain_model_classes"] = self._generate_model_classes(self.config["domain_models"])
 
 
 class MapperPartGenerator(ModelPartGenerator):
-    def __init__(self, config: dict, template_dir: str | Path, src_path: str) -> None:
+    def __init__(self, config: dict[str, Any], template_dir: str | Path, src_path: str) -> None:
         super().__init__(config, template_dir, src_path)
         self.template_file_name = "mapper.txt"
         self.template_vars["imports"] = self._create_mapper_imports()
@@ -113,24 +122,28 @@ class MapperPartGenerator(ModelPartGenerator):
 
         lines = [
             f"class {self.config['communication_layer']['rest_api']['mapper']['name']}:",
-            '    """Static mapper class for converting between domain models and DTOs."""'
-            , ""
+            '    """Static mapper class for converting between domain models and DTOs."""',
+            "",
         ]
 
         for mapping in self.config["communication_layer"]["rest_api"]["mapper"]["mappings"]:
-            lines.extend([
-                f"    @staticmethod",
-                (
-                    f"    def from_{self.camel_to_snake(mapping['from']['name'])}("
-                    if mapping['from']['type'] == "dto" else
-                    f"    def to_{self.camel_to_snake(mapping['to']['name'])}("
-                )
-                + f"{self.camel_to_snake(mapping['from']['name'])}: "
-                + f"{mapping['from']['name']}) -> {mapping['to']['name']}:",
-                f"        return {mapping['to']['name']}(",
-                *[f"            {_in}={self.camel_to_snake(mapping['from']['name'])}.{out},"
-                  for _in, out in mapping['field_mappings'].items()]
-            ])
+            lines.extend(
+                [
+                    "    @staticmethod",
+                    (
+                        f"    def from_{self.camel_to_snake(mapping['from']['name'])}("
+                        if mapping["from"]["type"] == "dto"
+                        else f"    def to_{self.camel_to_snake(mapping['to']['name'])}("
+                    )
+                    + f"{self.camel_to_snake(mapping['from']['name'])}: "
+                    + f"{mapping['from']['name']}) -> {mapping['to']['name']}:",
+                    f"        return {mapping['to']['name']}(",
+                    *[
+                        f"            {_in}={self.camel_to_snake(mapping['from']['name'])}.{out},"
+                        for _in, out in mapping["field_mappings"].items()
+                    ],
+                ]
+            )
             lines[-1] = lines[-1][:-1]
             lines.append("        )")
             lines.append("")

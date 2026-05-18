@@ -1,200 +1,117 @@
 """Generic FastAPI application setup and configuration."""
 
 import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
-from fastapi import APIRouter, FastAPI
+from fastapi import FastAPI
 
 if TYPE_CHECKING:
-    from .services.health.base import HealthCheckerBase
+    from .io.api.actuators.health import HealthCheckerBase
 
-from .api import actuators, cache, root
-from .base import EventHandler, RestApi
-from .base.agent_runtime import AgentRuntime
-from .base.business_service import BusinessService
+from .component.component import Component
+from .component.registry import Registry
+from .agent.agent_runtime import AgentRuntime
+from .handler.event_handler_base import EventHandlerBase
+from .io.api.rest_api_base import RestApiBase
+from .io.api.scheduling.scheduler import SchedulerBase
+from .io.api.actuators.actuator_api import ActuatorApi
+from .io.api.actuators.health import CacheHealthChecker, ClientHealthChecker
+from .io.api.eventing.dapr import DaprEventing
+from .io.api.eventing.nats import NatsEventing
+from .io.api.eventing.sessions_bus import SessionsBus
+from .io.api.utilities.root import RootApi
+from .io.api.utilities.cache import CacheManagementApi
+from .clients.io.dapr_client import DaprClient
+from .clients.io.nats_client import NATSClient
+from .services.service_base import ServiceBase
+from .services.eventing.event_processing_service import EventProcessingService
+from .services.eventing.event_publishing_service import EventPublishingService
+from .services.sessions import SessionKeyProvider, SessionsApiClient
+from .services.infrastructure.cache_backend_factory import CacheBackendFactory
 from .config import Config, TelemetryManager
-from .registry.component_registry import ComponentRegistry
-from .services import EventPublishingService
-from .services.cache_service import DiskCacheService
-from .services.health import DaprPubSubHealthChecker, HealthCheckerRegistry, VLLMProviderHealthChecker, NatsHealthChecker
-from .services.processing_service import ProcessingService
 
-# Dapr generic endpoints
-try:
-    from .api import dapr
-except ImportError:
-    dapr = None
+HandlerT = TypeVar("HandlerT", bound=EventHandlerBase)
+ServiceT = TypeVar("ServiceT", bound=ServiceBase)
+AgentT = TypeVar("AgentT", bound=AgentRuntime)
+SchedulerT = TypeVar("SchedulerT", bound=SchedulerBase)
+RestApiT = TypeVar("RestApiT", bound=RestApiBase)
 
 logger = logging.getLogger(__name__)
-event_handler_derivative = TypeVar("event_handler_derivative", bound=EventHandler)
 
 
 class AppBuilder:
-    """Builds the FastAPI application with a fluent interface."""
+    """Builds the FastAPI application with a fluent interface.
 
-    def __init__(
-        self,
-        config: Config,
-    ):
-        """Initialize the AppBuilder.
+    Usage::
 
-        Args:
-            config: Pre-configured Config object.
-        """
+        app = (
+            AppBuilder(config)
+            .with_handler(MyHandler)
+            .with_agent(my_agent)
+            .with_cache()
+            .build()
+        )
 
+    Components are instantiated via with_*() calls (accepting either a class or
+    an instance) and auto-register themselves in the shared registry. AppBuilder
+    injects the Config in build() before the lifespan starts.
+    """
+
+    def __init__(self, config: Config) -> None:
         self._config = config
-        self._telemetry_manager = TelemetryManager(settings=self._config)
-        self._component_registry = ComponentRegistry(settings=self._config)
-        self._health_checker_registry = HealthCheckerRegistry()
+        self._telemetry_manager = TelemetryManager()
+        self._eventing_component: DaprEventing | NatsEventing | None = None
+        # Components that need lifespan (on_startup / on_shutdown) but do not expose
+        # a FastAPI router. SessionsBus lives here because it is SSE-driven, not
+        # HTTP-driven; keeping it out of _eventing_component avoids the routerless
+        # special case in _build_rest_endpoints.
+        self._lifecycle_components: list[Component] = []
+        self._actuator_api: ActuatorApi | None = None
 
-    def build(self) -> FastAPI:
-        """Create and configure the FastAPI application.
+    # ------------------------------------------------------------------
+    # Fluent registration API
+    # ------------------------------------------------------------------
 
-        This method:
-        1. Creates the FastAPI app with lifespan management
-        2. Includes all registered routers (root, REST API, Dapr, actuators)
-        3. Configures health checks based on registered components
-        """
-        app = FastAPI(
-            title=self._config.get("app_name", "bios-agent"),
-            description=self._config.get("app_description", "Generic microservice blueprint for building intelligent agents"),
-            version="0.1.0",
-            lifespan=self._create_lifespan_manager(),
-            docs_url="/docs",
-            redoc_url="/redoc",
-            openapi_url="/openapi.json",
-        )
-
-        self._build_rest_endpoints(app)
-
-        # Configure health checks based on registered components
-
-        health_dependencies: dict[str, HealthCheckerBase] = {}
-
-        # Configure health checks based on event bus type
-        event_bus_type = self._config.get("event_bus", "dapr").lower()
-        if self._component_registry.has_handler() or self._config.get_event_publishing_config().topic_mapping:
-            if event_bus_type == "dapr" and dapr is not None:
-                logger.info("Health checks for DAPR connection enabled")
-                health_dependencies["dapr"] = DaprPubSubHealthChecker(self._config)
-            elif event_bus_type == "nats":
-                logger.info("Health checks for NATS connection enabled")
-                health_dependencies["nats"] = NatsHealthChecker(self._config)
-
-        if self._component_registry.has_agent():
-            runtime_names = self._component_registry.list_agents()
-            logger.info("Health checks for the following Agent runtimes enabled: %s", runtime_names)
-            health_dependencies["ai_provider"] = VLLMProviderHealthChecker(
-                self._config,
-                runtime_names=runtime_names,
-            )
-
-        # Add custom health checkers registered via with_health_checker()
-        custom_checkers = self._health_checker_registry.get_all()
-        if custom_checkers:
-            logger.info("Adding %d custom health checkers", len(custom_checkers))
-            health_dependencies.update(custom_checkers)
-
-        actuator_api = actuators.ActuatorApi(
-            config=self._config,
-            health_check_interval_seconds=self._config.get("health_check_interval_seconds", 30),
-            **health_dependencies,
-        )
-        app.include_router(actuator_api.router, tags=["actuators"])
-
-        # Store actuator_api for lifecycle management
-        self._actuator_api = actuator_api
-
-        return app
-
-    def _build_rest_endpoints(self, app: FastAPI) -> None:
-        """Build REST endpoints for the application."""
-
-        # Include root endpoints
-        root_api = root.RootApi(config=self._config)
-        app.include_router(root_api.router, tags=["root"])
-
-        # Include custom REST API if registered
-        rest_apis = self._component_registry.get_rest_apis()
-        for rest_api in rest_apis:
-            if rest_api.router is None:
-                rest_api.router = APIRouter()
-                rest_api._register_routes()
-            app.include_router(rest_api.router, prefix="/api", tags=["rest"])
-
-        # Include event bus endpoints based on configuration
-        if self._component_registry.get_handlers():
-            event_bus_type = self._config.get("event_bus", "dapr").lower()
-            
-            if event_bus_type == "dapr" and dapr is not None:
-                logger.info("Using Dapr as the event bus")
-                dapr_api = dapr.DaprApi(component_registry=self._component_registry)
-                app.include_router(dapr_api.router, tags=["dapr"])
-            elif event_bus_type == "nats":
-                logger.info("Using NATS as the event bus")
-                from .api.nats_bus import NatsEventBus
-                self._nats_bus = NatsEventBus(component_registry=self._component_registry, config=self._config)
-                # NATS doesn't expose a router as it uses direct NATS subscriptions
-            else:
-                logger.warning("No valid event bus configured. Event handling will be disabled.")
-
-        # Include cache management endpoints if cache is registered
-        if self._component_registry.has_cache():
-            cache_api = cache.CacheManagementApi(component_registry=self._component_registry)
-            app.include_router(cache_api.router, prefix="/api", tags=["cache"])
-
-    def with_handler(self, handler: type[event_handler_derivative]) -> "AppBuilder":
-        """Register a handler class or instance with the startup manager.
-
-        Handler classes are instantiated immediately when registered.
-        Handler instances are stored as-is.
-
-        Args:
-            handler: Either a handler class (type[EventHandler]) or an instance (EventHandler)
-
-        Returns:
-            Self for chaining
-
-        Raises:
-            TypeError: If handler is neither a class nor an instance of EventHandler
-        """
-
+    def with_handler(self, handler: type[HandlerT] | HandlerT, *, name: str | None = None, **kwargs: Any) -> "AppBuilder":
+        """Register an event handler class or instance."""
         if isinstance(handler, type):
-            # It's a class - instantiate it immediately
-            if not issubclass(handler, EventHandler):
-                raise TypeError(f"Handler class must be a subclass of EventHandler, " f"got {handler.__name__}")
-            handler = handler()
-
-        self._component_registry.register_handler(handler)
+            if not issubclass(handler, EventHandlerBase):
+                raise TypeError(f"Expected EventHandlerBase subclass, got {handler.__name__}")
+            instance = handler(**kwargs)
+        else:
+            instance = handler
+        if name is not None:
+            instance.name = name
         return self
 
-    def with_service(self, service_instance: BusinessService) -> "AppBuilder":
-        """Register a business service class with the startup manager."""
-
-        self._component_registry.register_service(service_instance)
+    def with_service(self, service: type[ServiceT] | ServiceT, *, name: str | None = None, **kwargs: Any) -> "AppBuilder":
+        """Register a business service class or instance."""
+        instance = service(**kwargs) if isinstance(service, type) else service
+        if name is not None:
+            instance.name = name
         return self
 
-    def with_agent(self, agent_instance: AgentRuntime) -> "AppBuilder":
-        """Register an agent class with the startup manager."""
-
-        self._component_registry.register_agent(agent_instance)
+    def with_agent(self, agent: type[AgentT] | AgentT, *, name: str | None = None, **kwargs: Any) -> "AppBuilder":
+        """Register an agent runtime class or instance."""
+        instance = agent(**kwargs) if isinstance(agent, type) else agent
+        if name is not None:
+            instance.name = name
         return self
 
-    def with_rest_api(self, api_instance: RestApi) -> "AppBuilder":
-        """Register a custom REST API instance.
+    def with_scheduler(self, scheduler: type[SchedulerT] | SchedulerT, *, name: str | None = None, **kwargs: Any) -> "AppBuilder":
+        """Register a scheduler class or instance."""
+        instance = scheduler(**kwargs) if isinstance(scheduler, type) else scheduler
+        if name is not None:
+            instance.name = name
+        return self
 
-        The instance must be a subclass of RestApi. AppBuilder will wire the
-        component registry and any registered agents into the instance.
-
-        Args:
-            api_instance: An instance of a RestApi subclass
-
-        Raises:
-            TypeError: If api_instance is not a RestApi subclass instance
-        """
-
-        self._component_registry.register_rest_api(api=api_instance)
+    def with_rest_api(self, api: type[RestApiT] | RestApiT, *, name: str | None = None, **kwargs: Any) -> "AppBuilder":
+        """Register a custom REST API class or instance."""
+        instance = api(**kwargs) if isinstance(api, type) else api
+        if name is not None:
+            instance.name = name
         return self
 
     def with_cache(self, enabled: bool = True, enable_locking: bool = True) -> "AppBuilder":
@@ -203,23 +120,14 @@ class AppBuilder:
         Args:
             enabled: Whether to enable caching (default: True)
             enable_locking: Enable file-based locking for multi-deployment safety (default: True).
-                           Set to False only in single-deployment scenarios.
-
-        Returns:
-            Self for chaining
         """
-
         if enabled:
             cache_config = self._config.get_cache_config()
-            cache_service = DiskCacheService(
-                cache_dir=cache_config.cache_dir,
-                size_limit=cache_config.size_limit,
-                eviction_policy=cache_config.eviction_policy,
-                enable_locking=enable_locking,
-            )
-            self._component_registry.register_cache(cache_service)
+            cache_service = CacheBackendFactory.create(cache_config, enable_locking=enable_locking)
+            Component.shared_registry.cache_service = cache_service  # type: ignore[union-attr]
             logger.info(
-                "Registered DiskCacheService with cache_dir=%s (locking=%s)",
+                "Registered %s with cache_dir=%s (locking=%s)",
+                type(cache_service).__name__,
                 cache_config.cache_dir,
                 enable_locking,
             )
@@ -227,44 +135,122 @@ class AppBuilder:
             logger.info("Caching disabled")
         return self
 
-    def with_health_checker(self, name: str, checker: "HealthCheckProvider") -> "AppBuilder":
-        """Register a custom health checker.
+    def with_health_checker(self, name: str, checker: "HealthCheckerBase") -> "AppBuilder":
+        """Register a custom health checker on the ActuatorApi.
 
-        Health checkers are used to determine application readiness. They are executed
-        periodically in the background and cached for performance.
-
-        Args:
-            name: Unique identifier for the health checker
-            checker: Health checker instance implementing HealthCheckProvider
-
-        Returns:
-            Self for chaining
-
-        Example:
-            ```python
-            builder = AppBuilder(config)
-            builder.with_health_checker("database", DatabaseHealthChecker())
-            builder.with_health_checker("cache", CacheHealthChecker())
-            ```
+        Must be called after build() has created the ActuatorApi, or the checker
+        will be added during build() automatically. Prefer calling before build().
         """
-        self._health_checker_registry.register_or_replace(name, checker)
-        logger.info("Registered custom health checker: %s", name)
+        if self._actuator_api is not None:
+            self._actuator_api.add_health_providers({name: checker})
+        else:
+            # Stored temporarily; flushed into ActuatorApi during build()
+            if not hasattr(self, "_custom_health_checkers"):
+                self._custom_health_checkers: dict[str, HealthCheckerBase] = {}
+            self._custom_health_checkers[name] = checker
         return self
 
-    def _create_lifespan_manager(self):
+    # ------------------------------------------------------------------
+    # Build
+    # ------------------------------------------------------------------
+
+    def build(self) -> FastAPI:
+        """Create and configure the FastAPI application.
+
+        This method:
+        1. Injects Config into the Component class hierarchy
+        2. Creates IO clients and internal services based on configuration
+        3. Wires health checkers from all registered clients
+        4. Returns a FastAPI app with lifespan management
+        """
+        # 1. Inject config — enforced once-only by metaclass guard
+        Component.configure(self._config)
+
+        registry: Registry = Component.shared_registry  # type: ignore[assignment]
+
+        # 2. Create IO transport client and eventing endpoint if handlers registered
+        if registry.get_event_handler():
+            event_bus_type = self._config.get("event_bus", "").lower()
+            if event_bus_type == "dapr":
+                DaprClient()  # auto-registers
+                self._eventing_component = DaprEventing()
+            elif event_bus_type == "nats":
+                NATSClient()  # auto-registers
+                self._eventing_component = NatsEventing()
+            elif event_bus_type == "sessions":
+                SessionsApiClient()  # ServiceBase → auto-registers
+                SessionKeyProvider()  # ServiceBase → auto-registers
+                # SessionsBus has no router (SSE-driven). Track it via the
+                # lifecycle list so the lifespan hook still drives on_startup /
+                # on_shutdown without polluting the router-mount path.
+                self._lifecycle_components.append(SessionsBus())
+            else:
+                logger.warning(
+                    "Event handlers are registered but no valid event_bus configured "
+                    "('dapr', 'nats', or 'sessions'). Event handling will be disabled."
+                )
+
+        # 3. Create internal services (auto-register)
+        EventProcessingService()
+        if registry.get_io_clients():
+            EventPublishingService()
+
+        # 4. Create ActuatorApi and wire health checkers from all registered clients
+        self._actuator_api = ActuatorApi()
+        health_providers: dict[str, HealthCheckerBase] = {client.name: ClientHealthChecker([client]) for client in registry.get_clients()}
+        # Pull the registered cache (if any) into the readiness probe so a Redis
+        # outage takes the pod out of service rotation instead of letting it
+        # silently serve cache misses.
+        if registry.has_cache():
+            health_providers["cache"] = CacheHealthChecker(registry.cache_service)
+        if hasattr(self, "_custom_health_checkers"):
+            health_providers.update(self._custom_health_checkers)
+        if health_providers:
+            self._actuator_api.add_health_providers(health_providers)
+
+        # 5. Build FastAPI app
+        app = FastAPI(
+            title=self._config.get("app_name", "bios-agent"),
+            description=self._config.get(
+                "app_description",
+                "Generic microservice blueprint for building intelligent agents",
+            ),
+            version="0.1.0",
+            lifespan=self._create_lifespan_manager(),
+            docs_url="/docs",
+            redoc_url="/redoc",
+            openapi_url="/openapi.json",
+        )
+
+        self._build_rest_endpoints(app, registry)
+        return app
+
+    def _build_rest_endpoints(self, app: FastAPI, registry: Registry) -> None:
+        """Include all routers into the FastAPI app."""
+        app.include_router(RootApi(app=app).router, tags=["root"])
+
+        for rest_api in registry.get_rest_apis():
+            app.include_router(rest_api.router, prefix="/api", tags=["rest"])
+
+        if self._eventing_component is not None:
+            app.include_router(self._eventing_component.router)
+
+        if registry.has_cache():
+            app.include_router(CacheManagementApi().router, prefix="/api", tags=["cache"])
+
+        if self._actuator_api is not None:
+            app.include_router(self._actuator_api.router, tags=["actuators"])
+
+    # ------------------------------------------------------------------
+    # Lifespan
+    # ------------------------------------------------------------------
+
+    def _create_lifespan_manager(self) -> Any:
         @asynccontextmanager
-        async def lifespan(_app: FastAPI):
+        async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             """Application lifespan manager for startup and shutdown events."""
-
-            logger.info("Initializing agent components")
-
-            # Start background health check scheduler
-            if hasattr(self, "_actuator_api"):
-                try:
-                    await self._actuator_api.start_health_checks()
-                    logger.info("Health check cache scheduler started")
-                except Exception as e:
-                    logger.warning("Failed to start health check cache: %s", e)
+            registry: Registry = Component.shared_registry  # type: ignore[assignment]
+            logger.info("Starting up application components")
 
             # Configure OpenTelemetry tracing
             try:
@@ -272,142 +258,152 @@ class AppBuilder:
             except Exception as e:
                 logger.warning("Failed to configure OpenTelemetry: %s", e)
 
-            # Initialize and register ProcessingService
-            try:
-                processing_service = ProcessingService(
-                    settings=self._config,
-                    component_registry=self._component_registry,
-                )
-                self._component_registry.register_processing_service(processing_service)
-                logger.info("Successfully registered ProcessingService")
-            except Exception as e:
-                logger.error("Failed to register ProcessingService: %s", e, exc_info=True)
-                raise
+            # ActuatorApi
+            if self._actuator_api is not None:
+                await self._actuator_api.on_startup()
 
-            # Initialize and register EventPublishingService
-            try:
-                event_publishing_service = EventPublishingService(config=self._config)
-                self._component_registry.register_event_publishing_service(event_publishing_service)
-                logger.info("Successfully registered EventPublishingService")
-            except Exception as e:
-                logger.error("Failed to register EventPublishingService: %s", e, exc_info=True)
-                raise
-
-            # Initialize event bus if needed
-            event_bus_type = self._config.get("event_bus", "dapr").lower()
-            if event_bus_type == "nats" and hasattr(self, '_nats_bus'):
+            # Clients (IO + AI) — config reading and lazy-connect preparation
+            for client in registry.get_clients():
                 try:
-                    await self._nats_bus.connect()
-                    await self._nats_bus.subscribe(
-                        self._config.get("nats_topic", "test.topic"),
-                        self._config.get("nats_queue_group", None)
-                    )
-                    logger.info("Successfully initialized NATS event bus")
+                    await client.on_startup()
+                    logger.info("Client %s startup completed", client.name)
                 except Exception as e:
-                    logger.error("Failed to initialize NATS: %s", str(e))
+                    logger.error("Client %s startup failed: %s", client.name, e, exc_info=True)
                     raise
 
-            # Call on_startup on all registered components
-            logger.info("Calling on_startup hooks for all components")
+            # Services (includes EventProcessingService, EventPublishingService, user services)
+            for service in registry.get_services():
+                try:
+                    await service.on_startup()
+                    logger.info("Service %s startup completed", service.name)
+                except Exception as e:
+                    logger.error("Service %s startup failed: %s", service.name, e, exc_info=True)
+                    raise
 
             # Handlers
-            for handler in self._component_registry.get_handlers():
+            for handler in registry.get_event_handler():
                 try:
                     await handler.on_startup()
-                    logger.info("Handler %s startup completed", handler.get_name())
+                    logger.info("Handler %s startup completed", handler.name)
                 except Exception as e:
-                    logger.error("Handler %s startup failed: %s", handler.get_name(), e, exc_info=True)
+                    logger.error("Handler %s startup failed: %s", handler.name, e, exc_info=True)
                     raise
 
             # Agents
-            for agent_name in self._component_registry.list_agents():
+            for agent_name in registry.get_agents():
                 try:
-                    agent = self._component_registry.get_agent(agent_name)
+                    agent = registry.get_component(agent_name)
                     await agent.on_startup()
                     logger.info("Agent %s startup completed", agent_name)
                 except Exception as e:
                     logger.error("Agent %s startup failed: %s", agent_name, e, exc_info=True)
                     raise
 
-            # Business Services
-            for service in self._component_registry.list_services():
-                try:
-                    await service.on_startup()
-                    logger.info("Business service %s startup completed", service.get_name())
-                except Exception as e:
-                    logger.error("Business service %s startup failed: %s", service.get_name(), e, exc_info=True)
-                    raise
-
-            # REST APIs
-            for rest_api in self._component_registry.get_rest_apis():
+            # User REST APIs
+            for rest_api in registry.get_rest_apis():
                 try:
                     await rest_api.on_startup()
-                    logger.info("REST API %s startup completed", rest_api.get_name())
+                    logger.info("REST API %s startup completed", rest_api.name)
                 except Exception as e:
-                    logger.error("REST API %s startup failed: %s", rest_api.get_name(), e, exc_info=True)
+                    logger.error("REST API %s startup failed: %s", rest_api.name, e, exc_info=True)
                     raise
 
-            logger.info("Startup initialization completed")
+            # Schedulers
+            for scheduler in registry.get_schedulers():
+                try:
+                    await scheduler.on_startup()
+                    logger.info("Scheduler %s startup completed", scheduler.name)
+                except Exception as e:
+                    logger.error("Scheduler %s startup failed: %s", scheduler.name, e, exc_info=True)
+                    raise
 
-            logger.info("Service startup completed")
+            # Eventing component (Dapr / NATS endpoint)
+            if self._eventing_component is not None:
+                try:
+                    await self._eventing_component.on_startup()
+                    logger.info("Eventing component startup completed")
+                except Exception as e:
+                    logger.error("Eventing component startup failed: %s", e, exc_info=True)
+                    raise
 
+            # Routerless lifecycle components (e.g. SessionsBus).
+            for lifecycle_component in self._lifecycle_components:
+                try:
+                    await lifecycle_component.on_startup()
+                    logger.info("Lifecycle component %s startup completed", type(lifecycle_component).__name__)
+                except Exception as e:
+                    logger.error(
+                        "Lifecycle component %s startup failed: %s",
+                        type(lifecycle_component).__name__,
+                        e,
+                        exc_info=True,
+                    )
+                    raise
+
+            logger.info("Application startup completed")
             yield
 
-            logger.info("Shutting down agent service")
+            # ----------------------------------------------------------
+            # Shutdown — reverse order
+            # ----------------------------------------------------------
+            logger.info("Shutting down application components")
 
-            # Stop background health check scheduler
-            if hasattr(self, "_actuator_api"):
+            for lifecycle_component in reversed(self._lifecycle_components):
                 try:
-                    await self._actuator_api.stop_health_checks()
-                    logger.info("Health check cache scheduler stopped")
+                    await lifecycle_component.on_shutdown()
                 except Exception as e:
-                    logger.warning("Failed to stop health check cache: %s", e)
+                    logger.error(
+                        "Lifecycle component %s shutdown failed: %s",
+                        type(lifecycle_component).__name__,
+                        e,
+                        exc_info=True,
+                    )
 
-            # Shutdown event bus if needed
-            event_bus_type = self._config.get("event_bus", "dapr").lower()
-            if event_bus_type == "nats" and hasattr(self, '_nats_bus'):
+            if self._eventing_component is not None:
                 try:
-                    await self._nats_bus.close()
-                    logger.info("NATS connection closed")
+                    await self._eventing_component.on_shutdown()
                 except Exception as e:
-                    logger.error("Error closing NATS connection: %s", str(e))
+                    logger.error("Eventing component shutdown failed: %s", e, exc_info=True)
 
-            # Call on_shutdown on all registered components (in reverse order)
-            logger.info("Calling on_shutdown hooks for all components")
+            for scheduler in registry.get_schedulers():
+                try:
+                    await scheduler.on_shutdown()
+                except Exception as e:
+                    logger.error("Scheduler %s shutdown failed: %s", scheduler.name, e, exc_info=True)
 
-            # REST APIs
-            for rest_api in self._component_registry.get_rest_apis():
+            for rest_api in registry.get_rest_apis():
                 try:
                     await rest_api.on_shutdown()
-                    logger.info("REST API %s shutdown completed", rest_api.get_name())
                 except Exception as e:
-                    logger.error("REST API %s shutdown failed: %s", rest_api.get_name(), e, exc_info=True)
+                    logger.error("REST API %s shutdown failed: %s", rest_api.name, e, exc_info=True)
 
-            # Business Services
-            for service in self._component_registry.list_services():
+            for agent_name in registry.get_agents():
                 try:
-                    await service.on_shutdown()
-                    logger.info("Business service %s shutdown completed", service.get_name())
-                except Exception as e:
-                    logger.error("Business service %s shutdown failed: %s", service.get_name(), e, exc_info=True)
-
-            # Agents
-            for agent_name in self._component_registry.list_agents():
-                try:
-                    agent = self._component_registry.get_agent(agent_name)
+                    agent = registry.get_component(agent_name)
                     await agent.on_shutdown()
-                    logger.info("Agent %s shutdown completed", agent_name)
                 except Exception as e:
                     logger.error("Agent %s shutdown failed: %s", agent_name, e, exc_info=True)
 
-            # Handlers
-            for handler in self._component_registry.get_handlers():
+            for handler in registry.get_event_handler():
                 try:
                     await handler.on_shutdown()
-                    logger.info("Handler %s shutdown completed", handler.get_name())
                 except Exception as e:
-                    logger.error("Handler %s shutdown failed: %s", handler.get_name(), e, exc_info=True)
+                    logger.error("Handler %s shutdown failed: %s", handler.name, e, exc_info=True)
 
-            logger.info("Service shutdown completed")
+            for service in registry.get_services():
+                try:
+                    await service.on_shutdown()
+                except Exception as e:
+                    logger.error("Service %s shutdown failed: %s", service.name, e, exc_info=True)
+
+            for client in registry.get_clients():
+                try:
+                    await client.on_shutdown()
+                except Exception as e:
+                    logger.error("Client %s shutdown failed: %s", client.name, e, exc_info=True)
+
+            if self._actuator_api is not None:
+                await self._actuator_api.on_shutdown()
+            logger.info("Application shutdown completed")
 
         return lifespan

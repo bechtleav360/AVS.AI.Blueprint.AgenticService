@@ -2,7 +2,7 @@
 
 from .config import Config, ConfigError
 from .custom_logging import LoggingManager
-from .telemetry import TelemetryManager, TracingContext
+from ..io.telemetry.telemetry import TelemetryManager, TracingContext
 
 __all__ = [
     "Config",

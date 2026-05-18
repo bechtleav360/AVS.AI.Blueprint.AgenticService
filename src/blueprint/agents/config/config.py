@@ -22,11 +22,26 @@ class ConfigError(Exception):
 class Config:
     """A class to manage the application's configuration using dynaconf."""
 
-    def __init__(self, settings_files=None, root_path=None):
-        """Initialize the configuration manager."""
+    def __init__(
+        self,
+        settings_files: list[str] | str | None = None,
+        root_path: str | None = None,
+        agent_scope: str | None = None,
+    ) -> None:
+        """Initialize the configuration manager.
+
+        When ``agent_scope`` is set, every key lookup performed via :meth:`get`
+        and the typed helpers tries ``<agent_scope>.<key>`` first and falls back
+        to ``<key>`` at root. This allows a single repo to host multiple agents
+        whose settings live under ``[default.<scope>]`` namespaces in the same
+        TOML files.
+
+        Raw access via ``self.settings`` remains unscoped.
+        """
 
         self._validation_errors: list[str] = []
         self._root_path = Path(root_path) if root_path else Path.cwd()
+        self._agent_scope = agent_scope
 
         # First pass: load config to get app_environment
         temp_settings = Dynaconf(
@@ -34,6 +49,20 @@ class Config:
         )
         app_env = temp_settings.get("app_environment", "development")
         logger.info("Loading configuration properties for environment: %s", app_env)
+
+        # Validators differ when scoped: app_name/app_port must live under the scope.
+        if agent_scope:
+            validators = [
+                Validator(f"{agent_scope}.app_name", must_exist=True),
+                Validator(f"{agent_scope}.app_port", must_exist=True, is_type_of=int),
+                Validator("app_environment", must_exist=True, default="development"),
+            ]
+        else:
+            validators = [
+                Validator("app_name", must_exist=True, default="agent_blueprint"),
+                Validator("app_port", must_exist=True, is_type_of=int, default=8000),
+                Validator("app_environment", must_exist=True, default="development"),
+            ]
 
         # Second pass: load with the correct environment
         self.settings = Dynaconf(
@@ -43,12 +72,14 @@ class Config:
             load_dotenv=False,
             merge_enabled=True,
             root_path=root_path,
-            validators=[
-                Validator("app_name", must_exist=True, default="agent_blueprint"),
-                Validator("app_port", must_exist=True, is_type_of=int, default=8000),
-                Validator("app_environment", must_exist=True, default="development"),
-            ],
+            validators=validators,
         )
+
+        # Validate first. Dynaconf's lazy _setup() triggers validators on the
+        # first attribute access, so this needs to run before any other access
+        # to self.settings to ensure ValidationError is converted to ConfigError
+        # by validate()'s exception handler.
+        self.validate()
 
         # Replace DOT placeholders
         dot_placeholder = self.settings.get("dot_placeholder", "")
@@ -58,8 +89,6 @@ class Config:
             # Update settings with processed values
             for key, value in processed.items():
                 self.settings[key] = value
-
-        self.validate()
 
         # Initialize logging after config is fully loaded
         self._initialize_logging()
@@ -82,12 +111,12 @@ class Config:
         manager = LoggingManager()
         manager.configure(log_level=log_level, log_format=log_format, suppress_noisy_loggers=suppress_noisy)
 
-    def _process_dynabox(self, box, placeholder, replacement):
+    def _process_dynabox(self, box: Any, placeholder: str, replacement: str) -> Any:
         """Recursively process a DynaBox to replace placeholders in keys and convert to lowercase.
         Also attempts to parse string values as JSON if they appear to be JSON objects/arrays.
         """
 
-        def _try_parse_json(possible_json_value):
+        def _try_parse_json(possible_json_value: Any) -> Any:
             """Try to parse a string value as JSON, return original if not valid JSON."""
             if not isinstance(possible_json_value, str):
                 return possible_json_value
@@ -98,7 +127,7 @@ class Config:
             except (json.JSONDecodeError, TypeError):
                 return possible_json_value
 
-        def _convert_keyed_list_to_dict(items):
+        def _convert_keyed_list_to_dict(items: Any) -> Any:
             """Convert a list of dicts with 'key' field to a dictionary.
 
             Args:
@@ -142,7 +171,9 @@ class Config:
                         (
                             self._process_dynabox(item, placeholder, replacement)
                             if isinstance(item, (dict, DynaBox)) or hasattr(item, "items")
-                            else _try_parse_json(item) if isinstance(item, str) else item
+                            else _try_parse_json(item)
+                            if isinstance(item, str)
+                            else item
                         )
                         for item in value
                     ]
@@ -156,10 +187,27 @@ class Config:
             return result
         return box
 
-    def get(self, key: str, default: Any = None) -> Any:
-        """Get a configuration value."""
+    def _scoped_get(self, key: str, default: Any = None) -> Any:
+        """Resolve a key with scope-first, root-fallback semantics.
 
-        env_var = self.settings.get(key, default)
+        When ``agent_scope`` is set, tries ``<scope>.<key>`` first; if missing or
+        ``None``, falls back to ``<key>`` at root. When ``agent_scope`` is None,
+        behaves exactly like ``self.settings.get(key, default)``.
+
+        ``None`` from a scoped lookup is treated as "not set" so the root
+        fallback fires. Empty containers (``[]``, ``{}``, ``""``) at the scoped
+        key are returned as-is — only ``None`` triggers fallback.
+        """
+        if self._agent_scope:
+            scoped = self.settings.get(f"{self._agent_scope}.{key}")
+            if scoped is not None:
+                return scoped
+        return self.settings.get(key, default)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """Get a configuration value, scope-aware when ``agent_scope`` is set."""
+
+        env_var = self._scoped_get(key, default)
         # Convert DynaBox to dict
         if isinstance(env_var, DynaBox):
             return env_var.to_dict()
@@ -194,18 +242,18 @@ class Config:
             if value is not None:
                 config[key] = value
 
-        # Try to find runtime-specific config
-        runtime_config = self.settings.get(f"runtimes.{runtime_name}")
+        # Try to find runtime-specific config (scope-aware)
+        runtime_config = self._scoped_get(f"runtimes.{runtime_name}")
         if not runtime_config:
-            runtime_config = self.settings.get(f"runtimes.{runtime_name.upper()}")
+            runtime_config = self._scoped_get(f"runtimes.{runtime_name.upper()}")
         if not runtime_config:
-            runtimes = self.settings.get("runtimes")
+            runtimes = self._scoped_get("runtimes")
             if runtimes and hasattr(runtimes, "get"):
                 runtime_config = runtimes.get(runtime_name) or runtimes.get(runtime_name.upper())
         if not runtime_config:
-            runtime_config = self.settings.get(f"runtime.{runtime_name}")
+            runtime_config = self._scoped_get(f"runtime.{runtime_name}")
         if not runtime_config:
-            runtime_config = self.settings.get(f"runtime.{runtime_name.upper()}")
+            runtime_config = self._scoped_get(f"runtime.{runtime_name.upper()}")
 
         # Process runtime-specific config if found
         if runtime_config:
@@ -241,8 +289,8 @@ class Config:
             AIConfig model with runtime-specific overrides.
         """
 
-        # Get runtime-specific settings directly from settings
-        runtime_settings = self.settings.get(f"runtimes.{runtime_name}")
+        # Get runtime-specific settings (scope-aware)
+        runtime_settings = self._scoped_get(f"runtimes.{runtime_name}")
         if not runtime_settings:
             runtime_settings = {}
 
@@ -266,7 +314,7 @@ class Config:
         api_key = get_with_fallback("model_api_key")
         base_url = get_with_fallback("model_base_url")
 
-        model_settings = self.settings.get(f"runtimes.{runtime_name}.model_settings")
+        model_settings = self._scoped_get(f"runtimes.{runtime_name}.model_settings")
         if not model_settings:
             model_settings = {}
 
@@ -297,7 +345,7 @@ class Config:
             ),
         )
 
-    def get_prompt_config(self, runtime_name: str = None) -> PromptConfig:
+    def get_prompt_config(self, runtime_name: str | None = None) -> PromptConfig:
         """Get prompt-related configuration for a specific runtime.
 
         Args:
@@ -306,7 +354,7 @@ class Config:
         Returns:
             PromptConfig model with prompt configuration.
         """
-        runtime_config = self.get_runtime_config(runtime_name)
+        runtime_config = self.get_runtime_config(runtime_name or "default")
 
         return PromptConfig(
             custom_path=runtime_config.get("prompt_directory", self.get("prompt_directory")),
@@ -341,6 +389,22 @@ class Config:
             topic_mapping=self.get("event_publishing.topic_mapping", {}),
         )
 
+    def get_nats_subscription_config(self) -> list[str]:
+        """Return NATS topics to auto-subscribe to from the ``nats_subscriptions`` config key.
+
+        Returns an empty list if the key is absent or misconfigured.
+
+        Example settings.toml::
+
+            nats_subscriptions = ["governance.>", "orders.created"]
+        """
+
+        raw = self.get("nats_subscriptions", [])
+        if not isinstance(raw, list):
+            logger.warning("nats_subscriptions must be a list; got %s — ignoring", type(raw).__name__)
+            return []
+        return [str(t) for t in raw if t]
+
     def get_cache_config(self) -> CacheConfig:
         """Get cache-related configuration.
 
@@ -353,9 +417,16 @@ class Config:
             size_limit=self.get("cache.size_limit", 1_000_000_000),
             eviction_policy=self.get("cache.eviction_policy", "least-recently-used"),
             default_ttl=self.get("cache.default_ttl", 3600),
+            backend=self.get("cache.backend", "disk"),
+            key_prefix=self.get("cache.key_prefix", ""),
+            redis_url=self.get("cache.redis_url"),
+            redis_password=self.get("cache.redis_password"),
+            redis_db=self.get("cache.redis_db", 0),
+            redis_tls=self.get("cache.redis_tls", False),
+            fallback_to_local=self.get("cache.fallback_to_local", False),
         )
 
-    def validate(self):
+    def validate(self) -> bool:
         """Validate the configuration."""
         self._validation_errors.clear()
         try:

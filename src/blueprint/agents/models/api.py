@@ -167,6 +167,10 @@ class ComponentHealth(BaseModel):
         description="An optional message providing more details on the component's status.",
         examples=["Connection successful."],
     )
+    details: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional diagnostic detail payload.",
+    )
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
@@ -260,6 +264,14 @@ class CacheEvictRequest(BaseModel):
     """Request to evict (clear) cache contents."""
 
     namespace: str | None = None
+
+
+class CacheEvictResponse(BaseModel):
+    """Response for cache eviction operation."""
+
+    success: bool = Field(..., description="Whether the eviction was successful")
+    namespace: str | None = Field(None, description="The namespace that was evicted")
+    evicted_keys: int = Field(0, description="Number of keys evicted")
 
 
 class AgentHealthDependencies(BaseModel):

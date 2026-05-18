@@ -1,10 +1,11 @@
 from pathlib import Path
+from typing import Any
 
 from .part_generator_base import PartGeneratorBase
 
 
 class HandlerPartGenerator(PartGeneratorBase):
-    def __init__(self, config: dict, template_dir: str | Path, src_path: str, handler_name: str) -> None:
+    def __init__(self, config: dict[str, Any], template_dir: str | Path, src_path: str, handler_name: str = "") -> None:
         super().__init__(config, template_dir, src_path)
         self.template_file_name = "handler.txt"
         self.handler_name = handler_name
@@ -12,6 +13,17 @@ class HandlerPartGenerator(PartGeneratorBase):
         self.template_vars["imports"] = self._create_handler_imports()
         self.template_vars["handler_class"] = self._generate_handler_class()
         self.template_vars["on_startup"] = self._generate_on_startup()
+        self.template_vars["on_shutdown"] = self._generate_on_shutdown()
+
+    def to_py_file_name(self) -> str:
+        """Converts a file name to a corresponding Python file name.
+
+        Uses component_name if available, otherwise falls back to handler_name.
+        """
+        component_name = self.config.get("component_name", "")
+        if component_name:
+            return f"{self.camel_to_snake(component_name)}_handler.py"
+        return f"{self.camel_to_snake(self.handler_name)}_handler.py"
 
     def _create_handler_imports(self) -> str:
         """
@@ -35,17 +47,18 @@ class HandlerPartGenerator(PartGeneratorBase):
         """
 
         lines = [
-            f"class {self.handler_name}(EventHandler):",
+            f"class {self.handler_name}(EventHandlerBase):",
             '    """',
             f"    {self.config['communication_layer']['handlers'][self.handler_name]['description']}",
             '    """',
             "",
-            f"    def __init__(self, name: str = \"{self.camel_to_snake(self.handler_name)}\") -> None:",
-            f"        super().__init__(name=name, "
-            f"priority={self.config['communication_layer']['handlers'][self.handler_name]['priority']})",
-            "        self._input_event_type: str = \"\"",
-            *[f"        self.{self.camel_to_snake(service)}: {service} | None = None"
-             for service in self.config["communication_layer"]["handlers"][self.handler_name]["uses_services"]],
+            "    def __init__(self) -> None:",
+            f"        super().__init__(priority={self.config['communication_layer']['handlers'][self.handler_name]['priority']})",
+            '        self._input_event_type: str = ""',
+            *[
+                f"        self.{self.camel_to_snake(service)}: {service} | None = None"
+                for service in self.config["communication_layer"]["handlers"][self.handler_name]["uses_services"]
+            ],
         ]
 
         return "\n".join(lines)
@@ -61,19 +74,28 @@ class HandlerPartGenerator(PartGeneratorBase):
         lines = [
             "    async def on_startup(self) -> None:",
             '        """Initialize the handler by getting services from the registry."""',
-            ""
+            "",
         ]
         for service in self.config["communication_layer"]["handlers"][self.handler_name]["uses_services"]:
-            lines.append(
-                f"        self.{self.camel_to_snake(service)} = "
-                f"self.get_registry().get_service('{self.camel_to_snake(service)}')"
-            )
-        lines.extend([
-            "",
-            f"        self._input_event_type = self.get_config().get(\"{self.camel_to_snake(self.handler_name)}\""
-            ", {}).get(\"input_event_type\", "")",
-            "        if self._input_event_type == \"\":",
-            "            raise ValueError(\"input_event_type is not set in config\")"
-        ])
+            lines.append(f"        self.{self.camel_to_snake(service)} = self.registry.get_service('{self.camel_to_snake(service)}')")
+        lines.extend(
+            [
+                "",
+                f'        self._input_event_type = self.config.get("{self.camel_to_snake(self.handler_name)}"'
+                ', {}).get("input_event_type", '
+                ")",
+                '        if self._input_event_type == "":',
+                '            raise ValueError("input_event_type is not set in config")',
+            ]
+        )
 
         return "\n".join(lines)
+
+    def _generate_on_shutdown(self) -> str:
+        """Generate a no-op on_shutdown method for the handler class."""
+        return "\n".join(
+            [
+                "    async def on_shutdown(self) -> None:",
+                '        """Clean up handler resources on shutdown."""',
+            ]
+        )

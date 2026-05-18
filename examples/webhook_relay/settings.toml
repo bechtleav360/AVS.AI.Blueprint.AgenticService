@@ -1,0 +1,18 @@
+[default]
+app_name = "Webhook Relay"
+app_port = 8000
+app_environment = "development"
+log_level = "INFO"
+event_bus = "nats"
+nats_url = "nats://localhost:4222"
+
+[default.event_publishing]
+default_pubsub_name = "pubsub"
+
+[default.event_publishing.topic_mapping]
+"webhook.processed" = { topic = "webhooks-processed" }
+"webhook.filtered" = { topic = "webhooks-filtered" }
+
+[default.cache]
+cache_dir = ".cache/webhooks"
+default_ttl = 3600

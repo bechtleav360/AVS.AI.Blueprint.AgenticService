@@ -4,8 +4,8 @@
 import logging
 from typing import Any
 
-from blueprint.agents.base import EventHandler
-from blueprint.agents.models import CloudEvent, HandlerResult
+from blueprint.agents.handler import EventHandlerBase
+from blueprint.agents.models import GenericCloudEvent, HandlerResult
 
 imports
 
@@ -16,7 +16,9 @@ handler_class
 
 on_startup
 
-    async def can_handle_event(self, event: CloudEvent, context: dict[str, Any]) -> bool:
+on_shutdown
+
+    async def can_handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> bool:
         """Determine if this handler should process the event.
 
         This method should make all the necessary checks to determine if this handler should process the event.
@@ -33,7 +35,7 @@ on_startup
 
         raise NotImplementedError()
 
-    async def handle_event(self, event: CloudEvent, context: dict[str, Any]) -> HandlerResult | None:
+    async def handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> HandlerResult | None:
         """Handles the event. This is where the main business logic is implemented. This can a part of a chain of
         handlers. The chain continues based on the handlers priorities and until a handler returns a result.
 

@@ -68,17 +68,11 @@ class CorrelationContext:
 class CorrelationContextProvider:
     """Lazily provides a shared CorrelationContext instance."""
 
-    _instance: CorrelationContext | None = None
+    _instance = CorrelationContext()
 
-    @classmethod
-    def get_instance(cls) -> CorrelationContext:
-        if cls._instance is None:
-            cls._instance = CorrelationContext()
-        return cls._instance
-
-    @classmethod
-    def set_instance(cls, context: CorrelationContext) -> None:
-        cls._instance = context
+    @staticmethod
+    def get_correlation_context() -> CorrelationContext:
+        return CorrelationContextProvider._instance
 
 
 class LoggingManager:
@@ -88,7 +82,7 @@ class LoggingManager:
         """Initialize the logging manager."""
         self.logger = logging.getLogger(self.__class__.__name__)
         self._configured = False
-        self._correlation_context = correlation or CorrelationContextProvider.get_instance()
+        self._correlation_context = correlation or CorrelationContextProvider.get_correlation_context()
         self._correlation_filter = self._correlation_context.build_filter()
         self._health_check_filter = HealthCheckFilter()
 

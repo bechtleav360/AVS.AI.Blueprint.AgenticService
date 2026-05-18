@@ -1,7 +1,7 @@
 """Generic result models for agent processing outcomes."""
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
@@ -97,7 +97,7 @@ class AnalysisResponse(BaseModel):
     error: str | None = Field(None, description="An error message if the analysis failed.")
 
 
-class ProcessingStatus(str, Enum):
+class ProcessingStatus(StrEnum):
     """Enumeration of processing outcomes."""
 
     PROCESSED = "processed"

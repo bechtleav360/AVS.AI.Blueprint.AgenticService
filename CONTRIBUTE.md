@@ -1,6 +1,6 @@
-# Contributing to Agents Blueprint
+# Contributing to Blueprint Agents
 
-Thank you for your interest in contributing to the Agents Blueprint project! This guide explains how to set up your development environment, build the package locally, and run tests.
+Thank you for your interest in contributing to Blueprint Agents! This guide explains how to set up your development environment, build the package locally, and run tests.
 
 ## Prerequisites
 
@@ -13,8 +13,8 @@ Thank you for your interest in contributing to the Agents Blueprint project! Thi
 ### 1. Clone the Repository
 
 ```bash
-git clone <repository-url>
-cd Agents_Blueprint
+git clone https://github.com/2SpeakAI/blueprint-agents.git
+cd blueprint-agents
 ```
 
 ### 2. Create a Virtual Environment
@@ -44,7 +44,7 @@ source .venv/bin/activate
 Install the framework package in editable mode with development dependencies:
 
 ```bash
-pip install -e ".[dev]"
+uv pip install -e ".[dev]"
 ```
 
 This installs:
@@ -56,13 +56,13 @@ This installs:
 ### Run All Tests
 
 ```bash
-pytest tests/
+python pytest tests/
 ```
 
 ### Run Tests with Coverage
 
 ```bash
-pytest tests/ --cov=blueprint.agents --cov-report=html
+python pytest tests/ --cov=blueprint.agents --cov-report=html
 ```
 
 This generates an HTML coverage report in `htmlcov/index.html`.
@@ -70,7 +70,7 @@ This generates an HTML coverage report in `htmlcov/index.html`.
 ### Run Tests for a Specific Module
 
 ```bash
-pytest tests/unit/test_agent_builder.py
+python pytest tests/unit/test_agent_builder.py
 ```
 
 ### Run Tests in Watch Mode (with pytest-watch)
@@ -206,15 +206,17 @@ mypy src/
 black src/ tests/ && ruff check src/ tests/ && mypy src/
 ```
 
-## Pre-commit Hooks
+## Pre-commit & Pre-push Hooks
 
-To automatically run linting and formatting before each commit:
+Set up both commit and push hooks:
 
 ```bash
 pre-commit install
+pre-commit install --hook-type pre-push
 ```
 
-This will run configured checks on staged files before allowing commits.
+- **Pre-commit** runs linting and formatting checks on staged files before each commit.
+- **Pre-push** runs the unit test suite before pushing, so CI won't fail on basic issues.
 
 ## Troubleshooting
 
@@ -252,14 +254,24 @@ pip install --force-reinstall --no-deps dist/avs_blueprint_agents-*.whl
 
 ## Publishing to PyPI (for maintainers)
 
-See the main README for instructions on publishing to PyPI or Azure Artifacts.
+Publishing is handled by the CI/CD pipeline. See `.github/workflows/publish.yml` for details.
+
+- Alpha versions (e.g., `0.6.0a3`) are published to TestPyPI
+- Stable versions are published to PyPI
+
+## Submitting Pull Requests
+
+1. Fork the repository and create a feature branch
+2. Make your changes with tests
+3. Ensure all checks pass: `black src/ tests/ && ruff check src/ tests/ && mypy src/ && pytest tests/`
+4. Submit a pull request with a clear description of changes
 
 ## Questions or Issues?
 
 If you encounter issues, please:
 
-1. Check the `TROUBLESHOOTING.md` file for known issues
+1. Check the [Troubleshooting Guide](docs/guides/troubleshooting.md) for known issues
 2. Review the test output carefully for error messages
-3. Open an issue on the repository with details about your environment and the error
+3. Open an issue on GitHub with details about your environment and the error
 
 Thank you for contributing!

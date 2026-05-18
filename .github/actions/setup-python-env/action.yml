@@ -1,0 +1,41 @@
+name: "Setup Python Environment"
+description: "Set up Python with a cached virtual environment"
+
+inputs:
+  python-version:
+    description: "Python version to use"
+    required: false
+    default: "3.13"
+  install-extras:
+    description: "pip extras to install (e.g. ci, dev)"
+    required: false
+    default: "ci"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install uv
+      uses: astral-sh/setup-uv@v6
+
+    - name: Set up Python ${{ inputs.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Cache virtual environment
+      uses: actions/cache@v4
+      id: cache-venv
+      with:
+        path: .venv
+        key: venv-${{ runner.os }}-py${{ inputs.python-version }}-${{ hashFiles('pyproject.toml') }}
+
+    - name: Create venv and install dependencies
+      if: steps.cache-venv.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        uv venv .venv
+        uv pip install -e ".[${{ inputs.install-extras }}]"
+
+    - name: Add venv to PATH
+      shell: bash
+      run: echo "${{ github.workspace }}/.venv/bin" >> $GITHUB_PATH

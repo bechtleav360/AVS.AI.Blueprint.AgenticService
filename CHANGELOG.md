@@ -1,5 +1,62 @@
 # Changelog
-## [0.4.0] - Planned
+## [0.6.0] - Planned
+
+## [0.5.0] - 2026-03-05
+
+### Architecture Refactoring - Component System Streamlining
+
+**Planned from Plan.md - 3 features ready for implementation**
+
+#### Feature 3: Streamlined Base Package (Foundation)
+- **BREAKING**: Promote concrete default implementations into `Component` base class
+  - `get_name()`, `get_registry()`, `get_config()` default implementations
+  - `link_config()`, `link_component_registry()` no longer abstract
+  - `on_startup()`, `on_shutdown()` default no-op implementations
+- Remove redundant overrides from `EventHandler`, `BusinessService`, `RestApi`, `AgentRuntime`
+- Delete `interfaces.py` - `ComponentInterface` Protocol is unused
+
+#### Feature 1: FastAPI Annotation-Based Route Registration
+- **BREAKING**: `RestApi` decorator-based route registration
+  - `RestApi.__init__` creates `APIRouter` and auto-discovers decorated methods
+  - Routes defined with `@self.router.get()`, `@self.router.post()`, etc.
+  - Remove `_register_routes()` abstract method
+  - Remove `payload_type` init parameter and `Generic[PayloadT]`
+- Update all 4 REST API examples to use annotation pattern
+
+#### Feature 2: Scheduler Base Class
+- **NEW**: `Scheduler` base class in `blueprint.agents.base`
+  - Extends `Component` with full registry and config access
+  - Constructor: `__init__(self, crontab: str, name: str = "Scheduler")`
+  - Abstract method: `tick(self) -> None` - called on each cron interval
+  - Background asyncio task with `croniter` for schedule evaluation
+  - Automatic lifecycle management (startup/shutdown)
+- Add `AppBuilder.with_scheduler(scheduler: Scheduler)` method
+- Integrate into lifespan manager for proper startup/shutdown
+
+### Sessions Service Integration - Architecture Planning 📋
+
+**Documented in plan_blueprint.md - Ready for implementation**
+
+Comprehensive 6-phase architecture plan for consuming jobs from Sessions Service via SSE:
+
+#### Planned Components
+- **JobConsumerService**: SSE connection management and job-to-CloudEvent conversion
+- **SessionsApiClient**: REST API client for job lifecycle operations
+- **JobHandler**: Optional convenience base class for job processing
+- **SessionKeyProvider**: Abstract session key retrieval from multiple sources
+
+
+
+### Testing & Quality Assurance
+
+#### Example Verification System
+- **NEW**: Comprehensive integration tests for all 7 example applications
+  - `tests/integration/examples/test_examples.py` - 36 structure/config tests
+  - `tests/verify_examples.py` - Automated startup verification script
+  - All 36 structure tests passing ✓
+  - 5/7 examples start without API keys, 2/7 require credentials
+
+
 
 ## [0.3.XX] - Planned
 - RestAPI Baseclass for all RestAPIs

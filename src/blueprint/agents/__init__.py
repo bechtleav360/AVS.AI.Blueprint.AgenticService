@@ -1,8 +1,7 @@
 """Base framework components for the agent blueprint."""
 
-from .agent import AgentBuilder
+from .agent import AgentBuilder, AgentRuntime
 from .app_builder import AppBuilder
-from .base import AgentRuntime
 from .config import Config
 
 __all__ = [
