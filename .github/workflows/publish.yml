@@ -92,7 +92,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     # Only alpha and beta releases go to TestPyPI
-    if: contains(github.ref, 'a') || contains(github.ref, 'b')
+    if: contains(github.ref_name, 'a') || contains(github.ref_name, 'b')
     environment:
       name: testpypi
       url: https://test.pypi.org/p/avs-blueprint-agents
@@ -116,7 +116,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     # Only stable releases (X.Y.Z with no pre-release suffix) go to PyPI
-    if: "!contains(github.ref, 'a') && !contains(github.ref, 'b') && !contains(github.ref, 'rc')"
+    if: "!contains(github.ref_name, 'a') && !contains(github.ref_name, 'b') && !contains(github.ref_name, 'rc')"
     environment:
       name: pypi
       url: https://pypi.org/p/avs-blueprint-agents
