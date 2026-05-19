@@ -38,7 +38,7 @@ class SessionKeyProvider(ServiceBase):
 
     def __init__(self) -> None:
         super().__init__()
-        self._cache: TTLCache | None = None
+        self._cache: TTLCache[str, str] | None = None
         self._source: str = "env"
         self._env_var: str = "SESSION_KEY"
         self._cache_ttl: int = 3600

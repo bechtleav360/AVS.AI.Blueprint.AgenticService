@@ -20,7 +20,7 @@ from blueprint.agents.handler import EventHandlerBase
 from blueprint.agents.services import ServiceBase
 from blueprint.agents.io.api import RestApiBase
 from blueprint.agents.io.api.scheduling import SchedulerBase
-from blueprint.agents.models import GenericCloudEvent, HandlerResult, CloudEvent
+from blueprint.agents.models import GenericCloudEvent, HandlerResult, CloudEvent, create_cloud_event
 ```
 
 ## Critical Rules
@@ -85,11 +85,13 @@ class OrderHandler(EventHandlerBase):
     async def handle_event(
         self, event: GenericCloudEvent, context: dict[str, Any]
     ) -> HandlerResult | None:
-        result = await self._service.process(event.data)
+        order = self.extract_payload(event, OrderModel)  # Typed extraction with validation
+        result = await self._service.process(order)
         return HandlerResult(event_type="order.processed", data=result)
 ```
 
 - Return `None` → pass to next handler. Return `HandlerResult` → publish event, stop chain.
+- **`self.extract_payload(event, ModelType)`** — validates `event.data` against a Pydantic model and returns a typed instance. Raises `InvalidEventError` if data is missing or invalid (the framework handles this automatically).
 
 ### Service
 
@@ -110,7 +112,7 @@ class OrderService(ServiceBase):
     async def analyze(self, order: OrderModel) -> AnalysisResult:
         """Run LLM analysis on order."""
         result = await self._agent.run(str(order.model_dump()))
-        return AnalysisResult.model_validate(result.data)
+        return AnalysisResult.model_validate(result.output)
 
     async def save(self, order: OrderModel) -> str:
         """Persist the order."""
@@ -134,6 +136,17 @@ class OrderApi(RestApiBase):
 ```
 
 Route decorators: `@RestApiBase.get()`, `.post()`, `.put()`, `.delete()`, `.patch()`.
+
+**Creating CloudEvents from REST payloads** — use `create_cloud_event()` when an API endpoint needs to feed a payload into the event processing pipeline:
+
+```python
+from blueprint.agents.models import create_cloud_event
+
+cloud_event = create_cloud_event("order.created", payload, source="/api/orders")
+result = await event_processing.process_event(cloud_event)
+```
+
+`create_cloud_event()` auto-generates the event ID, auto-calls `model_dump()` on Pydantic models, and sets sensible defaults.
 
 ### Scheduler
 

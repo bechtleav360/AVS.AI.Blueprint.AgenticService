@@ -126,7 +126,7 @@ result = await agent.run("Summarize the Q4 earnings report")
 
 The `result` object contains:
 
-- `result.data` -- the structured output (if `with_result_type` was used) or raw text
+- `result.output` -- the structured output (if `with_result_type` was used) or raw text
 - Additional metadata about the run
 
 ## Structured Output
@@ -152,8 +152,8 @@ agent = (
 )
 
 result = await agent.run("The product exceeded all expectations.")
-print(result.data.sentiment)    # "positive"
-print(result.data.confidence)   # 0.95
+print(result.output.sentiment)    # "positive"
+print(result.output.confidence)   # 0.95
 ```
 
 ## Tool Functions
@@ -378,7 +378,7 @@ class TicketService(ServiceBase):
             self._classifier.record_metrics(result, duration_ms)
 
             return {
-                "category": result.data.category,
+                "category": result.output.category,
                 "confidence": result.data.confidence,
                 "subcategories": result.data.subcategories,
             }

@@ -3,14 +3,13 @@
 import logging
 from typing import Any
 from uuid import uuid4
-
-from opentelemetry import trace
 from pydantic import ValidationError
 
+from opentelemetry import trace
 from ...component.component import traced
 from ...handler.handler_chain import HandlerChain
 from ...models import ProcessingResult, ProcessingStatus
-from ...models.events import CloudEvent, GenericCloudEvent, HandlerResult
+from ...models.events import GenericCloudEvent, HandlerResult, CloudEvent
 from ..service_base import ServiceBase
 from .event_publishing_service import EventPublishingService
 

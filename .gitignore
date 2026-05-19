@@ -130,6 +130,9 @@ venv.bak/
 .dmypy.json
 dmypy.json
 
+# bandit
+bandit-report.json
+
 # Pyre type checker
 .pyre/
 
@@ -149,3 +152,6 @@ uv.lock
 
 # PyCharm stuff
 .idea/
+
+
+ARCHITECTURE_DECISIONS.md

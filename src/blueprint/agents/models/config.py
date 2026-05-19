@@ -160,6 +160,13 @@ class CacheConfig(BaseModel):
         default="least-recently-used", description="Eviction policy (least-recently-used or least-frequently-used)"
     )
     default_ttl: int = Field(default=3600, description="Default TTL in seconds")
+    backend: str = Field(default="disk", description="Cache backend: 'disk' or 'redis'")
+    key_prefix: str = Field(default="", description="Global key prefix for all cache keys (avoids collisions in shared Redis)")
+    redis_url: str | None = Field(default=None, description="Redis connection URL (e.g. redis://localhost:6379/0)")
+    redis_password: str | None = Field(default=None, description="Redis password")
+    redis_db: int = Field(default=0, description="Redis database index")
+    redis_tls: bool = Field(default=False, description="Enable TLS for Redis connection")
+    fallback_to_local: bool = Field(default=False, description="Fall back to DiskCacheService if Redis is unavailable at startup")
 
 
 class RuntimeConfig(BaseModel):

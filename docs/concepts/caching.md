@@ -199,6 +199,85 @@ default_ttl = 3600                   # Default TTL in seconds (1 hour)
 | `eviction_policy` | `str` | Strategy for removing entries when the cache is full |
 | `default_ttl` | `int` | Default time-to-live in seconds for entries without an explicit TTL |
 
+## Redis Backend
+
+For deployments where multiple service instances need to share cache state (e.g. horizontal scaling, blue/green deployments, multi-pod Kubernetes setups), Blueprint Agents ships with an optional Redis backend. Cache reads and writes flow through a central Redis server so every replica sees the same data.
+
+### Installation
+
+The Redis client is an optional extra. Install it explicitly:
+
+```bash
+pip install 'avs-blueprint-agents[redis]'
+```
+
+This pulls in `redis-py` with the `hiredis` parser for fast wire-protocol decoding. No code changes are required — the framework auto-selects the backend at startup based on `settings.toml`.
+
+### Configuration
+
+Switch backends by setting `backend = "redis"` and adding the connection fields:
+
+```toml
+[default.cache]
+backend = "redis"                         # "disk" (default) or "redis"
+default_ttl = 3600                        # Default TTL in seconds (used by both backends)
+key_prefix = "inventory-api"              # Prefix prepended to every cache key
+redis_url = "redis://localhost:6379/0"    # Connection URL (host, port, db)
+redis_password = "secret"                 # Optional password
+redis_db = 0                              # Database index (0–15 for default Redis)
+redis_tls = false                         # Set true for TLS (rediss://)
+fallback_to_local = false                 # If true: fall back to DiskCacheService when Redis is unreachable
+```
+
+### Field Reference
+
+| Field | Type | Description |
+|---|---|---|
+| `backend` | `str` | `"disk"` (default) or `"redis"`. Controls which cache implementation is instantiated. |
+| `key_prefix` | `str` | Global prefix prepended to every key in the form `{prefix}:{namespace}:{hash}`. Lets you safely share a single Redis database between multiple services without key collisions. Empty string disables prefixing. |
+| `redis_url` | `str` | Standard Redis URL (`redis://...` or `rediss://...` for TLS). Defaults to `redis://localhost:6379/0`. |
+| `redis_password` | `str \| None` | Password for Redis AUTH. Read this from a secrets file, never commit it. |
+| `redis_db` | `int` | Numeric database index. Default is `0`. |
+| `redis_tls` | `bool` | Enable TLS — equivalent to using `rediss://` in `redis_url`. |
+| `fallback_to_local` | `bool` | If `True`, the framework starts up with `DiskCacheService` when (a) the Redis extra is not installed or (b) the Redis server is unreachable on `on_startup()`. Useful for graceful degradation in non-production environments. |
+
+### Multi-Service Shared Redis
+
+When several microservices share one Redis cluster, set a unique `key_prefix` per service:
+
+```toml
+# Service A
+[default.cache]
+backend = "redis"
+key_prefix = "inventory-api"
+redis_url = "redis://shared-redis:6379/0"
+
+# Service B
+[default.cache]
+backend = "redis"
+key_prefix = "billing-api"
+redis_url = "redis://shared-redis:6379/0"
+```
+
+Each service's `clear()`, `list_namespaces()`, and `list_values()` calls only operate within its own prefix. `clear()` uses `SCAN` + `DELETE` (never `FLUSHDB`), so it never touches keys belonging to other services.
+
+### Graceful Degradation
+
+In development or non-critical environments, set `fallback_to_local = true` to keep the service running when Redis is unavailable:
+
+```toml
+[default.cache]
+backend = "redis"
+redis_url = "redis://localhost:6379/0"
+fallback_to_local = true
+```
+
+Behavior:
+- If the `redis` extra is not installed: factory returns a `DiskCacheService`.
+- If Redis is installed but unreachable on startup: `on_startup()` logs the failure and continues without raising.
+
+In production, leave `fallback_to_local = false` so startup fails loudly when the cache backend is misconfigured.
+
 ## File-Based Locking
 
 The DiskCacheService uses file-based locking to ensure safe concurrent access across multiple processes or deployment replicas sharing the same `cache_dir`. This means multiple instances of the same service can safely read and write to a shared cache directory without corruption.

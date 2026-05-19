@@ -1,0 +1,14 @@
+[development]
+app_name = "test-app"
+app_port = 8000
+app_environment = "development"
+
+model_provider = "vllm"
+model_api_key = "test-global-key"
+model_base_url = "https://test.example.com/v1"
+model_name = "test-model"
+model_max_tokens = 2000
+model_temperature = 0.7
+
+log_level = "INFO"
+log_format = "text"

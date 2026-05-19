@@ -167,6 +167,10 @@ class ComponentHealth(BaseModel):
         description="An optional message providing more details on the component's status.",
         examples=["Connection successful."],
     )
+    details: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional diagnostic detail payload.",
+    )
     model_config = ConfigDict(
         json_schema_extra={
             "example": {

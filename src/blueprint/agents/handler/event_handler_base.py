@@ -9,6 +9,7 @@ Custom implementations MUST override the abstract methods:
 
 Handlers can also declare published event types by overriding:
 - `get_published_event_types()` - Return (success_event_type, error_event_type)
+- `get_subscribed_topics()` - Return list of NATS topics to auto-subscribe on startup
 
 The framework provides automatic OpenTelemetry tracing for all handlers.
 """
@@ -17,13 +18,18 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from opentelemetry import trace
 
+from pydantic import BaseModel, ValidationError as PydanticValidationError
+
 from ..models import HandlerResult
+from ..models.errors import InvalidEventError
 from ..models.events import GenericCloudEvent
 from ..component.component import Component, traced
+
+_T = TypeVar("_T", bound=BaseModel)
 
 if TYPE_CHECKING:
     pass
@@ -154,6 +160,61 @@ class EventHandlerBase(Component, ABC):
         """
 
         return None
+
+    def get_subscribed_topics(self) -> list[str]:
+        """Declare the NATS topics this handler subscribes to.
+
+        Override this method to have the framework automatically subscribe to
+        the listed topics on startup. Topics are deduplicated across all handlers
+        and the ``nats_subscriptions`` config list before subscribing.
+
+        Returns:
+            List of NATS topic strings (supports wildcards: ``entity.>``).
+            Default is an empty list — no auto-subscription.
+
+        Example::
+
+            def get_subscribed_topics(self) -> list[str]:
+                return ["entity.created", "entity.updated", "entity.deleted"]
+        """
+
+        return []
+
+    def extract_payload(self, event: GenericCloudEvent, payload_type: type[_T]) -> _T:
+        """Extract and validate the event payload as a typed Pydantic model.
+
+        Convenience method for handlers that expect a specific payload schema.
+        Wraps validation errors in :class:`InvalidEventError`, which the framework's
+        event handling infrastructure handles appropriately (e.g., Dapr returns DROP).
+
+        Args:
+            event: The CloudEvent containing the payload.
+            payload_type: The Pydantic model class to validate against.
+
+        Returns:
+            A validated instance of *payload_type*.
+
+        Raises:
+            InvalidEventError: If ``event.data`` is ``None`` or fails validation.
+
+        Example::
+
+            async def handle_event(self, event, context):
+                order = self.extract_payload(event, OrderPayload)
+                # order is now a validated OrderPayload instance
+        """
+        if event.data is None:
+            raise InvalidEventError(
+                status="invalid_payload",
+                reason=f"Event {event.id} has no data payload (expected {payload_type.__name__})",
+            )
+        try:
+            return payload_type.model_validate(event.data)
+        except PydanticValidationError as exc:
+            raise InvalidEventError(
+                status="invalid_payload",
+                reason=f"Event {event.id} payload does not match {payload_type.__name__}: {exc}",
+            ) from exc
 
     def __lt__(self, other: EventHandlerBase) -> bool:
         """Support sorting by priority."""

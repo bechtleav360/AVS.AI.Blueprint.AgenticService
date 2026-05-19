@@ -98,12 +98,23 @@ class ActuatorApi(RestApiBase):
             span.set_attribute("health_status", response.status)
             span.set_attribute("cache_age_seconds", self._health_cache.get_cache_age_seconds())
 
-            # Only log if health check fails
+            # Translate aggregated DOWN status into HTTP 503 so a default K8s
+            # httpGet readiness probe (which only inspects the status code) sees
+            # the failure and removes the pod from service rotation.
             if response.status != "UP":
                 logger.warning("Readiness probe failed: %s", response.components)
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=response.model_dump(),
+                )
 
             return response
 
+        except HTTPException:
+            # Propagate explicit 503s (validation errors, aggregated DOWN) with
+            # their detailed payload — don't let the generic catch below
+            # overwrite them with a generic message.
+            raise
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.error("Readiness probe failed: %s", exc)
             raise HTTPException(
@@ -159,7 +170,9 @@ class ActuatorApi(RestApiBase):
         ai_config_dict = (
             ai_config_model.model_dump()
             if hasattr(ai_config_model, "model_dump")
-            else ai_config_model.dict() if hasattr(ai_config_model, "dict") else {}
+            else ai_config_model.dict()
+            if hasattr(ai_config_model, "dict")
+            else {}
         )
         ai_config = self._sanitize_config(ai_config_dict)
 

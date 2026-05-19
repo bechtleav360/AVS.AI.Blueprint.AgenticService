@@ -34,7 +34,7 @@ from fastapi.responses import JSONResponse
 from opentelemetry import trace
 
 from ...component.component import traced
-from ...models import ProcessResourceResponse
+from ...models import ProcessResourceResponse, ProcessingStatus
 from ..io_base import IOBase
 
 logger = logging.getLogger(__name__)
@@ -158,32 +158,19 @@ class RestApiBase(IOBase, ABC):
             from ...services.eventing.event_processing_service import EventProcessingService  # noqa: PLC0415
 
             event_processing_service = self.registry.get_service(EventProcessingService)
-            result_event = await event_processing_service.process_rest_request(payload, context)
+            processing_result = await event_processing_service.process_rest_request(payload, context)
 
-            # Extract result data from CloudEvent
-            result = result_event.data  # type: ignore[attr-defined]
+            success = processing_result.status == ProcessingStatus.PROCESSED
+            success_message = processing_result.message or "Processing completed successfully"
 
-            # Determine success based on processing result
-            success = result["status"] == "processed"
-            success_message = "Processing completed successfully"
-
-            if result.get("processed_by"):
-                processors = ", ".join(result["processed_by"])
-                success_message = f"Processing completed by: {processors}"
-            elif not success:
-                success_message = "No processor handled this request"
-
-            # Extract agent result if available
-            agent_result = result.get("agent_result")
-            response_data = None
-            if agent_result:
-                # Convert Pydantic model to dict if needed
-                if hasattr(agent_result, "model_dump"):
-                    response_data = agent_result.model_dump()
-                elif hasattr(agent_result, "dict"):
-                    response_data = agent_result.dict()
-                else:
-                    response_data = agent_result
+            # Extract response data from handler results
+            response_data: Any = None
+            if processing_result.result:
+                handler_data = [r.data for r in processing_result.result if r.data is not None]
+                if len(handler_data) == 1:
+                    response_data = handler_data[0]
+                elif handler_data:
+                    response_data = handler_data
 
             response = ProcessResourceResponse(
                 success=success,
