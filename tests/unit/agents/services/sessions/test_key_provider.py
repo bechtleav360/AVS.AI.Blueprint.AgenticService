@@ -2,9 +2,12 @@
 
 import os
 from unittest.mock import MagicMock, patch
-from uuid import UUID
+from uuid import UUID, uuid4
 
+import httpx
 import pytest
+import respx
+from cachetools import TTLCache
 
 from blueprint.agents.services.sessions.key_provider import SessionKeyProvider
 
@@ -164,3 +167,60 @@ class TestInvalidateCache:
 
     def test_noop_when_cache_not_initialized(self, key_provider: SessionKeyProvider) -> None:
         key_provider.invalidate_cache()  # _cache is None — should not raise
+
+
+# ---------------------------------------------------------------------------
+# get_session_key — remote source
+# ---------------------------------------------------------------------------
+
+_REMOTE_URL = "http://sessions.local:8001/v1/sessions"
+
+
+def _make_remote_provider(remote_url: str = _REMOTE_URL, api_key: str = "test-key") -> SessionKeyProvider:
+    provider = SessionKeyProvider()
+    provider._source = "remote"
+    provider._remote_url = remote_url
+    provider._api_key = api_key
+    provider._cache = TTLCache(maxsize=100, ttl=60)
+    return provider
+
+
+class TestGetSessionKeyRemote:
+    @respx.mock
+    async def test_returns_key_from_remote(self) -> None:
+        session_id = uuid4()
+        respx.get(f"{_REMOTE_URL}/{session_id}/key").mock(
+            return_value=httpx.Response(200, json={"session_key": "remote-secret"})
+        )
+        provider = _make_remote_provider()
+        result = await provider.get_session_key(session_id)
+        assert result == "remote-secret"
+
+    @respx.mock
+    async def test_caches_key_after_first_fetch(self) -> None:
+        session_id = uuid4()
+        route = respx.get(f"{_REMOTE_URL}/{session_id}/key").mock(
+            return_value=httpx.Response(200, json={"session_key": "cached-remote"})
+        )
+        provider = _make_remote_provider()
+        await provider.get_session_key(session_id)
+        await provider.get_session_key(session_id)
+        assert route.call_count == 1
+
+    @respx.mock
+    async def test_raises_on_non_2xx_response(self) -> None:
+        session_id = uuid4()
+        respx.get(f"{_REMOTE_URL}/{session_id}/key").mock(return_value=httpx.Response(404))
+        provider = _make_remote_provider()
+        with pytest.raises(httpx.HTTPStatusError):
+            await provider.get_session_key(session_id)
+
+    async def test_raises_when_session_id_missing(self) -> None:
+        provider = _make_remote_provider()
+        with pytest.raises(ValueError, match="session_id required"):
+            await provider.get_session_key(None)
+
+    async def test_raises_when_remote_url_not_configured(self) -> None:
+        provider = _make_remote_provider(remote_url="")
+        with pytest.raises(ValueError, match="session_key_remote_url not configured"):
+            await provider.get_session_key(uuid4())

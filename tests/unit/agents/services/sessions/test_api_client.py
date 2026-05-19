@@ -64,28 +64,28 @@ class TestOnShutdown:
 
 
 # ---------------------------------------------------------------------------
-# get_job_details
+# get_job_detail
 # ---------------------------------------------------------------------------
 
 
-class TestGetJobDetails:
+class TestGetJobDetail:
     async def test_requests_correct_url(self, started_api_client: SessionsApiClient, mock_http_client: AsyncMock) -> None:
-        await started_api_client.get_job_details(_SESSION_ID, _JOB_ID, _SESSION_KEY)
+        await started_api_client.get_job_detail(_SESSION_ID, _JOB_ID, _SESSION_KEY)
         url = mock_http_client.get.call_args[0][0]
         assert str(_SESSION_ID) in url
         assert str(_JOB_ID) in url
 
     async def test_passes_session_key_header(self, started_api_client: SessionsApiClient, mock_http_client: AsyncMock) -> None:
-        await started_api_client.get_job_details(_SESSION_ID, _JOB_ID, _SESSION_KEY)
+        await started_api_client.get_job_detail(_SESSION_ID, _JOB_ID, _SESSION_KEY)
         headers = mock_http_client.get.call_args[1]["headers"]
         assert headers["X-Session-Key"] == _SESSION_KEY
 
     async def test_raises_when_not_initialized(self, api_client: SessionsApiClient) -> None:
         with pytest.raises(ValueError, match="not initialized"):
-            await api_client.get_job_details(_SESSION_ID, _JOB_ID, _SESSION_KEY)
+            await api_client.get_job_detail(_SESSION_ID, _JOB_ID, _SESSION_KEY)
 
     async def test_calls_raise_for_status(self, started_api_client: SessionsApiClient, mock_http_client: AsyncMock) -> None:
-        await started_api_client.get_job_details(_SESSION_ID, _JOB_ID, _SESSION_KEY)
+        await started_api_client.get_job_detail(_SESSION_ID, _JOB_ID, _SESSION_KEY)
         mock_http_client.get.return_value.raise_for_status.assert_called_once()
 
 
@@ -96,19 +96,24 @@ class TestGetJobDetails:
 
 class TestStartJob:
     async def test_posts_to_start_endpoint(self, started_api_client: SessionsApiClient, mock_http_client: AsyncMock) -> None:
-        await started_api_client.start_job(_SESSION_ID, _JOB_ID, agent_id="agent-1")
+        await started_api_client.start_job(_SESSION_ID, _JOB_ID, agent_id="agent-1", session_key=_SESSION_KEY)
         url = mock_http_client.post.call_args[0][0]
         assert "start" in url
         assert str(_JOB_ID) in url
 
     async def test_payload_contains_agent_id(self, started_api_client: SessionsApiClient, mock_http_client: AsyncMock) -> None:
-        await started_api_client.start_job(_SESSION_ID, _JOB_ID, agent_id="my-agent")
+        await started_api_client.start_job(_SESSION_ID, _JOB_ID, agent_id="my-agent", session_key=_SESSION_KEY)
         json_payload = mock_http_client.post.call_args[1]["json"]
         assert json_payload["agent_id"] == "my-agent"
 
+    async def test_passes_session_key_header(self, started_api_client: SessionsApiClient, mock_http_client: AsyncMock) -> None:
+        await started_api_client.start_job(_SESSION_ID, _JOB_ID, agent_id="agent-1", session_key=_SESSION_KEY)
+        headers = mock_http_client.post.call_args[1]["headers"]
+        assert headers["X-Session-Key"] == _SESSION_KEY
+
     async def test_raises_when_not_initialized(self, api_client: SessionsApiClient) -> None:
         with pytest.raises(ValueError, match="not initialized"):
-            await api_client.start_job(_SESSION_ID, _JOB_ID, agent_id="agent-1")
+            await api_client.start_job(_SESSION_ID, _JOB_ID, agent_id="agent-1", session_key=_SESSION_KEY)
 
 
 # ---------------------------------------------------------------------------
