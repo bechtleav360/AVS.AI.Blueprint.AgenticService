@@ -198,7 +198,9 @@ class SessionsServiceConfig(BaseModel):
     session_key_source: str = Field(default="env", description="Where to retrieve session keys from (env, vault, config, remote)")
     session_key_env_var: str = Field(default="SESSION_KEY", description="Environment variable name for session key")
     session_key_cache_ttl_seconds: int = Field(default=3600, description="Cache TTL for session keys in seconds")
-    session_key_remote_url: str | None = Field(default=None, description="Base URL for remote session key endpoint (required when session_key_source='remote')")
+    session_key_remote_url: str | None = Field(
+        default=None, description="Base URL for remote session key endpoint (required when session_key_source='remote')"
+    )
 
     # Concurrency & Performance
     max_concurrent_jobs: int = Field(default=10, description="Maximum concurrent job processing")

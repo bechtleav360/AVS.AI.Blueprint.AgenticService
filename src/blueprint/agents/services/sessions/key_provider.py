@@ -174,7 +174,7 @@ class SessionKeyProvider(ServiceBase):
         # - HashiCorp Vault
         # - Azure Key Vault
         # - AWS Secrets Manager
-        raise NotImplementedError("Vault integration not yet implemented. " "Use session_key_source='env' or 'config' for now.")
+        raise NotImplementedError("Vault integration not yet implemented. Use session_key_source='env' or 'config' for now.")
 
     async def _get_from_remote(self, session_id: UUID | None) -> str:
         """Fetch session key from a remote key vault endpoint.

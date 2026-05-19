@@ -189,9 +189,7 @@ class TestGetSessionKeyRemote:
     @respx.mock
     async def test_returns_key_from_remote(self) -> None:
         session_id = uuid4()
-        respx.get(f"{_REMOTE_URL}/{session_id}/key").mock(
-            return_value=httpx.Response(200, json={"session_key": "remote-secret"})
-        )
+        respx.get(f"{_REMOTE_URL}/{session_id}/key").mock(return_value=httpx.Response(200, json={"session_key": "remote-secret"}))
         provider = _make_remote_provider()
         result = await provider.get_session_key(session_id)
         assert result == "remote-secret"
@@ -199,9 +197,7 @@ class TestGetSessionKeyRemote:
     @respx.mock
     async def test_caches_key_after_first_fetch(self) -> None:
         session_id = uuid4()
-        route = respx.get(f"{_REMOTE_URL}/{session_id}/key").mock(
-            return_value=httpx.Response(200, json={"session_key": "cached-remote"})
-        )
+        route = respx.get(f"{_REMOTE_URL}/{session_id}/key").mock(return_value=httpx.Response(200, json={"session_key": "cached-remote"}))
         provider = _make_remote_provider()
         await provider.get_session_key(session_id)
         await provider.get_session_key(session_id)
