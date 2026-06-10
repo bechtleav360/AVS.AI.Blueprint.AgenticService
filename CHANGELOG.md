@@ -1,5 +1,7 @@
 # Changelog
-## [0.6.0] - Planned
+## [Unreleased]
+
+## [0.6.1] - 2026-06-10
 
 ### Added
 - **`SessionsJobHandler`** (`blueprint.agents.handler`) — shared job-lifecycle base for
@@ -23,6 +25,8 @@
   spawned `"python"` literally, which on Windows with uv-managed venvs could resolve to
   uv's base interpreter and fail with `No module named uvicorn`. It now uses
   `sys.executable`, so the reload server runs in the same venv as `asbs`.
+- **Kebab-case component names produce valid identifiers** (#3). `camel_to_snake` now
+  normalizes hyphens, so kebab-case names no longer generate invalid Python identifiers.
 
 ## [0.5.0] - 2026-03-05
 
