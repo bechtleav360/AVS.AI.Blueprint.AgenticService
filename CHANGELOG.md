@@ -1,6 +1,14 @@
 # Changelog
 ## [0.6.0] - Planned
 
+### Added
+- **`SessionsJobHandler`** (`blueprint.agents.handler`) — shared job-lifecycle base for
+  sessions-service SSE handlers (#19). Subclasses set `JOB_TYPE`, `PAYLOAD_MODEL`,
+  `RESULT_MODEL` and implement `process()`; the base wraps fetch → validate → start →
+  process → complete with two-stage idempotency (in-flight guard + post-start seen-set)
+  and a centralised error→status mapping (cancel / complete-with-error / retry-pending).
+  Additive and backwards compatible — `EventHandlerBase` is unchanged.
+
 ## [0.5.0] - 2026-03-05
 
 ### Architecture Refactoring - Component System Streamlining
