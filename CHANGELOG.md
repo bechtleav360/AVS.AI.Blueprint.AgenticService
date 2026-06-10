@@ -19,6 +19,10 @@
   `app_name` (fallback `"blueprint-service"`) and `app_description` (fallback `""`). The
   misleading framework-internal description fallback is removed. Set `app_version` in a
   service's `settings.toml` to surface the real version at `/docs`.
+- **`asbs dev` now uses the launching interpreter** (#15). The dev server subprocess
+  spawned `"python"` literally, which on Windows with uv-managed venvs could resolve to
+  uv's base interpreter and fail with `No module named uvicorn`. It now uses
+  `sys.executable`, so the reload server runs in the same venv as `asbs`.
 
 ## [0.5.0] - 2026-03-05
 
