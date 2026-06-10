@@ -90,6 +90,11 @@ class TestCamelToSnake:
         """Should handle single word lowercase."""
         assert camel_to_snake("agent") == "agent"
 
+    def test_camel_to_snake_kebab_case(self) -> None:
+        """Should convert kebab-case to snake_case."""
+        assert camel_to_snake("my-agent") == "my_agent"
+        assert camel_to_snake("cleanup-job") == "cleanup_job"
+
 
 class TestToSnakeCase:
     """Test suite for to_snake_case function."""
@@ -139,10 +144,16 @@ class TestNormalizeComponentName:
     def test_normalize_scheduler_kebab_case(self) -> None:
         """Should normalize scheduler name from kebab-case."""
         class_name, snake_name, filename = normalize_component_name("cleanup-job", "scheduler")
-        # camel_to_snake treats kebab-case differently, preserving the dash
         assert class_name == "CleanupJobScheduler"
-        assert snake_name == "cleanup-job_scheduler"
-        assert filename == "cleanup-job_scheduler.py"
+        assert snake_name == "cleanup_job_scheduler"
+        assert filename == "cleanup_job_scheduler.py"
+
+    def test_normalize_handler_kebab_case(self) -> None:
+        """Should normalize handler name from kebab-case."""
+        class_name, snake_name, filename = normalize_component_name("my-agent", "handler")
+        assert class_name == "MyAgentHandler"
+        assert snake_name == "my_agent_handler"
+        assert filename == "my_agent_handler.py"
 
 
 class TestAddImportToMain:
