@@ -210,12 +210,9 @@ class AppBuilder:
 
         # 5. Build FastAPI app
         app = FastAPI(
-            title=self._config.get("app_name", "bios-agent"),
-            description=self._config.get(
-                "app_description",
-                "Generic microservice blueprint for building intelligent agents",
-            ),
-            version="0.1.0",
+            title=self._config.get("app_name", "blueprint-service"),
+            description=self._config.get("app_description", ""),
+            version=self._config.get("app_version", "0.0.0"),
             lifespan=self._create_lifespan_manager(),
             docs_url="/docs",
             redoc_url="/redoc",

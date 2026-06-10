@@ -395,3 +395,49 @@ class TestBuildNatsRegression:
         all_build_mocks.nats_client.assert_called_once_with()
         all_build_mocks.nats_eventing.assert_called_once_with()
         all_build_mocks.sessions_bus.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# build() — OpenAPI app metadata sourced from config (#11)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildAppMetadata:
+    def test_reads_title_version_description_from_config(
+        self,
+        builder_for_build: AppBuilder,
+        mock_registry: MagicMock,
+        all_build_mocks: types.SimpleNamespace,
+        build_config: MagicMock,
+    ) -> None:
+        wire_empty_registry(mock_registry)
+        values = {
+            "app_name": "svc-sessions",
+            "app_version": "0.2.0",
+            "app_description": "Secure session management service.",
+        }
+        build_config.get.side_effect = lambda key, default="": values.get(key, default)
+
+        builder_for_build.build()
+
+        _, kwargs = all_build_mocks.fastapi.call_args
+        assert kwargs["title"] == "svc-sessions"
+        assert kwargs["version"] == "0.2.0"
+        assert kwargs["description"] == "Secure session management service."
+
+    def test_version_falls_back_to_0_0_0_not_hardcoded(
+        self,
+        builder_for_build: AppBuilder,
+        mock_registry: MagicMock,
+        all_build_mocks: types.SimpleNamespace,
+        build_config: MagicMock,
+    ) -> None:
+        wire_empty_registry(mock_registry)
+        # Honour the default arg so we observe the fallback the code requests.
+        build_config.get.side_effect = lambda key, default=None: default
+
+        builder_for_build.build()
+
+        _, kwargs = all_build_mocks.fastapi.call_args
+        assert kwargs["version"] == "0.0.0"
+        assert kwargs["description"] == ""

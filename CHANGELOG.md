@@ -13,6 +13,13 @@
   awaits a re-pend/lease capability there (avs.ai.idac.service-sessions#59).
   Additive and backwards compatible — `EventHandlerBase` is unchanged.
 
+### Fixed
+- **OpenAPI app metadata now comes from config** (#11). `AppBuilder.build()` no longer
+  hardcodes `version="0.1.0"`; it reads `app_version` (fallback `"0.0.0"`) alongside
+  `app_name` (fallback `"blueprint-service"`) and `app_description` (fallback `""`). The
+  misleading framework-internal description fallback is removed. Set `app_version` in a
+  service's `settings.toml` to surface the real version at `/docs`.
+
 ## [0.5.0] - 2026-03-05
 
 ### Architecture Refactoring - Component System Streamlining
