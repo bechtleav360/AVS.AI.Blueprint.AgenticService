@@ -4,6 +4,25 @@
 **Spec source:** issue #19 body (acceptance criteria) + analyser#13 (lifecycle parity reference)
 **Repo:** `blueprint.agent-service` (code-follows rule — the framework change lives here)
 
+## Amendment (supersedes the "after `start_job`" idempotency wording below)
+
+PR #21 review found that populating `_seen` immediately after `start_job` (as the
+"Lifecycle order" / step 5 below describe) silently drops the redelivery of any job that
+*started* but then re-raised a non-terminal error (`RetryableHandlerError` / `OSError` /
+`TimeoutError` / `CriticalHandlerError`, or complete-exhaustion) — violating the
+"left pending = retryable" contract. **Final implementation:** `_seen` is **terminal-only**
+— populated only on a terminal outcome (successful complete, cancel, error-result complete).
+`_in_flight` still guards concurrent duplicates. Post-start non-terminal failures stay in
+*neither* set, so they remain eligible for redelivery.
+
+Known bound: once `start_job` moved a job `PENDING→RUNNING`, a redelivery re-calls
+`start_job` and svc-sessions rejects `RUNNING→RUNNING` with 409 — eligible-for-redelivery is
+not yet fully *resumable*. Tracked in avs.ai.idac.service-sessions#59. An idempotent
+"swallow 409-already-running" start was rejected: under multi-replica SSE it would turn a
+benign duplicate-stop into double-`process()`.
+
+Read the sections below with this amendment in force.
+
 ## Goal
 
 Add `blueprint.agents.handler.SessionsJobHandler` — a shared base that wraps the

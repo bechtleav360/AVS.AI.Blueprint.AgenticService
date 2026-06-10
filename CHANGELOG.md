@@ -5,8 +5,12 @@
 - **`SessionsJobHandler`** (`blueprint.agents.handler`) — shared job-lifecycle base for
   sessions-service SSE handlers (#19). Subclasses set `JOB_TYPE`, `PAYLOAD_MODEL`,
   `RESULT_MODEL` and implement `process()`; the base wraps fetch → validate → start →
-  process → complete with two-stage idempotency (in-flight guard + post-start seen-set)
-  and a centralised error→status mapping (cancel / complete-with-error / retry-pending).
+  process → complete with two-stage idempotency (an in-flight guard for concurrent
+  duplicates plus a **terminal-only** seen-set populated only on complete/cancel) and a
+  centralised error→status mapping (cancel / complete-with-error / left-eligible-for-
+  redelivery). Post-start retryable/critical failures are not silently dropped, but are
+  not yet fully resumable — svc-sessions rejects `RUNNING→RUNNING` (409), so true resume
+  awaits a re-pend/lease capability there (avs.ai.idac.service-sessions#59).
   Additive and backwards compatible — `EventHandlerBase` is unchanged.
 
 ## [0.5.0] - 2026-03-05
