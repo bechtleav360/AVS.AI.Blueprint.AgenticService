@@ -1,9 +1,10 @@
 """Unit tests for SessionsJobHandler (issue #19).
 
 Covers the shared job-lifecycle base: happy path, two-stage idempotency
-(in-flight guard + post-start seen-set), anti-stranding on transient pre-start
-failures, payload validation -> cancel, the process() error->status mapping,
-complete_job retry/exhaustion, and unknown-job_type no-op.
+(in-flight guard + terminal-only seen-set), eligibility-for-redelivery on
+transient pre-start AND post-start failures, payload validation -> cancel, the
+process() error->status mapping, complete_job retry/exhaustion, and
+unknown-job_type no-op.
 
 All svc-sessions calls are mocked; these tests do NOT prove the live cancel path
 (svc-sessions exposes no /cancel route — tracked as a separate follow-up).
@@ -513,3 +514,177 @@ class TestCriticalHandlerError:
             await handler.handle_event(event, context)
         api_client.complete_job.assert_not_awaited()
         api_client.cancel_job.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Terminal-only seen-set: a job that STARTED but did not reach a terminal state
+# (post-start retryable/critical failure) must stay out of `_seen`, so it is
+# eligible for redelivery rather than silently ignored. `_seen` is populated
+# only on terminal outcomes (complete / cancel / error-result-complete).
+# ---------------------------------------------------------------------------
+
+
+class TestTerminalSeenSemantics:
+    async def test_retryable_from_process_leaves_job_unseen(
+        self,
+        mock_config: MagicMock,
+        mock_registry: MagicMock,
+        event: GenericCloudEvent,
+        context: dict[str, Any],
+        api_client: MagicMock,
+        job_id: UUID,
+    ) -> None:
+        async def boom(_p: Any, _c: Any) -> _Result:
+            raise RetryableHandlerError(status="busy", reason="later")
+
+        handler = _Handler(process_impl=boom)
+        mock_config.get.return_value = {"agent_id": "test-agent"}
+        await handler.on_startup()
+
+        with pytest.raises(RetryableHandlerError):
+            await handler.handle_event(event, context)
+        api_client.start_job.assert_awaited_once()
+        assert job_id not in handler._seen
+        assert job_id not in handler._in_flight
+
+    async def test_oserror_from_process_leaves_job_unseen(
+        self,
+        mock_config: MagicMock,
+        mock_registry: MagicMock,
+        event: GenericCloudEvent,
+        context: dict[str, Any],
+        api_client: MagicMock,
+        job_id: UUID,
+    ) -> None:
+        async def boom(_p: Any, _c: Any) -> _Result:
+            raise OSError("disk gone")
+
+        handler = _Handler(process_impl=boom)
+        mock_config.get.return_value = {"agent_id": "test-agent"}
+        await handler.on_startup()
+
+        with pytest.raises(RetryableHandlerError):
+            await handler.handle_event(event, context)
+        assert job_id not in handler._seen
+
+    async def test_timeout_error_from_process_leaves_job_unseen(
+        self,
+        mock_config: MagicMock,
+        mock_registry: MagicMock,
+        event: GenericCloudEvent,
+        context: dict[str, Any],
+        api_client: MagicMock,
+        job_id: UUID,
+    ) -> None:
+        async def boom(_p: Any, _c: Any) -> _Result:
+            raise TimeoutError("slow")
+
+        handler = _Handler(process_impl=boom)
+        mock_config.get.return_value = {"agent_id": "test-agent"}
+        await handler.on_startup()
+
+        with pytest.raises(RetryableHandlerError):
+            await handler.handle_event(event, context)
+        assert job_id not in handler._seen
+
+    async def test_critical_from_process_leaves_job_unseen(
+        self,
+        mock_config: MagicMock,
+        mock_registry: MagicMock,
+        event: GenericCloudEvent,
+        context: dict[str, Any],
+        api_client: MagicMock,
+        job_id: UUID,
+    ) -> None:
+        async def boom(_p: Any, _c: Any) -> _Result:
+            raise CriticalHandlerError(status="fatal", reason="restart")
+
+        handler = _Handler(process_impl=boom)
+        mock_config.get.return_value = {"agent_id": "test-agent"}
+        await handler.on_startup()
+
+        with pytest.raises(CriticalHandlerError):
+            await handler.handle_event(event, context)
+        assert job_id not in handler._seen
+
+    async def test_complete_exhaustion_leaves_job_unseen(
+        self,
+        mock_config: MagicMock,
+        mock_registry: MagicMock,
+        event: GenericCloudEvent,
+        context: dict[str, Any],
+        api_client: MagicMock,
+        job_id: UUID,
+    ) -> None:
+        api_client.complete_job = AsyncMock(side_effect=httpx.ConnectError("always"))
+        handler = _started(mock_config)
+        await handler.on_startup()
+
+        with pytest.raises(RetryableHandlerError):
+            await handler.handle_event(event, context)
+        assert job_id not in handler._seen
+
+    async def test_terminal_outcomes_populate_seen(
+        self,
+        mock_config: MagicMock,
+        mock_registry: MagicMock,
+        event: GenericCloudEvent,
+        context: dict[str, Any],
+        api_client: MagicMock,
+        job_id: UUID,
+    ) -> None:
+        # Successful completion is terminal -> seen.
+        handler = _started(mock_config)
+        await handler.on_startup()
+        await handler.handle_event(event, context)
+        assert job_id in handler._seen
+
+    async def test_cancel_is_terminal_and_seen(
+        self,
+        mock_config: MagicMock,
+        mock_registry: MagicMock,
+        event: GenericCloudEvent,
+        context: dict[str, Any],
+        api_client: MagicMock,
+        job_id: UUID,
+    ) -> None:
+        api_client.get_job_detail = AsyncMock(return_value={"payload": {"wrong": "field"}})
+        handler = _started(mock_config)
+        await handler.on_startup()
+        await handler.handle_event(event, context)
+        assert job_id in handler._seen
+        # Replay of a cancelled job is a no-op (no second cancel).
+        await handler.handle_event(event, context)
+        api_client.cancel_job.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Error-result completion shares the retry helper with the success path.
+# ---------------------------------------------------------------------------
+
+
+class TestErrorResultCompletionRetry:
+    async def test_error_result_completion_retries_transient(
+        self,
+        mock_config: MagicMock,
+        mock_registry: MagicMock,
+        event: GenericCloudEvent,
+        context: dict[str, Any],
+        api_client: MagicMock,
+        job_id: UUID,
+    ) -> None:
+        async def boom(_p: Any, _c: Any) -> _Result:
+            raise ValueError("bad input")
+
+        # First complete attempt fails transiently, second succeeds.
+        api_client.complete_job = AsyncMock(side_effect=[httpx.ConnectError("x"), {}])
+        handler = _Handler(process_impl=boom)
+        mock_config.get.return_value = {"agent_id": "test-agent"}
+        await handler.on_startup()
+
+        await handler.handle_event(event, context)
+
+        assert api_client.complete_job.await_count == 2
+        _, kwargs = api_client.complete_job.call_args
+        assert kwargs["result"]["status"] == "failed"
+        assert job_id in handler._seen

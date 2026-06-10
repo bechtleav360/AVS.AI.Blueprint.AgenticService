@@ -17,10 +17,20 @@ Concrete handlers set three class vars (``JOB_TYPE``, ``PAYLOAD_MODEL``,
             ...
 
 Idempotency is two-stage (see :meth:`handle_event`): an in-flight guard for
-concurrent duplicate notifications, plus a seen-set populated only after
-``start_job`` succeeds for replays of already-started jobs. A job that fails
-*before* ``start_job`` (transient fetch/start error) is left in neither set so a
-later redelivery is not stranded.
+concurrent duplicate notifications, plus a seen-set populated only on a
+*terminal* outcome (complete / cancel / error-result-complete) to drop replays
+of finished jobs. A job that fails before reaching a terminal state — transient
+fetch/start error, or a post-start retryable/critical failure — is left in
+neither set, so it stays eligible for redelivery rather than being silently
+ignored.
+
+Caveat: once ``start_job`` has moved a job PENDING->RUNNING, a redelivery that
+re-enters this handler will call ``start_job`` again and svc-sessions rejects it
+(RUNNING->RUNNING is not a valid transition -> 409). So post-start retryable
+failures are *eligible* for redelivery but not yet cleanly *resumable* — true
+post-start resume needs a svc-sessions re-pend/resume capability (tracked
+separately). The ``_seen`` fix here removes the silent-ignore; it does not add a
+resume path.
 
 Error -> terminal-state mapping (svc-sessions can only reach COMPLETED/CANCELLED;
 there is no reachable ``failed`` state):
@@ -77,7 +87,7 @@ class SessionsJobHandler(EventHandlerBase, ABC):
         self._agent_id: str | None = None
         # Concurrent duplicate guard; populated at entry, cleared in `finally`.
         self._in_flight: set[UUID] = set()
-        # Replay guard; populated only after `start_job` succeeds.
+        # Replay guard; populated only on a terminal outcome (complete/cancel).
         self._seen: set[UUID] = set()
 
     async def on_startup(self) -> None:
@@ -143,12 +153,8 @@ class SessionsJobHandler(EventHandlerBase, ABC):
             try:
                 payload = self.PAYLOAD_MODEL.model_validate(raw_payload)
             except PydanticValidationError as exc:
-                self._log(session_id, job_id, "cancelled", started)
-                await api_client.cancel_job(
-                    session_id=session_id,
-                    job_id=job_id,
-                    session_key=session_key,
-                    reason=f"invalid payload for {self.PAYLOAD_MODEL.__name__}: {exc}",
+                await self._cancel(
+                    api_client, session_id, job_id, session_key, started, reason=f"invalid payload for {self.PAYLOAD_MODEL.__name__}: {exc}"
                 )
                 return None
 
@@ -157,9 +163,12 @@ class SessionsJobHandler(EventHandlerBase, ABC):
                 await api_client.start_job(session_id, job_id, self._agent_id, session_key)
             except httpx.RequestError as exc:
                 raise RetryableHandlerError(status="start_failed", reason=f"start_job failed: {exc}") from exc
-            self._seen.add(job_id)
 
             # --- Process + map errors to terminal states. ---
+            # NOTE: `_seen` (the redelivery guard) is populated ONLY on a terminal
+            # outcome below — never merely because `start_job` succeeded. A job that
+            # started but then re-raises (retryable / critical) must stay out of
+            # `_seen` so a redelivery is not silently ignored.
             try:
                 result = await self.process(payload, context)
             except (RetryableHandlerError, CriticalHandlerError):
@@ -167,27 +176,58 @@ class SessionsJobHandler(EventHandlerBase, ABC):
                 # Both keep their framework semantics; never neutralise into a result.
                 raise
             except InvalidEventError as exc:
-                self._log(session_id, job_id, "cancelled", started)
-                await api_client.cancel_job(session_id=session_id, job_id=job_id, session_key=session_key, reason=str(exc))
+                await self._cancel(api_client, session_id, job_id, session_key, started, reason=str(exc))
                 return None
             except (OSError, TimeoutError) as exc:
                 raise RetryableHandlerError(status="process_transient", reason=f"process transient error: {exc}") from exc
             except Exception as exc:  # ValueError + any other -> complete with error result.
-                self._log(session_id, job_id, "completed_failed", started)
-                await api_client.complete_job(
-                    session_id=session_id,
-                    job_id=job_id,
-                    session_key=session_key,
-                    result={"status": "failed", "error": str(exc)},
+                await self._complete(
+                    api_client,
+                    session_id,
+                    job_id,
+                    session_key,
+                    started,
+                    {"status": "failed", "error": str(exc)},
+                    status_log="completed_failed",
                 )
                 return None
 
-            # --- Complete (with retry on transient HTTP errors). ---
-            await self._complete_with_retry(api_client, session_id, job_id, session_key, result.model_dump())
-            self._log(session_id, job_id, "completed", started)
+            # --- Complete (success). ---
+            await self._complete(api_client, session_id, job_id, session_key, started, result.model_dump(), status_log="completed")
             return None
         finally:
             self._in_flight.discard(job_id)
+
+    async def _complete(
+        self,
+        api_client: Any,
+        session_id: UUID,
+        job_id: UUID,
+        session_key: str,
+        started: float,
+        result: dict[str, Any],
+        *,
+        status_log: str,
+    ) -> None:
+        """Terminal completion (success or error-result) with shared retry, then mark seen."""
+        await self._complete_with_retry(api_client, session_id, job_id, session_key, result)
+        self._seen.add(job_id)
+        self._log(session_id, job_id, status_log, started)
+
+    async def _cancel(
+        self,
+        api_client: Any,
+        session_id: UUID,
+        job_id: UUID,
+        session_key: str,
+        started: float,
+        *,
+        reason: str,
+    ) -> None:
+        """Terminal cancellation, then mark seen so a redelivery does not re-cancel."""
+        await api_client.cancel_job(session_id=session_id, job_id=job_id, session_key=session_key, reason=reason)
+        self._seen.add(job_id)
+        self._log(session_id, job_id, "cancelled", started)
 
     async def _complete_with_retry(
         self,
