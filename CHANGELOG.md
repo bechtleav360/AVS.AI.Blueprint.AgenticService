@@ -1,6 +1,29 @@
 # Changelog
 ## [0.6.0] - Planned
 
+### Added
+- **`SessionsJobHandler`** (`blueprint.agents.handler`) — shared job-lifecycle base for
+  sessions-service SSE handlers (#19). Subclasses set `JOB_TYPE`, `PAYLOAD_MODEL`,
+  `RESULT_MODEL` and implement `process()`; the base wraps fetch → validate → start →
+  process → complete with two-stage idempotency (an in-flight guard for concurrent
+  duplicates plus a **terminal-only** seen-set populated only on complete/cancel) and a
+  centralised error→status mapping (cancel / complete-with-error / left-eligible-for-
+  redelivery). Post-start retryable/critical failures are not silently dropped, but are
+  not yet fully resumable — svc-sessions rejects `RUNNING→RUNNING` (409), so true resume
+  awaits a re-pend/lease capability there (avs.ai.idac.service-sessions#59).
+  Additive and backwards compatible — `EventHandlerBase` is unchanged.
+
+### Fixed
+- **OpenAPI app metadata now comes from config** (#11). `AppBuilder.build()` no longer
+  hardcodes `version="0.1.0"`; it reads `app_version` (fallback `"0.0.0"`) alongside
+  `app_name` (fallback `"blueprint-service"`) and `app_description` (fallback `""`). The
+  misleading framework-internal description fallback is removed. Set `app_version` in a
+  service's `settings.toml` to surface the real version at `/docs`.
+- **`asbs dev` now uses the launching interpreter** (#15). The dev server subprocess
+  spawned `"python"` literally, which on Windows with uv-managed venvs could resolve to
+  uv's base interpreter and fail with `No module named uvicorn`. It now uses
+  `sys.executable`, so the reload server runs in the same venv as `asbs`.
+
 ## [0.5.0] - 2026-03-05
 
 ### Architecture Refactoring - Component System Streamlining
