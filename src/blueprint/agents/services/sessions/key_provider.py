@@ -9,6 +9,8 @@ import logging
 import os
 from uuid import UUID
 
+import httpx
+
 from cachetools import TTLCache
 
 from ..service_base import ServiceBase
@@ -40,6 +42,8 @@ class SessionKeyProvider(ServiceBase):
         self._source: str = "env"
         self._env_var: str = "SESSION_KEY"
         self._cache_ttl: int = 3600
+        self._remote_url: str = ""
+        self._api_key: str = ""
 
     async def on_startup(self) -> None:
         """Initialize the session key provider with configuration."""
@@ -50,6 +54,8 @@ class SessionKeyProvider(ServiceBase):
         self._source = config.get("session_key_source", "env")
         self._env_var = config.get("session_key_env_var", "SESSION_KEY")
         self._cache_ttl = config.get("session_key_cache_ttl_seconds", 3600)
+        self._remote_url = config.get("session_key_remote_url", "")
+        self._api_key = config.get("api_key", "")
 
         # Initialize cache
         self._cache = TTLCache(maxsize=1000, ttl=self._cache_ttl)
@@ -62,7 +68,7 @@ class SessionKeyProvider(ServiceBase):
 
     async def on_shutdown(self) -> None:
         """Clean up resources."""
-        if self._cache:
+        if self._cache is not None:
             self._cache.clear()
         logger.info("SessionKeyProvider shut down")
 
@@ -92,6 +98,8 @@ class SessionKeyProvider(ServiceBase):
             session_key = self._get_from_config()
         elif self._source == "vault":
             session_key = await self._get_from_vault(session_id)
+        elif self._source == "remote":
+            session_key = await self._get_from_remote(session_id)
         else:
             raise ValueError(f"Unknown session key source: {self._source}")
 
@@ -108,7 +116,7 @@ class SessionKeyProvider(ServiceBase):
         Args:
             session_id: Optional session ID to invalidate, or None for default
         """
-        if not self._cache:
+        if self._cache is None:
             return
 
         cache_key = str(session_id) if session_id else "default"
@@ -167,3 +175,31 @@ class SessionKeyProvider(ServiceBase):
         # - Azure Key Vault
         # - AWS Secrets Manager
         raise NotImplementedError("Vault integration not yet implemented. Use session_key_source='env' or 'config' for now.")
+
+    async def _get_from_remote(self, session_id: UUID | None) -> str:
+        """Fetch session key from a remote key vault endpoint.
+
+        Args:
+            session_id: Session ID to look up.
+
+        Returns:
+            Session key string.
+
+        Raises:
+            ValueError: If session_id is None or remote_url not configured.
+            httpx.HTTPStatusError: If the remote returns a non-2xx response.
+        """
+        if not session_id:
+            raise ValueError("session_id required for remote source")
+        if not self._remote_url:
+            raise ValueError("sessions_service.session_key_remote_url not configured")
+
+        url = f"{self._remote_url}/{session_id}/key"
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(url, headers={"X-Api-Key": self._api_key})
+            response.raise_for_status()
+            data = response.json()
+
+        logger.debug("Session key retrieved from remote: session_id=%s", session_id)
+        return data["session_key"]

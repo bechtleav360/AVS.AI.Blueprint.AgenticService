@@ -26,9 +26,12 @@ def run(args: Namespace) -> None:
     print()
 
     try:
-        # Run uvicorn with reload
+        # Run uvicorn with reload. Use sys.executable (the interpreter that launched
+        # asbs) rather than a literal "python": on Windows with uv-managed venvs the
+        # latter can resolve to the base interpreter, which can't see the venv's
+        # site-packages (#15).
         cmd = [
-            "python",
+            sys.executable,
             "-m",
             "uvicorn",
             "src.main:app",

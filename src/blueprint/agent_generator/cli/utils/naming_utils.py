@@ -53,14 +53,15 @@ def to_class_name(name: str) -> str:
 
 def camel_to_snake(name: str) -> str:
     """
-    Convert CamelCase to snake_case.
+    Convert CamelCase or kebab-case to snake_case.
 
     Args:
-        name: CamelCase string
+        name: CamelCase or kebab-case string
 
     Returns:
         snake_case string
     """
+    name = name.replace("-", "_")
     # Insert underscore before capital letters (except first)
     s1 = re.sub("(.)([A-Z][a-z]+)", r"\1_\2", name)
     # Insert underscore before capital letters preceded by lowercase

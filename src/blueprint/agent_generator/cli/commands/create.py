@@ -86,8 +86,6 @@ def create_handler(args: Namespace) -> None:
     # Use naming utilities to normalize the handler name
     class_name, snake_name, file_name = normalize_component_name(args.name, "handler")
 
-    # Ensure filename doesn't contain hyphens (convert to snake_case for imports)
-    file_name = file_name.replace("-", "_")
     module_name = file_name[:-3]  # Remove .py extension
     output_file = output_dir / file_name
 
@@ -180,8 +178,6 @@ def create_service(args: Namespace) -> None:
     # Use naming utilities to normalize the service name
     class_name, snake_name, file_name = normalize_component_name(args.name, "service")
 
-    # Ensure filename doesn't contain hyphens (convert to snake_case for imports)
-    file_name = file_name.replace("-", "_")
     module_name = file_name[:-3]  # Remove .py extension
     output_file = output_dir / file_name
 
@@ -282,8 +278,6 @@ def create_api(args: Namespace) -> None:
     # Use naming utilities to normalize the API name
     class_name, _, file_name = normalize_component_name(args.name, "api")
 
-    # Ensure filename doesn't contain hyphens (convert to snake_case for imports)
-    file_name = file_name.replace("-", "_")
     module_name = file_name[:-3]  # Remove .py extension
     api_output_file = api_output_dir / file_name
 
@@ -534,9 +528,6 @@ def create_agent(args: Namespace) -> None:
     # Use naming utilities to normalize the agent name
     class_name, snake_name, file_name = normalize_component_name(args.name, "agent")
 
-    # Ensure filename doesn't contain hyphens (convert to snake_case for imports)
-    file_name = file_name.replace("-", "_")
-    snake_name = snake_name.replace("-", "_")  # Also fix snake_name
     module_name = file_name[:-3]  # Remove .py extension
 
     # Get project root and directories
@@ -686,8 +677,6 @@ def create_scheduler(args: Namespace) -> None:
     # Use naming utilities to normalize the scheduler name
     class_name, snake_name, file_name = normalize_component_name(args.name, "scheduler")
 
-    # Ensure filename doesn't contain hyphens (convert to snake_case for imports)
-    file_name = file_name.replace("-", "_")
     module_name = file_name[:-3]  # Remove .py extension
     output_file = output_dir / file_name
 
