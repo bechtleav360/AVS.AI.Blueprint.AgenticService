@@ -44,6 +44,7 @@ def eventing(mock_registry: MagicMock, mock_config: MagicMock) -> _RetryEventing
     }.get(key, default)
     return _RetryEventing()
 
+
 # ---------------------------------------------------------------------------
 # _unwrap_nested_cloud_event
 # ---------------------------------------------------------------------------
@@ -195,9 +196,7 @@ class TestStartWithRetry:
             await eventing._retry_task
         assert eventing.connect_mock.await_count == 2
 
-    async def test_max_retries_zero_raises_after_single_attempt(
-        self, eventing: _RetryEventing, mock_config: MagicMock
-    ) -> None:
+    async def test_max_retries_zero_raises_after_single_attempt(self, eventing: _RetryEventing, mock_config: MagicMock) -> None:
         mock_config.get.side_effect = lambda key, default=None: {
             "event_client_max_retries": 0,
             "event_client_retry_delay": 0.0,
@@ -209,9 +208,7 @@ class TestStartWithRetry:
             await eventing._retry_task
         eventing.connect_mock.assert_awaited_once()
 
-    async def test_max_retries_exhausted_calls_connect_n_plus_one_times(
-        self, eventing: _RetryEventing, mock_config: MagicMock
-    ) -> None:
+    async def test_max_retries_exhausted_calls_connect_n_plus_one_times(self, eventing: _RetryEventing, mock_config: MagicMock) -> None:
         mock_config.get.side_effect = lambda key, default=None: {
             "event_client_max_retries": 2,
             "event_client_retry_delay": 0.0,
@@ -224,9 +221,7 @@ class TestStartWithRetry:
                 await eventing._retry_task
         assert eventing.connect_mock.await_count == 3  # 1 initial + 2 retries
 
-    async def test_succeeds_on_last_allowed_retry(
-        self, eventing: _RetryEventing, mock_config: MagicMock
-    ) -> None:
+    async def test_succeeds_on_last_allowed_retry(self, eventing: _RetryEventing, mock_config: MagicMock) -> None:
         mock_config.get.side_effect = lambda key, default=None: {
             "event_client_max_retries": 2,
             "event_client_retry_delay": 0.0,

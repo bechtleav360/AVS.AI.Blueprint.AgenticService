@@ -39,7 +39,7 @@ class EventHandlingBase(RestApiBase, CloudEventProcessorMixin, ABC):
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
-        self._retry_task: asyncio.Task | None = None
+        self._retry_task: asyncio.Task[None] | None = None
 
     async def on_startup(self) -> None:
         self._retry_task = asyncio.ensure_future(self._start_with_retry())
