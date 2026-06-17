@@ -68,7 +68,7 @@ class TestNatsEventingPublish:
 # ---------------------------------------------------------------------------
 
 
-class TestNatsEventingOnStartup:
+class TestNatsEventingConnectAndSubscribe:
     async def test_fetches_nats_client_from_registry(
         self, nats_eventing: NatsEventing, mock_registry: MagicMock, mock_config: MagicMock
     ) -> None:
@@ -77,7 +77,7 @@ class TestNatsEventingOnStartup:
         mock_registry.get_event_handler.return_value = []
         mock_config.get_nats_subscription_config.return_value = []
 
-        await nats_eventing.on_startup()
+        await nats_eventing._connect_and_subscribe()
 
         assert nats_eventing._client is mock_client
 
@@ -87,7 +87,7 @@ class TestNatsEventingOnStartup:
         mock_config.get_nats_subscription_config.return_value = []
         mock_sub = AsyncMock()
         with patch.object(nats_eventing, "_subscribe_to_topic", mock_sub):
-            await nats_eventing.on_startup()
+            await nats_eventing._connect_and_subscribe()
 
         mock_sub.assert_not_called()
 
@@ -101,7 +101,7 @@ class TestNatsEventingOnStartup:
         mock_config.get_nats_subscription_config.return_value = []
         mock_sub = AsyncMock()
         with patch.object(nats_eventing, "_subscribe_to_topic", mock_sub):
-            await nats_eventing.on_startup()
+            await nats_eventing._connect_and_subscribe()
 
         mock_sub.assert_awaited_once_with("events.created")
 
@@ -113,7 +113,7 @@ class TestNatsEventingOnStartup:
         mock_config.get_nats_subscription_config.return_value = ["orders.created", "orders.updated"]
         mock_sub = AsyncMock()
         with patch.object(nats_eventing, "_subscribe_to_topic", mock_sub):
-            await nats_eventing.on_startup()
+            await nats_eventing._connect_and_subscribe()
 
         assert mock_sub.await_count == 2
 
@@ -127,7 +127,7 @@ class TestNatsEventingOnStartup:
         mock_config.get_nats_subscription_config.return_value = ["shared.topic", "other.topic"]
         mock_sub = AsyncMock()
         with patch.object(nats_eventing, "_subscribe_to_topic", mock_sub):
-            await nats_eventing.on_startup()
+            await nats_eventing._connect_and_subscribe()
 
         subscribed = [c.args[0] for c in mock_sub.call_args_list]
         assert subscribed.count("shared.topic") == 1
@@ -143,7 +143,7 @@ class TestNatsEventingOnStartup:
         mock_config.get_nats_subscription_config.return_value = ["config.topic"]
         mock_sub = AsyncMock()
         with patch.object(nats_eventing, "_subscribe_to_topic", mock_sub):
-            await nats_eventing.on_startup()
+            await nats_eventing._connect_and_subscribe()
 
         subscribed = [c.args[0] for c in mock_sub.call_args_list]
         assert subscribed == ["handler.topic", "config.topic"]

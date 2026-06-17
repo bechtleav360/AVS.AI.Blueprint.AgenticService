@@ -19,7 +19,7 @@ class NatsEventing(EventHandlingBase):
         super().__init__(should_register=False)
         self._client: NATSClient | None = None
 
-    async def on_startup(self) -> None:
+    async def _connect_and_subscribe(self) -> None:
         """Fetch the registered NATSClient and auto-subscribe to declared topics.
 
         Topics are collected from two sources (handler-declared topics first,
@@ -69,9 +69,6 @@ class NatsEventing(EventHandlingBase):
         await self._client.subscribe(topic, _process_event)
         logger.info("NatsEventing: auto-subscribed to topic '%s'", topic)
 
-    async def on_shutdown(self) -> None:
-        """No shutdown actions required — NATSClient lifecycle is managed separately."""
-
     @RestApiBase.post("/nats/subscribe/{topic}", tags=["nats"])
     async def subscribe(self, topic: str, queue_group: str | None = None) -> dict[str, Any]:
         """Subscribe to a NATS topic.
@@ -83,25 +80,7 @@ class NatsEventing(EventHandlingBase):
         Returns:
             Success message
         """
-        if not self._client:
-            raise RuntimeError("NATS client not initialized")
-
-        # Callback to process incoming events
-        async def _process_event(event: CloudEvent[Any]) -> None:
-            try:
-                context = {"nats_topic": topic}
-                processing_result = await self._process_cloud_event(event, context)
-                logger.debug(
-                    "Processed CloudEvent %s on topic %s with status %s",
-                    event.id,
-                    topic,
-                    processing_result.status.value,
-                )
-            except (RetryableHandlerError, InvalidEventError, CriticalHandlerError) as exc:
-                logger.error("Event processing failed: %s", str(exc), exc_info=True)
-                # NATS handles retries/acks via client
-
-        await self._client.subscribe(topic, _process_event)
+        await self._subscribe_to_topic(topic)
         return {"message": f"Subscribed to topic {topic}"}
 
     @RestApiBase.post("/events/{topic}", tags=["nats"])

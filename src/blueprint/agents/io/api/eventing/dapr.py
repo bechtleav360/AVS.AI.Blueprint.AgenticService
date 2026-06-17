@@ -22,12 +22,9 @@ class DaprEventing(EventHandlingBase):
         super().__init__(should_register=False)
         self._client: DaprClient | None = None
 
-    async def on_startup(self) -> None:
+    async def _connect_and_subscribe(self) -> None:
         """Fetch the registered DaprClient from the registry."""
         self._client = self.registry.get_component(DaprClient)
-
-    async def on_shutdown(self) -> None:
-        """No shutdown actions required — DaprClient lifecycle is managed separately."""
 
     @RestApiBase.get("/dapr/subscribe", tags=["dapr"])
     async def subscribe(self, topic: str, queue_group: str | None = None) -> dict[str, Any]:

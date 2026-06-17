@@ -297,6 +297,8 @@ Returns a readiness check indicating the application and its dependencies are re
 
 Use this for the Kubernetes readiness probe. If this endpoint fails, the pod is removed from the service load balancer until it recovers.
 
+> **Event broker startup**: the broker connection (NATS / Dapr) is established asynchronously after startup. `/health/ready` returns `503` until the broker is reachable and all topic subscriptions are active. Set `failureThreshold` high enough to tolerate the broker's own startup time — see [Broker Startup Resilience](../concepts/event-processing.md#broker-startup-resilience).
+
 ### /health/detailed
 
 Returns component-level health status for debugging and monitoring.
