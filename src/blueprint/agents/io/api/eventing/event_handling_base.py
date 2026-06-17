@@ -64,24 +64,22 @@ class EventHandlingBase(RestApiBase, CloudEventProcessorMixin, ABC):
         max_retries: int = self.config.get("event_client_max_retries", -1)
         delay: float = float(self.config.get("event_client_retry_delay", 5.0))
         attempt = 0
-        last_exc: Exception | None = None
         while True:
             try:
                 await self._connect_and_subscribe()
                 logger.info("%s connected successfully", type(self).__name__)
                 return
             except Exception as e:
-                last_exc = e
                 attempt += 1
                 if max_retries != -1 and attempt > max_retries:
                     logger.error(
                         "%s permanently failed to connect after %d attempt(s): %s",
                         type(self).__name__,
                         attempt,
-                        last_exc,
-                        exc_info=last_exc,
+                        e,
+                        exc_info=e,
                     )
-                    raise last_exc
+                    raise
                 logger.warning(
                     "%s connect attempt %d failed, retrying in %.1fs: %s",
                     type(self).__name__,
