@@ -29,12 +29,14 @@ runs:
         path: .venv
         key: venv-${{ runner.os }}-py${{ inputs.python-version }}-${{ hashFiles('pyproject.toml') }}
 
-    - name: Create venv and install dependencies
+    - name: Create venv
       if: steps.cache-venv.outputs.cache-hit != 'true'
       shell: bash
-      run: |
-        uv venv .venv
-        uv pip install -e ".[${{ inputs.install-extras }}]"
+      run: uv venv .venv
+
+    - name: Install dependencies
+      shell: bash
+      run: uv pip install -e ".[${{ inputs.install-extras }}]"
 
     - name: Add venv to PATH
       shell: bash

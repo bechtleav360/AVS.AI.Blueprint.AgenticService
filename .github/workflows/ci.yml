@@ -21,13 +21,13 @@ jobs:
       - uses: ./.github/actions/setup-python-env
 
       - name: ruff check
-        run: uv run ruff check src tests
+        run: ruff check src tests
 
       - name: ruff format check
-        run: uv run ruff format --check src tests
+        run: ruff format --check src tests
 
       - name: mypy
-        run: uv run mypy src
+        run: mypy src
 
       - name: Run unit tests
-        run: uv run pytest tests/unit -v --tb=short
+        run: python -m pytest tests/unit -v --tb=short
