@@ -50,8 +50,7 @@ class TestBackwardCompatibility:
         assert base_config.get("app_port") == 8000
 
     def test_unscoped_get_runtime_config_uses_legacy_block(self, write_settings: WriteSettings) -> None:
-        settings_file = write_settings(
-            """
+        settings_file = write_settings("""
             [development]
             app_name = "legacy"
             app_port = 8000
@@ -62,8 +61,7 @@ class TestBackwardCompatibility:
 
             [development.runtimes.my_agent]
             model_name = "legacy-model"
-            """
-        )
+            """)
         config = Config(settings_files=[str(settings_file)], root_path=str(settings_file.parent))
         runtime_cfg = config.get_runtime_config("my_agent")
         assert runtime_cfg["model_name"] == "legacy-model"
@@ -110,16 +108,14 @@ class TestGetAiConfigScoped:
 
 class TestValidators:
     def test_missing_scoped_app_name_raises(self, write_settings: WriteSettings) -> None:
-        settings_file = write_settings(
-            """
+        settings_file = write_settings("""
             [development]
             app_environment = "development"
 
             [development.foo]
             app_port = 8101
             # app_name intentionally missing
-            """
-        )
+            """)
         with pytest.raises(ConfigError):
             Config(
                 settings_files=[str(settings_file)],
@@ -128,16 +124,14 @@ class TestValidators:
             )
 
     def test_missing_scoped_app_port_raises(self, write_settings: WriteSettings) -> None:
-        settings_file = write_settings(
-            """
+        settings_file = write_settings("""
             [development]
             app_environment = "development"
 
             [development.foo]
             app_name = "foo-app"
             # app_port intentionally missing
-            """
-        )
+            """)
         with pytest.raises(ConfigError):
             Config(
                 settings_files=[str(settings_file)],
@@ -147,16 +141,14 @@ class TestValidators:
 
     def test_root_keys_not_required_when_scoped(self, write_settings: WriteSettings) -> None:
         # No root app_name / app_port; only scoped versions exist.
-        settings_file = write_settings(
-            """
+        settings_file = write_settings("""
             [development]
             app_environment = "development"
 
             [development.foo]
             app_name = "foo-app"
             app_port = 8101
-            """
-        )
+            """)
         # Must not raise.
         config = Config(
             settings_files=[str(settings_file)],
