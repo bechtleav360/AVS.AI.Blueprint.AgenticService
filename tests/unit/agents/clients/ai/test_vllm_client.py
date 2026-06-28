@@ -36,7 +36,7 @@ class TestVLLMClientConnection:
 
 class TestVLLMClientPubSub:
     async def test_subscribe_is_noop(self, vllm_client: VLLMClient) -> None:
-        await vllm_client.subscribe("topic", AsyncMock())
+        await vllm_client.subscribe({"topic": AsyncMock()})
 
     async def test_publish_is_noop(self, vllm_client: VLLMClient) -> None:
         await vllm_client.publish("topic", MagicMock())

@@ -22,6 +22,11 @@ class EventHandlingBase(RestApiBase, CloudEventProcessorMixin, ABC):
     Combines REST API routing (RestApiBase) with CloudEvent processing
     (CloudEventProcessorMixin) and adds structured error-handling and logging
     around the dispatch pipeline.
+
+    Transport connection, topic subscriptions, and retry logic live entirely
+    in the transport client (NATSClient, DaprClient). Subclasses implement
+    ``on_startup`` to wire the client's managed subscription flow and declare
+    their own REST endpoints via concrete ``publish`` implementations.
     """
 
     @traced("topic", "cloud_event")
@@ -29,18 +34,12 @@ class EventHandlingBase(RestApiBase, CloudEventProcessorMixin, ABC):
         processing_result = await self._process_cloud_event(cloud_event, {"topic": topic})
         if processing_result.status == ProcessingStatus.PROCESSED:
             return {"status": "SUCCESS"}
-        else:
-            failure_reason = processing_result.message or processing_result.status.value or "unknown_status"
-            return {"status": "RETRY", "reason": failure_reason}
+        failure_reason = processing_result.message or processing_result.status.value or "unknown_status"
+        return {"status": "RETRY", "reason": failure_reason}
 
     @abstractmethod
     async def publish(self, topic: str, event: CloudEvent[Any]) -> dict[str, Any]:
-        """Abstract method for publishing events (output)"""
-        raise NotImplementedError()
-
-    @abstractmethod
-    async def subscribe(self, topic: str, queue_group: str | None = None) -> dict[str, Any]:
-        """Abstract method for subscribing for events (input)"""
+        """Publish a CloudEvent to the broker (output path)."""
         raise NotImplementedError()
 
     async def _process_cloud_event(
@@ -48,21 +47,10 @@ class EventHandlingBase(RestApiBase, CloudEventProcessorMixin, ABC):
         cloud_event: CloudEvent[Any],
         context: dict[str, Any],
     ) -> ProcessingResult:
-        """Process a CloudEvent with error handling and logging.
+        """Dispatch a CloudEvent with structured error-handling and logging.
 
-        Wraps ``_dispatch_cloud_event`` with structured logging and exception
-        handling for the four known error types. All exceptions are re-raised
-        after logging.
-
-        Args:
-            cloud_event: The CloudEvent to process
-            context: Additional context for processing
-
-        Returns:
-            The processing result
-
-        Raises:
-            Exception: Re-raises all exceptions after logging
+        Wraps ``_dispatch_cloud_event`` and re-raises all exceptions after
+        logging them at the appropriate level.
         """
         try:
             logger.debug("Processing CloudEvent: %s", cloud_event.id)

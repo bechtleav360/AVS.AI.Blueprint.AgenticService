@@ -3,7 +3,6 @@
 import json
 from unittest.mock import AsyncMock, MagicMock
 
-
 from blueprint.agents.io.api.eventing.dapr import DaprEventing
 from blueprint.agents.models.events import CloudEvent
 from blueprint.agents.models.result import ProcessingResult

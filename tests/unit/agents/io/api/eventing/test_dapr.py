@@ -94,3 +94,51 @@ class TestDaprEventingSubscribe:
     async def test_subscribe_returns_empty_dict(self, dapr_eventing: DaprEventing) -> None:
         result = await dapr_eventing.subscribe("some-topic")
         assert result == {}
+
+
+class TestDaprEventingOnStartup:
+    async def test_fetches_dapr_client_from_registry(self, dapr_eventing: DaprEventing, mock_registry: MagicMock) -> None:
+        mock_client = MagicMock()
+        mock_client.subscribe = AsyncMock()
+        mock_registry.get_component.return_value = mock_client
+        mock_registry.get_event_handler.return_value = []
+
+        await dapr_eventing.on_startup()
+
+        assert dapr_eventing._client is mock_client
+
+    async def test_no_handlers_skips_client_subscribe(self, dapr_eventing: DaprEventing, mock_registry: MagicMock) -> None:
+        mock_client = MagicMock()
+        mock_client.subscribe = AsyncMock()
+        mock_registry.get_component.return_value = mock_client
+        mock_registry.get_event_handler.return_value = []
+
+        await dapr_eventing.on_startup()
+
+        mock_client.subscribe.assert_not_called()
+
+    async def test_handler_topics_passed_to_client_subscribe(self, dapr_eventing: DaprEventing, mock_registry: MagicMock) -> None:
+        handler = MagicMock()
+        handler.get_subscribed_topics.return_value = ["orders.created"]
+        mock_client = MagicMock()
+        mock_client.subscribe = AsyncMock()
+        mock_registry.get_component.return_value = mock_client
+        mock_registry.get_event_handler.return_value = [handler]
+
+        await dapr_eventing.on_startup()
+
+        mock_client.subscribe.assert_awaited_once()
+        mapping = mock_client.subscribe.call_args[0][0]
+        assert "orders.created" in mapping
+        assert callable(mapping["orders.created"])
+
+    async def test_on_startup_returns_without_raising(self, dapr_eventing: DaprEventing, mock_registry: MagicMock) -> None:
+        """on_startup must return immediately; subscribe() starts a background task."""
+        handler = MagicMock()
+        handler.get_subscribed_topics.return_value = ["t"]
+        mock_client = MagicMock()
+        mock_client.subscribe = AsyncMock()
+        mock_registry.get_component.return_value = mock_client
+        mock_registry.get_event_handler.return_value = [handler]
+
+        await dapr_eventing.on_startup()  # must not raise or hang
