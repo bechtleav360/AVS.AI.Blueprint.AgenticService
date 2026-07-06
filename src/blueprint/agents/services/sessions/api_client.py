@@ -258,3 +258,15 @@ class SessionsApiClient(ServiceBase):
         response.raise_for_status()
         logger.info("Agent registered: agent_id=%s (status=%d)", agent_id, response.status_code)
         return True
+
+    async def unregister_agent(self, agent_id: str) -> None:
+        """Best-effort graceful deregistration (idempotent DELETE). Never raises.
+
+        Called on shutdown; a failure here must not prevent a clean shutdown, so all
+        exceptions (network error, 404 on legacy, closed client) are swallowed.
+        """
+        try:
+            response = await self._request("DELETE", f"/agents/{agent_id}")
+            logger.info("Agent unregistered: agent_id=%s (status=%d)", agent_id, response.status_code)
+        except Exception as e:
+            logger.warning("Graceful unregister failed for agent_id=%s: %s", agent_id, e)

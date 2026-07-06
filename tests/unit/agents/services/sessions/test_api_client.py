@@ -218,3 +218,25 @@ class TestRegisterAgent:
     async def test_raises_when_not_initialized(self, api_client) -> None:
         with pytest.raises(ValueError, match="not initialized"):
             await api_client.register_agent("a", "t", [])
+
+
+# ---------------------------------------------------------------------------
+# unregister_agent
+# ---------------------------------------------------------------------------
+
+
+class TestUnregisterAgent:
+    async def test_deletes_agent_endpoint(self, started_api_client, mock_http_client) -> None:
+        mock_http_client.delete.return_value.status_code = 204
+        await started_api_client.unregister_agent("agent-1")
+        url = mock_http_client.delete.call_args[0][0]
+        assert url.endswith("/agents/agent-1")
+
+    async def test_swallows_errors(self, started_api_client, mock_http_client, caplog) -> None:
+        mock_http_client.delete.side_effect = httpx.ConnectError("boom")
+        with caplog.at_level("WARNING"):
+            await started_api_client.unregister_agent("agent-1")  # must not raise
+        assert "unregister failed" in caplog.text.lower()
+
+    async def test_swallows_uninitialized_client(self, api_client) -> None:
+        await api_client.unregister_agent("agent-1")  # must not raise
