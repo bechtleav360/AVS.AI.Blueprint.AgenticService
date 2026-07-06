@@ -159,9 +159,11 @@ class SessionsBus(Component, CloudEventProcessorMixin):
         # v0.4.0 gates the stream on registration — register (idempotent) before every
         # connect attempt. On a legacy server this is a no-op (404 -> False); on a hard
         # failure it raises and the reconnect loop (in _consume_sse_stream) backs off.
-        await self._api_client.register_agent(
+        if self._agent_id is None:
+            raise RuntimeError("SessionsBus not started: agent_id is not set")
+        await self._require_api_client().register_agent(
             agent_id=self._agent_id,
-            agent_type=self._agent_type,
+            agent_type=self._agent_type or "",
             capabilities=self._capabilities,
         )
 
