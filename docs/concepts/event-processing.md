@@ -244,6 +244,12 @@ When `event_bus = "sessions"`, `AppBuilder.build()` wires three components autom
 
 `SessionsBus` has no inbound HTTP surface — there is no router to mount. Connection to the sessions service is established asynchronously after startup; the framework tolerates a sessions service that is unreachable at boot and retries in the background.
 
+> **Agent registration (sessions v0.4.0+):** Before opening the SSE job stream, `SessionsBus` calls
+> `POST /agents/register` to declare its `agent_id`, `agent_type`, and `capabilities` — the dispatch
+> source of truth. It re-registers before every reconnect attempt (idempotent), and on graceful
+> shutdown it drains in-flight jobs and unregisters (`DELETE /agents/{agent_id}`). Against a pre-v0.4.0
+> server the register call returns 404 and is skipped ("legacy, proceed without registration").
+
 ```toml
 [default]
 event_bus = "sessions"

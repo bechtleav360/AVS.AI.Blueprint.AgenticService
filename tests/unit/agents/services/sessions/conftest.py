@@ -34,6 +34,7 @@ def mock_http_client() -> AsyncMock:
     client = AsyncMock()
     client.get = AsyncMock(return_value=mock_response)
     client.post = AsyncMock(return_value=mock_response)
+    client.delete = AsyncMock(return_value=mock_response)
     client.aclose = AsyncMock()
     return client
 
