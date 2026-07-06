@@ -63,6 +63,33 @@ class SessionsApiClient(ServiceBase):
             await self._client.aclose()
             logger.info("SessionsApiClient HTTP client closed")
 
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        session_key: str | None = None,
+        json: dict[str, Any] | None = None,
+    ) -> httpx.Response:
+        """Issue an authenticated request to the sessions service.
+
+        Owns the client-initialised guard, URL assembly, and the optional
+        X-Session-Key header. Returns the raw Response so callers decide how to treat
+        status codes (registration branches on 404 rather than always raising).
+        """
+        if not self._client:
+            raise ValueError("SessionsApiClient not initialized. Call on_startup() first.")
+
+        url = f"{self._base_url}{path}"
+        kwargs: dict[str, Any] = {}
+        if session_key is not None:
+            kwargs["headers"] = {"X-Session-Key": session_key}
+        if json is not None:
+            kwargs["json"] = json
+
+        method_fn = getattr(self._client, method.lower())
+        return await method_fn(url, **kwargs)
+
     async def start_job(
         self,
         session_id: UUID,
@@ -85,21 +112,16 @@ class SessionsApiClient(ServiceBase):
             httpx.HTTPStatusError: If the request fails
             ValueError: If client not initialized
         """
-        if not self._client:
-            raise ValueError("SessionsApiClient not initialized. Call on_startup() first.")
-
-        url = f"{self._base_url}/sessions/{session_id}/jobs/{job_id}/start"
-        payload = {"agent_id": agent_id}
-        headers = {"X-Session-Key": session_key}
-
         logger.info("Starting job: session_id=%s, job_id=%s, agent_id=%s", session_id, job_id, agent_id)
-
-        response = await self._client.post(url, json=payload, headers=headers)
+        response = await self._request(
+            "POST",
+            f"/sessions/{session_id}/jobs/{job_id}/start",
+            session_key=session_key,
+            json={"agent_id": agent_id},
+        )
         response.raise_for_status()
-
         job_data = response.json()
         logger.info("Job started successfully: job_id=%s", job_id)
-
         return job_data
 
     async def get_job_detail(
@@ -122,14 +144,12 @@ class SessionsApiClient(ServiceBase):
             httpx.HTTPStatusError: If the request fails
             ValueError: If client not initialized
         """
-        if not self._client:
-            raise ValueError("SessionsApiClient not initialized. Call on_startup() first.")
-
-        url = f"{self._base_url}/sessions/{session_id}/jobs/{job_id}"
-        headers = {"X-Session-Key": session_key}
-
         logger.debug("Fetching job detail: session_id=%s, job_id=%s", session_id, job_id)
-        response = await self._client.get(url, headers=headers)
+        response = await self._request(
+            "GET",
+            f"/sessions/{session_id}/jobs/{job_id}",
+            session_key=session_key,
+        )
         response.raise_for_status()
         job_data = response.json()
         logger.debug("Job detail fetched: job_id=%s", job_id)
@@ -157,21 +177,16 @@ class SessionsApiClient(ServiceBase):
             httpx.HTTPStatusError: If the request fails
             ValueError: If client not initialized
         """
-        if not self._client:
-            raise ValueError("SessionsApiClient not initialized. Call on_startup() first.")
-
-        url = f"{self._base_url}/sessions/{session_id}/jobs/{job_id}/complete"
-        headers = {"X-Session-Key": session_key}
-        payload = {"result": result}
-
         logger.info("Completing job: session_id=%s, job_id=%s", session_id, job_id)
-
-        response = await self._client.post(url, json=payload, headers=headers)
+        response = await self._request(
+            "POST",
+            f"/sessions/{session_id}/jobs/{job_id}/complete",
+            session_key=session_key,
+            json={"result": result},
+        )
         response.raise_for_status()
-
         job_data = response.json()
         logger.info("Job completed successfully: job_id=%s", job_id)
-
         return job_data
 
     async def cancel_job(
@@ -196,19 +211,15 @@ class SessionsApiClient(ServiceBase):
             httpx.HTTPStatusError: If the request fails
             ValueError: If client not initialized
         """
-        if not self._client:
-            raise ValueError("SessionsApiClient not initialized. Call on_startup() first.")
-
-        url = f"{self._base_url}/sessions/{session_id}/jobs/{job_id}/cancel"
-        headers = {"X-Session-Key": session_key}
         payload = {"reason": reason} if reason else {}
-
         logger.warning("Cancelling job: session_id=%s, job_id=%s, reason=%s", session_id, job_id, reason)
-
-        response = await self._client.post(url, json=payload, headers=headers)
+        response = await self._request(
+            "POST",
+            f"/sessions/{session_id}/jobs/{job_id}/cancel",
+            session_key=session_key,
+            json=payload,
+        )
         response.raise_for_status()
-
         job_data = response.json()
         logger.info("Job cancelled successfully: job_id=%s", job_id)
-
         return job_data
