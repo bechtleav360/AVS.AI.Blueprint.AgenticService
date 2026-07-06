@@ -35,11 +35,12 @@ runs:
         key: venv-${{ runner.os }}-py${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('pyproject.toml') }}
 
     - name: Create venv and install dependencies
-      # Always run: idempotent with uv, and it repairs a restored venv whose
-      # interpreter path drifted. On a clean cache hit this is a fast no-op.
+      # Always run: `--clear` recreates the venv, repairing a restored one whose
+      # interpreter path drifted AND tolerating a cache hit that already placed
+      # `.venv` (plain `uv venv` aborts with "a virtual environment already exists").
       shell: bash
       run: |
-        uv venv .venv
+        uv venv .venv --clear
         uv pip install -e ".[${{ inputs.install-extras }}]"
 
     - name: Add venv to PATH
