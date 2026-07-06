@@ -343,7 +343,7 @@ class TestDispatchSseEvent:
         # before the loop yields to the scheduled coroutine, so the task is still tracked.
         started_sessions_bus._handle_job_notification = AsyncMock()  # type: ignore[method-assign]
         payload = (
-            '{"session_id": "00000000-0000-0000-0000-000000000001", ' '"job_id": "00000000-0000-0000-0000-000000000002", "job_type": "t"}'
+            '{"session_id": "00000000-0000-0000-0000-000000000001", "job_id": "00000000-0000-0000-0000-000000000002", "job_type": "t"}'
         )
         sse = SimpleNamespace(event="job_created", data=payload)
         started_sessions_bus._dispatch_sse_event(sse)
