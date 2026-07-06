@@ -235,9 +235,7 @@ class TestProcessJobNotification:
 
         assert "Job remains pending" in caplog.text
 
-    async def test_403_invalidates_cache_and_retries(
-        self, started_sessions_bus: SessionsBus, notification: JobNotification
-    ) -> None:
+    async def test_403_invalidates_cache_and_retries(self, started_sessions_bus: SessionsBus, notification: JobNotification) -> None:
         response_mock = MagicMock()
         response_mock.status_code = 403
         http_err = httpx.HTTPStatusError("403", request=MagicMock(), response=response_mock)
@@ -326,18 +324,14 @@ class TestRegisterBeforeConnect:
 
 
 class TestDispatchSseEvent:
-    def test_keepalive_message_frame_is_debug_not_warning(
-        self, sessions_bus: SessionsBus, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_keepalive_message_frame_is_debug_not_warning(self, sessions_bus: SessionsBus, caplog: pytest.LogCaptureFixture) -> None:
         sse = SimpleNamespace(event="message", data="")
         with caplog.at_level("DEBUG"):
             sessions_bus._dispatch_sse_event(sse)
         assert "keepalive" in caplog.text.lower()
         assert "Unknown SSE event type" not in caplog.text
 
-    def test_named_unknown_event_with_payload_warns(
-        self, sessions_bus: SessionsBus, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_named_unknown_event_with_payload_warns(self, sessions_bus: SessionsBus, caplog: pytest.LogCaptureFixture) -> None:
         sse = SimpleNamespace(event="surprise", data="{}")
         with caplog.at_level("WARNING"):
             sessions_bus._dispatch_sse_event(sse)
@@ -347,15 +341,14 @@ class TestDispatchSseEvent:
         # async so a running event loop exists for asyncio.create_task; the assertion runs
         # before the loop yields to the scheduled coroutine, so the task is still tracked.
         started_sessions_bus._handle_job_notification = AsyncMock()  # type: ignore[method-assign]
-        payload = '{"session_id": "00000000-0000-0000-0000-000000000001", ' \
-                  '"job_id": "00000000-0000-0000-0000-000000000002", "job_type": "t"}'
+        payload = (
+            '{"session_id": "00000000-0000-0000-0000-000000000001", ' '"job_id": "00000000-0000-0000-0000-000000000002", "job_type": "t"}'
+        )
         sse = SimpleNamespace(event="job_created", data=payload)
         started_sessions_bus._dispatch_sse_event(sse)
         assert len(started_sessions_bus._inflight_tasks) == 1
 
-    def test_malformed_job_payload_is_logged_and_skipped(
-        self, started_sessions_bus: SessionsBus, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_malformed_job_payload_is_logged_and_skipped(self, started_sessions_bus: SessionsBus, caplog: pytest.LogCaptureFixture) -> None:
         sse = SimpleNamespace(event="job_created", data='{"missing": "ids"}')
         with caplog.at_level("ERROR"):
             started_sessions_bus._dispatch_sse_event(sse)
