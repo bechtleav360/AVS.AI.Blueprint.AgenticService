@@ -361,7 +361,7 @@ class SessionsBus(Component, CloudEventProcessorMixin):
     ) -> None:
         # A 403 from a handler means the cached session key is stale. Invalidate and retry
         # once through the SAME dispatch seam as the happy path (no separate code path).
-        logger.error("Invalid session key for session %s", session_id)
+        logger.warning("Stale session key for session %s; refreshing and retrying", session_id)
         key_provider = self._require_key_provider()
         key_provider.invalidate_cache(session_id)
         try:

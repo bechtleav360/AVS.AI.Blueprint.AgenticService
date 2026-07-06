@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from httpx_sse import SSEError
 
 from blueprint.agents.io.api.eventing.sessions_bus import SessionsBus
 from blueprint.agents.models.errors import InvalidEventError, RetryableHandlerError
@@ -410,3 +411,97 @@ class TestShutdownDrainAndUnregister:
         bus._api_client.unregister_agent = AsyncMock(side_effect=RuntimeError("boom"))
         # on_shutdown must never propagate a cleanup failure.
         await bus.on_shutdown()
+
+
+# ---------------------------------------------------------------------------
+# _connect_and_consume — end-to-end register/connect lifecycle
+# ---------------------------------------------------------------------------
+
+
+class _EmptyAsyncIter:
+    """An async iterator that yields no SSE events (a clean, immediately-closed stream)."""
+
+    def __aiter__(self) -> "_EmptyAsyncIter":
+        return self
+
+    async def __anext__(self):
+        raise StopAsyncIteration
+
+
+class _RaisingAsyncIter:
+    """An async iterator whose first iteration raises (simulates a rejected stream)."""
+
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+
+    def __aiter__(self) -> "_RaisingAsyncIter":
+        return self
+
+    async def __anext__(self):
+        raise self._exc
+
+
+def _mock_sse_context(event_source: MagicMock) -> MagicMock:
+    """Build an async-context-manager stand-in for aconnect_sse(...) yielding event_source."""
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=event_source)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    return cm
+
+
+def _connectable_bus(bus: SessionsBus) -> SessionsBus:
+    bus._base_url = "http://sessions-svc"
+    bus._agent_id = "agent-001"
+    bus._agent_type = "transcription"
+    bus._capabilities = ["transcribe"]
+    bus._api_key = "secret"
+    return bus
+
+
+class TestConnectLifecycle:
+    async def test_reconnect_re_registers(self, started_sessions_bus: SessionsBus) -> None:
+        # The reconnect loop re-invokes _connect_and_consume; each invocation must re-register.
+        bus = _connectable_bus(started_sessions_bus)
+        bus._api_client.register_agent = AsyncMock(return_value=True)
+
+        event_source = MagicMock()
+        event_source.aiter_sse = lambda: _EmptyAsyncIter()
+
+        with patch("blueprint.agents.io.api.eventing.sessions_bus.aconnect_sse", return_value=_mock_sse_context(event_source)):
+            await bus._connect_and_consume()
+            await bus._connect_and_consume()
+
+        assert bus._api_client.register_agent.await_count == 2
+
+    async def test_legacy_server_still_opens_stream(self, started_sessions_bus: SessionsBus) -> None:
+        # A legacy (< v0.4.0) server returns 404 -> register_agent returns False; the stream still opens.
+        bus = _connectable_bus(started_sessions_bus)
+        bus._api_client.register_agent = AsyncMock(return_value=False)
+
+        event_source = MagicMock()
+        event_source.aiter_sse = lambda: _EmptyAsyncIter()
+
+        with patch("blueprint.agents.io.api.eventing.sessions_bus.aconnect_sse", return_value=_mock_sse_context(event_source)) as mock_sse:
+            await bus._connect_and_consume()
+
+        mock_sse.assert_called_once()
+
+    async def test_sse_rejection_logs_status_and_body(self, started_sessions_bus: SessionsBus, caplog: pytest.LogCaptureFixture) -> None:
+        # A non-event-stream response (e.g. the 403 dispatch-gate JSON) raises SSEError; the real
+        # status and body must be logged before the error propagates into the reconnect backoff.
+        bus = _connectable_bus(started_sessions_bus)
+        bus._api_client.register_agent = AsyncMock(return_value=True)
+
+        response = MagicMock()
+        response.status_code = 403
+        response.aread = AsyncMock(return_value=b'{"detail": "agent not registered"}')
+        event_source = MagicMock()
+        event_source.response = response
+        event_source.aiter_sse = lambda: _RaisingAsyncIter(SSEError("bad content-type"))
+
+        with patch("blueprint.agents.io.api.eventing.sessions_bus.aconnect_sse", return_value=_mock_sse_context(event_source)):
+            with caplog.at_level("ERROR"), pytest.raises(SSEError):
+                await bus._connect_and_consume()
+
+        assert "SSE stream rejected: status=403" in caplog.text
+        assert "agent not registered" in caplog.text
