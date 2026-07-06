@@ -107,7 +107,13 @@ class SessionsBus(Component, CloudEventProcessorMixin):
         )
 
     async def on_shutdown(self) -> None:
-        """Close the SSE connection and clean up resources."""
+        """Stop the stream, drain in-flight jobs, then unregister.
+
+        The order is deliberate: setting the shutdown event stops the consumer from
+        accepting new jobs, in-flight jobs are given a bounded window to finish, and
+        only then do we unregister — so the registration is never pulled out from
+        under a job that is still reporting results.
+        """
         logger.info("SessionsBus closing...")
 
         self._shutdown_event.set()
@@ -119,7 +125,39 @@ class SessionsBus(Component, CloudEventProcessorMixin):
             except asyncio.CancelledError:
                 logger.info("SSE task cancelled")
 
+        await self._drain_inflight_jobs()
+
+        if self._api_client is not None and self._agent_id:
+            # Cleanup must never fail the shutdown; unregister_agent is best-effort but
+            # guard here too so a mocked/overridden client cannot break teardown.
+            try:
+                await self._api_client.unregister_agent(self._agent_id)
+            except Exception as e:
+                logger.warning("Unregister on shutdown failed: %s", e)
+
         logger.info("SessionsBus closed")
+
+    async def _drain_inflight_jobs(self) -> None:
+        """Wait for in-flight job tasks to finish, bounded by ``job_timeout``.
+
+        Jobs are launched fire-and-forget from the SSE loop; without this drain they
+        would be orphaned on shutdown. Tasks still running after the timeout are
+        cancelled so shutdown cannot hang.
+        """
+        if not self._inflight_tasks:
+            return
+        pending = list(self._inflight_tasks)
+        logger.info("Draining %d in-flight job(s) (timeout=%ds)", len(pending), self._job_timeout)
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*pending, return_exceptions=True),
+                timeout=self._job_timeout,
+            )
+        except TimeoutError:
+            logger.warning("Drain timeout — cancelling %d in-flight job(s)", len(pending))
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
 
     async def _consume_sse_stream(self) -> None:
         """Connect to the SSE endpoint and process events with reconnection logic."""

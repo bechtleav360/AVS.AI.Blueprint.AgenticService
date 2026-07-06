@@ -368,3 +368,52 @@ class TestDispatchSseEvent:
         with caplog.at_level("WARNING"):
             sessions_bus._dispatch_sse_event(sse)
         assert "Unknown SSE event type: message" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# on_shutdown — drain + unregister
+# ---------------------------------------------------------------------------
+
+
+class TestShutdownDrainAndUnregister:
+    async def test_unregisters_after_draining(self, started_sessions_bus: SessionsBus) -> None:
+        bus = started_sessions_bus
+        bus._agent_id = "agent-001"
+        bus._api_client.unregister_agent = AsyncMock()
+
+        async def _job() -> None:
+            await asyncio.sleep(0.01)
+
+        task = asyncio.create_task(_job())
+        bus._inflight_tasks.add(task)
+        task.add_done_callback(bus._inflight_tasks.discard)
+
+        await bus.on_shutdown()
+
+        assert task.done()
+        bus._api_client.unregister_agent.assert_awaited_once_with("agent-001")
+
+    async def test_drain_timeout_cancels_and_still_unregisters(self, started_sessions_bus: SessionsBus) -> None:
+        bus = started_sessions_bus
+        bus._agent_id = "agent-001"
+        bus._job_timeout = 0  # force immediate drain timeout
+        bus._api_client.unregister_agent = AsyncMock()
+
+        async def _slow_job() -> None:
+            await asyncio.sleep(10)
+
+        task = asyncio.create_task(_slow_job())
+        bus._inflight_tasks.add(task)
+        task.add_done_callback(bus._inflight_tasks.discard)
+
+        await bus.on_shutdown()
+
+        assert task.cancelled()
+        bus._api_client.unregister_agent.assert_awaited_once()
+
+    async def test_unregister_failure_does_not_raise(self, started_sessions_bus: SessionsBus) -> None:
+        bus = started_sessions_bus
+        bus._agent_id = "agent-001"
+        bus._api_client.unregister_agent = AsyncMock(side_effect=RuntimeError("boom"))
+        # on_shutdown must never propagate a cleanup failure.
+        await bus.on_shutdown()
