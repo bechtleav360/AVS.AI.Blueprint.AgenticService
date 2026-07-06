@@ -235,8 +235,9 @@ small, self-contained diff.
    `job_data.get("job_id")` is silently `None`). Add a small pydantic `JobNotification` (fields:
    `session_id: UUID`, `job_id: UUID`, `job_type: str`, `created_at`, `data`) parsed **once** in
    `_connect_and_consume`'s `job_created` branch; pass the typed object to `_handle_job_notification` /
-   `_process_job_notification` / `_convert_to_cloud_event`. A malformed notification becomes an
-   `InvalidEventError` at the boundary instead of a `KeyError` deep in processing.
+   `_process_job_notification` / `_convert_to_cloud_event`. A malformed payload is caught and logged at
+   the boundary (the stream keeps consuming) instead of raising a `KeyError` deep in processing — it
+   cannot be cancelled because a malformed notification has no reliable job/session id.
 
 5. **Shutdown drain for in-flight job tasks** — *robustness note from the review.* Jobs are launched
    fire-and-forget via `asyncio.create_task(...)` (`sessions_bus.py:187`) and today are orphaned on
@@ -258,7 +259,7 @@ the fix.
 | register 4xx / 5xx / network error | log status + body, raise → reconnect backoff, retry next cycle |
 | stream opens then drops | existing backoff → next cycle re-registers |
 | SSE stream rejected (non-`text/event-stream`) | log real status + body, raise → backoff |
-| malformed `job_created` payload | `InvalidEventError` at the SSE boundary → job cancelled, stream continues |
+| malformed `job_created` payload | logged at ERROR at the SSE boundary, event skipped, stream continues |
 | keepalive `message` frame, empty data | DEBUG log, ignored (#44) |
 | shutdown | stop stream → drain in-flight jobs (bounded) → best-effort `DELETE` unregister |
 
@@ -288,8 +289,8 @@ loaded by `SessionsBus.on_startup`. `version`/`metadata` are intentionally **not
 - A named unknown event with a payload still logs the WARNING.
 - **Refactor #2:** the 403-retry path invokes `_dispatch_cloud_event` (not `EventProcessingService.process_event`
   directly) — update `test_403_invalidates_cache_and_retries` accordingly.
-- **Refactor #4:** a malformed `job_created` payload raises `InvalidEventError` at the boundary and the
-  stream keeps consuming (one bad job does not drop the connection).
+- **Refactor #4:** a malformed `job_created` payload is logged and skipped at the boundary and the
+  stream keeps consuming (one bad frame does not drop the connection or create a job task).
 - **Refactor #5:** `on_shutdown` awaits an in-flight job task before unregistering; a job exceeding the
   drain timeout does not hang shutdown.
 
