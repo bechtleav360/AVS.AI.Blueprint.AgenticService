@@ -225,3 +225,36 @@ class SessionsApiClient(ServiceBase):
         job_data = response.json()
         logger.info("Job cancelled successfully: job_id=%s", job_id)
         return job_data
+
+    async def register_agent(
+        self,
+        agent_id: str,
+        agent_type: str,
+        capabilities: list[str],
+        version: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> bool:
+        """Register the agent with the sessions dispatch registry (idempotent).
+
+        v0.4.0 gates ``GET /jobs/stream/sse`` on a prior registration. Returns True
+        when the server accepted it (200/201). Returns False when the server is a
+        legacy (< v0.4.0) instance without the endpoint (404) — the caller may still
+        open the stream. Raises on any other non-2xx so the reconnect loop backs off.
+        """
+        payload: dict[str, Any] = {"agent_id": agent_id, "agent_type": agent_type, "capabilities": capabilities}
+        if version is not None:
+            payload["version"] = version
+        if metadata:
+            payload["metadata"] = metadata
+
+        response = await self._request("POST", "/agents/register", json=payload)
+
+        if response.status_code == 404:
+            logger.warning("Sessions service has no /agents/register (legacy < v0.4.0); proceeding without registration")
+            return False
+
+        if response.status_code >= 400:
+            logger.error("Agent registration failed: status=%d body=%s", response.status_code, response.text)
+        response.raise_for_status()
+        logger.info("Agent registered: agent_id=%s (status=%d)", agent_id, response.status_code)
+        return True

@@ -3,6 +3,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
 
+import httpx
 import pytest
 
 from blueprint.agents.services.sessions.api_client import SessionsApiClient
@@ -166,3 +167,54 @@ class TestCancelJob:
     async def test_raises_when_not_initialized(self, api_client: SessionsApiClient) -> None:
         with pytest.raises(ValueError, match="not initialized"):
             await api_client.cancel_job(_SESSION_ID, _JOB_ID, _SESSION_KEY)
+
+
+# ---------------------------------------------------------------------------
+# register_agent
+# ---------------------------------------------------------------------------
+
+
+class TestRegisterAgent:
+    async def test_posts_to_register_endpoint_with_body(self, started_api_client, mock_http_client) -> None:
+        mock_http_client.post.return_value.status_code = 201
+        await started_api_client.register_agent("agent-1", "analyser", ["classify"])
+        url = mock_http_client.post.call_args[0][0]
+        payload = mock_http_client.post.call_args[1]["json"]
+        assert url.endswith("/agents/register")
+        assert payload == {"agent_id": "agent-1", "agent_type": "analyser", "capabilities": ["classify"]}
+
+    async def test_201_returns_true(self, started_api_client, mock_http_client) -> None:
+        mock_http_client.post.return_value.status_code = 201
+        assert await started_api_client.register_agent("a", "t", []) is True
+
+    async def test_200_returns_true(self, started_api_client, mock_http_client) -> None:
+        mock_http_client.post.return_value.status_code = 200
+        assert await started_api_client.register_agent("a", "t", []) is True
+
+    async def test_404_returns_false_and_does_not_raise(self, started_api_client, mock_http_client, caplog) -> None:
+        mock_http_client.post.return_value.status_code = 404
+        with caplog.at_level("WARNING"):
+            result = await started_api_client.register_agent("a", "t", [])
+        assert result is False
+        assert "legacy" in caplog.text.lower()
+        mock_http_client.post.return_value.raise_for_status.assert_not_called()
+
+    async def test_500_raises_and_logs_body(self, started_api_client, mock_http_client, caplog) -> None:
+        resp = mock_http_client.post.return_value
+        resp.status_code = 500
+        resp.text = "internal error detail"
+        resp.raise_for_status.side_effect = httpx.HTTPStatusError("500", request=MagicMock(), response=resp)
+        with caplog.at_level("ERROR"), pytest.raises(httpx.HTTPStatusError):
+            await started_api_client.register_agent("a", "t", [])
+        assert "internal error detail" in caplog.text
+
+    async def test_optional_fields_included_when_given(self, started_api_client, mock_http_client) -> None:
+        mock_http_client.post.return_value.status_code = 201
+        await started_api_client.register_agent("a", "t", [], version="1.2.3", metadata={"k": "v"})
+        payload = mock_http_client.post.call_args[1]["json"]
+        assert payload["version"] == "1.2.3"
+        assert payload["metadata"] == {"k": "v"}
+
+    async def test_raises_when_not_initialized(self, api_client) -> None:
+        with pytest.raises(ValueError, match="not initialized"):
+            await api_client.register_agent("a", "t", [])
