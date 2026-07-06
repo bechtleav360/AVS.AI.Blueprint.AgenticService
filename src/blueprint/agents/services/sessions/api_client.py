@@ -6,7 +6,7 @@ and session key management.
 """
 
 import logging
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 import httpx
@@ -65,7 +65,7 @@ class SessionsApiClient(ServiceBase):
 
     async def _request(
         self,
-        method: str,
+        method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"],
         path: str,
         *,
         session_key: str | None = None,
@@ -87,7 +87,9 @@ class SessionsApiClient(ServiceBase):
         if json is not None:
             kwargs["json"] = json
 
-        method_fn = getattr(self._client, method.lower())
+        method_fn = getattr(self._client, method.lower(), None)
+        if method_fn is None:
+            raise ValueError(f"Unsupported HTTP method: {method!r}")
         return await method_fn(url, **kwargs)
 
     async def start_job(
