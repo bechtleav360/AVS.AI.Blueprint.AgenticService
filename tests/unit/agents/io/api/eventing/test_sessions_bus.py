@@ -361,3 +361,10 @@ class TestDispatchSseEvent:
             started_sessions_bus._dispatch_sse_event(sse)
         assert "Error processing SSE event" in caplog.text
         assert len(started_sessions_bus._inflight_tasks) == 0
+
+    def test_message_event_with_data_warns(self, sessions_bus: SessionsBus, caplog: pytest.LogCaptureFixture) -> None:
+        # A `message` frame WITH a payload is not a keepalive — it should still warn.
+        sse = SimpleNamespace(event="message", data='{"x": 1}')
+        with caplog.at_level("WARNING"):
+            sessions_bus._dispatch_sse_event(sse)
+        assert "Unknown SSE event type: message" in caplog.text

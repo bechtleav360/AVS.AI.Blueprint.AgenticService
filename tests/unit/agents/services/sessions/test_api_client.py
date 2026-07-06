@@ -215,6 +215,13 @@ class TestRegisterAgent:
         assert payload["version"] == "1.2.3"
         assert payload["metadata"] == {"k": "v"}
 
+    async def test_agent_type_omitted_when_none(self, started_api_client, mock_http_client) -> None:
+        mock_http_client.post.return_value.status_code = 201
+        await started_api_client.register_agent("a", None, [])
+        payload = mock_http_client.post.call_args[1]["json"]
+        assert "agent_type" not in payload
+        assert payload == {"agent_id": "a", "capabilities": []}
+
     async def test_raises_when_not_initialized(self, api_client) -> None:
         with pytest.raises(ValueError, match="not initialized"):
             await api_client.register_agent("a", "t", [])

@@ -229,7 +229,7 @@ class SessionsApiClient(ServiceBase):
     async def register_agent(
         self,
         agent_id: str,
-        agent_type: str,
+        agent_type: str | None,
         capabilities: list[str],
         version: str | None = None,
         metadata: dict[str, Any] | None = None,
@@ -240,8 +240,14 @@ class SessionsApiClient(ServiceBase):
         when the server accepted it (200/201). Returns False when the server is a
         legacy (< v0.4.0) instance without the endpoint (404) — the caller may still
         open the stream. Raises on any other non-2xx so the reconnect loop backs off.
+
+        ``agent_type`` is omitted from the payload when ``None`` (as with ``version``
+        and ``metadata``); the server rejects a missing required field loudly rather
+        than silently accepting an empty string.
         """
-        payload: dict[str, Any] = {"agent_id": agent_id, "agent_type": agent_type, "capabilities": capabilities}
+        payload: dict[str, Any] = {"agent_id": agent_id, "capabilities": capabilities}
+        if agent_type is not None:
+            payload["agent_type"] = agent_type
         if version is not None:
             payload["version"] = version
         if metadata:

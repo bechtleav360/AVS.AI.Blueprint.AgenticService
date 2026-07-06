@@ -163,7 +163,7 @@ class SessionsBus(Component, CloudEventProcessorMixin):
             raise RuntimeError("SessionsBus not started: agent_id is not set")
         await self._require_api_client().register_agent(
             agent_id=self._agent_id,
-            agent_type=self._agent_type or "",
+            agent_type=self._agent_type,
             capabilities=self._capabilities,
         )
 
@@ -277,7 +277,7 @@ class SessionsBus(Component, CloudEventProcessorMixin):
             except httpx.HTTPStatusError as e:
                 if e.response.status_code != 403:
                     raise
-                await self._retry_with_fresh_key(event, session_id, job_id)
+                await self._retry_with_fresh_key(event, session_id, job_id, e)
 
             except Exception as e:
                 logger.exception("Unexpected error processing job %s: %s", job_id, e)
@@ -297,8 +297,8 @@ class SessionsBus(Component, CloudEventProcessorMixin):
             "session_id": str(session_id),
             "job_id": str(job_id),
             "session_key": session_key,
-            "sessions_api_client": self._api_client,
-            "sessions_key_provider": self._key_provider,
+            "sessions_api_client": self._require_api_client(),
+            "sessions_key_provider": self._require_key_provider(),
         }
 
     async def _cancel_invalid_job(self, session_id: UUID, job_id: UUID, error: InvalidEventError) -> None:
@@ -314,7 +314,13 @@ class SessionsBus(Component, CloudEventProcessorMixin):
         except Exception as cancel_error:
             logger.error("Failed to cancel job %s: %s", job_id, cancel_error)
 
-    async def _retry_with_fresh_key(self, event: GenericCloudEvent, session_id: UUID, job_id: UUID) -> None:
+    async def _retry_with_fresh_key(
+        self,
+        event: GenericCloudEvent,
+        session_id: UUID,
+        job_id: UUID,
+        original_error: httpx.HTTPStatusError,
+    ) -> None:
         # A 403 from a handler means the cached session key is stale. Invalidate and retry
         # once through the SAME dispatch seam as the happy path (no separate code path).
         logger.error("Invalid session key for session %s", session_id)
@@ -326,9 +332,11 @@ class SessionsBus(Component, CloudEventProcessorMixin):
             await self._dispatch_cloud_event(event, context)
         except Exception as retry_error:
             logger.error("Retry failed for job %s: %s", job_id, retry_error)
+            # Report the original 403 in the reason (that is what the operator needs to see);
+            # chain from retry_error so the proximate failure is preserved in the traceback.
             raise InvalidEventError(
                 status="invalid_session_key",
-                reason=f"Session key invalid: {retry_error}",
+                reason=f"Session key invalid: {original_error}",
             ) from retry_error
 
     def _convert_to_cloud_event(self, notification: JobNotification) -> GenericCloudEvent:
