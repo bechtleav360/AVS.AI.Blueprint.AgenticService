@@ -6,19 +6,18 @@ for processing via the CloudEventProcessorMixin dispatch pipeline.
 """
 
 import asyncio
-import json
 import logging
 from typing import Any
 from uuid import UUID
 
 import httpx
-from httpx_sse import aconnect_sse
+from httpx_sse import ServerSentEvent, SSEError, aconnect_sse
 from opentelemetry import trace
 
 from ....component.component import Component
 from ....models.errors import InvalidEventError, RetryableHandlerError
 from ....models.events import GenericCloudEvent
-from ....services.eventing.event_processing_service import EventProcessingService
+from ....models.sessions import JobNotification
 from ....services.sessions import SessionKeyProvider, SessionsApiClient
 from .cloud_event_processor_mixin import CloudEventProcessorMixin
 
@@ -44,6 +43,9 @@ class SessionsBus(Component, CloudEventProcessorMixin):
         # SSE connection
         self._sse_task: asyncio.Task[None] | None = None
         self._shutdown_event: asyncio.Event = asyncio.Event()
+
+        # In-flight job tasks (tracked so shutdown can drain them, not orphan them)
+        self._inflight_tasks: set[asyncio.Task[None]] = set()
 
         # Services (resolved on startup)
         self._api_client: SessionsApiClient | None = None
@@ -153,7 +155,7 @@ class SessionsBus(Component, CloudEventProcessorMixin):
                     pass
 
     async def _connect_and_consume(self) -> None:
-        """Establish SSE connection and consume events."""
+        """Register, then establish the SSE connection and consume events."""
         # v0.4.0 gates the stream on registration — register (idempotent) before every
         # connect attempt. On a legacy server this is a no-op (404 -> False); on a hard
         # failure it raises and the reconnect loop (in _consume_sse_stream) backs off.
@@ -165,10 +167,8 @@ class SessionsBus(Component, CloudEventProcessorMixin):
 
         url = f"{self._base_url}/jobs/stream/sse"
         params: dict[str, Any] = {"agent_id": self._agent_id}
-
         if self._agent_type:
             params["agent_type"] = self._agent_type
-
         if self._capabilities:
             params["capabilities"] = ",".join(self._capabilities)
 
@@ -177,166 +177,179 @@ class SessionsBus(Component, CloudEventProcessorMixin):
         async with httpx.AsyncClient(timeout=None) as client:
             async with aconnect_sse(client, "GET", url, params=params, headers=headers) as event_source:
                 logger.info("SSE connection established")
+                try:
+                    async for sse in event_source.aiter_sse():
+                        if self._shutdown_event.is_set():
+                            break
+                        self._dispatch_sse_event(sse)
+                except SSEError:
+                    # aconnect_sse hides the real status when the server returns JSON (e.g. a
+                    # 403 dispatch-gate rejection). Surface status + body before backing off.
+                    resp = event_source.response
+                    body = (await resp.aread()).decode(errors="replace")[:500]
+                    logger.error("SSE stream rejected: status=%d body=%s", resp.status_code, body)
+                    raise
 
-                async for sse in event_source.aiter_sse():
-                    if self._shutdown_event.is_set():
-                        break
+    def _dispatch_sse_event(self, sse: ServerSentEvent) -> None:
+        """Route a single SSE frame. Keepalive comment frames are ignored (#44)."""
+        try:
+            if sse.event == "connected":
+                logger.info("SSE connected event received")
 
-                    try:
-                        if sse.event == "connected":
-                            logger.info("SSE connected event received")
+            elif sse.event == "job_created":
+                notification = JobNotification.model_validate_json(sse.data)
+                logger.info(
+                    "Job notification received: job_id=%s, job_type=%s",
+                    notification.job_id,
+                    notification.job_type,
+                )
+                task = asyncio.create_task(self._handle_job_notification(notification))
+                self._inflight_tasks.add(task)
+                task.add_done_callback(self._inflight_tasks.discard)
 
-                        elif sse.event == "job_created":
-                            job_data = json.loads(sse.data)
-                            logger.info(
-                                "Job notification received: job_id=%s, job_type=%s",
-                                job_data.get("job_id"),
-                                job_data.get("job_type"),
-                            )
-                            asyncio.create_task(self._handle_job_notification(job_data))
+            elif sse.event == "heartbeat":
+                logger.debug("SSE heartbeat received")
 
-                        elif sse.event == "heartbeat":
-                            logger.debug("SSE heartbeat received")
+            elif sse.event == "message" and not (sse.data or "").strip():
+                # Server keepalive comment frame (`: keepalive`) surfaces as a default-type
+                # `message` with empty data. Ignore it (#44) instead of warning every tick.
+                logger.debug("SSE keepalive frame received")
 
-                        else:
-                            logger.warning("Unknown SSE event type: %s", sse.event)
+            else:
+                logger.warning("Unknown SSE event type: %s", sse.event)
 
-                    except Exception as e:
-                        logger.error("Error processing SSE event: %s", e, exc_info=True)
+        except Exception as e:
+            logger.error("Error processing SSE event: %s", e, exc_info=True)
 
-    async def _handle_job_notification(self, job_data: dict[str, Any]) -> None:
+    async def _handle_job_notification(self, notification: JobNotification) -> None:
         """Handle job notification with concurrency control.
 
         Args:
-            job_data: Job notification data from SSE
+            notification: Parsed job notification from the SSE stream
         """
         if self._semaphore is None:
             raise RuntimeError("Semaphore not initialized")
         async with self._semaphore:
             try:
                 await asyncio.wait_for(
-                    self._process_job_notification(job_data),
+                    self._process_job_notification(notification),
                     timeout=self._job_timeout,
                 )
             except TimeoutError:
                 logger.error(
                     "Job processing timeout after %ds: job_id=%s",
                     self._job_timeout,
-                    job_data.get("job_id"),
+                    notification.job_id,
                 )
 
-    async def _process_job_notification(self, job_data: dict[str, Any]) -> None:
-        """Process a job notification by converting to CloudEvent and delegating to handlers.
-
-        Uses the CloudEventProcessorMixin dispatch pipeline for the primary call.
-        Applies sessions-specific error handling: permanent failures cancel the job,
-        transient failures leave it pending, 403 auth errors invalidate the session key
-        and retry once.
-
-        Args:
-            job_data: Job notification data from SSE
+    async def _process_job_notification(self, notification: JobNotification) -> None:
+        """Convert the notification to a CloudEvent and dispatch it, applying
+        sessions-specific error handling. Each recovery policy lives in its own
+        helper so this method stays a thin dispatcher.
         """
-        session_id = UUID(job_data["session_id"])
-        job_id = UUID(job_data["job_id"])
-        job_type = job_data["job_type"]
+        session_id = notification.session_id
+        job_id = notification.job_id
+        job_type = notification.job_type
 
         with tracer.start_as_current_span("sessions_bus.process_job") as span:
             span.set_attribute("job_id", str(job_id))
             span.set_attribute("session_id", str(session_id))
             span.set_attribute("job_type", job_type)
 
+            event = self._convert_to_cloud_event(notification)
+
             try:
-                # Get session key from provider
-                if self._key_provider is None:
-                    raise RuntimeError("SessionKeyProvider not initialized")
-                session_key = await self._key_provider.get_session_key(session_id)
-
-                event = self._convert_to_cloud_event(job_data)
-
-                context = {
-                    "session_id": str(session_id),
-                    "job_id": str(job_id),
-                    "session_key": session_key,
-                    "sessions_api_client": self._api_client,
-                    "sessions_key_provider": self._key_provider,
-                }
-
+                session_key = await self._require_key_provider().get_session_key(session_id)
+                context = self._build_context(session_id, job_id, session_key)
                 result = await self._dispatch_cloud_event(event, context)
 
                 if result.status.value == "no_handler_found":
-                    logger.warning(
-                        "No handler found for job type %s (job_id=%s)",
-                        job_type,
-                        job_id,
-                    )
+                    logger.warning("No handler found for job type %s (job_id=%s)", job_type, job_id)
 
             except InvalidEventError as e:
-                logger.error("Invalid job %s: %s. Cancelling.", job_id, e)
-                try:
-                    if self._key_provider is None:
-                        raise RuntimeError("SessionKeyProvider not initialized")
-                    if self._api_client is None:
-                        raise RuntimeError("SessionsApiClient not initialized")
-                    session_key = await self._key_provider.get_session_key(session_id)
-                    await self._api_client.cancel_job(
-                        session_id=session_id,
-                        job_id=job_id,
-                        session_key=session_key,
-                        reason=f"Invalid event: {str(e)}",
-                    )
-                except Exception as cancel_error:
-                    logger.error("Failed to cancel job %s: %s", job_id, cancel_error)
+                await self._cancel_invalid_job(session_id, job_id, e)
 
             except RetryableHandlerError as e:
-                logger.warning(
-                    "Retryable error for job %s: %s. Job remains pending.",
-                    job_id,
-                    e,
-                )
+                logger.warning("Retryable error for job %s: %s. Job remains pending.", job_id, e)
 
             except httpx.HTTPStatusError as e:
-                if e.response.status_code == 403:
-                    logger.error("Invalid session key for session %s", session_id)
-                    if self._key_provider is None:
-                        raise RuntimeError("SessionKeyProvider not initialized") from None
-                    self._key_provider.invalidate_cache(session_id)
-
-                    try:
-                        session_key = await self._key_provider.get_session_key(session_id)
-                        context["session_key"] = session_key
-                        processing_service = self.registry.get_service(EventProcessingService)
-                        await processing_service.process_event(event, context)
-                    except Exception as retry_error:
-                        logger.error("Retry failed for job %s: %s", job_id, retry_error)
-                        raise InvalidEventError(
-                            status="invalid_session_key",
-                            reason=f"Session key invalid: {str(e)}",
-                        ) from e
-                else:
+                if e.response.status_code != 403:
                     raise
+                await self._retry_with_fresh_key(event, session_id, job_id)
 
             except Exception as e:
                 logger.exception("Unexpected error processing job %s: %s", job_id, e)
 
-    def _convert_to_cloud_event(self, job_data: dict[str, Any]) -> GenericCloudEvent:
-        """Convert job notification to CloudEvent format.
+    def _require_key_provider(self) -> SessionKeyProvider:
+        if self._key_provider is None:
+            raise RuntimeError("SessionKeyProvider not initialized")
+        return self._key_provider
+
+    def _require_api_client(self) -> SessionsApiClient:
+        if self._api_client is None:
+            raise RuntimeError("SessionsApiClient not initialized")
+        return self._api_client
+
+    def _build_context(self, session_id: UUID, job_id: UUID, session_key: str) -> dict[str, Any]:
+        return {
+            "session_id": str(session_id),
+            "job_id": str(job_id),
+            "session_key": session_key,
+            "sessions_api_client": self._api_client,
+            "sessions_key_provider": self._key_provider,
+        }
+
+    async def _cancel_invalid_job(self, session_id: UUID, job_id: UUID, error: InvalidEventError) -> None:
+        logger.error("Invalid job %s: %s. Cancelling.", job_id, error)
+        try:
+            session_key = await self._require_key_provider().get_session_key(session_id)
+            await self._require_api_client().cancel_job(
+                session_id=session_id,
+                job_id=job_id,
+                session_key=session_key,
+                reason=f"Invalid event: {error}",
+            )
+        except Exception as cancel_error:
+            logger.error("Failed to cancel job %s: %s", job_id, cancel_error)
+
+    async def _retry_with_fresh_key(self, event: GenericCloudEvent, session_id: UUID, job_id: UUID) -> None:
+        # A 403 from a handler means the cached session key is stale. Invalidate and retry
+        # once through the SAME dispatch seam as the happy path (no separate code path).
+        logger.error("Invalid session key for session %s", session_id)
+        key_provider = self._require_key_provider()
+        key_provider.invalidate_cache(session_id)
+        try:
+            session_key = await key_provider.get_session_key(session_id)
+            context = self._build_context(session_id, job_id, session_key)
+            await self._dispatch_cloud_event(event, context)
+        except Exception as retry_error:
+            logger.error("Retry failed for job %s: %s", job_id, retry_error)
+            raise InvalidEventError(
+                status="invalid_session_key",
+                reason=f"Session key invalid: {retry_error}",
+            ) from retry_error
+
+    def _convert_to_cloud_event(self, notification: JobNotification) -> GenericCloudEvent:
+        """Convert a job notification to CloudEvent format.
 
         Args:
-            job_data: Job notification data from SSE
+            notification: Parsed job notification
 
         Returns:
-            GenericCloudEvent with job data
+            GenericCloudEvent with the full job payload as ``data``
         """
-        job_type = job_data["job_type"]
-        event_type = f"sessions.job.created.{job_type}"
-
-        return GenericCloudEvent(
-            specversion="1.0",
-            id=job_data["job_id"],
-            type=event_type,
-            source="/sessions-service",
-            subject=job_data["session_id"],
-            time=job_data.get("created_at"),
-            datacontenttype="application/json",
-            data=job_data,
-        )
+        event_type = f"sessions.job.created.{notification.job_type}"
+        kwargs: dict[str, Any] = {
+            "specversion": "1.0",
+            "id": str(notification.job_id),
+            "type": event_type,
+            "source": "/sessions-service",
+            "subject": str(notification.session_id),
+            "datacontenttype": "application/json",
+            "data": notification.payload(),
+        }
+        # Only set `time` when present — GenericCloudEvent rejects a None time; omitting it
+        # lets the model apply its default timestamp.
+        if notification.created_at is not None:
+            kwargs["time"] = notification.created_at
+        return GenericCloudEvent(**kwargs)

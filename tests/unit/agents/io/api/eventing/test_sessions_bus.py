@@ -1,8 +1,9 @@
 """Unit tests for SessionsBus."""
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -10,6 +11,7 @@ import pytest
 from blueprint.agents.io.api.eventing.sessions_bus import SessionsBus
 from blueprint.agents.models.errors import InvalidEventError, RetryableHandlerError
 from blueprint.agents.models.result import ProcessingResult, ProcessingStatus
+from blueprint.agents.models.sessions import JobNotification
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -53,13 +55,13 @@ def started_sessions_bus(sessions_bus: SessionsBus) -> SessionsBus:
 
 
 @pytest.fixture
-def job_data() -> dict:
-    return {
-        "session_id": str(uuid4()),
-        "job_id": str(uuid4()),
-        "job_type": "transcription",
-        "created_at": "2024-01-01T00:00:00Z",
-    }
+def notification() -> JobNotification:
+    return JobNotification(
+        session_id=uuid4(),
+        job_id=uuid4(),
+        job_type="transcription",
+        created_at="2024-01-01T00:00:00Z",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -131,45 +133,40 @@ class TestOnShutdown:
 # ---------------------------------------------------------------------------
 
 
-def _job_data_with_time(**overrides: str) -> dict:
-    """Build minimal job data that includes the required created_at timestamp."""
-    base = {
-        "session_id": str(uuid4()),
-        "job_id": str(uuid4()),
-        "job_type": "transcription",
-        "created_at": "2024-01-01T00:00:00Z",
-    }
-    base.update(overrides)
-    return base
-
-
 class TestConvertToCloudEvent:
+    def _n(self, **overrides) -> JobNotification:
+        base = {
+            "session_id": uuid4(),
+            "job_id": uuid4(),
+            "job_type": "transcription",
+            "created_at": "2024-01-01T00:00:00Z",
+        }
+        base.update(overrides)
+        return JobNotification(**base)
+
     def test_event_type_includes_job_type(self, sessions_bus: SessionsBus) -> None:
-        data = _job_data_with_time(job_type="analysis")
-        event = sessions_bus._convert_to_cloud_event(data)
+        event = sessions_bus._convert_to_cloud_event(self._n(job_type="analysis"))
         assert event.type == "sessions.job.created.analysis"
 
     def test_event_id_is_job_id(self, sessions_bus: SessionsBus) -> None:
-        job_id = str(uuid4())
-        data = _job_data_with_time(job_id=job_id)
-        event = sessions_bus._convert_to_cloud_event(data)
-        assert event.id == job_id
+        job_id = uuid4()
+        event = sessions_bus._convert_to_cloud_event(self._n(job_id=job_id))
+        assert event.id == str(job_id)
 
     def test_subject_is_session_id(self, sessions_bus: SessionsBus) -> None:
-        session_id = str(uuid4())
-        data = _job_data_with_time(session_id=session_id)
-        event = sessions_bus._convert_to_cloud_event(data)
-        assert event.subject == session_id
+        session_id = uuid4()
+        event = sessions_bus._convert_to_cloud_event(self._n(session_id=session_id))
+        assert event.subject == str(session_id)
 
     def test_source_is_sessions_service(self, sessions_bus: SessionsBus) -> None:
-        data = _job_data_with_time()
-        event = sessions_bus._convert_to_cloud_event(data)
+        event = sessions_bus._convert_to_cloud_event(self._n())
         assert event.source == "/sessions-service"
 
-    def test_data_payload_equals_job_data(self, sessions_bus: SessionsBus) -> None:
-        data = _job_data_with_time(job_type="analysis")
-        event = sessions_bus._convert_to_cloud_event(data)
-        assert event.data == data
+    def test_data_payload_contains_job_fields(self, sessions_bus: SessionsBus) -> None:
+        n = self._n(job_type="analysis")
+        event = sessions_bus._convert_to_cloud_event(n)
+        assert event.data["job_type"] == "analysis"
+        assert event.data["session_id"] == str(n.session_id)
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +178,7 @@ class TestProcessJobNotification:
     async def test_no_handler_found_is_logged(
         self,
         started_sessions_bus: SessionsBus,
-        job_data: dict,
+        notification: JobNotification,
         mock_registry: MagicMock,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
@@ -193,28 +190,28 @@ class TestProcessJobNotification:
         started_sessions_bus._dispatch_cloud_event = AsyncMock(return_value=result)  # type: ignore[method-assign]
 
         with caplog.at_level("WARNING"):
-            await started_sessions_bus._process_job_notification(job_data)
+            await started_sessions_bus._process_job_notification(notification)
 
         assert "No handler found" in caplog.text
 
     async def test_invalid_event_error_cancels_job(
         self,
         started_sessions_bus: SessionsBus,
-        job_data: dict,
+        notification: JobNotification,
     ) -> None:
         err = InvalidEventError(status="bad_data", reason="missing field")
         started_sessions_bus._dispatch_cloud_event = AsyncMock(side_effect=err)  # type: ignore[method-assign]
 
-        await started_sessions_bus._process_job_notification(job_data)
+        await started_sessions_bus._process_job_notification(notification)
 
         started_sessions_bus._api_client.cancel_job.assert_awaited_once()
         call_kwargs = started_sessions_bus._api_client.cancel_job.call_args.kwargs
-        assert call_kwargs["job_id"] == UUID(job_data["job_id"])
+        assert call_kwargs["job_id"] == notification.job_id
 
     async def test_invalid_event_error_cancel_failure_is_swallowed(
         self,
         started_sessions_bus: SessionsBus,
-        job_data: dict,
+        notification: JobNotification,
     ) -> None:
         started_sessions_bus._dispatch_cloud_event = AsyncMock(  # type: ignore[method-assign]
             side_effect=InvalidEventError(status="bad", reason="reason")
@@ -222,67 +219,53 @@ class TestProcessJobNotification:
         started_sessions_bus._api_client.cancel_job = AsyncMock(side_effect=RuntimeError("cancel failed"))
 
         # Should not raise — cancel failures are swallowed
-        await started_sessions_bus._process_job_notification(job_data)
+        await started_sessions_bus._process_job_notification(notification)
 
     async def test_retryable_error_is_logged_not_raised(
         self,
         started_sessions_bus: SessionsBus,
-        job_data: dict,
+        notification: JobNotification,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         err = RetryableHandlerError(status="transient", reason="downstream unavailable")
         started_sessions_bus._dispatch_cloud_event = AsyncMock(side_effect=err)  # type: ignore[method-assign]
 
         with caplog.at_level("WARNING"):
-            await started_sessions_bus._process_job_notification(job_data)
+            await started_sessions_bus._process_job_notification(notification)
 
         assert "Job remains pending" in caplog.text
 
     async def test_403_invalidates_cache_and_retries(
-        self,
-        started_sessions_bus: SessionsBus,
-        job_data: dict,
-        mock_registry: MagicMock,
+        self, started_sessions_bus: SessionsBus, notification: JobNotification
     ) -> None:
         response_mock = MagicMock()
         response_mock.status_code = 403
         http_err = httpx.HTTPStatusError("403", request=MagicMock(), response=response_mock)
-        started_sessions_bus._dispatch_cloud_event = AsyncMock(side_effect=http_err)  # type: ignore[method-assign]
-        mock_registry.get_service.return_value.process_event = AsyncMock(
-            return_value=ProcessingResult(request_id="r", status=ProcessingStatus.PROCESSED)
-        )
+        processed = ProcessingResult(request_id="r", status=ProcessingStatus.PROCESSED)
+        # First dispatch raises 403; the retry (same seam) succeeds.
+        started_sessions_bus._dispatch_cloud_event = AsyncMock(side_effect=[http_err, processed])  # type: ignore[method-assign]
 
-        await started_sessions_bus._process_job_notification(job_data)
+        await started_sessions_bus._process_job_notification(notification)
 
         started_sessions_bus._key_provider.invalidate_cache.assert_called_once()
-        mock_registry.get_service.return_value.process_event.assert_awaited_once()
+        assert started_sessions_bus._dispatch_cloud_event.await_count == 2
 
     async def test_403_retry_failure_propagates_invalid_event_error(
-        self,
-        started_sessions_bus: SessionsBus,
-        job_data: dict,
-        mock_registry: MagicMock,
+        self, started_sessions_bus: SessionsBus, notification: JobNotification
     ) -> None:
-        """Exceptions raised inside an except clause propagate outside all peer handlers.
-
-        When the 403 retry fails, `raise InvalidEventError(...)` is executed inside
-        the `except httpx.HTTPStatusError` block. Python does not route this new
-        exception to other except clauses at the same level — it propagates out of
-        _process_job_notification entirely.
-        """
         response_mock = MagicMock()
         response_mock.status_code = 403
         http_err = httpx.HTTPStatusError("403", request=MagicMock(), response=response_mock)
-        started_sessions_bus._dispatch_cloud_event = AsyncMock(side_effect=http_err)  # type: ignore[method-assign]
-        mock_registry.get_service.return_value.process_event = AsyncMock(side_effect=RuntimeError("still broken"))
-
+        started_sessions_bus._dispatch_cloud_event = AsyncMock(  # type: ignore[method-assign]
+            side_effect=[http_err, RuntimeError("still broken")]
+        )
         with pytest.raises(InvalidEventError, match="Session key invalid"):
-            await started_sessions_bus._process_job_notification(job_data)
+            await started_sessions_bus._process_job_notification(notification)
 
     async def test_non_403_http_error_propagates(
         self,
         started_sessions_bus: SessionsBus,
-        job_data: dict,
+        notification: JobNotification,
     ) -> None:
         """Non-403 HTTPStatusError is re-raised and escapes _process_job_notification.
 
@@ -296,18 +279,18 @@ class TestProcessJobNotification:
         started_sessions_bus._dispatch_cloud_event = AsyncMock(side_effect=http_err)  # type: ignore[method-assign]
 
         with pytest.raises(httpx.HTTPStatusError):
-            await started_sessions_bus._process_job_notification(job_data)
+            await started_sessions_bus._process_job_notification(notification)
 
     async def test_unexpected_error_is_logged_not_raised(
         self,
         started_sessions_bus: SessionsBus,
-        job_data: dict,
+        notification: JobNotification,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         started_sessions_bus._dispatch_cloud_event = AsyncMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
 
         with caplog.at_level("ERROR"):
-            await started_sessions_bus._process_job_notification(job_data)
+            await started_sessions_bus._process_job_notification(notification)
 
         assert "Unexpected error" in caplog.text
 
@@ -335,3 +318,46 @@ class TestRegisterBeforeConnect:
         bus._api_client.register_agent.assert_awaited_once_with(
             agent_id="agent-001", agent_type="transcription", capabilities=["transcribe"]
         )
+
+
+# ---------------------------------------------------------------------------
+# _dispatch_sse_event
+# ---------------------------------------------------------------------------
+
+
+class TestDispatchSseEvent:
+    def test_keepalive_message_frame_is_debug_not_warning(
+        self, sessions_bus: SessionsBus, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        sse = SimpleNamespace(event="message", data="")
+        with caplog.at_level("DEBUG"):
+            sessions_bus._dispatch_sse_event(sse)
+        assert "keepalive" in caplog.text.lower()
+        assert "Unknown SSE event type" not in caplog.text
+
+    def test_named_unknown_event_with_payload_warns(
+        self, sessions_bus: SessionsBus, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        sse = SimpleNamespace(event="surprise", data="{}")
+        with caplog.at_level("WARNING"):
+            sessions_bus._dispatch_sse_event(sse)
+        assert "Unknown SSE event type: surprise" in caplog.text
+
+    async def test_job_created_creates_tracked_task(self, started_sessions_bus: SessionsBus) -> None:
+        # async so a running event loop exists for asyncio.create_task; the assertion runs
+        # before the loop yields to the scheduled coroutine, so the task is still tracked.
+        started_sessions_bus._handle_job_notification = AsyncMock()  # type: ignore[method-assign]
+        payload = '{"session_id": "00000000-0000-0000-0000-000000000001", ' \
+                  '"job_id": "00000000-0000-0000-0000-000000000002", "job_type": "t"}'
+        sse = SimpleNamespace(event="job_created", data=payload)
+        started_sessions_bus._dispatch_sse_event(sse)
+        assert len(started_sessions_bus._inflight_tasks) == 1
+
+    def test_malformed_job_payload_is_logged_and_skipped(
+        self, started_sessions_bus: SessionsBus, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        sse = SimpleNamespace(event="job_created", data='{"missing": "ids"}')
+        with caplog.at_level("ERROR"):
+            started_sessions_bus._dispatch_sse_event(sse)
+        assert "Error processing SSE event" in caplog.text
+        assert len(started_sessions_bus._inflight_tasks) == 0
