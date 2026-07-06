@@ -153,5 +153,8 @@ uv.lock
 # PyCharm stuff
 .idea/
 
+# Claude Code local config
+.claude/
+
 
 ARCHITECTURE_DECISIONS.md

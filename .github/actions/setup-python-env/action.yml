@@ -18,6 +18,7 @@ runs:
       uses: astral-sh/setup-uv@v6
 
     - name: Set up Python ${{ inputs.python-version }}
+      id: setup-python
       uses: actions/setup-python@v5
       with:
         python-version: ${{ inputs.python-version }}
@@ -27,13 +28,19 @@ runs:
       id: cache-venv
       with:
         path: .venv
-        key: venv-${{ runner.os }}-py${{ inputs.python-version }}-${{ hashFiles('pyproject.toml') }}
+        # Key on the resolved patch version (e.g. 3.13.14), not just "3.13".
+        # A venv's bin/ scripts hard-code the interpreter path; when the runner
+        # bumps its 3.13.x patch the old cached interpreter disappears and the
+        # restored scripts fail with "cannot execute: required file not found".
+        key: venv-${{ runner.os }}-py${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('pyproject.toml') }}
 
     - name: Create venv and install dependencies
-      if: steps.cache-venv.outputs.cache-hit != 'true'
+      # Always run: `--clear` recreates the venv, repairing a restored one whose
+      # interpreter path drifted AND tolerating a cache hit that already placed
+      # `.venv` (plain `uv venv` aborts with "a virtual environment already exists").
       shell: bash
       run: |
-        uv venv .venv
+        uv venv .venv --clear
         uv pip install -e ".[${{ inputs.install-extras }}]"
 
     - name: Add venv to PATH

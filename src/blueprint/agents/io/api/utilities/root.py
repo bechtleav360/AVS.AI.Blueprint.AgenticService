@@ -45,9 +45,10 @@ class RootApi(RestApiBase):
         for route in self._app.routes:
             if not isinstance(route, APIRoute):
                 continue
-            methods = ", ".join(sorted(route.methods))
+            route_methods = route.methods or set()
+            methods = ", ".join(sorted(route_methods))
             summary = route.summary or ""
-            if "GET" in route.methods:
+            if "GET" in route_methods:
                 path_cell = f'<a href="{route.path}">{route.path}</a>'
             else:
                 anchor = route.path.replace("/", "-").strip("-")

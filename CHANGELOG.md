@@ -1,6 +1,24 @@
 # Changelog
 ## [Unreleased]
 
+## [0.6.2] - 2026-07-06
+
+### Fixed
+- **`SessionsBus` registers with the dispatch registry before opening the SSE stream** (#45).
+  Sessions v0.4.0 gates `GET /jobs/stream/sse` on a prior `POST /agents/register`; the bus now
+  registers (idempotent) before every connect attempt and re-registers on reconnect, fixing the
+  403 loop that broke all deployed agents. A pre-v0.4.0 server (404 on register) is handled as
+  "legacy, proceed without registration". The real status/body of an SSE rejection is now logged
+  instead of an opaque `SSEError`.
+- **Keepalive comment frames are no longer logged as `Unknown SSE event type: message`** (#44).
+
+### Changed
+- **`SessionsBus` unregisters and drains in-flight jobs on graceful shutdown.** It stops the stream,
+  waits for in-flight jobs (bounded by `job_timeout_seconds`, cancelling stragglers), then calls
+  `DELETE /agents/{agent_id}` so the agent leaves the registry immediately instead of lapsing at TTL.
+- Job notifications are parsed into a typed `JobNotification` model at the SSE boundary.
+- **Business REST routers no longer carry a blanket `rest` OpenAPI tag.** `_build_rest_endpoints` mounted every `with_rest_api` router with `include_router(..., tags=["rest"])`, which stamps a redundant `rest` tag onto *every* operation on top of its own per-operation tag — so the entire business API collapses into a single `rest` group in Swagger UI. Routers are now mounted without the blanket tag; operations group by their real resource tags (set via the `RestApiBase` decorators), and untagged routes fall under FastAPI's `default`. Presentation only — no route/path/schema change. Downstream services that relied on the `rest` grouping should tag their routes (most already do).
+
 ## [0.6.1] - 2026-06-10
 
 ### Added
