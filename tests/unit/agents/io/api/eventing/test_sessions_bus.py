@@ -310,3 +310,28 @@ class TestProcessJobNotification:
             await started_sessions_bus._process_job_notification(job_data)
 
         assert "Unexpected error" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# _connect_and_consume — registration gate
+# ---------------------------------------------------------------------------
+
+
+class TestRegisterBeforeConnect:
+    async def test_registers_before_opening_stream(self, started_sessions_bus: SessionsBus) -> None:
+        bus = started_sessions_bus
+        bus._base_url = "http://sessions-svc"
+        bus._agent_id = "agent-001"
+        bus._agent_type = "transcription"
+        bus._capabilities = ["transcribe"]
+        bus._api_key = "secret"
+        bus._api_client.register_agent = AsyncMock(side_effect=RuntimeError("register-first"))
+
+        with patch("blueprint.agents.io.api.eventing.sessions_bus.aconnect_sse") as mock_sse:
+            with pytest.raises(RuntimeError, match="register-first"):
+                await bus._connect_and_consume()
+            mock_sse.assert_not_called()  # stream is never opened when registration fails
+
+        bus._api_client.register_agent.assert_awaited_once_with(
+            agent_id="agent-001", agent_type="transcription", capabilities=["transcribe"]
+        )
