@@ -227,7 +227,12 @@ class AppBuilder:
         app.include_router(RootApi(app=app).router, tags=["root"])
 
         for rest_api in registry.get_rest_apis():
-            app.include_router(rest_api.router, prefix="/api", tags=["rest"])
+            # No blanket `tags=["rest"]`: it stamps every operation with a redundant "rest" tag on
+            # top of its own resource tag, so the whole business API collapses into one "rest" group
+            # in Swagger UI. Routes carry their per-operation tags (set via the RestApiBase decorators)
+            # and group correctly; untagged routes fall under FastAPI's "default", which is the nudge
+            # for services to tag their routes rather than hide behind a catch-all.
+            app.include_router(rest_api.router, prefix="/api")
 
         if self._eventing_component is not None:
             app.include_router(self._eventing_component.router)
