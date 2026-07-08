@@ -1,6 +1,8 @@
 # Changelog
 ## [Unreleased]
 
+## [0.6.3] - 2026-07-08
+
 ### Fixed
 - **`SessionsBus` now reconciles jobs missed while disconnected** (#57). SSE is a live-only push
   transport, so jobs created during a restart, redeploy, or stream gap were never delivered and
