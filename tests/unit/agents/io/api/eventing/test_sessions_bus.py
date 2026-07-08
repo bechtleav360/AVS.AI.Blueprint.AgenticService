@@ -293,6 +293,79 @@ class TestProcessJobNotification:
 
         assert "Unexpected error" in caplog.text
 
+    async def test_pipeline_id_forwarded_to_context(
+        self,
+        started_sessions_bus: SessionsBus,
+    ) -> None:
+        """pipeline_id from the SSE payload is forwarded into the context dict."""
+        notification = JobNotification(
+            session_id=uuid4(),
+            job_id=uuid4(),
+            job_type="classify_documents",
+            pipeline_id="test-pipeline-id",
+        )
+        captured_contexts: list[dict] = []
+
+        async def _capture_dispatch(event, context):
+            captured_contexts.append(context)
+            return ProcessingResult(request_id="r", status=ProcessingStatus.PROCESSED)
+
+        started_sessions_bus._dispatch_cloud_event = _capture_dispatch  # type: ignore[method-assign]
+
+        await started_sessions_bus._process_job_notification(notification)
+
+        assert len(captured_contexts) == 1
+        assert captured_contexts[0]["pipeline_id"] == "test-pipeline-id"
+
+    async def test_pipeline_id_none_when_not_provided(
+        self,
+        started_sessions_bus: SessionsBus,
+        notification: JobNotification,
+    ) -> None:
+        """pipeline_id is None in context when absent from SSE payload (backward compat)."""
+        captured_contexts: list[dict] = []
+
+        async def _capture_dispatch(event, context):
+            captured_contexts.append(context)
+            return ProcessingResult(request_id="r", status=ProcessingStatus.PROCESSED)
+
+        started_sessions_bus._dispatch_cloud_event = _capture_dispatch  # type: ignore[method-assign]
+
+        await started_sessions_bus._process_job_notification(notification)
+
+        assert len(captured_contexts) == 1
+        assert captured_contexts[0]["pipeline_id"] is None
+
+    async def test_pipeline_id_forwarded_on_403_retry(
+        self,
+        started_sessions_bus: SessionsBus,
+    ) -> None:
+        """pipeline_id is preserved in context when _retry_with_fresh_key is invoked."""
+        notification = JobNotification(
+            session_id=uuid4(),
+            job_id=uuid4(),
+            job_type="classify_documents",
+            pipeline_id="pipeline-retry-id",
+        )
+        response_mock = MagicMock()
+        response_mock.status_code = 403
+        http_err = httpx.HTTPStatusError("403", request=MagicMock(), response=response_mock)
+
+        captured_contexts: list[dict] = []
+
+        async def _side_effect(event, context):
+            captured_contexts.append(context)
+            if len(captured_contexts) == 1:
+                raise http_err
+            return ProcessingResult(request_id="r", status=ProcessingStatus.PROCESSED)
+
+        started_sessions_bus._dispatch_cloud_event = _side_effect  # type: ignore[method-assign]
+
+        await started_sessions_bus._process_job_notification(notification)
+
+        assert len(captured_contexts) == 2
+        assert captured_contexts[1]["pipeline_id"] == "pipeline-retry-id"
+
 
 # ---------------------------------------------------------------------------
 # _connect_and_consume — registration gate
