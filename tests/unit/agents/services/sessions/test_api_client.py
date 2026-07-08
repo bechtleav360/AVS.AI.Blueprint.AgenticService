@@ -247,3 +247,76 @@ class TestUnregisterAgent:
 
     async def test_swallows_uninitialized_client(self, api_client) -> None:
         await api_client.unregister_agent("agent-1")  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# list_pending_jobs — reconnect catch-up
+# ---------------------------------------------------------------------------
+
+
+def _summary(job_id: str, job_type: str) -> dict:
+    return {
+        "id": job_id,
+        "session_id": "00000000-0000-0000-0000-0000000000ff",
+        "job_type": job_type,
+        "status": "pending",
+        "created_at": "2026-07-08T00:00:00Z",
+        "updated_at": "2026-07-08T00:00:00Z",
+    }
+
+
+def _list_resp(payload: list[dict]) -> MagicMock:
+    resp = MagicMock()
+    resp.json.return_value = payload
+    resp.raise_for_status = MagicMock()
+    return resp
+
+
+class TestListPendingJobs:
+    async def test_queries_status_pending_once_per_capability(self, started_api_client, mock_http_client) -> None:
+        mock_http_client.get = AsyncMock(side_effect=[_list_resp([_summary("j1", "a")]), _list_resp([_summary("j2", "b")])])
+
+        jobs = await started_api_client.list_pending_jobs(["a", "b"])
+
+        assert mock_http_client.get.await_count == 2
+        # Every call targets /jobs with status=pending and one capability as job_type.
+        seen_types = set()
+        for call in mock_http_client.get.call_args_list:
+            url = call[0][0]
+            params = call[1]["params"]
+            assert url.endswith("/jobs")
+            assert params["status"] == "pending"
+            seen_types.add(params["job_type"])
+        assert seen_types == {"a", "b"}
+        assert {j["id"] for j in jobs} == {"j1", "j2"}
+
+    async def test_single_unfiltered_query_when_no_capabilities(self, started_api_client, mock_http_client) -> None:
+        mock_http_client.get = AsyncMock(return_value=_list_resp([_summary("j1", "a")]))
+
+        jobs = await started_api_client.list_pending_jobs([])
+
+        assert mock_http_client.get.await_count == 1
+        params = mock_http_client.get.call_args[1]["params"]
+        assert params["status"] == "pending"
+        assert "job_type" not in params
+        assert [j["id"] for j in jobs] == ["j1"]
+
+    async def test_merges_and_dedupes_by_id(self, started_api_client, mock_http_client) -> None:
+        # A job returned under two capability queries appears once in the merged result.
+        dup = _summary("dup", "a")
+        mock_http_client.get = AsyncMock(side_effect=[_list_resp([dup]), _list_resp([dup, _summary("j2", "b")])])
+
+        jobs = await started_api_client.list_pending_jobs(["a", "b"])
+
+        ids = [j["id"] for j in jobs]
+        assert sorted(ids) == ["dup", "j2"]
+
+    async def test_calls_raise_for_status(self, started_api_client, mock_http_client) -> None:
+        resp = _list_resp([])
+        mock_http_client.get = AsyncMock(return_value=resp)
+        await started_api_client.list_pending_jobs(["a"])
+        resp.raise_for_status.assert_called_once()
+
+    async def test_raises_when_not_initialized(self, api_client) -> None:
+        with pytest.raises(ValueError, match="not initialized"):
+            await api_client.list_pending_jobs(["a"])

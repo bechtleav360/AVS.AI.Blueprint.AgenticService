@@ -3,7 +3,7 @@
 import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -505,3 +505,137 @@ class TestConnectLifecycle:
 
         assert "SSE stream rejected: status=403" in caplog.text
         assert "agent not registered" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Reconnect catch-up (REST reconciliation of jobs missed while disconnected)
+# ---------------------------------------------------------------------------
+
+
+async def _drain_inflight(bus: SessionsBus) -> None:
+    """Await every task the bus spawned (catch-up task + the per-job tasks it creates)."""
+    while bus._inflight_tasks:
+        await asyncio.gather(*list(bus._inflight_tasks), return_exceptions=True)
+
+
+_JOB_1 = "11111111-1111-1111-1111-111111111111"
+_JOB_2 = "22222222-2222-2222-2222-222222222222"
+
+
+def _pending_summary(job_id: str, job_type: str = "transcribe") -> dict:
+    return {
+        "id": job_id,
+        "session_id": "00000000-0000-0000-0000-0000000000ff",
+        "job_type": job_type,
+        "status": "pending",
+        "created_at": "2026-07-08T00:00:00Z",
+        "updated_at": "2026-07-08T00:00:00Z",
+    }
+
+
+class TestCatchUpOnConnect:
+    async def test_pending_jobs_are_dispatched_after_connect(self, started_sessions_bus: SessionsBus) -> None:
+        # Jobs created while the agent was disconnected are not replayed by SSE; the bus must
+        # reconcile them via the REST listing and dispatch each through the normal job path.
+        bus = _connectable_bus(started_sessions_bus)
+        bus._api_client.register_agent = AsyncMock(return_value=True)
+        bus._api_client.list_pending_jobs = AsyncMock(return_value=[_pending_summary(_JOB_1), _pending_summary(_JOB_2)])
+        bus._handle_job_notification = AsyncMock()  # type: ignore[method-assign]
+
+        event_source = MagicMock()
+        event_source.aiter_sse = lambda: _EmptyAsyncIter()
+
+        with patch("blueprint.agents.io.api.eventing.sessions_bus.aconnect_sse", return_value=_mock_sse_context(event_source)):
+            await bus._connect_and_consume()
+            await _drain_inflight(bus)
+
+        bus._api_client.list_pending_jobs.assert_awaited_once_with(["transcribe"])
+        dispatched = {call.args[0].job_id for call in bus._handle_job_notification.await_args_list}
+        assert dispatched == {UUID(_JOB_1), UUID(_JOB_2)}
+
+    async def test_catch_up_failure_does_not_break_stream(
+        self, started_sessions_bus: SessionsBus, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # A failing catch-up listing must be logged and swallowed — the live stream keeps consuming.
+        bus = _connectable_bus(started_sessions_bus)
+        bus._api_client.register_agent = AsyncMock(return_value=True)
+        bus._api_client.list_pending_jobs = AsyncMock(side_effect=RuntimeError("listing down"))
+        bus._handle_job_notification = AsyncMock()  # type: ignore[method-assign]
+
+        event_source = MagicMock()
+        event_source.aiter_sse = lambda: _EmptyAsyncIter()
+
+        with patch("blueprint.agents.io.api.eventing.sessions_bus.aconnect_sse", return_value=_mock_sse_context(event_source)):
+            with caplog.at_level("WARNING"):
+                await bus._connect_and_consume()  # must not raise
+                await _drain_inflight(bus)
+
+        bus._handle_job_notification.assert_not_awaited()
+        assert "catch-up" in caplog.text.lower()
+
+    async def test_malformed_summary_is_skipped(self, started_sessions_bus: SessionsBus) -> None:
+        # One unparseable summary must not stop the others from being dispatched.
+        bus = _connectable_bus(started_sessions_bus)
+        bus._api_client.register_agent = AsyncMock(return_value=True)
+        bus._api_client.list_pending_jobs = AsyncMock(return_value=[{"garbage": True}, _pending_summary(_JOB_1)])
+        bus._handle_job_notification = AsyncMock()  # type: ignore[method-assign]
+
+        event_source = MagicMock()
+        event_source.aiter_sse = lambda: _EmptyAsyncIter()
+
+        with patch("blueprint.agents.io.api.eventing.sessions_bus.aconnect_sse", return_value=_mock_sse_context(event_source)):
+            await bus._connect_and_consume()
+            await _drain_inflight(bus)
+
+        assert bus._handle_job_notification.await_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Last-Event-ID resume (same-process reconnect replay from the server ring buffer)
+# ---------------------------------------------------------------------------
+
+
+class TestLastEventIdResume:
+    def test_frame_id_is_tracked(self, started_sessions_bus: SessionsBus) -> None:
+        # Any id-bearing frame advances the resume cursor; a heartbeat isolates the tracking
+        # unit from the job_created path (which spawns a task, covered separately).
+        bus = started_sessions_bus
+        bus._dispatch_sse_event(SimpleNamespace(event="heartbeat", data="", id="12"))
+        assert bus._last_event_id == 12
+
+    def test_non_numeric_id_is_ignored(self, started_sessions_bus: SessionsBus) -> None:
+        bus = started_sessions_bus
+        bus._dispatch_sse_event(SimpleNamespace(event="heartbeat", data="", id="not-a-number"))
+        assert bus._last_event_id is None
+
+    async def test_reconnect_sends_last_event_id(self, started_sessions_bus: SessionsBus) -> None:
+        bus = _connectable_bus(started_sessions_bus)
+        bus._api_client.register_agent = AsyncMock(return_value=True)
+        bus._api_client.list_pending_jobs = AsyncMock(return_value=[])
+        bus._last_event_id = 7
+
+        event_source = MagicMock()
+        event_source.aiter_sse = lambda: _EmptyAsyncIter()
+
+        with patch("blueprint.agents.io.api.eventing.sessions_bus.aconnect_sse", return_value=_mock_sse_context(event_source)) as mock_sse:
+            await bus._connect_and_consume()
+            await _drain_inflight(bus)
+
+        params = mock_sse.call_args[1]["params"]
+        assert params["last_event_id"] == 7
+
+    async def test_first_connect_omits_last_event_id(self, started_sessions_bus: SessionsBus) -> None:
+        bus = _connectable_bus(started_sessions_bus)
+        bus._api_client.register_agent = AsyncMock(return_value=True)
+        bus._api_client.list_pending_jobs = AsyncMock(return_value=[])
+        assert bus._last_event_id is None
+
+        event_source = MagicMock()
+        event_source.aiter_sse = lambda: _EmptyAsyncIter()
+
+        with patch("blueprint.agents.io.api.eventing.sessions_bus.aconnect_sse", return_value=_mock_sse_context(event_source)) as mock_sse:
+            await bus._connect_and_consume()
+            await _drain_inflight(bus)
+
+        params = mock_sse.call_args[1]["params"]
+        assert "last_event_id" not in params

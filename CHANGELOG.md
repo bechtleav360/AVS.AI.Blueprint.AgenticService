@@ -1,6 +1,19 @@
 # Changelog
 ## [Unreleased]
 
+### Fixed
+- **`SessionsBus` now reconciles jobs missed while disconnected** (#57). SSE is a live-only push
+  transport, so jobs created during a restart, redeploy, or stream gap were never delivered and
+  stayed `pending` on the server (observed: 9 `analyse.batch` jobs created before a reconnect that
+  were never picked up). On every (re)connect the bus now reconciles two ways: (1) a REST
+  **catch-up** — lists pending jobs for its capabilities (`GET /jobs?status=pending`) and dispatches
+  each through the normal job path (best-effort; de-duplicated by the handler's idempotency guards;
+  a listing failure never disturbs the live stream), and (2) **`Last-Event-ID` resume** — tracks the
+  last SSE event id and sends `last_event_id` on reconnect so a same-process stream gap replays from
+  the server ring buffer. A cold start omits `last_event_id` (catch-up covers it). Distinct follow-on
+  to #45. A job stranded in `running` by a crashed agent is recovered server-side
+  (avs.ai.idac.service-sessions#127) and then redelivered by this catch-up.
+
 ## [0.6.2] - 2026-07-06
 
 ### Fixed

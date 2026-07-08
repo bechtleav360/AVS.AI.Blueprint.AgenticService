@@ -7,6 +7,7 @@ for processing via the CloudEventProcessorMixin dispatch pipeline.
 
 import asyncio
 import logging
+from collections.abc import Coroutine
 from typing import Any
 from uuid import UUID
 
@@ -43,6 +44,11 @@ class SessionsBus(Component, CloudEventProcessorMixin):
         # SSE connection
         self._sse_task: asyncio.Task[None] | None = None
         self._shutdown_event: asyncio.Event = asyncio.Event()
+
+        # Last SSE event id seen, sent as `last_event_id` on reconnect so the server replays
+        # events missed during a same-process stream gap from its ring buffer. None until the
+        # first id-bearing frame (and after a process restart) — the REST catch-up covers that.
+        self._last_event_id: int | None = None
 
         # In-flight job tasks (tracked so shutdown can drain them, not orphan them)
         self._inflight_tasks: set[asyncio.Task[None]] = set()
@@ -211,12 +217,22 @@ class SessionsBus(Component, CloudEventProcessorMixin):
             params["agent_type"] = self._agent_type
         if self._capabilities:
             params["capabilities"] = ",".join(self._capabilities)
+        # Resume from the last id we saw so a same-process reconnect replays missed events
+        # from the server ring buffer. Omitted on a cold start (None) — catch-up covers that.
+        if self._last_event_id is not None:
+            params["last_event_id"] = self._last_event_id
 
         headers = {"X-Api-Key": self._api_key}
 
         async with httpx.AsyncClient(timeout=None) as client:
             async with aconnect_sse(client, "GET", url, params=params, headers=headers) as event_source:
                 logger.info("SSE connection established")
+                # Subscribe-then-snapshot: the stream is open, so any job created from here on
+                # arrives live. Reconcile jobs created *before* now (restart/redeploy/gap) via a
+                # background REST catch-up; overlaps with replayed/live events are de-duplicated
+                # by the job handler's idempotency guards. Runs off the consume loop so it never
+                # blocks live delivery.
+                self._spawn_tracked(self._run_catch_up())
                 try:
                     async for sse in event_source.aiter_sse():
                         if self._shutdown_event.is_set():
@@ -230,9 +246,31 @@ class SessionsBus(Component, CloudEventProcessorMixin):
                     logger.error("SSE stream rejected: status=%d body=%s", resp.status_code, body)
                     raise
 
+    def _spawn_tracked(self, coro: Coroutine[Any, Any, None]) -> None:
+        """Launch *coro* as a tracked background task so shutdown can drain it.
+
+        Shared by the live ``job_created`` path and the reconnect catch-up so both feed the
+        same in-flight set (and therefore the same shutdown drain).
+        """
+        task = asyncio.create_task(coro)
+        self._inflight_tasks.add(task)
+        task.add_done_callback(self._inflight_tasks.discard)
+
+    def _track_event_id(self, sse: ServerSentEvent) -> None:
+        """Advance the resume cursor from a frame's ``id`` (server ids are monotonic ints)."""
+        raw = getattr(sse, "id", None)
+        if not raw:
+            return
+        try:
+            self._last_event_id = int(raw)
+        except (TypeError, ValueError):
+            logger.debug("Ignoring non-numeric SSE id: %r", raw)
+
     def _dispatch_sse_event(self, sse: ServerSentEvent) -> None:
         """Route a single SSE frame. Keepalive comment frames are ignored (#44)."""
         try:
+            self._track_event_id(sse)
+
             if sse.event == "connected":
                 logger.info("SSE connected event received")
 
@@ -243,9 +281,7 @@ class SessionsBus(Component, CloudEventProcessorMixin):
                     notification.job_id,
                     notification.job_type,
                 )
-                task = asyncio.create_task(self._handle_job_notification(notification))
-                self._inflight_tasks.add(task)
-                task.add_done_callback(self._inflight_tasks.discard)
+                self._spawn_tracked(self._handle_job_notification(notification))
 
             elif sse.event == "heartbeat":
                 logger.debug("SSE heartbeat received")
@@ -260,6 +296,45 @@ class SessionsBus(Component, CloudEventProcessorMixin):
 
         except Exception as e:
             logger.error("Error processing SSE event: %s", e, exc_info=True)
+
+    async def _run_catch_up(self) -> None:
+        """Reconcile jobs created while the agent was disconnected (restart / redeploy / gap).
+
+        SSE only delivers jobs created *while connected*; anything created before this stream
+        opened is pending on the server but was never pushed. List those over REST and dispatch
+        each through the same path as a live notification. Best-effort: a listing failure is
+        logged and swallowed so it never disturbs the live stream, and each summary is parsed
+        defensively so one bad row does not stop the rest. Overlap with replayed or live events
+        is de-duplicated by the job handler's idempotency guards.
+        """
+        if self._shutdown_event.is_set():
+            return
+        try:
+            summaries = await self._require_api_client().list_pending_jobs(self._capabilities)
+        except Exception as e:
+            logger.warning("Catch-up listing failed; missed jobs wait for the next reconnect: %s", e)
+            return
+        if not summaries:
+            return
+        logger.info("Catch-up: reconciling %d pending job(s) missed while disconnected", len(summaries))
+        for summary in summaries:
+            if self._shutdown_event.is_set():
+                break
+            try:
+                notification = self._notification_from_summary(summary)
+            except Exception as e:
+                logger.error("Skipping unparseable pending-job summary %r: %s", summary, e)
+                continue
+            self._spawn_tracked(self._handle_job_notification(notification))
+
+    def _notification_from_summary(self, summary: dict[str, Any]) -> JobNotification:
+        """Build a JobNotification from a REST ``JobSummary`` dict (its ``id`` is the job id)."""
+        return JobNotification(
+            session_id=summary["session_id"],
+            job_id=summary["id"],
+            job_type=summary["job_type"],
+            created_at=summary.get("created_at"),
+        )
 
     async def _handle_job_notification(self, notification: JobNotification) -> None:
         """Handle job notification with concurrency control.

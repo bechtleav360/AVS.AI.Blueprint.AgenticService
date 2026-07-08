@@ -70,6 +70,7 @@ class SessionsApiClient(ServiceBase):
         *,
         session_key: str | None = None,
         json: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
     ) -> httpx.Response:
         """Issue an authenticated request to the sessions service.
 
@@ -86,6 +87,8 @@ class SessionsApiClient(ServiceBase):
             kwargs["headers"] = {"X-Session-Key": session_key}
         if json is not None:
             kwargs["json"] = json
+        if params is not None:
+            kwargs["params"] = params
 
         method_fn = getattr(self._client, method.lower(), None)
         if method_fn is None:
@@ -225,6 +228,35 @@ class SessionsApiClient(ServiceBase):
         job_data = response.json()
         logger.info("Job cancelled successfully: job_id=%s", job_id)
         return job_data
+
+    async def list_pending_jobs(self, job_types: list[str] | None = None) -> list[dict[str, Any]]:
+        """List pending jobs for reconnect catch-up.
+
+        SSE only pushes jobs created *while connected*; jobs created during a restart,
+        redeploy, or stream gap are never delivered. On (re)connect the bus reconciles
+        against this authoritative REST listing so those pending jobs are still picked up.
+
+        Queries ``GET /jobs?status=pending`` once per entry in ``job_types`` (the agent's
+        capabilities), or a single unfiltered query when it is empty/None — mirroring the
+        dispatch registry's "no capabilities = all job types" rule. Results are merged and
+        de-duplicated by job id. Returns the raw ``JobSummary`` dicts (``id``, ``session_id``,
+        ``job_type``, ``status``, ``created_at``, ``updated_at``).
+
+        Raises:
+            httpx.HTTPStatusError: If any listing request fails.
+            ValueError: If the client is not initialized.
+        """
+        queries: list[dict[str, str]] = (
+            [{"status": "pending", "job_type": jt} for jt in job_types] if job_types else [{"status": "pending"}]
+        )
+        merged: dict[str, dict[str, Any]] = {}
+        for params in queries:
+            response = await self._request("GET", "/jobs", params=params)
+            response.raise_for_status()
+            for summary in response.json():
+                merged[str(summary["id"])] = summary
+        logger.debug("Catch-up listing found %d pending job(s) for job_types=%s", len(merged), job_types or "<all>")
+        return list(merged.values())
 
     async def register_agent(
         self,
