@@ -21,6 +21,7 @@ class JobNotification(BaseModel):
     job_id: UUID
     job_type: str
     created_at: str | None = None
+    pipeline_id: str | None = None
 
     def payload(self) -> dict[str, Any]:
         """The full notification as a JSON-serialisable dict (UUIDs as strings)."""

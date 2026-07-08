@@ -300,7 +300,7 @@ class SessionsBus(Component, CloudEventProcessorMixin):
 
             try:
                 session_key = await self._require_key_provider().get_session_key(session_id)
-                context = self._build_context(session_id, job_id, session_key)
+                context = self._build_context(session_id, job_id, session_key, pipeline_id=notification.pipeline_id)
                 result = await self._dispatch_cloud_event(event, context)
 
                 if result.status.value == "no_handler_found":
@@ -315,7 +315,7 @@ class SessionsBus(Component, CloudEventProcessorMixin):
             except httpx.HTTPStatusError as e:
                 if e.response.status_code != 403:
                     raise
-                await self._retry_with_fresh_key(event, session_id, job_id, e)
+                await self._retry_with_fresh_key(event, session_id, job_id, e, pipeline_id=notification.pipeline_id)
 
             except Exception as e:
                 logger.exception("Unexpected error processing job %s: %s", job_id, e)
@@ -330,13 +330,14 @@ class SessionsBus(Component, CloudEventProcessorMixin):
             raise RuntimeError("SessionsApiClient not initialized")
         return self._api_client
 
-    def _build_context(self, session_id: UUID, job_id: UUID, session_key: str) -> dict[str, Any]:
+    def _build_context(self, session_id: UUID, job_id: UUID, session_key: str, pipeline_id: str | None = None) -> dict[str, Any]:
         return {
             "session_id": str(session_id),
             "job_id": str(job_id),
             "session_key": session_key,
             "sessions_api_client": self._require_api_client(),
             "sessions_key_provider": self._require_key_provider(),
+            "pipeline_id": pipeline_id,
         }
 
     async def _cancel_invalid_job(self, session_id: UUID, job_id: UUID, error: InvalidEventError) -> None:
@@ -358,6 +359,7 @@ class SessionsBus(Component, CloudEventProcessorMixin):
         session_id: UUID,
         job_id: UUID,
         original_error: httpx.HTTPStatusError,
+        pipeline_id: str | None = None,
     ) -> None:
         # A 403 from a handler means the cached session key is stale. Invalidate and retry
         # once through the SAME dispatch seam as the happy path (no separate code path).
@@ -366,7 +368,7 @@ class SessionsBus(Component, CloudEventProcessorMixin):
         key_provider.invalidate_cache(session_id)
         try:
             session_key = await key_provider.get_session_key(session_id)
-            context = self._build_context(session_id, job_id, session_key)
+            context = self._build_context(session_id, job_id, session_key, pipeline_id=pipeline_id)
             await self._dispatch_cloud_event(event, context)
         except Exception as retry_error:
             logger.error("Retry failed for job %s: %s", job_id, retry_error)
