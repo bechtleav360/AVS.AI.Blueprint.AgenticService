@@ -250,6 +250,16 @@ When `event_bus = "sessions"`, `AppBuilder.build()` wires three components autom
 > shutdown it drains in-flight jobs and unregisters (`DELETE /agents/{agent_id}`). Against a pre-v0.4.0
 > server the register call returns 404 and is skipped ("legacy, proceed without registration").
 
+> **Reconnect catch-up:** SSE only pushes jobs created *while connected*, so jobs created during a
+> restart, redeploy, or stream gap would otherwise be missed. On every (re)connect `SessionsBus`
+> reconciles in two ways: it resumes the stream with `Last-Event-ID` (the server replays missed
+> frames from its ring buffer on a same-process reconnect), and it runs a REST **catch-up** —
+> `GET /jobs?status=pending` for its capabilities — dispatching any pending jobs through the normal
+> handler path. Both feed the same idempotent handler, so a job that arrives via more than one route
+> is processed once. Catch-up is best-effort: a listing failure is logged and never disturbs the live
+> stream. A job stranded in `running` because its previous owner crashed is recovered server-side
+> (the sessions reaper re-pends it) and then redelivered by this catch-up.
+
 ```toml
 [default]
 event_bus = "sessions"
