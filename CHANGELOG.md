@@ -1,6 +1,11 @@
 # Changelog
 ## [Unreleased]
 
+## [0.6.4] - 2026-07-29
+
+### Fixed
+- **`@traced` no longer binds/stamps arguments on every call when tracing isn't recording** (#65). Checks `span.is_recording()` right after opening the span and skips `inspect.signature().bind()` + attribute extraction for no-op spans (no OTel provider/exporter configured). Span creation and error-status handling are unchanged.
+
 ## [0.6.3] - 2026-07-08
 
 ### Fixed
