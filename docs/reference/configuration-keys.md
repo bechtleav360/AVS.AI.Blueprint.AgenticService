@@ -99,6 +99,7 @@ OpenTelemetry and tracing settings.
 | `otel_enabled` | `bool` | `false` | Enable OpenTelemetry tracing and metrics export. |
 | `otel_endpoint` | `str` | -- | OTLP collector endpoint URL (e.g., `"http://localhost:4317"`). |
 | `otel_service_name` | `str` | -- | Service name reported to the OTLP collector. Defaults to `app_name` if not set. |
+| `token_metrics_enabled` | `bool` | `true` | Record LLM token usage and response latency to OpenTelemetry. Only takes effect when `otel_enabled` is also `true`. |
 
 ---
 
@@ -139,6 +140,7 @@ suppress_noisy_loggers = true
 otel_enabled = false
 otel_endpoint = "http://localhost:4317"
 otel_service_name = "my_agent_service"
+token_metrics_enabled = true
 
 [default.event_publishing]
 default_pubsub_name = "pubsub"
