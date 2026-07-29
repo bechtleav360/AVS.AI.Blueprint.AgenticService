@@ -1,6 +1,11 @@
 # Changelog
 ## [Unreleased]
 
+## [0.6.4] - 2026-07-29
+
+### Fixed
+- **`MetricsRecorder` no longer recreates OTel token/latency instruments on every LLM call** (#64). `record()` called `meter.create_counter`/`create_histogram` on every invocation instead of once; both instruments are now created lazily on first use and cached on the instance. Also documents the previously-undocumented `token_metrics_enabled` config key.
+
 ## [0.6.3] - 2026-07-08
 
 ### Fixed
