@@ -1,6 +1,11 @@
 # Changelog
 ## [Unreleased]
 
+## [0.6.4] - 2026-07-29
+
+### Fixed
+- **`EventProcessingService` no longer constructed when no event handlers are registered** (#67). `AppBuilder.build()` created it unconditionally, even for pure-scheduler or pure-REST agents that never route through the handler chain. Now gated on `registry.get_event_handler()`, mirroring the existing `EventPublishingService` guard.
+
 ## [0.6.3] - 2026-07-08
 
 ### Fixed
