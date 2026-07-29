@@ -44,6 +44,7 @@ Abstract base class that all health checkers must inherit from.
 from blueprint.agents.services.health import HealthCheckerBase
 from blueprint.agents.models.api import ComponentHealth
 
+
 class CustomHealthChecker(HealthCheckerBase):
     async def health_check(self) -> ComponentHealth:
         """Perform health check logic."""
@@ -51,8 +52,7 @@ class CustomHealthChecker(HealthCheckerBase):
             # Check component status
             is_healthy = await check_service()
             return ComponentHealth(
-                status="UP" if is_healthy else "DOWN",
-                message="Service is operational" if is_healthy else "Service unavailable"
+                status="UP" if is_healthy else "DOWN", message="Service is operational" if is_healthy else "Service unavailable"
             )
         except Exception as e:
             return ComponentHealth(status="DOWN", message=str(e))
@@ -165,10 +165,7 @@ from blueprint.agents.services.health.cache import HealthCheckCache
 cache = HealthCheckCache(check_interval_seconds=30)
 
 # Set health check providers
-providers = {
-    "dapr": DaprPubSubHealthChecker(config),
-    "ai_provider": VLLMProviderHealthChecker(config)
-}
+providers = {"dapr": DaprPubSubHealthChecker(config), "ai_provider": VLLMProviderHealthChecker(config)}
 cache.set_health_check_provider(providers)
 
 # Start background scheduler
@@ -190,10 +187,12 @@ from blueprint.agents import AppBuilder, Config
 from blueprint.agents.services.health import HealthCheckerBase
 from blueprint.agents.models.api import ComponentHealth
 
+
 class DatabaseHealthChecker(HealthCheckerBase):
     async def health_check(self) -> ComponentHealth:
         # Check database connection
         return ComponentHealth(status="UP", message="DB OK")
+
 
 config = Config(...)
 builder = AppBuilder(config)
@@ -227,6 +226,7 @@ from blueprint.agents.services.health import HealthCheckerBase
 from blueprint.agents.models.api import ComponentHealth
 import httpx
 
+
 class ExternalAPIHealthChecker(HealthCheckerBase):
     def __init__(self, api_url: str):
         self.api_url = api_url
@@ -236,15 +236,9 @@ class ExternalAPIHealthChecker(HealthCheckerBase):
             async with httpx.AsyncClient(timeout=5.0) as client:
                 response = await client.get(f"{self.api_url}/health")
                 response.raise_for_status()
-                return ComponentHealth(
-                    status="UP",
-                    message=f"API reachable at {self.api_url}"
-                )
+                return ComponentHealth(status="UP", message=f"API reachable at {self.api_url}")
         except Exception as e:
-            return ComponentHealth(
-                status="DOWN",
-                message=f"API unreachable: {e}"
-            )
+            return ComponentHealth(status="DOWN", message=f"API unreachable: {e}")
 ```
 
 ## Integration with AppBuilder
@@ -279,14 +273,11 @@ from blueprint.agents.models.api import ComponentHealth
 
 health = ComponentHealth(
     status="UP",  # or "DOWN"
-    message="Service is operational"
+    message="Service is operational",
 )
 
 # Response format
-{
-    "status": "UP",
-    "message": "Service is operational"
-}
+{"status": "UP", "message": "Service is operational"}
 ```
 
 ## Configuration
@@ -319,6 +310,7 @@ from blueprint.agents.services.health import HealthCheckerBase
 from blueprint.agents.models.api import ComponentHealth
 from pathlib import Path
 
+
 # Define custom health checker
 class RedisHealthChecker(HealthCheckerBase):
     def __init__(self, redis_url: str):
@@ -327,6 +319,7 @@ class RedisHealthChecker(HealthCheckerBase):
     async def health_check(self) -> ComponentHealth:
         try:
             import redis.asyncio as redis
+
             r = await redis.from_url(self.redis_url, socket_connect_timeout=2)
             await r.ping()
             await r.close()
@@ -334,11 +327,9 @@ class RedisHealthChecker(HealthCheckerBase):
         except Exception as e:
             return ComponentHealth(status="DOWN", message=f"Redis error: {e}")
 
+
 # Setup
-config = Config(
-    settings_files=["settings.toml"],
-    root_path=Path(__file__).parent
-)
+config = Config(settings_files=["settings.toml"], root_path=Path(__file__).parent)
 
 builder = AppBuilder(config)
 
@@ -362,9 +353,11 @@ import pytest
 from blueprint.agents.services.health import HealthCheckerBase
 from blueprint.agents.models.api import ComponentHealth
 
+
 class TestHealthChecker(HealthCheckerBase):
     async def health_check(self) -> ComponentHealth:
         return ComponentHealth(status="UP", message="Test OK")
+
 
 @pytest.mark.asyncio
 async def test_health_checker():
