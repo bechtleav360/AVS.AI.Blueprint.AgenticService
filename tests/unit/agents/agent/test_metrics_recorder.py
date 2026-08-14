@@ -86,6 +86,19 @@ class TestRecord:
         recorder = MetricsRecorder(otel_on_config, meter=None)
         recorder.record(_result(_usage()), 100.0, "gpt-4o")  # must not raise
 
+    def test_instruments_created_once_and_reused_across_calls(self, otel_on_config: MagicMock) -> None:
+        meter = MagicMock()
+        recorder = MetricsRecorder(otel_on_config, meter=meter)
+
+        recorder.record(_result(_usage()), 100.0, "gpt-4o")
+        recorder.record(_result(_usage()), 150.0, "gpt-4o")
+        recorder.record(_result(_usage()), 200.0, "gpt-4o")
+
+        meter.create_counter.assert_called_once()
+        meter.create_histogram.assert_called_once()
+        assert meter.create_counter.return_value.add.call_count == 9  # 3 calls x (total, prompt, completion)
+        assert meter.create_histogram.return_value.record.call_count == 3
+
     def test_config_exception_suppressed(self) -> None:
         config = MagicMock(spec=Config)
         config.get_observability_config.side_effect = RuntimeError("config unavailable")
