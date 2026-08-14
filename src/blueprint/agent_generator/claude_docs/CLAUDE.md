@@ -82,9 +82,7 @@ class OrderHandler(EventHandlerBase):
     async def can_handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> bool:
         return event.type == "order.placed"
 
-    async def handle_event(
-        self, event: GenericCloudEvent, context: dict[str, Any]
-    ) -> HandlerResult | None:
+    async def handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> HandlerResult | None:
         order = self.extract_payload(event, OrderModel)  # Typed extraction with validation
         result = await self._service.process(order)
         return HandlerResult(event_type="order.processed", data=result)
@@ -172,7 +170,7 @@ class CleanupScheduler(SchedulerBase):
 agent = (
     AgentBuilder(config, runtime_name="analyzer")
     .with_model_from_config("analyzer")
-    .with_system_prompt("system")              # Loads prompts/system.prompt (static, no dynamic inputs)
+    .with_system_prompt("system")  # Loads prompts/system.prompt (static, no dynamic inputs)
     .with_tools([analyze_tool])
     .with_result_type(AnalysisResult)
     .with_metrics()
@@ -199,9 +197,9 @@ result = await self._agent.run(user_prompt=prompt)
 All components access others through `self.registry` (property, NOT a method):
 
 ```python
-self.registry.get_service(MyService)          # By class or "my_service" string
-self.registry.get_agent("my_agent")           # Agent by name
-self.registry.cache_service                   # Cache (if enabled)
+self.registry.get_service(MyService)  # By class or "my_service" string
+self.registry.get_agent("my_agent")  # Agent by name
+self.registry.cache_service  # Cache (if enabled)
 ```
 
 ## Configuration

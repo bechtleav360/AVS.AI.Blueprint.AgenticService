@@ -21,11 +21,11 @@ from blueprint.agents.models import GenericCloudEvent, HandlerResult, CloudEvent
 
 **Registry access** (only in `on_startup()`, NEVER in `__init__`):
 ```python
-self.registry.get_service(MyService)       # By class or "my_service" string
-self.registry.get_agent("agent_name")      # Agent by runtime name
-self.registry.get_rest_api(MyApi)          # RestApi
-self.registry.get_scheduler(MyScheduler)   # Scheduler
-self.registry.cache_service                # Cache service (if enabled)
+self.registry.get_service(MyService)  # By class or "my_service" string
+self.registry.get_agent("agent_name")  # Agent by runtime name
+self.registry.get_rest_api(MyApi)  # RestApi
+self.registry.get_scheduler(MyScheduler)  # Scheduler
+self.registry.cache_service  # Cache service (if enabled)
 ```
 
 ## Implementation Process
@@ -62,9 +62,7 @@ class MyHandler(EventHandlerBase):
     async def can_handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> bool:
         return event.type == "my.event.type"
 
-    async def handle_event(
-        self, event: GenericCloudEvent, context: dict[str, Any]
-    ) -> HandlerResult | list[HandlerResult] | None:
+    async def handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> HandlerResult | list[HandlerResult] | None:
         payload = self.extract_payload(event, MyModel)  # Typed extraction with validation
         result = await self._service.process(payload)
         return HandlerResult(event_type="my.result.type", data=result)
@@ -162,7 +160,7 @@ class CleanupScheduler(SchedulerBase):
 my_agent = (
     AgentBuilder(config, runtime_name="my_agent")
     .with_model_from_config("my_agent")
-    .with_system_prompt("system")        # Loads prompts/system.prompt (static, no dynamic inputs)
+    .with_system_prompt("system")  # Loads prompts/system.prompt (static, no dynamic inputs)
     .with_tools([tool_one, tool_two])
     .with_result_type(MyResultModel)
     .with_metrics()
@@ -177,6 +175,7 @@ All models go in `src/models/`:
 ```python
 class OrderModel(BaseModel):
     """Domain model for an order."""
+
     id: str
     customer_id: str
     items: list[OrderItem]
