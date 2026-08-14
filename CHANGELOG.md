@@ -4,6 +4,7 @@
 ## [0.6.4] - 2026-07-29
 
 ### Fixed
+- **`EventProcessingService` no longer constructed when no event handlers are registered** (#67). `AppBuilder.build()` created it unconditionally, even for pure-scheduler or pure-REST agents that never route through the handler chain. Now gated on `registry.get_event_handler()`, mirroring the existing `EventPublishingService` guard.
 - **`@traced` no longer binds/stamps arguments on every call when tracing isn't recording** (#65). Checks `span.is_recording()` right after opening the span and skips `inspect.signature().bind()` + attribute extraction for no-op spans (no OTel provider/exporter configured). Span creation and error-status handling are unchanged.
 - **`MetricsRecorder` no longer recreates OTel token/latency instruments on every LLM call** (#64). `record()` called `meter.create_counter`/`create_histogram` on every invocation instead of once; both instruments are now created lazily on first use and cached on the instance. Also documents the previously-undocumented `token_metrics_enabled` config key.
 

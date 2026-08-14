@@ -191,7 +191,11 @@ class AppBuilder:
                 )
 
         # 3. Create internal services (auto-register)
-        EventProcessingService()
+        # EventProcessingService is only useful when there's a handler to route
+        # requests to — whether via an eventing endpoint (see step 2) or a REST
+        # API calling RestApiBase._process_resource() directly.
+        if registry.get_event_handler():
+            EventProcessingService()
         if registry.get_io_clients():
             EventPublishingService()
 
