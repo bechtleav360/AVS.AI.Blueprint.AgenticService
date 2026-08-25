@@ -2,7 +2,7 @@
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 from uuid import UUID, uuid4
 
 import httpx
@@ -195,6 +195,19 @@ class TestProcessJobNotification:
 
         assert "No handler found" in caplog.text
 
+    async def test_get_session_key_receives_job_id(
+        self,
+        started_sessions_bus: SessionsBus,
+        notification: JobNotification,
+    ) -> None:
+        """#76: the happy-path fetch threads job_id through so a "job" source can claim it."""
+        result = ProcessingResult(request_id="r", status=ProcessingStatus.PROCESSED)
+        started_sessions_bus._dispatch_cloud_event = AsyncMock(return_value=result)  # type: ignore[method-assign]
+
+        await started_sessions_bus._process_job_notification(notification)
+
+        started_sessions_bus._key_provider.get_session_key.assert_awaited_once_with(notification.session_id, job_id=notification.job_id)
+
     async def test_invalid_event_error_cancels_job(
         self,
         started_sessions_bus: SessionsBus,
@@ -208,6 +221,10 @@ class TestProcessJobNotification:
         started_sessions_bus._api_client.cancel_job.assert_awaited_once()
         call_kwargs = started_sessions_bus._api_client.cancel_job.call_args.kwargs
         assert call_kwargs["job_id"] == notification.job_id
+        # #76: _cancel_invalid_job's own key fetch also threads job_id through (get_session_key
+        # is called twice overall here — once in the main try block, once inside cancel — both
+        # with the same args, so assert on the most recent call rather than requiring exactly one).
+        started_sessions_bus._key_provider.get_session_key.assert_awaited_with(notification.session_id, job_id=notification.job_id)
 
     async def test_invalid_event_error_cancel_failure_is_swallowed(
         self,
@@ -248,6 +265,10 @@ class TestProcessJobNotification:
 
         started_sessions_bus._key_provider.invalidate_cache.assert_called_once()
         assert started_sessions_bus._dispatch_cloud_event.await_count == 2
+        # #76: the retry's own fresh-key fetch also threads job_id through.
+        assert started_sessions_bus._key_provider.get_session_key.await_args_list[-1] == call(
+            notification.session_id, job_id=notification.job_id
+        )
 
     async def test_403_retry_failure_propagates_invalid_event_error(
         self, started_sessions_bus: SessionsBus, notification: JobNotification
