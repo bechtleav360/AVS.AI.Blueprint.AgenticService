@@ -6,9 +6,10 @@ This module provides all components needed for integrating with the sessions ser
 """
 
 from .api_client import SessionsApiClient
-from .key_provider import SessionKeyProvider
+from .key_provider import SessionKeyClaimConflictError, SessionKeyProvider
 
 __all__ = [
-    "SessionsApiClient",
+    "SessionKeyClaimConflictError",
     "SessionKeyProvider",
+    "SessionsApiClient",
 ]
