@@ -1,6 +1,9 @@
 # Changelog
 ## [Unreleased]
 
+### Added
+- **`SessionKeyProvider` gains a `"job"` source** (#76). `env`/`config` only ever supported one static key for every session, which cannot work for consumers whose session keys are generated fresh per session and actually validated (encryption enforced) — the gap live-reproduced as `ValueError: Environment variable SESSION_KEY not set` immediately after a job dispatch (bechtleav360/avs.ai.project.pida#385). `source = "job"` fetches the key via `GET {session_key_remote_url}/internal/jobs/{job_id}/session-key?agent_id=<this agent's own id>` (bechtleav360/avs.ai.idac.service-sessions#194 Finding 2 / #196), threading a new optional `job_id` parameter through `get_session_key` from `SessionsBus`'s three call sites. A 409 (job already claimed by a different `agent_id`) raises the new `SessionKeyClaimConflictError`, distinct from the 404/`httpx.HTTPStatusError` case. `env`/`config`/`vault`/`remote` sources are unaffected.
+
 ## [0.6.4] - 2026-07-29
 
 ### Fixed

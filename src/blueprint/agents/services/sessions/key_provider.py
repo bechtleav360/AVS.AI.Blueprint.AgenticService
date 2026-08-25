@@ -18,6 +18,14 @@ from ..service_base import ServiceBase
 logger = logging.getLogger(__name__)
 
 
+class SessionKeyClaimConflictError(Exception):
+    """Raised when a ``"job"`` source fetch returns 409: the job's session key was already
+    claimed by a different ``agent_id``. Distinct from the 404 case (``httpx.HTTPStatusError``,
+    raised via ``response.raise_for_status()``) — a caller catching this specifically can log
+    "another agent instance already claimed this job" instead of treating it identically to
+    "the key is simply gone."""
+
+
 class SessionKeyProvider(ServiceBase):
     """Provides session keys from configured source.
 
@@ -25,15 +33,17 @@ class SessionKeyProvider(ServiceBase):
     - Environment variables (Phase 1)
     - Configuration files
     - External vault (Phase 2 - HashiCorp Vault, Azure Key Vault)
+    - Job-scoped keys fetched from the sessions service ("job")
     - Per-session keys passed via context (Phase 3)
 
     Includes caching with TTL and 403-based invalidation for performance.
 
     Configuration (settings.toml):
         [sessions_service]
-        session_key_source = "env"  # Options: env, vault, context
+        session_key_source = "env"  # Options: env, config, vault, remote, job
         session_key_env_var = "SESSION_KEY"
         session_key_cache_ttl_seconds = 3600
+        agent_id = "..."  # required when session_key_source = "job"
     """
 
     def __init__(self) -> None:
@@ -44,6 +54,7 @@ class SessionKeyProvider(ServiceBase):
         self._cache_ttl: int = 3600
         self._remote_url: str = ""
         self._api_key: str = ""
+        self._agent_id: str = ""
 
     async def on_startup(self) -> None:
         """Initialize the session key provider with configuration."""
@@ -56,6 +67,10 @@ class SessionKeyProvider(ServiceBase):
         self._cache_ttl = config.get("session_key_cache_ttl_seconds", 3600)
         self._remote_url = config.get("session_key_remote_url", "")
         self._api_key = config.get("api_key", "")
+        # Same config key SessionsBus reads for its own agent_id (sessions_service.agent_id) —
+        # read independently rather than pulled from SessionsBus at runtime, since this service
+        # starts before SessionsBus (a routerless lifecycle component) in the app lifespan.
+        self._agent_id = config.get("agent_id", "")
 
         # Initialize cache
         self._cache = TTLCache(maxsize=1000, ttl=self._cache_ttl)
@@ -72,17 +87,21 @@ class SessionKeyProvider(ServiceBase):
             self._cache.clear()
         logger.info("SessionKeyProvider shut down")
 
-    async def get_session_key(self, session_id: UUID | None = None) -> str:
+    async def get_session_key(self, session_id: UUID | None = None, job_id: UUID | None = None) -> str:
         """Get session key for a specific session or default key.
 
         Args:
             session_id: Optional session ID for per-session keys
+            job_id: Job ID to fetch a job-scoped key for (required when
+                ``session_key_source == "job"``; ignored by every other source)
 
         Returns:
             Session key string
 
         Raises:
             ValueError: If session key cannot be retrieved
+            SessionKeyClaimConflictError: ``"job"`` source only — the job's key was already
+                claimed by a different ``agent_id`` (HTTP 409)
         """
         cache_key = str(session_id) if session_id else "default"
 
@@ -92,7 +111,9 @@ class SessionKeyProvider(ServiceBase):
             return self._cache[cache_key]
 
         # Fetch from source
-        if self._source == "env":
+        if self._source == "job":
+            session_key = await self._get_from_job(job_id)
+        elif self._source == "env":
             session_key = self._get_from_env()
         elif self._source == "config":
             session_key = self._get_from_config()
@@ -202,4 +223,39 @@ class SessionKeyProvider(ServiceBase):
             data = response.json()
 
         logger.debug("Session key retrieved from remote: session_id=%s", session_id)
+        return data["session_key"]
+
+    async def _get_from_job(self, job_id: UUID | None) -> str:
+        """Fetch a job-scoped session key from the sessions service's agent-claimed handoff
+        endpoint (bechtleav360/avs.ai.idac.service-sessions#194 Finding 2 / #196).
+
+        Args:
+            job_id: Job ID to fetch the key for.
+
+        Returns:
+            Session key string.
+
+        Raises:
+            ValueError: If job_id is None, agent_id is unset, or remote_url not configured.
+            SessionKeyClaimConflictError: The job's key was already claimed by a different
+                agent_id (HTTP 409).
+            httpx.HTTPStatusError: Any other non-2xx response, notably 404 (expired/unknown job).
+        """
+        if not job_id:
+            raise ValueError("job_id required for 'job' source")
+        if not self._remote_url:
+            raise ValueError("sessions_service.session_key_remote_url not configured")
+        if not self._agent_id:
+            raise ValueError("sessions_service.agent_id not configured — required for session_key_source='job'")
+
+        url = f"{self._remote_url}/internal/jobs/{job_id}/session-key"
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(url, params={"agent_id": self._agent_id}, headers={"X-Api-Key": self._api_key})
+            if response.status_code == 409:
+                raise SessionKeyClaimConflictError(f"job {job_id}'s session key was already claimed by a different agent")
+            response.raise_for_status()  # 404 (expired/unknown) raises here
+            data = response.json()
+
+        logger.debug("Session key retrieved for job: job_id=%s, agent_id=%s", job_id, self._agent_id)
         return data["session_key"]
