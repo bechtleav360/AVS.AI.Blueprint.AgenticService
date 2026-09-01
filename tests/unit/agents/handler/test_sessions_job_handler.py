@@ -70,6 +70,15 @@ class _Handler(SessionsJobHandler):
         return _Result(ok=True)
 
 
+class _FailureHandler(_Handler):
+    """process() returns normally; failure_of flags a not-ok result as failed."""
+
+    def failure_of(self, result: _Result) -> dict[str, Any] | None:  # type: ignore[override]
+        if not result.ok:
+            return {"message": "handler signalled failure", "code": "handler_failed"}
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -92,6 +101,7 @@ def api_client() -> MagicMock:
     client.start_job = AsyncMock(return_value={})
     client.complete_job = AsyncMock(return_value={})
     client.cancel_job = AsyncMock(return_value={})
+    client.fail_job = AsyncMock(return_value={})
     return client
 
 
@@ -323,7 +333,7 @@ class TestPayloadValidation:
 
 
 class TestProcessErrorMapping:
-    async def test_value_error_completes_with_failed_result(
+    async def test_value_error_fails_job(
         self, mock_config: MagicMock, mock_registry: MagicMock, event: GenericCloudEvent, context: dict[str, Any], api_client: MagicMock
     ) -> None:
         async def boom(_p: Any, _c: Any) -> _Result:
@@ -336,13 +346,14 @@ class TestProcessErrorMapping:
         result = await handler.handle_event(event, context)
 
         assert result is None
-        api_client.complete_job.assert_awaited_once()
-        _, kwargs = api_client.complete_job.call_args
-        assert kwargs["result"]["status"] == "failed"
-        assert "bad business input" in kwargs["result"]["error"]
+        api_client.fail_job.assert_awaited_once()
+        _, kwargs = api_client.fail_job.call_args
+        assert kwargs["error"]["message"] == "bad business input"
+        assert kwargs["error"]["code"] == "ValueError"
+        api_client.complete_job.assert_not_awaited()
         api_client.cancel_job.assert_not_awaited()
 
-    async def test_generic_exception_completes_with_failed_result(
+    async def test_generic_exception_fails_job(
         self, mock_config: MagicMock, mock_registry: MagicMock, event: GenericCloudEvent, context: dict[str, Any], api_client: MagicMock
     ) -> None:
         async def boom(_p: Any, _c: Any) -> _Result:
@@ -354,9 +365,11 @@ class TestProcessErrorMapping:
 
         await handler.handle_event(event, context)
 
-        api_client.complete_job.assert_awaited_once()
-        _, kwargs = api_client.complete_job.call_args
-        assert kwargs["result"]["status"] == "failed"
+        api_client.fail_job.assert_awaited_once()
+        _, kwargs = api_client.fail_job.call_args
+        assert kwargs["error"]["message"] == "kaboom"
+        assert kwargs["error"]["code"] == "RuntimeError"
+        api_client.complete_job.assert_not_awaited()
 
     async def test_oserror_raises_retryable_and_leaves_pending(
         self, mock_config: MagicMock, mock_registry: MagicMock, event: GenericCloudEvent, context: dict[str, Any], api_client: MagicMock
@@ -403,6 +416,61 @@ class TestProcessErrorMapping:
         with pytest.raises(RetryableHandlerError):
             await handler.handle_event(event, context)
         api_client.complete_job.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# failure_of hook: non-raising failure -> fail_job (#72)
+# ---------------------------------------------------------------------------
+
+
+class TestFailureOfHook:
+    async def test_flagged_result_routes_to_fail_job(
+        self, mock_config: MagicMock, mock_registry: MagicMock, event: GenericCloudEvent, context: dict[str, Any], api_client: MagicMock
+    ) -> None:
+        async def returns_failure(_p: Any, _c: Any) -> _Result:
+            return _Result(ok=False)
+
+        handler = _FailureHandler(process_impl=returns_failure)
+        mock_config.get.return_value = {"agent_id": "test-agent"}
+        await handler.on_startup()
+
+        await handler.handle_event(event, context)
+
+        api_client.fail_job.assert_awaited_once()
+        _, kwargs = api_client.fail_job.call_args
+        assert kwargs["error"]["code"] == "handler_failed"
+        api_client.complete_job.assert_not_awaited()
+
+    async def test_unflagged_result_completes(
+        self, mock_config: MagicMock, mock_registry: MagicMock, event: GenericCloudEvent, context: dict[str, Any], api_client: MagicMock
+    ) -> None:
+        async def returns_ok(_p: Any, _c: Any) -> _Result:
+            return _Result(ok=True)
+
+        handler = _FailureHandler(process_impl=returns_ok)
+        mock_config.get.return_value = {"agent_id": "test-agent"}
+        await handler.on_startup()
+
+        await handler.handle_event(event, context)
+
+        api_client.complete_job.assert_awaited_once()
+        api_client.fail_job.assert_not_awaited()
+
+    async def test_default_failure_of_completes_even_failed_shaped_result(
+        self, mock_config: MagicMock, mock_registry: MagicMock, event: GenericCloudEvent, context: dict[str, Any], api_client: MagicMock
+    ) -> None:
+        # Base _Handler does NOT override failure_of -> back-compat: still completes.
+        async def returns_failure(_p: Any, _c: Any) -> _Result:
+            return _Result(ok=False)
+
+        handler = _Handler(process_impl=returns_failure)
+        mock_config.get.return_value = {"agent_id": "test-agent"}
+        await handler.on_startup()
+
+        await handler.handle_event(event, context)
+
+        api_client.complete_job.assert_awaited_once()
+        api_client.fail_job.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -659,12 +727,12 @@ class TestTerminalSeenSemantics:
 
 
 # ---------------------------------------------------------------------------
-# Error-result completion shares the retry helper with the success path.
+# Failure (fail_job) shares the retry helper with the success (complete_job) path.
 # ---------------------------------------------------------------------------
 
 
-class TestErrorResultCompletionRetry:
-    async def test_error_result_completion_retries_transient(
+class TestFailJobRetry:
+    async def test_exception_failure_retries_transient(
         self,
         mock_config: MagicMock,
         mock_registry: MagicMock,
@@ -676,15 +744,16 @@ class TestErrorResultCompletionRetry:
         async def boom(_p: Any, _c: Any) -> _Result:
             raise ValueError("bad input")
 
-        # First complete attempt fails transiently, second succeeds.
-        api_client.complete_job = AsyncMock(side_effect=[httpx.ConnectError("x"), {}])
+        # First fail attempt fails transiently, second succeeds.
+        api_client.fail_job = AsyncMock(side_effect=[httpx.ConnectError("x"), {}])
         handler = _Handler(process_impl=boom)
         mock_config.get.return_value = {"agent_id": "test-agent"}
         await handler.on_startup()
 
         await handler.handle_event(event, context)
 
-        assert api_client.complete_job.await_count == 2
-        _, kwargs = api_client.complete_job.call_args
-        assert kwargs["result"]["status"] == "failed"
+        assert api_client.fail_job.await_count == 2
+        _, kwargs = api_client.fail_job.call_args
+        assert kwargs["error"]["message"] == "bad input"
+        assert kwargs["error"]["code"] == "ValueError"
         assert job_id in handler._seen
