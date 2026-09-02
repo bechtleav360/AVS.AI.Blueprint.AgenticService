@@ -68,8 +68,13 @@ class ClientBase(Component, ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def subscribe(self, topic: str, callback: Callable[[CloudEvent[Any]], Awaitable[None]]) -> None:
-        """Subscribe to a topic with a callback for incoming events."""
+    async def subscribe(self, topic_callbacks: dict[str, Callable[[CloudEvent[Any]], Awaitable[None]]]) -> None:
+        """Register all topic→callback mappings and begin the managed connection + subscription cycle.
+
+        Implementations must be non-blocking: store the mapping and start a
+        background retry task, then return immediately. The ``subscriptions_ready``
+        property reports whether the cycle has completed successfully.
+        """
         raise NotImplementedError
 
     @abstractmethod
