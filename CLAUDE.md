@@ -62,3 +62,17 @@ cp dist/* ~/local-pypi/
 # In consumer project:
 uv pip install --no-cache-dir --find-links file:///home/pajoma/pypi/ avs-blueprint-agents==<version>
 ```
+
+---
+
+## Multi-Agent Grouping
+
+- **Spec (normative):** `docs/specs/2026-08-28-multi-agent-grouping.md` -- invariants C1-C7, API
+  surface, config reference, acceptance criteria. Where any other document disagrees with the
+  spec, the spec wins.
+- **Implementation plan:** `docs/plans/2026-08-28-multi-agent-grouping.md` -- prerequisites P1-P6
+  (blocking defects) and phases 0-9.
+
+Read the spec before changing `component/registry.py`, `app_builder.py`, `handler/`,
+`services/eventing/`, `io/api/eventing/`, `clients/io/nats_client.py`, the schedulers or
+telemetry: those paths carry invariants that are not visible from the code.
