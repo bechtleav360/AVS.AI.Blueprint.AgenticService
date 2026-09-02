@@ -66,6 +66,7 @@ from pydantic import BaseModel, ValidationError as PydanticValidationError
 from ..models import HandlerResult
 from ..models.errors import CriticalHandlerError, InvalidEventError, RetryableHandlerError
 from ..models.events import GenericCloudEvent
+from ..models.sessions import JobError
 from .event_handler_base import EventHandlerBase
 
 logger = logging.getLogger(__name__)
@@ -82,10 +83,15 @@ class SessionsJobHandler(EventHandlerBase, ABC):
     PAYLOAD_MODEL: ClassVar[type[BaseModel]]
     RESULT_MODEL: ClassVar[type[BaseModel]]
 
-    #: Attempts for the terminal ``complete_job`` call on transient HTTP errors.
-    COMPLETE_MAX_ATTEMPTS: ClassVar[int] = 3
-    #: Backoff between ``complete_job`` attempts, in seconds.
-    COMPLETE_RETRY_BACKOFF_SECONDS: ClassVar[float] = 2.0
+    #: Attempts for a terminal write (``complete_job`` / ``fail_job``) on transient HTTP errors.
+    TERMINAL_MAX_ATTEMPTS: ClassVar[int] = 3
+    #: Backoff between terminal-write attempts, in seconds.
+    TERMINAL_RETRY_BACKOFF_SECONDS: ClassVar[float] = 2.0
+    #: Deprecated pre-0.7.0 names for the two knobs above (back when only ``complete_job``
+    #: retried). Prefer ``TERMINAL_*``; a subclass override of these is still honoured by
+    #: :meth:`_terminal_with_retry`, so existing tuning keeps working.
+    COMPLETE_MAX_ATTEMPTS: ClassVar[int] = TERMINAL_MAX_ATTEMPTS
+    COMPLETE_RETRY_BACKOFF_SECONDS: ClassVar[float] = TERMINAL_RETRY_BACKOFF_SECONDS
 
     def __init__(self, priority: int = 100) -> None:
         super().__init__(priority=priority)
@@ -130,7 +136,7 @@ class SessionsJobHandler(EventHandlerBase, ABC):
             * any other exception -> the job is failed (``fail_job``, FAILED).
         """
 
-    def failure_of(self, result: BaseModel) -> dict[str, Any] | None:
+    def failure_of(self, result: BaseModel) -> JobError | None:
         """Classify a *normally-returned* result as a failure, or not (default).
 
         :meth:`process` can compute an internal failure and return it as an ordinary
@@ -138,11 +144,11 @@ class SessionsJobHandler(EventHandlerBase, ABC):
         recorded them on the result). Override this to route such a result to
         ``fail_job`` (svc-sessions ``FAILED``) instead of ``complete_job``.
 
-        Return a ``JobError``-shaped mapping (``{"message": str, "code": str | None}``)
-        to fail the job, or ``None`` to complete it. The default returns ``None``, so
-        every normally-returned result completes — identical to the behaviour before
-        this hook existed. Only the no-exception path is affected; raising from
-        ``process`` is unchanged.
+        Return a :class:`JobError` (``{"message": str, "code": str | None}``) to fail
+        the job, or ``None`` to complete it. The default returns ``None``, so every
+        normally-returned result completes — identical to the behaviour before this
+        hook existed. Only the no-exception path is affected; raising from ``process``
+        is unchanged.
         """
         return None
 
@@ -252,7 +258,7 @@ class SessionsJobHandler(EventHandlerBase, ABC):
         job_id: UUID,
         session_key: str,
         started: float,
-        error: dict[str, Any],
+        error: JobError,
         *,
         status_log: str,
     ) -> None:
@@ -295,8 +301,20 @@ class SessionsJobHandler(EventHandlerBase, ABC):
         propagate raw. Exhaustion raises ``RetryableHandlerError`` so the job stays
         eligible for redelivery rather than being lost.
         """
+        # Prefer the canonical TERMINAL_* knobs, but honour a subclass that overrode the
+        # deprecated COMPLETE_* aliases (i.e. set them to something other than the default).
+        max_attempts = (
+            self.COMPLETE_MAX_ATTEMPTS
+            if self.COMPLETE_MAX_ATTEMPTS != SessionsJobHandler.COMPLETE_MAX_ATTEMPTS
+            else self.TERMINAL_MAX_ATTEMPTS
+        )
+        backoff = (
+            self.COMPLETE_RETRY_BACKOFF_SECONDS
+            if self.COMPLETE_RETRY_BACKOFF_SECONDS != SessionsJobHandler.COMPLETE_RETRY_BACKOFF_SECONDS
+            else self.TERMINAL_RETRY_BACKOFF_SECONDS
+        )
         last_exc: httpx.RequestError | None = None
-        for attempt in range(1, self.COMPLETE_MAX_ATTEMPTS + 1):
+        for attempt in range(1, max_attempts + 1):
             try:
                 await call()
                 return
@@ -306,15 +324,15 @@ class SessionsJobHandler(EventHandlerBase, ABC):
                     "%s_job attempt %d/%d failed: %s",
                     verb,
                     attempt,
-                    self.COMPLETE_MAX_ATTEMPTS,
+                    max_attempts,
                     exc,
                     extra={"session_id": str(session_id), "job_id": str(job_id), "job_type": self.JOB_TYPE, "status": f"{verb}_retry"},
                 )
-                if attempt < self.COMPLETE_MAX_ATTEMPTS and self.COMPLETE_RETRY_BACKOFF_SECONDS > 0:
-                    await asyncio.sleep(self.COMPLETE_RETRY_BACKOFF_SECONDS)
+                if attempt < max_attempts and backoff > 0:
+                    await asyncio.sleep(backoff)
         raise RetryableHandlerError(
             status=f"{verb}_failed",
-            reason=f"{verb}_job exhausted {self.COMPLETE_MAX_ATTEMPTS} attempts: {last_exc}",
+            reason=f"{verb}_job exhausted {max_attempts} attempts: {last_exc}",
         )
 
     def _log(self, session_id: UUID, job_id: UUID, status: str, started: float) -> None:

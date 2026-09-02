@@ -11,6 +11,7 @@ from uuid import UUID
 
 import httpx
 
+from ...models.sessions import JobError
 from ..service_base import ServiceBase
 
 logger = logging.getLogger(__name__)
@@ -234,7 +235,7 @@ class SessionsApiClient(ServiceBase):
         session_id: UUID,
         job_id: UUID,
         session_key: str,
-        error: dict[str, Any],
+        error: JobError,
     ) -> dict[str, Any]:
         """Mark a job as failed with a structured error.
 
@@ -247,7 +248,7 @@ class SessionsApiClient(ServiceBase):
             session_id: UUID of the session
             job_id: UUID of the job
             session_key: Session key for authentication
-            error: Structured failure detail; a ``JobError``-shaped mapping
+            error: Structured failure detail; a :class:`JobError`
                 (``{"message": str, "code": str | None}``).
 
         Returns:
