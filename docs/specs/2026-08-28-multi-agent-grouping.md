@@ -682,6 +682,16 @@ Two things an author still needs to know: their agent's name, and that handlers 
 - [ ] Cron fires once across three replicas in both `scheduler_mode` values (#73).
 - [ ] `scheduler_mode = "event"` starts no timer, and the generated `CronJob` matches the schedule
       declared in agent code.
+- [ ] An event that matches no handler is acknowledged, not redelivered: the transport edge
+      behaves identically for `PROCESSED` and `NO_HANDLER_FOUND` (sec. 7.2).
+- [ ] The same outcome yields the same disposition on both transports -- `CriticalHandlerError`
+      drops on Dapr and terms on NATS, and a payload that fails to parse never naks (sec. 7.2).
+- [ ] A handler declaring no topics and no event types is still evaluated for every event its
+      namespace receives (sec. 7.7).
+- [ ] A namespace's derived `filter_subjects` is never narrower than its declared topics unioned
+      with `nats_subscriptions` (sec. 7.7).
+- [ ] Unhandled events per (namespace, topic) and namespaces-per-subject fan-out are both exposed
+      (sec. 7.2, sec. 7.7).
 - [ ] Frozen compat suite and generated-project smoke test both green (sec. 10.2).
 - [ ] Idempotency off by default, with the requirement surfaced at scaffold time and in
       `asbs validate`.
