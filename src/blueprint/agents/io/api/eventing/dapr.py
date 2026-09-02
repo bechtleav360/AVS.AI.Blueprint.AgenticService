@@ -19,13 +19,26 @@ logger = logging.getLogger(__name__)
 class DaprEventing(EventHandlingBase):
     """Implements event handling using Dapr pub/sub.
 
-    Dapr subscriptions are declarative: the sidecar discovers topics via
-    ``GET /dapr/subscribe`` and pushes events to ``POST /events/{topic}``.
+    The application holds no broker connection -- the sidecar does. The sidecar discovers
+    what to deliver by calling ``GET /dapr/subscribe``, then pushes each message to
+    ``POST /events/{topic}``, whose response body is the acknowledgement.
 
-    ``on_startup`` stores the topic→callback mapping in ``DaprClient`` and
-    starts a background retry task that pings the sidecar until it responds.
-    The client tracks ``subscriptions_ready`` and exposes it via
-    ``health_check()`` so the readiness probe reflects sidecar availability.
+    Both halves are driven by the same ``get_subscribed_topics()`` declarations the NATS
+    transport uses:
+
+    - ``subscribe()`` renders them as the sidecar's subscription document, which is what
+      actually causes delivery.
+    - ``on_startup`` also hands them to ``DaprClient``, which uses them only to start the
+      sidecar-reachability retry and to report ``subscriptions_ready`` through
+      ``health_check()``. The client never invokes those callbacks, because delivery arrives
+      over HTTP rather than through a client-side subscription.
+
+    Config keys
+    ~~~~~~~~~~~
+    ``dapr_pubsub_name`` (str, default ``"pubsub"``): the Dapr pub/sub component to bind to.
+    ``dapr_declarative_subscriptions`` (bool, default ``False``): set ``True`` when
+    subscriptions are declared outside the application (CRD or YAML) so the discovery
+    endpoint returns an empty document and the sidecar cannot subscribe twice.
     """
 
     def __init__(self) -> None:
@@ -35,16 +48,17 @@ class DaprEventing(EventHandlingBase):
     async def on_startup(self) -> None:
         self._client = self.registry.get_component(DaprClient)
 
-        topic_callbacks: dict[str, Callable[[CloudEvent[Any]], Awaitable[None]]] = {}
-        for handler in self.registry.get_event_handler():
-            for topic in handler.get_subscribed_topics():
-                if topic and topic not in topic_callbacks:
-                    topic_callbacks[topic] = self._make_event_callback(topic)
+        # Delivery is driven by the subscription document in subscribe(); this handing-over
+        # exists so the client starts its sidecar-reachability retry and can report
+        # subscriptions_ready. Removing it would silently disable readiness gating.
+        topic_callbacks: dict[str, Callable[[CloudEvent[Any]], Awaitable[None]]] = {
+            topic: self._make_event_callback(topic) for topic in self._declared_topics()
+        }
 
         if topic_callbacks:
             await self._client.subscribe(topic_callbacks)
         else:
-            logger.info("DaprEventing: no subscriptions configured")
+            logger.debug("DaprEventing: no handler declared a topic; nothing to report as ready")
 
     async def on_shutdown(self) -> None:
         pass
@@ -62,15 +76,37 @@ class DaprEventing(EventHandlingBase):
         return _process_event
 
     @RestApiBase.get("/dapr/subscribe", tags=["dapr"])
-    async def subscribe(self, topic: str, queue_group: str | None = None) -> dict[str, Any]:
-        """Dapr subscription discovery endpoint.
+    async def subscribe(self) -> list[dict[str, Any]]:
+        """Return the subscription document the Dapr sidecar fetches at startup.
 
-        The Dapr sidecar calls this at startup to learn which topics to route
-        to this service.  Override in user code to declare real subscriptions.
+        One entry per topic declared by a registered handler, routed to this service's
+        ``POST /events/{topic}`` endpoint. The sidecar calls this with no parameters, so the
+        signature takes none: a required query parameter here answers 422 and the service
+        receives nothing.
 
-        Note: subscriptions can also be defined via Kubernetes resources.
+        Returns an empty document when ``dapr_declarative_subscriptions`` is set, so a
+        deployment that declares its subscriptions as Kubernetes resources does not end up
+        subscribed twice.
+
+        Overriding this in user code is supported, but the override must re-apply
+        ``@RestApiBase.get("/dapr/subscribe")`` -- route discovery walks the MRO subclass-first
+        and an undecorated override claims the name without registering a route.
         """
-        return {}
+        if self.config.get("dapr_declarative_subscriptions", False):
+            logger.debug("DaprEventing: subscriptions are declared externally, returning an empty document")
+            return []
+
+        pubsub_name = self.config.get("dapr_pubsub_name", "pubsub")
+        return [{"pubsubname": pubsub_name, "topic": topic, "route": f"/events/{topic}"} for topic in self._declared_topics()]
+
+    def _declared_topics(self) -> list[str]:
+        """Return every topic declared by a registered handler, in declaration order."""
+        topics: dict[str, None] = {}
+        for handler in self.registry.get_event_handler():
+            for topic in handler.get_subscribed_topics():
+                if topic:
+                    topics[topic] = None
+        return list(topics)
 
     @RestApiBase.post("/events/{topic}", tags=["dapr"])
     async def publish(self, topic: str, cloud_event: CloudEvent[Any]) -> dict[str, Any]:

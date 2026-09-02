@@ -2,6 +2,9 @@
 
 from unittest.mock import AsyncMock, MagicMock
 
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
+
 
 from blueprint.agents.io.api.eventing.dapr import DaprEventing
 from blueprint.agents.models.errors import CriticalHandlerError, InvalidEventError, RetryableHandlerError
@@ -91,9 +94,67 @@ class TestDaprEventingPublish:
 
 
 class TestDaprEventingSubscribe:
-    async def test_subscribe_returns_empty_dict(self, dapr_eventing: DaprEventing) -> None:
-        result = await dapr_eventing.subscribe("some-topic")
-        assert result == {}
+    async def test_subscription_document_is_empty_without_declarations(self, dapr_eventing: DaprEventing, mock_registry: MagicMock) -> None:
+        mock_registry.get_event_handler.return_value = []
+        assert await dapr_eventing.subscribe() == []
+
+    async def test_subscription_document_lists_declared_topics(self, dapr_eventing: DaprEventing, mock_registry: MagicMock) -> None:
+        handler = MagicMock()
+        handler.get_subscribed_topics.return_value = ["orders.created", "orders.cancelled"]
+        mock_registry.get_event_handler.return_value = [handler]
+
+        assert await dapr_eventing.subscribe() == [
+            {"pubsubname": "pubsub", "topic": "orders.created", "route": "/events/orders.created"},
+            {"pubsubname": "pubsub", "topic": "orders.cancelled", "route": "/events/orders.cancelled"},
+        ]
+
+    async def test_subscription_document_deduplicates_across_handlers(self, dapr_eventing: DaprEventing, mock_registry: MagicMock) -> None:
+        first = MagicMock()
+        first.get_subscribed_topics.return_value = ["orders.created"]
+        second = MagicMock()
+        second.get_subscribed_topics.return_value = ["orders.created"]
+        mock_registry.get_event_handler.return_value = [first, second]
+
+        document = await dapr_eventing.subscribe()
+
+        assert [entry["topic"] for entry in document] == ["orders.created"]
+
+    async def test_subscription_document_uses_configured_pubsub_name(self, dapr_eventing: DaprEventing, mock_registry: MagicMock) -> None:
+        handler = MagicMock()
+        handler.get_subscribed_topics.return_value = ["orders.created"]
+        mock_registry.get_event_handler.return_value = [handler]
+        dapr_eventing.config.get.side_effect = lambda key, default=None: "orders-bus" if key == "dapr_pubsub_name" else default
+
+        document = await dapr_eventing.subscribe()
+
+        assert document[0]["pubsubname"] == "orders-bus"
+
+    async def test_subscription_document_is_empty_when_declared_externally(
+        self, dapr_eventing: DaprEventing, mock_registry: MagicMock
+    ) -> None:
+        handler = MagicMock()
+        handler.get_subscribed_topics.return_value = ["orders.created"]
+        mock_registry.get_event_handler.return_value = [handler]
+        dapr_eventing.config.get.side_effect = lambda key, default=None: True if key == "dapr_declarative_subscriptions" else default
+
+        assert await dapr_eventing.subscribe() == []
+
+    async def test_sidecar_can_fetch_the_document_without_query_parameters(
+        self, dapr_eventing: DaprEventing, mock_registry: MagicMock
+    ) -> None:
+        """Regression: a required query parameter here answered 422 to every sidecar call."""
+        handler = MagicMock()
+        handler.get_subscribed_topics.return_value = ["orders.created"]
+        mock_registry.get_event_handler.return_value = [handler]
+
+        app = FastAPI()
+        app.include_router(dapr_eventing.router)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://sidecar") as client:
+            response = await client.get("/dapr/subscribe")
+
+        assert response.status_code == 200
+        assert response.json() == [{"pubsubname": "pubsub", "topic": "orders.created", "route": "/events/orders.created"}]
 
 
 class TestDaprEventingOnStartup:

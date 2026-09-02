@@ -77,9 +77,13 @@ Three gaps to close while landing it, none of which the original PR addressed:
   under P2: stop `_process_event` in `io/api/eventing/nats.py` swallowing the classified
   handler errors, and stop `_process_cloud_event` logging *and* re-raising them, so the
   transport boundary becomes the single place that both sees and handles failure.
-- **`DaprEventing` registers a callback map with `DaprClient` while delivery still arrives on
-  `POST /events/{topic}`,** so that callback appears unused for delivery and exists only to drive
-  readiness. Settle its role or remove it.
+- ~~**`DaprEventing` registers a callback map that Dapr delivery does not use.**~~ **Done**, and it
+  turned out to hide a live bug (issue #81): the discovery endpoint the sidecar fetches took a
+  required `topic` query parameter, so `GET /dapr/subscribe` answered 422 and no handler
+  declaration ever reached Dapr. The endpoint now renders `get_subscribed_topics()` as the
+  sidecar's subscription document, so one declaration drives both transports. The callback map is
+  kept deliberately — it is what starts the client's sidecar-reachability retry and feeds
+  `subscriptions_ready`, and removing it would silently disable readiness gating.
 
 **P1 — Core NATS subscriptions have no queue group.** `clients/io/nats_client.py:250` calls
 `client.subscribe(topic, cb=...)` with no `queue=`. JetStream is off by default
