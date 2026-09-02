@@ -120,17 +120,17 @@ class TestNATSClientConnect:
 
 
 class TestNATSClientClose:
-    async def test_close_unsubscribes_all_subscriptions(self, connected_nats_client: NATSClient) -> None:
-        sub = MagicMock()
-        sub.unsubscribe = AsyncMock()
+    async def test_close_drains_all_subscriptions(self, connected_nats_client: NATSClient) -> None:
+        sub = MagicMock(drain=AsyncMock(), unsubscribe=AsyncMock())
         connected_nats_client._subscriptions = [sub]
 
         await connected_nats_client.close()
 
-        sub.unsubscribe.assert_awaited_once()
+        sub.drain.assert_awaited_once()
+        sub.unsubscribe.assert_not_awaited()
 
     async def test_close_clears_subscriptions_list(self, connected_nats_client: NATSClient) -> None:
-        connected_nats_client._subscriptions = [MagicMock(unsubscribe=AsyncMock())]
+        connected_nats_client._subscriptions = [MagicMock(drain=AsyncMock())]
         await connected_nats_client.close()
         assert connected_nats_client._subscriptions == []
 
@@ -154,6 +154,88 @@ class TestNATSClientClose:
         nats_client._nats_client = None
         await nats_client.close()
         assert task.cancelled()
+
+
+class TestNATSClientShutdownDrain:
+    async def test_close_unsubscribes_when_drain_fails(self, connected_nats_client: NATSClient) -> None:
+        sub = MagicMock(drain=AsyncMock(side_effect=Exception("broken")), unsubscribe=AsyncMock())
+        connected_nats_client._subscriptions = [sub]
+
+        await connected_nats_client.close()
+
+        sub.unsubscribe.assert_awaited_once()
+
+    async def test_close_marks_subscriptions_not_ready(self, connected_nats_client: NATSClient) -> None:
+        connected_nats_client._subscriptions_ready = True
+        await connected_nats_client.close()
+        assert connected_nats_client.subscriptions_ready is False
+
+    async def test_connection_stays_open_until_inflight_handler_finishes(
+        self, connected_nats_client: NATSClient, mock_nats_core: MagicMock
+    ) -> None:
+        connected_nats_client._enter_handler()
+        connection_closed_during_handler = []
+
+        async def _finish_handler() -> None:
+            await asyncio.sleep(0.05)
+            connection_closed_during_handler.append(mock_nats_core.close.await_count > 0)
+            connected_nats_client._exit_handler()
+
+        finishing = asyncio.create_task(_finish_handler())
+        await connected_nats_client.close()
+        await finishing
+
+        assert connection_closed_during_handler == [False]
+        mock_nats_core.close.assert_awaited_once()
+
+    async def test_close_gives_up_after_drain_timeout_and_still_closes(
+        self, connected_nats_client: NATSClient, mock_nats_core: MagicMock
+    ) -> None:
+        connected_nats_client.config.get.side_effect = lambda key, default=None: 0.01 if key == "event_client_drain_timeout" else default
+        connected_nats_client._enter_handler()
+
+        await connected_nats_client.close()
+
+        assert connected_nats_client.inflight_handlers == 1
+        mock_nats_core.close.assert_awaited_once()
+
+    async def test_close_does_not_wait_when_no_handler_is_running(self, connected_nats_client: NATSClient) -> None:
+        assert connected_nats_client.inflight_handlers == 0
+        await asyncio.wait_for(connected_nats_client.close(), timeout=1.0)
+
+    async def test_handler_execution_is_counted_and_released(
+        self, nats_client: NATSClient, mock_nats_core: MagicMock, cloud_event: CloudEvent
+    ) -> None:
+        seen_during_handler = []
+
+        async def _callback(event: CloudEvent) -> None:
+            seen_during_handler.append(nats_client.inflight_handlers)
+
+        nats_client._nats_client = mock_nats_core
+        nats_client._client = mock_nats_core
+        await nats_client._subscribe_one("orders.created", _callback)
+        message_handler = mock_nats_core.subscribe.await_args.kwargs["cb"]
+
+        msg = MagicMock(data=json.dumps(dict(cloud_event)).encode())
+        await message_handler(msg)
+
+        assert seen_during_handler == [1]
+        assert nats_client.inflight_handlers == 0
+
+    async def test_handler_count_is_released_when_callback_raises(
+        self, nats_client: NATSClient, mock_nats_core: MagicMock, cloud_event: CloudEvent
+    ) -> None:
+        async def _callback(event: CloudEvent) -> None:
+            raise RuntimeError("handler exploded")
+
+        nats_client._nats_client = mock_nats_core
+        nats_client._client = mock_nats_core
+        await nats_client._subscribe_one("orders.created", _callback)
+        message_handler = mock_nats_core.subscribe.await_args.kwargs["cb"]
+
+        await message_handler(MagicMock(data=json.dumps(dict(cloud_event)).encode()))
+
+        assert nats_client.inflight_handlers == 0
 
 
 class TestNATSClientPublish:

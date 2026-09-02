@@ -21,6 +21,7 @@ _NATS_CONFIG = {
     "nats_use_jetstream": False,
     "nats_stream_name": "EVENTS",
     "nats_durable_name": "test-durable",
+    "event_client_drain_timeout": 5.0,
 }
 
 

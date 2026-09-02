@@ -28,6 +28,9 @@ Settings for the event bus transport layer.
 |-----|------|---------|-------------|
 | `event_bus` | `str` | `""` | Event bus implementation. Set to `"dapr"` for Dapr pub/sub or `"nats"` for NATS. Empty string disables the event bus. |
 | `nats_url` | `str` | `"nats://localhost:4222"` | NATS server URL. Only used when `event_bus = "nats"`. |
+| `event_client_max_retries` | `int` | `-1` | Number of reconnection attempts if the broker is unavailable at startup. `-1` retries indefinitely until the broker becomes reachable. `0` makes a single attempt and logs a permanent error on failure. |
+| `event_client_retry_delay` | `float` | `5.0` | Seconds to wait between reconnection attempts. |
+| `event_client_drain_timeout` | `float` | `30.0` | Seconds allowed at shutdown for in-flight message handlers to finish before the broker connection is closed. Bounds the whole shutdown sequence, so keep it below the pod's termination grace period. |
 
 ---
 
@@ -126,6 +129,9 @@ log_format = "text"
 # Event Bus
 event_bus = "nats"
 nats_url = "nats://localhost:4222"
+event_client_max_retries = -1   # retry indefinitely
+event_client_retry_delay = 5.0  # seconds between attempts
+event_client_drain_timeout = 30.0  # shutdown budget for in-flight handlers
 
 # Prompts
 prompt_directory = "prompts"

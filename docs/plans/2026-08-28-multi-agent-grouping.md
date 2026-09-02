@@ -65,10 +65,10 @@ of this work, ahead of everything else in this list, because the rest of it sits
 
 Three gaps to close while landing it, none of which the original PR addressed:
 
-- **No shutdown drain.** `close()` cancels the retry task and unsubscribes under
-  `contextlib.suppress(Exception)`, so in-flight handlers lose their acknowledgement on every
-  deploy — duplicates on the next start are certain, not merely possible. Drain in-flight work
-  before unsubscribing, bounded by a timeout.
+- ~~**No shutdown drain.**~~ **Done.** `close()` now drains subscriptions, waits for in-flight
+  handlers, and only then closes the connection, bounded by `event_client_drain_timeout`
+  (default 30 s). The order matters: an acknowledgement travels over the delivering connection, so
+  closing first stranded it and made duplicates certain on every deploy.
 - **The `except Exception` swallow in `message_handler` must not survive the port** (see P2).
 - **`DaprEventing` registers a callback map with `DaprClient` while delivery still arrives on
   `POST /events/{topic}`,** so that callback appears unused for delivery and exists only to drive

@@ -234,6 +234,57 @@ default_pubsub_name = "default"
 "document.summarized" = "documents.processed"
 ```
 
+## Broker Startup Resilience
+
+By default the framework does not require the broker to be reachable when the service starts. The broker connection and topic subscriptions are established in a background task so the application enters a live state immediately, even if the NATS server or Dapr sidecar is temporarily unavailable.
+
+### Startup sequence
+
+1. `AppBuilder.build()` completes and the FastAPI application starts.
+2. `/health/live` returns `200` immediately — the process is alive.
+3. The eventing component attempts to connect and subscribe in the background.
+4. Until the connection succeeds, `/health/ready` returns `503` because the underlying client health check reports `unhealthy`.
+5. Once the broker is reachable and all subscriptions are established, `/health/ready` returns `200`.
+
+This behaviour is particularly useful in Kubernetes where Dapr sidecars or NATS may become available a few seconds after the application container starts.
+
+### Configuration
+
+```toml
+# Retry indefinitely (default) — suitable for Kubernetes where the broker
+# eventually becomes available.
+event_client_max_retries = -1
+event_client_retry_delay = 5.0
+
+# Fail fast after 3 attempts — useful for local development to surface
+# misconfiguration quickly.
+event_client_max_retries = 3
+event_client_retry_delay = 2.0
+```
+
+| Key | Default | Behaviour |
+|-----|---------|-----------|
+| `event_client_max_retries` | `-1` | `-1` = retry indefinitely. `0` = single attempt. `N` = N retries after the first failure. |
+| `event_client_retry_delay` | `5.0` | Seconds between attempts. |
+
+When all retries are exhausted (i.e. `event_client_max_retries >= 0` and the limit is reached), the error is logged at `ERROR` level with a full traceback. The application remains live but permanently not-ready.
+
+### Kubernetes probe recommendations
+
+Because the broker connection is asynchronous, tune the readiness probe to allow enough time for the broker to start:
+
+```yaml
+readinessProbe:
+  httpGet:
+    path: /health/ready
+    port: 8000
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  failureThreshold: 12   # tolerate up to ~2 minutes of broker unavailability
+```
+
+---
+
 ## Sessions Transport
 
 When `event_bus = "sessions"`, `AppBuilder.build()` wires three components automatically:

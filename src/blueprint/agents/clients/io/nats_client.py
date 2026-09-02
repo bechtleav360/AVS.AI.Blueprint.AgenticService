@@ -39,6 +39,8 @@ class NATSClient(IOClientBase):
     ``event_client_max_retries`` (int, default -1): retries after first failure;
     ``-1`` = indefinite, ``0`` = single attempt.
     ``event_client_retry_delay`` (float, default 5.0): seconds between retries.
+    ``event_client_drain_timeout`` (float, default 30.0): seconds allowed for in-flight
+    handlers to finish during shutdown.
     """
 
     def __init__(self) -> None:
@@ -51,6 +53,9 @@ class NATSClient(IOClientBase):
         self._subscriptions_ready: bool = False
         self._subscriptions_managed: bool = False
         self._retry_task: asyncio.Task[None] | None = None
+        self._inflight: int = 0
+        self._idle: asyncio.Event = asyncio.Event()
+        self._idle.set()
 
     # ------------------------------------------------------------------
     # Public state
@@ -60,6 +65,11 @@ class NATSClient(IOClientBase):
     def subscriptions_ready(self) -> bool:
         """``True`` once all managed subscriptions are active."""
         return self._subscriptions_ready
+
+    @property
+    def inflight_handlers(self) -> int:
+        """Number of message handlers currently executing."""
+        return self._inflight
 
     # ------------------------------------------------------------------
     # Managed subscription API
@@ -115,22 +125,83 @@ class NATSClient(IOClientBase):
             raise
 
     async def close(self) -> None:
-        """Cancel the retry task, unsubscribe all topics, and close the connection."""
+        """Stop consuming, let in-flight handlers finish, then close the connection.
+
+        The order is load-bearing. An acknowledgement travels over the same connection
+        that delivered the message, so closing the connection while a handler is still
+        running strands that acknowledgement and guarantees redelivery. Subscriptions
+        are drained first, in-flight handlers then get until ``event_client_drain_timeout``
+        to finish, and only then is the connection closed. The timeout bounds the whole
+        sequence, so shutdown stays inside a pod's termination grace period.
+        """
+        self._subscriptions_ready = False
+
         if self._retry_task and not self._retry_task.done():
             self._retry_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._retry_task
 
         if self._nats_client is not None:
-            for sub in self._subscriptions:
-                with contextlib.suppress(Exception):
-                    await sub.unsubscribe()
-            self._subscriptions.clear()
+            timeout = float(self.config.get("event_client_drain_timeout", 30.0))
+            deadline = asyncio.get_running_loop().time() + timeout
+            await self._drain_subscriptions(deadline)
+            await self._await_inflight(deadline)
 
             await self._nats_client.close()
             self._nats_client = None
             self._js = None
             self._client = None
+
+    # ------------------------------------------------------------------
+    # Internal -- shutdown
+    # ------------------------------------------------------------------
+
+    async def _drain_subscriptions(self, deadline: float) -> None:
+        """Stop new deliveries while letting already-queued messages reach their handler.
+
+        Falls back to an immediate unsubscribe if a drain fails or outlives the deadline,
+        so one stuck subscription cannot hold up shutdown.
+        """
+        for sub in self._subscriptions:
+            remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+            try:
+                await asyncio.wait_for(sub.drain(), timeout=remaining)
+            except TimeoutError:
+                logger.warning("Draining a NATS subscription outlived the shutdown deadline; unsubscribing instead")
+                await self._force_unsubscribe(sub)
+            except Exception as e:
+                logger.warning("Failed to drain a NATS subscription (%s); unsubscribing instead", e)
+                await self._force_unsubscribe(sub)
+        self._subscriptions.clear()
+
+    @staticmethod
+    async def _force_unsubscribe(sub: Any) -> None:
+        with contextlib.suppress(Exception):
+            await sub.unsubscribe()
+
+    async def _await_inflight(self, deadline: float) -> None:
+        """Give handlers that are still running a bounded chance to finish."""
+        if self._inflight == 0:
+            return
+
+        remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+        logger.debug("Waiting up to %.1fs for %d in-flight NATS handler(s)", remaining, self._inflight)
+        try:
+            await asyncio.wait_for(self._idle.wait(), timeout=remaining)
+        except TimeoutError:
+            logger.error(
+                "Shutdown deadline reached with %d NATS handler(s) still running; their messages will be redelivered",
+                self._inflight,
+            )
+
+    def _enter_handler(self) -> None:
+        self._inflight += 1
+        self._idle.clear()
+
+    def _exit_handler(self) -> None:
+        self._inflight = max(0, self._inflight - 1)
+        if self._inflight == 0:
+            self._idle.set()
 
     # ------------------------------------------------------------------
     # Publish
@@ -221,12 +292,15 @@ class NATSClient(IOClientBase):
         client = await self.client
 
         async def message_handler(msg: Any) -> None:
+            self._enter_handler()
             try:
                 event_data = json.loads(msg.data.decode())
                 cloud_event: CloudEvent[Any] = CloudEvent(**event_data)
                 await callback(cloud_event)
             except Exception as ex:
                 logger.error("Failed to handle NATS message: %s", str(ex))
+            finally:
+                self._exit_handler()
 
         try:
             if self._use_jetstream and client.jetstream():
