@@ -175,6 +175,22 @@ class NATSClient(IOClientBase):
         self._subscriptions.clear()
 
     @staticmethod
+    def _decode_message(msg: Any, topic: str) -> CloudEvent[Any] | None:
+        """Decode a broker message into a CloudEvent, or ``None`` if the payload is unusable.
+
+        Kept separate from dispatch because the two failures have opposite dispositions. A
+        payload that cannot become a CloudEvent will not become one on redelivery either, so
+        it is terminal for that message rather than retryable: P2 terms here, and naks a
+        dispatch failure (spec sec. 7.2).
+        """
+        try:
+            event_data = json.loads(msg.data.decode())
+            return CloudEvent(**event_data)
+        except Exception as ex:
+            logger.error("Discarding unparseable message on topic '%s': %s", topic, ex)
+            return None
+
+    @staticmethod
     async def _force_unsubscribe(sub: Any) -> None:
         with contextlib.suppress(Exception):
             await sub.unsubscribe()
@@ -294,11 +310,22 @@ class NATSClient(IOClientBase):
         async def message_handler(msg: Any) -> None:
             self._enter_handler()
             try:
-                event_data = json.loads(msg.data.decode())
-                cloud_event: CloudEvent[Any] = CloudEvent(**event_data)
-                await callback(cloud_event)
-            except Exception as ex:
-                logger.error("Failed to handle NATS message: %s", str(ex))
+                cloud_event = self._decode_message(msg, topic)
+                if cloud_event is None:
+                    return
+
+                try:
+                    await callback(cloud_event)
+                except Exception as ex:
+                    # The dispatch failed, but the same event may well succeed later, so this is
+                    # the retryable case: P2 naks here (spec sec. 7.2).
+                    logger.error(
+                        "Handler failed for event %s on topic '%s': %s",
+                        cloud_event.id,
+                        topic,
+                        ex,
+                        exc_info=True,
+                    )
             finally:
                 self._exit_handler()
 

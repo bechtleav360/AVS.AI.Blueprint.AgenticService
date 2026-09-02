@@ -156,6 +156,92 @@ class TestNATSClientClose:
         assert task.cancelled()
 
 
+class TestNATSClientMessageBoundary:
+    """The transport boundary distinguishes an unusable payload from a failed dispatch.
+
+    The two have opposite dispositions once P2 lands: a payload that cannot be decoded is
+    terminal for that message, while a dispatch failure is retryable.
+    """
+
+    @staticmethod
+    async def _handler_for(nats_client: NATSClient, mock_nats_core: MagicMock, callback) -> object:
+        nats_client._nats_client = mock_nats_core
+        nats_client._client = mock_nats_core
+        await nats_client._subscribe_one("orders.created", callback)
+        return mock_nats_core.subscribe.await_args.kwargs["cb"]
+
+    async def test_undecodable_payload_is_not_dispatched(
+        self, nats_client: NATSClient, mock_nats_core: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        dispatched = []
+
+        async def _callback(event: CloudEvent) -> None:
+            dispatched.append(event)
+
+        handler = await self._handler_for(nats_client, mock_nats_core, _callback)
+
+        with caplog.at_level("ERROR"):
+            await handler(MagicMock(data=b"not json at all"))
+
+        assert dispatched == []
+        assert "unparseable" in caplog.text
+        assert "orders.created" in caplog.text
+
+    async def test_valid_json_that_is_not_a_cloud_event_is_not_dispatched(self, nats_client: NATSClient, mock_nats_core: MagicMock) -> None:
+        dispatched = []
+
+        async def _callback(event: CloudEvent) -> None:
+            dispatched.append(event)
+
+        handler = await self._handler_for(nats_client, mock_nats_core, _callback)
+
+        await handler(MagicMock(data=json.dumps({"not": "an event"}).encode()))
+
+        assert dispatched == []
+
+    async def test_dispatch_failure_is_logged_with_event_and_topic(
+        self,
+        nats_client: NATSClient,
+        mock_nats_core: MagicMock,
+        cloud_event: CloudEvent,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        async def _callback(event: CloudEvent) -> None:
+            raise RuntimeError("handler exploded")
+
+        handler = await self._handler_for(nats_client, mock_nats_core, _callback)
+
+        with caplog.at_level("ERROR"):
+            await handler(MagicMock(data=json.dumps(dict(cloud_event)).encode()))
+
+        assert "Handler failed" in caplog.text
+        assert cloud_event.id in caplog.text
+        assert "orders.created" in caplog.text
+
+    async def test_neither_failure_escapes_into_the_broker_callback(
+        self, nats_client: NATSClient, mock_nats_core: MagicMock, cloud_event: CloudEvent
+    ) -> None:
+        async def _callback(event: CloudEvent) -> None:
+            raise RuntimeError("handler exploded")
+
+        handler = await self._handler_for(nats_client, mock_nats_core, _callback)
+
+        await handler(MagicMock(data=b"garbage"))
+        await handler(MagicMock(data=json.dumps(dict(cloud_event)).encode()))
+
+        assert nats_client.inflight_handlers == 0
+
+    async def test_undecodable_payload_releases_the_inflight_slot(self, nats_client: NATSClient, mock_nats_core: MagicMock) -> None:
+        async def _callback(event: CloudEvent) -> None:
+            pass
+
+        handler = await self._handler_for(nats_client, mock_nats_core, _callback)
+
+        await handler(MagicMock(data=b"garbage"))
+
+        assert nats_client.inflight_handlers == 0
+
+
 class TestNATSClientShutdownDrain:
     async def test_close_unsubscribes_when_drain_fails(self, connected_nats_client: NATSClient) -> None:
         sub = MagicMock(drain=AsyncMock(side_effect=Exception("broken")), unsubscribe=AsyncMock())

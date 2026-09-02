@@ -69,7 +69,14 @@ Three gaps to close while landing it, none of which the original PR addressed:
   handlers, and only then closes the connection, bounded by `event_client_drain_timeout`
   (default 30 s). The order matters: an acknowledgement travels over the delivering connection, so
   closing first stranded it and made duplicates certain on every deploy.
-- **The `except Exception` swallow in `message_handler` must not survive the port** (see P2).
+- **Partly done: the `except Exception` swallow in `message_handler`.** The boundary now
+  separates an undecodable payload from a failed dispatch, logs each once with the topic and
+  event id, and keeps the two failures distinguishable for the dispositions P2 assigns them
+  (term vs nak). It still *catches* both, because a broker callback must not raise into the
+  library and because nothing yet decides what to do with a failure. Remaining, and listed
+  under P2: stop `_process_event` in `io/api/eventing/nats.py` swallowing the classified
+  handler errors, and stop `_process_cloud_event` logging *and* re-raising them, so the
+  transport boundary becomes the single place that both sees and handles failure.
 - **`DaprEventing` registers a callback map with `DaprClient` while delivery still arrives on
   `POST /events/{topic}`,** so that callback appears unused for delivery and exists only to drive
   readiness. Settle its role or remove it.
