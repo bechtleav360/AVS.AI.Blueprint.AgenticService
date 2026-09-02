@@ -50,10 +50,8 @@ and is therefore what makes the group-size dial usable in response to a real fai
 These are independent of the namespace work and would need fixing under any option. **They block
 scaling any group past one replica** and must land before the multi-agent phases ship.
 
-**P0 — Transport lifecycle: managed subscription, retry, reconnect, readiness.** Written as
-PR #27 (`feature/event_handler_retries`), which is being closed in favour of landing the work
-here. It is a prerequisite rather than a parallel track, because the rest of this list sits on
-top of it:
+**P0 — Transport lifecycle: managed subscription, retry, reconnect, readiness.** Lands as part
+of this work, ahead of everything else in this list, because the rest of it sits on top:
 
 - `ClientBase.subscribe(topic_callbacks)` replaces `subscribe(topic, callback)` — one call
   carrying the whole `{topic: callback}` map, non-blocking, backed by a background retry task.
@@ -963,9 +961,8 @@ open question.
   path, and they compound: #43 unfixed plus two replicas gives four ticks.
 - #28 (resilient broker startup) looks delivered by the `event-client-resilience` work; check
   whether it can be closed.
-- PR #27 (`feature/event_handler_retries`) is being closed with its work folded into P0. Say so on
-  the PR and on #27's issue, so the branch is not resurrected later: the code is not abandoned,
-  only relocated, and it arrives with the shutdown drain and the ack contract the PR lacked.
+- An earlier implementation of P0 exists on `feature/event_handler_retries`. Reconciling it with
+  what lands here is its author's call, and deliberately out of scope for this plan.
 
 **Engineering spikes**
 - **Ack-retry-on-reconnect.** Belongs in P0's `_on_reconnected`. Capture the acknowledgement reply subject and re-send after a

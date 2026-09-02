@@ -2,7 +2,6 @@
 
 | | |
 |---|---|
-| **Status** | draft |
 | **Implementation plan** | `docs/plans/2026-08-28-multi-agent-grouping.md` |
 | **Resolves** | #75 (deployment model decision), #73 (duplicate cron ticks) |
 | **Unblocks** | #32 (100 agents in 4 GB), #35 (shared interpreter), #20 (worker scaling) |
