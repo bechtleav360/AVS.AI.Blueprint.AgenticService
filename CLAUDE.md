@@ -70,8 +70,13 @@ uv pip install --no-cache-dir --find-links file:///home/pajoma/pypi/ avs-bluepri
 - **Spec (normative):** `docs/specs/2026-08-28-multi-agent-grouping.md` -- invariants C1-C7, API
   surface, config reference, acceptance criteria. Where any other document disagrees with the
   spec, the spec wins.
-- **Implementation plan:** `docs/plans/2026-08-28-multi-agent-grouping.md` -- prerequisites P1-P6
+- **Implementation plan:** `docs/plans/2026-08-28-multi-agent-grouping.md` -- prerequisites P0-P6
   (blocking defects) and phases 0-9.
+
+**Work this feature in reviewable steps.** Make one change, then stop and report what changed and
+why before starting the next. Do not chain phases together, and do not chain the work items within
+a phase, into a single unreviewed run -- each step is meant to be looked at before the next one
+begins. This rule applies to every prerequisite and phase in that plan, and only to this feature.
 
 Read the spec before changing `component/registry.py`, `app_builder.py`, `handler/`,
 `services/eventing/`, `io/api/eventing/`, `clients/io/nats_client.py`, the schedulers or
