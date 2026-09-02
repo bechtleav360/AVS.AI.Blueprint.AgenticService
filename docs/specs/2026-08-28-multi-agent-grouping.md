@@ -354,9 +354,39 @@ defect at one replica.
 blip from duplicate work into *lost* work, which is worse for expensive, side-effecting inference.
 Consequently at-least-once is permanent, and sec. 7.4 applies.
 
-- Success: `ack()`.
-- Retryable failure: `nak()`.
-- Poison message: `term()`.
+**The contract is that a normal return acknowledges and a raised exception does not.**
+`ProcessingStatus` carries no failure value -- it is `PROCESSED` or `NO_HANDLER_FOUND` -- so every
+failure already reaches the transport as an exception. The transport edge **MUST NOT** inspect
+`ProcessingResult` to decide acknowledgement: `ProcessingResult` is a reporting object and **MUST**
+remain independent of delivery control.
+
+| Outcome at the transport edge | NATS | Dapr response |
+|---|---|---|
+| Handler chain returned, any status | `ack()` | `SUCCESS` |
+| `RetryableHandlerError` | `nak()` | `RETRY` |
+| `InvalidEventError` | `term()` | `DROP` |
+| `CriticalHandlerError` | `term()` | `DROP` |
+| Any other exception raised during dispatch | `nak()`, bounded by `max_deliver` | `RETRY` |
+| Payload fails JSON or CloudEvent parsing, before dispatch | `term()` | `DROP` |
+
+**`NO_HANDLER_FOUND` MUST acknowledge.** An event that matches no handler's conditions has nothing
+to do, and redelivery cannot make a handler appear: a nak is a pointless loop until `max_deliver`,
+and under a queue group a loop that visits every replica in turn. `dapr.py:75` returns `RETRY` for
+this case today and **MUST** change.
+
+Acknowledging it **MUST NOT** make it invisible. A subscribed topic with no matching handler is
+usually a declaration error, and the acknowledgement is what would otherwise hide it forever. The
+framework **MUST** count unhandled events per namespace and topic, and **MUST** log at WARNING the
+first time a given (namespace, topic) pair produces one.
+
+**Both transports MUST map the same outcome to the same disposition.** Dapr's response dict *is*
+its acknowledgement, so the table above is normative for `dapr.py` and
+`event_handling_base.handle_event` exactly as it is for `nats_client.py`. They disagree in two
+places today: `NO_HANDLER_FOUND` as above, and `CriticalHandlerError`, which `dapr.py:102` retries
+-- a critical error is not made less critical by being delivered again.
+
+`max_deliver` and a dead-letter destination **MUST** be configured, because nak on an unexpected
+exception otherwise redelivers indefinitely.
 
 Implementations **SHOULD** capture the ack reply subject and retry the ack after a reconnect,
 which narrows the duplicate window from "certain on any blip" to "only if the pod also dies".

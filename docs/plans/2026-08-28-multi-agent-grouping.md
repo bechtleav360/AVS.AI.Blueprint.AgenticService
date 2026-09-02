@@ -50,6 +50,32 @@ and is therefore what makes the group-size dial usable in response to a real fai
 These are independent of the namespace work and would need fixing under any option. **They block
 scaling any group past one replica** and must land before the multi-agent phases ship.
 
+**P0 — Transport lifecycle: managed subscription, retry, reconnect, readiness.** Written as
+PR #27 (`feature/event_handler_retries`), which is being closed in favour of landing the work
+here. It is a prerequisite rather than a parallel track, because the rest of this list sits on
+top of it:
+
+- `ClientBase.subscribe(topic_callbacks)` replaces `subscribe(topic, callback)` — one call
+  carrying the whole `{topic: callback}` map, non-blocking, backed by a background retry task.
+  P6's per-namespace clients need exactly this shape.
+- `subscriptions_ready` plus health-check gating. C4 and C7 read it, and Phase 9 drives
+  `blueprint_namespace_up` from it.
+- `disconnected_cb` / `reconnected_cb`, re-subscribing JetStream durables on reconnect. P2's
+  correctness depends on this path: the server redelivers everything unacked after a reconnect.
+- Config keys `event_client_max_retries` (default `-1`, indefinite) and `event_client_retry_delay`
+  (default `5.0`).
+
+Three gaps to close while landing it, none of which the original PR addressed:
+
+- **No shutdown drain.** `close()` cancels the retry task and unsubscribes under
+  `contextlib.suppress(Exception)`, so in-flight handlers lose their acknowledgement on every
+  deploy — duplicates on the next start are certain, not merely possible. Drain in-flight work
+  before unsubscribing, bounded by a timeout.
+- **The `except Exception` swallow in `message_handler` must not survive the port** (see P2).
+- **`DaprEventing` registers a callback map with `DaprClient` while delivery still arrives on
+  `POST /events/{topic}`,** so that callback appears unused for delivery and exists only to drive
+  readiness. Settle its role or remove it.
+
 **P1 — Core NATS subscriptions have no queue group.** `clients/io/nats_client.py:250` calls
 `client.subscribe(topic, cb=...)` with no `queue=`. JetStream is off by default
 (`nats_use_jetstream`, `nats_client.py:102`), so the default path today is: *every replica
@@ -61,8 +87,41 @@ container (C1).
 subscribes with `manual_ack=True`, and there is no `msg.ack()` call anywhere in the codebase.
 Every message redelivers after `ack_wait` until `max_deliver`. This is already a defect at one
 replica — each event is processed repeatedly — and at N replicas it presents as a scaling
-problem but is not one. Fix: ack on success, `nak()` on retryable failure, `term()` on
-poison messages, in `_subscribe_one`'s `message_handler`.
+problem but is not one.
+
+The contract is normative in spec sec. 7.2: **a normal return acks, a raised exception does not.**
+`ProcessingStatus` has exactly two values, `PROCESSED` and `NO_HANDLER_FOUND`, so no failure can
+reach the transport as a returned value. That is why the transport edge never inspects
+`ProcessingResult` — it would learn nothing — and why an event that matches no handler's
+conditions acks like any other completed dispatch instead of being redelivered until
+`max_deliver`.
+
+What blocks this today is not the missing `msg.ack()` call but two layers that discard the
+classification before it can reach one:
+
+| Layer | Behaviour |
+|---|---|
+| `_process_cloud_event` (`io/api/eventing/event_handling_base.py`) | logs and **re-raises** — correct, keep |
+| `_process_event` (`io/api/eventing/nats.py`) | catches `RetryableHandlerError`, `InvalidEventError`, `CriticalHandlerError`, logs, returns `None` |
+| `message_handler` (`clients/io/nats_client.py`) | catches `Exception`, logs, returns |
+
+Work items:
+
+- Remove the `except` block from `_process_event` so classified exceptions reach the transport.
+- In `message_handler`, ack on normal return and map exception type to `nak()` / `term()` per the
+  spec table. Distinguish *before* dispatch from *during* dispatch: a payload that fails JSON or
+  CloudEvent parsing terms, because it will not parse on redelivery either.
+- Leave the callback type `Callable[[CloudEvent[Any]], Awaitable[None]]` unchanged. The
+  classification travels as an exception, so no signature widens and P0's nine callback-type
+  declarations stay untouched. Widen it only if P4's dedup or C7's in-flight gauge later needs the
+  result object at the transport edge — and then once, deliberately, not twice.
+- Bring Dapr into line (spec sec. 7.2): `NO_HANDLER_FOUND` → `SUCCESS` (`dapr.py:75`),
+  `CriticalHandlerError` → `DROP` (`dapr.py:102`), and the same in
+  `event_handling_base.handle_event`, whose returned dict *is* Dapr's acknowledgement.
+- Add the unhandled-event counter and the first-occurrence WARNING per (namespace, topic), so
+  acking an unmatched event does not hide a topic nobody handles.
+- Configure `max_deliver` and a dead-letter destination (with P3), since nak on an unexpected
+  exception otherwise redelivers forever.
 
 **P3 — Consumer tuning is not configurable.** Expose `ack_wait` (must exceed p99 handler
 duration, or long LLM work is redelivered to another replica mid-flight) and `max_ack_pending`
@@ -710,10 +769,13 @@ hidden by API design — so they must be caught mechanically rather than documen
 | `handler/handler_chain.py` | 4 |
 | `services/eventing/event_processing_service.py` | 4, 7 |
 | `services/infrastructure/cache_service.py` | 2 (sync ops via `run_in_executor(self.executor, ...)`) |
-| `io/api/eventing/nats.py` | 5 |
+| `io/api/eventing/nats.py` | P2 (stop swallowing classified exceptions), 5 |
 | `io/api/eventing/cloud_event_processor_mixin.py` | 5 |
-| `io/api/eventing/event_handling_base.py` | 5 |
-| `clients/io/nats_client.py` | P1-P3 (queue group, ack/nak/term, consumer tuning), 5 (durable naming) |
+| `io/api/eventing/event_handling_base.py` | P2 (ack parity in `handle_event`), 5 |
+| `clients/client_base.py` | P0 (`subscribe(topic_callbacks)` abstract) |
+| `clients/io/nats_client.py` | P0 (managed subscribe, retry, reconnect, drain), P1-P3 (queue group, ack/nak/term, consumer tuning), 5 (durable naming) |
+| `clients/io/dapr_client.py` | P0 (same lifecycle, mirrored) |
+| `io/api/eventing/dapr.py` | P2 (ack parity: `NO_HANDLER_FOUND` → SUCCESS, `CriticalHandlerError` → DROP) |
 | `handler/event_handler_base.py` | 7 |
 | `handler/handler_chain.py` | P4 (CloudEvent-id dedup before dispatch) |
 | `io/api/scheduling/scheduler.py` | P5 (`scheduler_mode`; timer suppressed in event mode, lease in in-process mode) |
@@ -764,6 +826,13 @@ New test coverage required alongside the implementation:
   different groups. This is the test that keeps regrouping cheap; without it C1 rots silently.
 - **Ack lifecycle (P2):** a handled message is acked exactly once; a retryable failure naks; a
   poison message terms. Regression test that no message is redelivered after a successful handle.
+- **Ack contract (P2):** an event no handler matches is **acked**, not naked — the transport edge
+  behaves identically for `PROCESSED` and `NO_HANDLER_FOUND`, proving it does not read
+  `ProcessingResult`; a payload that fails CloudEvent parsing terms without dispatching; and the
+  Dapr response mapping is asserted against the same outcome table as the NATS dispositions.
+- **Transport lifecycle (P0):** shutdown acknowledges in-flight work before unsubscribing;
+  a reconnect re-establishes JetStream durables without double-acking; `subscriptions_ready` is
+  false until every topic in the map is subscribed.
 - **Idempotency (P4):** the same CloudEvent `id` delivered twice dispatches to the handler once.
 - **Scheduler (P5):** with three simulated replicas a cron job fires once in both modes;
   `scheduler_mode = "event"` starts no timer and the generated `CronJob` matches the declared schedule.
@@ -842,9 +911,12 @@ open question.
   path, and they compound: #43 unfixed plus two replicas gives four ticks.
 - #28 (resilient broker startup) looks delivered by the `event-client-resilience` work; check
   whether it can be closed.
+- PR #27 (`feature/event_handler_retries`) is being closed with its work folded into P0. Say so on
+  the PR and on #27's issue, so the branch is not resurrected later: the code is not abandoned,
+  only relocated, and it arrives with the shutdown drain and the ack contract the PR lacked.
 
 **Engineering spikes**
-- **Ack-retry-on-reconnect.** Capture the acknowledgement reply subject and re-send after a
+- **Ack-retry-on-reconnect.** Belongs in P0's `_on_reconnected`. Capture the acknowledgement reply subject and re-send after a
   reconnect, narrowing the duplicate window from "certain on any connection blip" to "only if the
   pod also dies". Two unknowns make this a prototype rather than a design commitment: a redelivery
   may already be in flight when the retry lands, and the behaviour of acking a stale delivery
