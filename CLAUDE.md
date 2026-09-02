@@ -78,6 +78,11 @@ why before starting the next. Do not chain phases together, and do not chain the
 a phase, into a single unreviewed run -- each step is meant to be looked at before the next one
 begins. This rule applies to every prerequisite and phase in that plan, and only to this feature.
 
+**Explain new code, not just its arrival.** When a change introduces real implementation -- new
+behaviour, new control flow, a new abstraction -- report what was built and how it works, not only
+which files changed and whether the checks passed. Formatting and lint fixes, type annotations,
+tests and documentation need no walkthrough.
+
 Read the spec before changing `component/registry.py`, `app_builder.py`, `handler/`,
 `services/eventing/`, `io/api/eventing/`, `clients/io/nats_client.py`, the schedulers or
 telemetry: those paths carry invariants that are not visible from the code.
