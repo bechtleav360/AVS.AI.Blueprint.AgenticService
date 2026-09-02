@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 from blueprint.agents.models.errors import CriticalHandlerError, InvalidEventError, RetryableHandlerError
 from blueprint.agents.models.events import GenericCloudEvent
+from blueprint.agents.models.sessions import JobError
 
 # Module under test (does not exist yet — RED).
 from blueprint.agents.handler.sessions_job_handler import SessionsJobHandler
@@ -73,7 +74,7 @@ class _Handler(SessionsJobHandler):
 class _FailureHandler(_Handler):
     """process() returns normally; failure_of flags a not-ok result as failed."""
 
-    def failure_of(self, result: _Result) -> dict[str, Any] | None:  # type: ignore[override]
+    def failure_of(self, result: _Result) -> JobError | None:  # type: ignore[override]
         if not result.ok:
             return {"message": "handler signalled failure", "code": "handler_failed"}
         return None
