@@ -975,6 +975,25 @@ open question.
 - An earlier implementation of P0 exists on `feature/event_handler_retries`. Reconciling it with
   what lands here is its author's call, and deliberately out of scope for this plan.
 
+**Test environment**
+- **Local NATS and Dapr, exercised as real integration tests.** Every prerequisite and phase here is
+  covered by unit tests against mocked transports, which cannot show queue-group distribution,
+  redelivery after `ack_wait`, durable survival across a reconnect, or a sidecar fetching the
+  subscription document. Once the feature is implemented, stand both brokers up locally (a compose
+  file plus a CI job) and cover what only a real broker exhibits:
+  - queue-group distribution: N replicas, each event handled once (P1);
+  - ack, nak and term, and that a handled message is not redelivered (P2);
+  - `ack_wait` expiry redelivering to another replica mid-handler (P3);
+  - JetStream durables surviving a reconnect, and the ack-retry-on-reconnect spike (P0, P2);
+  - `close()` acknowledging in-flight work before exit (P0);
+  - `filter_subjects` applied to a durable that already exists — in place, or delete-and-recreate,
+    which is the migration question spec sec. 7.7 raises;
+  - the Dapr sidecar fetching `GET /dapr/subscribe` and delivering to `POST /events/{topic}`,
+    including the SUCCESS/RETRY/DROP mapping.
+
+  Blocked on the unit/integration split in #80: `tests/integration/` is not run by CI at all today,
+  so integration tests added now would be invisible.
+
 **Engineering spikes**
 - **Ack-retry-on-reconnect.** Belongs in P0's `_on_reconnected`. Capture the acknowledgement reply subject and re-send after a
   reconnect, narrowing the duplicate window from "certain on any connection blip" to "only if the

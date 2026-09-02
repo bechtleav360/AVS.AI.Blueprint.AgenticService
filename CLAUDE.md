@@ -78,6 +78,11 @@ why before starting the next. Do not chain phases together, and do not chain the
 a phase, into a single unreviewed run -- each step is meant to be looked at before the next one
 begins. This rule applies to every prerequisite and phase in that plan, and only to this feature.
 
+**Record every change in the feature changelog.** `docs/plans/2026-08-28-multi-agent-grouping-changelog.md`
+is updated as part of each change, not reconstructed at the end: it is the running record of what
+was done and why, and it becomes the pull-request description. Smaller fixes found along the way
+belong in it too -- they are the ones most easily lost.
+
 **Explain new code, not just its arrival.** When a change introduces real implementation -- new
 behaviour, new control flow, a new abstraction -- report what was built and how it works, not only
 which files changed and whether the checks passed. Formatting and lint fixes, type annotations,
