@@ -459,6 +459,68 @@ deduplication **MUST** be scoped within a namespace. Each `(namespace, topic)` p
 subscription and its own consumer. A cross-namespace "first declaration wins" rule would silently
 disable one agent's subscription, and the agent author could not observe it locally.
 
+### 7.7 Selection and fan-out
+
+Selection happens at two levels, and only one of them is enforced by the broker:
+
+| Level | Enforced by | Mechanism |
+|---|---|---|
+| Which subjects reach the process | broker | subscription subject, JetStream `filter_subjects` |
+| Which event a handler wants | in-process | `can_handle()` |
+
+NATS filters on **subject only** -- there is no content or header predicate -- so any selection
+finer than the subject is either encoded in the subject or paid for inside the process. Dapr can
+evaluate CEL rules over the CloudEvent, but in the sidecar, after the broker has already
+delivered.
+
+This matters at scale for a reason that is not CPU. With one consumer per `(namespace, topic)`
+pair (sec. 7.6), a broad subject makes the **broker** copy every message once per namespace, each
+copy carrying its own delivery, ack-pending state and redelivery timer. One hundred agents
+subscribed to `events.>` is a hundredfold fan-out before any handler code runs.
+
+**Selection that the framework is expected to push down to the broker MUST be declared
+statically.** `can_handle()` is imperative code and can never be pushed anywhere: it **MUST**
+remain available as the final in-process selector, and **MUST NOT** be the only selector
+available. Handlers **SHOULD** declare the subjects or event types they accept, and the framework
+**SHOULD** resolve declared event types to subjects through the same `topic_mapping` it uses when
+publishing, so publisher and consumer cannot drift.
+
+Two rules keep this non-breaking, and both are load-bearing, because **no handler in the framework
+or in any scaffolded project declares anything today**: `get_subscribed_topics()` is overridden
+nowhere, the generated handler template selects purely inside `can_handle_event`, and
+`nats_subscriptions` appears in no generated settings file. Any design that treats declarations as
+authoritative therefore describes an empty set.
+
+1. **A handler that declares nothing MUST continue to be evaluated for every event its namespace
+   receives.** An in-process dispatch index **MAY** be keyed on declared event types as an
+   optimisation, but undeclared handlers **MUST** fall into a wildcard bucket that is always
+   evaluated. Without this every existing handler silently stops firing -- and because
+   `NO_HANDLER_FOUND` acknowledges (sec. 7.2), the events would be consumed and discarded rather
+   than accumulating visibly. This is the most destructive failure mode available in this design.
+2. **A broker-side filter MUST NOT be narrower than the union of the explicitly declared subjects
+   and the configured `nats_subscriptions` list.** Filters **MUST** derive from explicit
+   declarations only; the framework **MUST NOT** infer a narrower filter by reading handler code or
+   handler type checks. An agent subscribed to `orders.>` whose handler selects part of that space
+   on payload content has to keep receiving all of it.
+
+**Consumer reconfiguration is a migration, not a config change.** A durable's name and its filter
+set are broker-side state. Depending on server version, changing the filter set is applied in place
+or forces delete-and-recreate, and a recreated consumer resumes according to its delivery policy --
+replaying from the start of the stream, or skipping whatever arrived in between. Any release that
+changes a durable's name or filter set **MUST** state the migration explicitly, including whether
+replay or a gap is expected. This binds the durable renaming that C1 requires
+(`{namespace}-{topic}-durable`, replacing today's `nats_durable_name` default) exactly as it binds
+filter derivation: on first deploy, every pre-existing consumer becomes a new consumer.
+
+**Fan-out MUST be observable.** The framework **MUST** expose, per subject, how many namespaces
+select it. With the unhandled-event counter of sec. 7.2 this covers both directions of the same
+error: an event nobody wanted, and an event offered to far too many.
+
+Build-time gates on subject breadth belong to the implementation plan rather than here, because
+they constrain projects rather than the framework. They **SHOULD** ship as warnings before they
+become errors: the frozen compat suite and the generated-project smoke test cover runtime API and
+would not catch a newly failing build.
+
 ---
 
 ## 8. Caches
@@ -657,6 +719,14 @@ Two things an author still needs to know: their agent's name, and that handlers 
   within a bound), or is "one designated instance runs it, others no-op" enough? The cheap
   ordinal-check answer does not work under a Deployment, which has no stable ordinal, so a lease
   is likely needed either way.
+- **Who owns the subject taxonomy?** Pushing selection into the subject (sec. 7.7) only works if
+  publishers encode the discriminator, and the publishers are other services. `topic_mapping` lets
+  the framework enforce symmetry once a scheme exists, but it cannot invent the token order.
+  `<domain>.<entity>.<action>` is the usual shape. Open: who ratifies it, and how a subject is
+  added.
+- **What is the consumer-count budget?** One hundred agents times a few subjects each is several
+  hundred JetStream consumers, each with its own ack-pending state. The connection ceiling was
+  closed as a non-issue (sec. 6); consumer count is the analogous question and has not been asked.
 - **Do agents eventually become separate distributions?** Build-time dependency trimming would
   require it, which is when the agent-to-module map should migrate to entry points. Not needed
   while trimming stays opt-in.

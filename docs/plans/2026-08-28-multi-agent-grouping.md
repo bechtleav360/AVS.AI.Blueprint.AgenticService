@@ -483,7 +483,23 @@ behave exactly as today. All existing `with_*` calls default to `namespace=""`.
 - Wire previously unused `runtime_name`: after chain picks winner, resolve agent via
   `get_runtime_name()` (Phase 7) within the namespace.
 
-**Backwards compatibility:** Omitting `namespace` defaults to `""` — today's behaviour.
+**Dispatch index (spec sec. 7.7).** `handler_chain.py:52-55` sorts every registered handler and
+calls `can_handle` on each until one returns non-`None`. Build a `dict[event_type, list[handler]]`
+once at startup from declared event types, priority-sorted, and evaluate only the candidates for
+an event's type plus the wildcard bucket. The chain-of-responsibility fallthrough is preserved:
+a candidate whose `handle` returns `None` still passes to the next.
+
+**Handlers that declare nothing MUST stay in the wildcard bucket** and be evaluated for every
+event, which is today's behaviour. Nothing in the framework or in any scaffolded project declares
+event types today — `get_subscribed_topics()` is overridden nowhere and the generated
+`handler.txt` selects purely in `can_handle_event` — so an index that treats declarations as
+authoritative silences every existing handler, and P2's ack contract then discards the events
+instead of letting them pile up. `SessionsJobHandler` is the model case for opting in: its
+`can_handle_event` is `event.type == f"sessions.job.created.{self.JOB_TYPE}"`, so the framework can
+derive its declaration from `JOB_TYPE` without the author writing one.
+
+**Backwards compatibility:** Omitting `namespace` defaults to `""` — today's behaviour. The index
+changes selection for no handler that has not opted in.
 
 ---
 
@@ -503,6 +519,17 @@ behave exactly as today. All existing `with_*` calls default to `namespace=""`.
 - Each `_subscribe_to_topic(topic, namespace)` closure passes `namespace=` to
   `_process_cloud_event`.
 
+**Broker-side filter derivation (spec sec. 7.7).** Give each namespace's JetStream consumer a
+`filter_subjects` set, so a broad subject stops fanning every message out to every namespace. The
+set is the union of that namespace's declared `get_subscribed_topics()` and the configured
+`nats_subscriptions` — that is, exactly what is subscribed today, expressed one layer down.
+**Never infer a narrower filter from handler code**: an agent on `orders.>` whose handler selects
+by payload must keep receiving all of it.
+
+Collapse the derived set to the agent's domain prefix rather than tracking the exact handler list.
+A durable's filter set is broker state, so a filter that follows handler churn turns adding one
+handler into a consumer reconfiguration — and possibly a redelivery storm on deploy.
+
 `CloudEventProcessorMixin._dispatch_cloud_event`:
 - Accept `namespace: str = ""`, forward to `EventProcessingService.process_event`.
 
@@ -515,6 +542,14 @@ behave exactly as today. All existing `with_*` calls default to `namespace=""`.
   correctly *and* makes moving an agent between groups invisible to the broker. A durable name
   that picks up the group name produces a fresh consumer on regrouping: replay from the start of
   the stream, or a silent gap, depending on the delivery policy.
+
+**Migration note (spec sec. 7.7) — this rename is a consumer migration.** Today the durable is
+`nats_durable_name` from config, or `f"{topic}-durable"`. On the first deploy of this phase every
+pre-existing consumer becomes a new consumer, which resumes according to its delivery policy:
+replay from the start of the stream, or a gap covering whatever arrived in between. The release
+notes **must** state which, and the same applies to any later change of a filter set. Do not ship
+this phase and a filter-set change in the same release — if something replays, you want to know
+which change caused it.
 
 One `NATSClient` **per namespace** (P6), named `f"{namespace}.{group}.{pod}"`. The connection name
 contains the pod, so it must never feed durable or queue naming.
@@ -766,7 +801,7 @@ hidden by API design — so they must be caught mechanically rather than documen
 | `__init__.py` | 0 |
 | `component/registry.py` | 1 (namespace storage, named caches, executor registry) |
 | `component/component.py` | 2 (`namespace` param, `executor` property) |
-| `handler/handler_chain.py` | 4 |
+| `handler/handler_chain.py` | 4 (namespace scope + dispatch index, spec sec. 7.7) |
 | `services/eventing/event_processing_service.py` | 4, 7 |
 | `services/infrastructure/cache_service.py` | 2 (sync ops via `run_in_executor(self.executor, ...)`) |
 | `io/api/eventing/nats.py` | P2 (stop swallowing classified exceptions), 5 |
@@ -853,7 +888,12 @@ New test coverage required alongside the implementation:
   proves the API still compiles, not that behaviour is preserved — so add both of:
   - a **frozen compat suite** exercising today's usage patterns, including `with_cache(False)` and
     `with_cache(True, False)` positionally, never updated to the new API. If it needs editing, a
-    break shipped.
+    break shipped. **It must include a handler that declares no topics and no event types, and
+    assert it is still evaluated for every event** (spec sec. 7.7, rule 1). That single test is
+    what keeps the dispatch index from silently disabling every pre-existing handler.
+  - a **filter-derivation test** (spec sec. 7.7, rule 2): the derived `filter_subjects` for a
+    namespace is never narrower than its declared topics unioned with `nats_subscriptions`, and an
+    agent declaring `orders.>` still receives `orders.other.created`.
   - a **generated-project smoke test**: `asbs setup`, then build and start the result unchanged
     against the new framework version. Catches the Dockerfile and `main.py` paths unit tests miss.
 
@@ -866,6 +906,18 @@ deploy:
   agent is duplicate processing, not a scaling strategy.
 - No duplicate namespace names; no conflicting topic declarations within a group.
 - Every declared group builds (import + `build()`, no external I/O).
+
+Subject-breadth gates (spec sec. 7.7), which constrain projects rather than the framework and so
+**ship as warnings first, errors a release later** — the frozen compat suite covers runtime API
+and would not catch a build that newly fails:
+
+- No handler may declare a bare `>` or a root-level single-token wildcard. A declared subject
+  carries at least domain and entity tokens.
+- Every declared subject is reachable from the publish-side `topic_mapping`, catching typos and
+  orphaned subscriptions at build time — the same error class the unhandled-event counter catches
+  at runtime.
+- Report fan-out per subject: how many namespaces select it. Above a threshold, require an
+  explicit waiver rather than silent acceptance.
 
 ---
 
@@ -922,6 +974,10 @@ open question.
   may already be in flight when the retry lands, and the behaviour of acking a stale delivery
   attempt depends on how the server keys pending state on stream sequence. **Validate against a
   real broker before relying on it.**
+- **Consumer-count budget.** One hundred agents times a few subjects each is several hundred
+  JetStream consumers, each carrying ack-pending state. The connection ceiling was closed as a
+  non-issue; this is the analogous number for consumers and is currently an assumption. Measure
+  before committing to per-subject filters at 100 agents.
 - **Marginal RSS per namespace.** Build N namespaces, report the resident-size delta per namespace,
   reusing #36's benchmark harness. #32 measures ~6 MB per forked child with shared libraries; a
   namespace has no separate process at all and should come in materially below that. This is the
