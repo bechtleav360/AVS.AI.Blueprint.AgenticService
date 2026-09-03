@@ -37,33 +37,33 @@ Reaching that requires fixing several defects that block running more than one r
 Design and specification:
 
 - Normative spec and phased implementation plan, extracted from `CLAUDE.md` into the repo's
-  spec/plan convention (`a889f2b`)
+  spec/plan convention (`4233933`)
 - **Acknowledgement contract**: a normal return acks, a raised exception does not; `NO_HANDLER_FOUND`
-  acks (`c3d83c8`)
+  acks (`b6ab1c9`)
 - **Selection and fan-out rules** (spec sec. 7.7), including the two rules that keep a dispatch
-  index and broker-side filters non-breaking (`ebcd78d`)
-- Acceptance criteria for both of the above (`7491e00`)
+  index and broker-side filters non-breaking (`13e4d28`)
+- Acceptance criteria for both of the above (`b94f60c`)
 
 Code:
 
 - **P0 -- transport lifecycle**: managed whole-map `subscribe()`, background retry, reconnect
-  re-subscription, `subscriptions_ready` readiness gating (`1ffc364`)
-- **P0 -- shutdown drain**: in-flight handlers finish before the connection closes (`7bd627f`)
+  re-subscription, `subscriptions_ready` readiness gating (`77af507`)
+- **P0 -- shutdown drain**: in-flight handlers finish before the connection closes (`585e58c`)
 - **P0 -- message boundary**: an undecodable payload is distinguished from a failed dispatch
-  (`2a7460f`)
+  (`3843abf`)
 - **Dapr subscription discovery fixed** -- declared topics now actually subscribe; `GET
-  /dapr/subscribe` no longer answers 422 (#81, `b2f12dc`)
+  /dapr/subscribe` no longer answers 422 (#81, `fac528b`)
 - **P1 -- queue groups**: Core NATS subscriptions join a queue group derived from the agent, so a
-  second replica no longer processes every message a second time (`9cfcdd5`)
+  second replica no longer processes every message a second time (`05083c8`)
 
 Documentation and process:
 
 - Deployment guide now warns that multi-replica is unsafe, and its examples default to one replica
-  (`459fd53`)
+  (`2d80b63`)
 - New config keys documented: `event_client_drain_timeout`, `dapr_pubsub_name`,
   `dapr_declarative_subscriptions`
-- Feature working rules in `CLAUDE.md`: one reviewable change at a time (`f6ef96e`), and a
-  walkthrough whenever real code is written (`62dffd0`)
+- Feature working rules in `CLAUDE.md`: one reviewable change at a time (`4cf2d51`), and a
+  walkthrough whenever real code is written (`7735251`)
 
 Issues opened along the way:
 
@@ -77,7 +77,7 @@ Issues opened along the way:
 
 ## Changes in detail
 
-### Spec and plan extracted into the repo's conventions (`a889f2b`)
+### Spec and plan extracted into the repo's conventions (`4233933`)
 
 The multi-agent work breakdown lived as a 900-line section inside `CLAUDE.md`. It is now
 `docs/specs/2026-08-28-multi-agent-grouping.md` (normative: scope, invariants C1-C7, public API,
@@ -92,7 +92,7 @@ repo already separated spec from plan (`docs/specs/2026-07-06-...-design.md` aga
 `docs/plans/2026-07-06-...md`), so this follows an existing convention rather than inventing one.
 Open questions live in the spec alone, so the two documents cannot drift.
 
-### Acknowledgement contract (`c3d83c8`)
+### Acknowledgement contract (`b6ab1c9`)
 
 Spec sec. 7.2 now states: **a normal return acknowledges, a raised exception does not.** The
 transport edge must not inspect `ProcessingResult` to decide delivery, and `NO_HANDLER_FOUND`
@@ -107,7 +107,7 @@ result buys nothing. It does actively harm: `dapr.py` mapped `NO_HANDLER_FOUND` 
 event no handler wanted was redelivered until `max_deliver`, and under a queue group that loop
 visits every replica in turn. The contract removes a check rather than adding one.
 
-### Selection and fan-out (`ebcd78d`)
+### Selection and fan-out (`13e4d28`)
 
 Spec sec. 7.7 records that selection happens at two levels and only the subject level is enforced
 by the broker: NATS has no content or header predicate, and Dapr's CEL rules are evaluated in the
@@ -136,7 +136,7 @@ The migration rule surfaced that **Phase 5 was already a consumer migration and 
 as one**: renaming durables to `{namespace}-{topic}-durable` makes every pre-existing consumer a new
 consumer on first deploy.
 
-### Acceptance criteria for the above (`7491e00`)
+### Acceptance criteria for the above (`b94f60c`)
 
 Five criteria added to spec sec. 12, covering the ack contract, cross-transport parity, the
 undeclared-handler rule, filter derivation, and the two observability counters.
@@ -144,7 +144,7 @@ undeclared-handler rule, filter derivation, and the two observability counters.
 **Motivation.** Sections 7.2 and 7.7 were normative but had no entry in the acceptance criteria, so
 "done" did not include them.
 
-### P0 -- transport lifecycle (`1ffc364`)
+### P0 -- transport lifecycle (`77af507`)
 
 Connection, retry and subscription lifecycle moved out of the eventing APIs and into the transport
 clients. `ClientBase.subscribe(topic_callbacks)` replaces `subscribe(topic, callback)`: one
@@ -163,7 +163,7 @@ single subscribe call carrying the whole map.
 Originally written as PR #27; applied here as one commit without that branch's CI and version
 changes, so this update can land first.
 
-### P0 -- shutdown drain (`7bd627f`)
+### P0 -- shutdown drain (`585e58c`)
 
 `close()` now cancels the retry task, drains subscriptions so already-queued messages still reach
 their handler, waits for running handlers, and only then closes the connection. One deadline from
@@ -177,7 +177,7 @@ every deploy guaranteed duplicate work for whatever was in flight, and P2 would 
 as a permanent duplicate source. `inflight_handlers` is public because Phase 9 needs exactly that
 number for the per-namespace in-flight gauge (C7).
 
-### P0 -- message boundary (`2a7460f`)
+### P0 -- message boundary (`3843abf`)
 
 Decoding moved into `_decode_message`, which returns `None` for a payload that cannot become a
 CloudEvent and logs it as discarded, naming the topic. Dispatch keeps its own catch, logging the
@@ -192,7 +192,7 @@ The boundary still catches both: a broker callback that raises into `nats-py` lo
 gains nothing while no code yet decides what to do with a failure. In P2 the catch becomes the
 disposition.
 
-### Dapr subscription discovery (#81, `b2f12dc`)
+### Dapr subscription discovery (#81, `fac528b`)
 
 `GET /dapr/subscribe` now takes no parameters and returns a subscription array built from
 `get_subscribed_topics()` -- one entry per declared topic, routed to `/events/{topic}`, using the
@@ -212,7 +212,7 @@ The callback map is kept deliberately and documented for what it is -- the input
 sidecar-reachability retry and feeds `subscriptions_ready`. Removing it, which "delete the unused
 map" invites, would have silently disabled the readiness gating added in P0.
 
-### P1 -- queue groups on Core NATS subscriptions (`9cfcdd5`)
+### P1 -- queue groups on Core NATS subscriptions (`05083c8`)
 
 Every Core NATS subscription now passes `queue=`, so the server delivers each message to exactly
 one member of the group instead of to every subscriber. The name is resolved once, in
@@ -280,7 +280,7 @@ Both properties rest on the names being distinct per agent, and two things can b
   collapses all its topics onto one durable name; pre-existing, and worth fixing where Phase 5
   touches that line.
 
-### Deployment guide corrected (`459fd53`)
+### Deployment guide corrected (`2d80b63`)
 
 The guide recommended `replicaCount: 2`, an HPA, and `--set replicaCount=3` as ordinary scaling. It
 now opens with a warning naming the three defects that make multi-replica incorrect rather than
@@ -292,7 +292,7 @@ belongs to ADR vocabulary while this repo uses Status as a revision marker.
 before any code changes: following it doubles every side effect and every inference bill, and
 duplicates every cron tick.
 
-### Working rules for this feature (`f6ef96e`, `62dffd0`)
+### Working rules for this feature (`4cf2d51`, `7735251`)
 
 `CLAUDE.md` gained two rules scoped to this feature: work in reviewable steps, one change at a time,
 reported before the next begins; and explain new code, not just its arrival -- a walkthrough of the
