@@ -11,6 +11,7 @@ from uuid import UUID
 
 import httpx
 
+from ...models.sessions import JobError
 from ..service_base import ServiceBase
 
 logger = logging.getLogger(__name__)
@@ -227,6 +228,46 @@ class SessionsApiClient(ServiceBase):
         response.raise_for_status()
         job_data = response.json()
         logger.info("Job cancelled successfully: job_id=%s", job_id)
+        return job_data
+
+    async def fail_job(
+        self,
+        session_id: UUID,
+        job_id: UUID,
+        session_key: str,
+        error: JobError,
+    ) -> dict[str, Any]:
+        """Mark a job as failed with a structured error.
+
+        Terminal counterpart to :meth:`complete_job` for a *failure*: posts to the
+        sessions ``/fail`` endpoint (running->failed), which records ``JobStatus.FAILED``
+        plus the ``error`` payload. Same session-key-gated conventions as
+        ``complete_job`` / ``cancel_job``.
+
+        Args:
+            session_id: UUID of the session
+            job_id: UUID of the job
+            session_key: Session key for authentication
+            error: Structured failure detail; a :class:`JobError`
+                (``{"message": str, "code": str | None}``).
+
+        Returns:
+            Updated job details
+
+        Raises:
+            httpx.HTTPStatusError: If the request fails
+            ValueError: If client not initialized
+        """
+        logger.warning("Failing job: session_id=%s, job_id=%s, error=%s", session_id, job_id, error)
+        response = await self._request(
+            "POST",
+            f"/sessions/{session_id}/jobs/{job_id}/fail",
+            session_key=session_key,
+            json={"error": error},
+        )
+        response.raise_for_status()
+        job_data = response.json()
+        logger.info("Job marked failed successfully: job_id=%s", job_id)
         return job_data
 
     async def list_pending_jobs(self, job_types: list[str] | None = None) -> list[dict[str, Any]]:
