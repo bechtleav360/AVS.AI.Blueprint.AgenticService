@@ -88,6 +88,36 @@ behaviour, new control flow, a new abstraction -- report what was built and how 
 which files changed and whether the checks passed. Formatting and lint fixes, type annotations,
 tests and documentation need no walkthrough.
 
+**Report the production code in detail, and report it first.** The walkthrough is about
+`src/`: name each function, branch and call site that changed, show the lines that matter, and say
+what the code now does that it did not do before and what breaks if it is removed. A list of files
+touched, a summary of intent, or "tests pass and lint is clean" is not a report of the code -- that
+is the wrapper around it. Tests, documentation and the changelog are listed, not walked through:
+they are how the change is verified and recorded, not the change itself.
+
 Read the spec before changing `component/registry.py`, `app_builder.py`, `handler/`,
 `services/eventing/`, `io/api/eventing/`, `clients/io/nats_client.py`, the schedulers or
 telemetry: those paths carry invariants that are not visible from the code.
+
+---
+
+## Commits
+
+Commit messages follow **Conventional Commits** -- `.pre-commit-config.yaml` runs the commitizen
+hook at the `commit-msg` stage, so the subject line must be `<type>(<scope>): <description>` with
+a type from `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`,
+`revert`. A prefix like `P0:` is not a type and will be rejected once the hook is installed.
+
+Install every hook stage, not just the default one:
+
+```bash
+pre-commit install
+pre-commit install --hook-type commit-msg
+pre-commit install --hook-type pre-push
+```
+
+End every commit message with the repo's trailer:
+
+```
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+```

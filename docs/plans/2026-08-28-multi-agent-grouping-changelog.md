@@ -54,7 +54,7 @@ Code:
 - **Dapr subscription discovery fixed** -- declared topics now actually subscribe; `GET
   /dapr/subscribe` no longer answers 422 (#81, `b2f12dc`)
 - **P1 -- queue groups**: Core NATS subscriptions join a queue group derived from the agent, so a
-  second replica no longer processes every message a second time
+  second replica no longer processes every message a second time (`9cfcdd5`)
 
 Documentation and process:
 
@@ -212,7 +212,7 @@ The callback map is kept deliberately and documented for what it is -- the input
 sidecar-reachability retry and feeds `subscriptions_ready`. Removing it, which "delete the unused
 map" invites, would have silently disabled the readiness gating added in P0.
 
-### P1 -- queue groups on Core NATS subscriptions
+### P1 -- queue groups on Core NATS subscriptions (`9cfcdd5`)
 
 Every Core NATS subscription now passes `queue=`, so the server delivers each message to exactly
 one member of the group instead of to every subscriber. The name is resolved once, in

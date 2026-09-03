@@ -830,7 +830,21 @@ hidden by API design — so they must be caught mechanically rather than documen
 | `config/config.py` | 3 (C5 — `agent_scope` wiring via `with_namespace`), 8 (fragment merge) |
 | `services/eventing/event_publishing_service.py` | P6 (per-namespace client) |
 
-**Scaffolding changes (`blueprint/agent_generator`)** — none of this exists yet:
+**Scaffolding tracks the framework, every step.** `blueprint/agent_generator` is part of this
+feature's surface, not a follow-up to it. Any change that adds a config key, alters what a
+generated `settings.toml` must contain, changes what `main.py` or the `Dockerfile` looks like, or
+changes the meaning of a key a generated project already writes, carries a matching
+`agent_generator` change in the same step — templates under `base_files/`, the CLI commands, and
+the generated `claude_docs/CLAUDE.md`. A generated project that no longer matches the framework it
+generates against is a defect, and it is invisible from the framework's own tests.
+
+Known outstanding item from P1: `app_name` now determines the NATS queue group, so it is broker
+consumer identity rather than a display name. The generator writes it (`settings_part_generator.py`)
+and documents it (`claude_docs/CLAUDE.md`), and neither says so; `nats_queue_group` appears in
+neither. The fallback literal `"generated-agent"` in `cli/commands/create.py` is also now a
+collision source between projects that hit it.
+
+**Scaffolding changes (`blueprint/agent_generator`)** -- none of this exists yet:
 
 | Piece | Change |
 |---|---|
