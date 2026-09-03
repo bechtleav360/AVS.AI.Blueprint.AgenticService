@@ -1,9 +1,22 @@
 """Domain models for the sessions service integration."""
 
-from typing import Any
+from typing import Any, NotRequired, TypedDict
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
+
+
+class JobError(TypedDict):
+    """Structured failure detail for a job, mirroring the svc-sessions ``/fail`` body.
+
+    Matches service-sessions' ``JobError`` DTO: ``message`` required, ``code`` optional.
+    Used as the payload for :meth:`SessionsApiClient.fail_job` and as the return shape of
+    the :meth:`SessionsJobHandler.failure_of` extension point, so a key typo is caught by
+    mypy at the construction site rather than at runtime against the live endpoint.
+    """
+
+    message: str
+    code: NotRequired[str | None]
 
 
 class JobNotification(BaseModel):
