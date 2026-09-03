@@ -87,11 +87,21 @@ class SessionsJobHandler(EventHandlerBase, ABC):
     TERMINAL_MAX_ATTEMPTS: ClassVar[int] = 3
     #: Backoff between terminal-write attempts, in seconds.
     TERMINAL_RETRY_BACKOFF_SECONDS: ClassVar[float] = 2.0
-    #: Deprecated pre-0.7.0 names for the two knobs above (back when only ``complete_job``
-    #: retried). Prefer ``TERMINAL_*``; a subclass override of these is still honoured by
-    #: :meth:`_terminal_with_retry`, so existing tuning keeps working.
-    COMPLETE_MAX_ATTEMPTS: ClassVar[int] = TERMINAL_MAX_ATTEMPTS
-    COMPLETE_RETRY_BACKOFF_SECONDS: ClassVar[float] = TERMINAL_RETRY_BACKOFF_SECONDS
+
+    @property
+    def COMPLETE_MAX_ATTEMPTS(self) -> int:
+        """Deprecated read-only alias of :attr:`TERMINAL_MAX_ATTEMPTS` (pre-0.7.0 name).
+
+        Retained so code that *reads* the old name keeps working; it no longer accepts an
+        override — tune :attr:`TERMINAL_MAX_ATTEMPTS` instead. ``TERMINAL_*`` is the single
+        source of truth, so a stale ``COMPLETE_*`` override can't silently diverge from it.
+        """
+        return self.TERMINAL_MAX_ATTEMPTS
+
+    @property
+    def COMPLETE_RETRY_BACKOFF_SECONDS(self) -> float:
+        """Deprecated read-only alias of :attr:`TERMINAL_RETRY_BACKOFF_SECONDS` (pre-0.7.0 name)."""
+        return self.TERMINAL_RETRY_BACKOFF_SECONDS
 
     def __init__(self, priority: int = 100) -> None:
         super().__init__(priority=priority)
@@ -301,18 +311,8 @@ class SessionsJobHandler(EventHandlerBase, ABC):
         propagate raw. Exhaustion raises ``RetryableHandlerError`` so the job stays
         eligible for redelivery rather than being lost.
         """
-        # Prefer the canonical TERMINAL_* knobs, but honour a subclass that overrode the
-        # deprecated COMPLETE_* aliases (i.e. set them to something other than the default).
-        max_attempts = (
-            self.COMPLETE_MAX_ATTEMPTS
-            if self.COMPLETE_MAX_ATTEMPTS != SessionsJobHandler.COMPLETE_MAX_ATTEMPTS
-            else self.TERMINAL_MAX_ATTEMPTS
-        )
-        backoff = (
-            self.COMPLETE_RETRY_BACKOFF_SECONDS
-            if self.COMPLETE_RETRY_BACKOFF_SECONDS != SessionsJobHandler.COMPLETE_RETRY_BACKOFF_SECONDS
-            else self.TERMINAL_RETRY_BACKOFF_SECONDS
-        )
+        max_attempts = self.TERMINAL_MAX_ATTEMPTS
+        backoff = self.TERMINAL_RETRY_BACKOFF_SECONDS
         last_exc: httpx.RequestError | None = None
         for attempt in range(1, max_attempts + 1):
             try:
