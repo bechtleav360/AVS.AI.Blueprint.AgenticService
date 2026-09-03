@@ -57,7 +57,7 @@ class _Handler(SessionsJobHandler):
     RESULT_MODEL = _Result
 
     # Zero backoff so retry tests don't sleep.
-    COMPLETE_RETRY_BACKOFF_SECONDS = 0.0
+    TERMINAL_RETRY_BACKOFF_SECONDS = 0.0
 
     def __init__(self, *, process_impl: Any = None) -> None:
         super().__init__()
