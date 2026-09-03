@@ -53,6 +53,8 @@ Code:
   (`2a7460f`)
 - **Dapr subscription discovery fixed** -- declared topics now actually subscribe; `GET
   /dapr/subscribe` no longer answers 422 (#81, `b2f12dc`)
+- **P1 -- queue groups**: Core NATS subscriptions join a queue group derived from the agent, so a
+  second replica no longer processes every message a second time
 
 Documentation and process:
 
@@ -210,6 +212,74 @@ The callback map is kept deliberately and documented for what it is -- the input
 sidecar-reachability retry and feeds `subscriptions_ready`. Removing it, which "delete the unused
 map" invites, would have silently disabled the readiness gating added in P0.
 
+### P1 -- queue groups on Core NATS subscriptions
+
+Every Core NATS subscription now passes `queue=`, so the server delivers each message to exactly
+one member of the group instead of to every subscriber. The name is resolved once, in
+`subscribe()`, from `nats_queue_group` falling back to `app_name`, and is exposed as the public
+`queue_group` property; the resolved name is logged with each subscription, which is what makes C1
+checkable by diffing two deployments' startup logs.
+
+Three details carry the invariant:
+
+- **The name identifies the agent, not the process.** C1 requires the queue group to be a pure
+  function of the agent's own identity, so that regrouping is invisible to the broker. Only
+  `nats_queue_group` and `app_name` feed it -- never a pod, container or replica name. When
+  namespaces land, the namespace supplies the name directly and these keys stay as the root-namespace
+  fallback.
+- **An underivable name raises rather than defaults.** NATS reads `queue=""` as *no queue group*, so
+  any silent fallback would reintroduce exactly the fan-out being fixed, and would do it invisibly.
+  `subscribe()` raises `ValueError` instead, naming both keys.
+- **It is resolved in `subscribe()`, not at subscription time.** `subscribe()` is called by the
+  caller's startup path, while the actual subscribing happens inside the background retry task. A
+  config error raised in that task would be retried indefinitely (`event_client_max_retries`
+  defaults to `-1`) and would surface only as a readiness probe that never goes green. Raising in
+  `subscribe()` fails startup where a human is looking.
+
+**Motivation.** JetStream is off by default, so the default transport path was plain Core NATS with
+no queue group: `replicas: 2` meant both replicas received and processed every event -- every side
+effect twice, every inference billed twice. This is a defect at any replica count above one,
+independent of grouping, and it is what makes the deployment guide's multi-replica warning
+removable later.
+
+**JetStream is deliberately untouched, and still single-subscriber.** nats-py rejects a queue
+subscription whose durable name differs from the queue name
+(`cannot create queue subscription '<queue>' to consumer '<durable>'`), so passing the queue group
+next to the existing per-topic durable would raise at subscribe time. A durable shared across
+replicas needs its deliver group set on an explicitly constructed `ConsumerConfig` and bound with
+`subscribe_bind`, which is the same object P3 has to build anyway for `ack_wait` and
+`max_ack_pending`. Doing it there is one change instead of two, and the constraint is recorded as a
+comment at the call site so it does not read as an oversight. Until then a second replica on
+JetStream fails to subscribe loudly (`consumer is already bound to a subscription`) rather than
+double-processing silently -- the safer of the two failures, and readiness gating keeps such a pod
+out of rotation.
+
+New config key: `nats_queue_group` (default: `app_name`), documented in
+`docs/reference/configuration-keys.md`.
+
+**What this buys, and what it depends on.** The group key is *(subject, queue name)*, so with the
+name set per agent the two properties a multi-agent platform needs hold together: different agents
+on one subject are different groups and each receives its own copy (fan-out), while replicas of one
+agent share a group and one of them handles each message (round-robin). Adding a replica never adds
+a copy; adding an agent always does. Plain non-queue subscribers, such as a monitoring tap, are
+unaffected and still receive everything.
+
+Both properties rest on the names being distinct per agent, and two things can break that:
+
+- **Default-valued `app_name`.** Scaffolding writes the project name
+  (`settings_part_generator.py:11`), but the config validator falls back to `agent_blueprint` if the
+  key is removed, and `asbs create agent` outside a scaffolded project writes `generated-agent`
+  (`create.py:580`). Two services on either default would join one group and steal each other's
+  events -- the failure this fixes, moved from replicas to agents. Candidate for an `asbs validate`
+  notice when `event_bus = "nats"`.
+- **JetStream durables are keyed by topic, not by agent** (`nats_durable_name`, default
+  `f"{topic}-durable"`). Two agents subscribing to the same topic both try to bind one durable and
+  the second fails. Cross-agent fan-out under JetStream therefore does not work until the Phase 5
+  rename to `f"{namespace}-{topic}-durable"`, which is the functional reason that rename is
+  load-bearing rather than cosmetic. Separately, a project that sets `nats_durable_name` explicitly
+  collapses all its topics onto one durable name; pre-existing, and worth fixing where Phase 5
+  touches that line.
+
 ### Deployment guide corrected (`459fd53`)
 
 The guide recommended `replicaCount: 2`, an HPA, and `--set replicaCount=3` as ordinary scaling. It
@@ -247,9 +317,35 @@ No breaking change has landed. Specifically:
   answered 422 to the only intended caller. Overrides are unaffected, because `_wire_routes`
   registers `getattr(self, name)` walking the MRO subclass-first, so an override's own signature is
   what FastAPI sees.
-- The Dapr subscription document is empty for every project that exists today, since
-  `get_subscribed_topics()` is overridden nowhere -- so no deployment can start double-subscribing.
+- The Dapr subscription document is empty for every project **in this repository**, since
+  `get_subscribed_topics()` is overridden nowhere here. That is not a guarantee about downstream
+  projects: the method is a documented override point (`event_handler_base.py:164`, with an example
+  in its docstring), so a consumer project may well override it. For such a project the discovery fix
+  changes Dapr behaviour by design -- declared topics went from subscribing to nothing to
+  subscribing -- and if it *also* declares the same topics as Kubernetes `Subscription` resources,
+  the sidecar now holds a declarative and a programmatic subscription for one topic.
+  `dapr_declarative_subscriptions = true` exists for exactly that case, but it defaults to `false`.
+  Whether Dapr merges the two or delivers twice needs checking against a real sidecar; it belongs on
+  the broker-test list.
 - New config keys all default to current behaviour.
+- `nats_queue_group` is new and defaults to `app_name`, so no deployment has to set it. It does
+  change broker-side behaviour for anyone already running more than one replica on Core NATS:
+  duplicate processing stops, which is the point. A deployment whose correctness depended on every
+  replica seeing every message would be affected, but that shape cannot be built on this framework
+  today -- there is no way to opt a subscription out of the queue group.
+- **`app_name` values containing whitespace are now rejected at startup.** `nats-py` raises
+  `BadSubjectError` for a queue name containing a space, so an `app_name` like `"My Agent Service"`
+  -- legal, and working, before subscriptions carried a queue group -- would have failed inside the
+  background retry task and retried forever behind a red readiness probe. `_resolve_queue_group`
+  checks for whitespace and raises at startup naming the key and the value, so the cause is visible.
+  Affected projects set `nats_queue_group` to a whitespace-free name. This is the one case where a
+  single-replica deployment that worked before does not start after the upgrade.
+- **Single-replica Core NATS behaviour is otherwise unchanged**: a group of one receives everything,
+  exactly as an ungrouped subscription did. The exception is an agent subscribing to overlapping
+  subjects (a wildcard plus a literal it covers), where the count of dispatches per message may drop
+  from two to one -- see the broker-test open point.
+- **Dapr is untouched by P1.** The queue group is a NATS concept; `DaprClient` has no equivalent, and
+  no Dapr code path reads the new key. Delivery under Dapr is unchanged by this change.
 
 The spec's one deliberate future break is `with_cache`'s `name` parameter (sec. 10.1), which must
 stay keyword-only and last, or an existing `with_cache(False)` would silently become a cache named
@@ -259,7 +355,10 @@ stay keyword-only and last, or an existing `with_cache(False)` would silently be
 
 ## Open points
 
-- **P1-P6 remain**, starting with P1 (queue groups) and P2 (the acknowledgement contract in code).
+- **P2-P6 remain**, starting with P2 (the acknowledgement contract in code).
+- **JetStream competing consumers are still open**, carried into P3: the shared durable needs a
+  deliver group set through `ConsumerConfig`/`subscribe_bind`, alongside `ack_wait` and
+  `max_ack_pending`. Core NATS -- the default path -- is fixed by P1.
 - **Local NATS and Dapr integration environment.** Everything above is covered by unit tests with
   mocked transports. Once the feature is implemented, stand both brokers up locally (compose file
   plus a CI job) and cover the behaviour that only a real broker exhibits: queue-group distribution
@@ -267,7 +366,13 @@ stay keyword-only and last, or an existing `with_cache(False)` would silently be
   reconnect, the shutdown drain acknowledging in-flight work, `filter_subjects` behaviour on a
   durable that already exists, and the Dapr sidecar actually fetching the discovery document and
   delivering to `/events/{topic}`. Depends on the unit/integration split in #80 being settled first,
-  since `tests/integration/` is currently not run by CI at all.
+  since `tests/integration/` is currently not run by CI at all. Add to that list: **what a queue
+  group does when one agent's subjects overlap** -- a wildcard plus a literal it covers, both in the
+  same group, both matching one message. `nats-server` is expected to merge subscriptions by queue
+  name across matching nodes and deliver once (to either callback, non-deterministically), which
+  would also end the double dispatch such a pair caused before P1. If it does not merge, the agent
+  receives the event twice and P2 acks both copies as ordinary work, so the answer changes what P2
+  has to handle.
 - **The two design questions in spec sec. 13** that change the shape rather than the parameters: 20
   or 100 agents, and whether the 4 GB host budget is real.
 - **#80** -- the failing example tests and the unenforced test split.

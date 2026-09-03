@@ -30,6 +30,7 @@ Settings for the event bus transport layer.
 | `nats_url` | `str` | `"nats://localhost:4222"` | NATS server URL. Only used when `event_bus = "nats"`. |
 | `dapr_pubsub_name` | `str` | `"pubsub"` | Dapr pub/sub component name, used when publishing and in the subscription document served at `GET /dapr/subscribe`. Only used when `event_bus = "dapr"`. |
 | `dapr_declarative_subscriptions` | `bool` | `false` | Set `true` when Dapr subscriptions are declared outside the application (Kubernetes `Subscription` resources or YAML). The discovery endpoint then serves an empty document, so the sidecar cannot subscribe twice. |
+| `nats_queue_group` | `str` | value of `app_name` | Queue group joined by every NATS subscription, so exactly one replica processes any given message. Identifies the agent, not the process: it must not contain a pod, container or replica name, or moving the agent between deployments would change which consumer it is. Startup fails if neither this key nor `app_name` yields a name. Only used when `event_bus = "nats"`. |
 | `event_client_max_retries` | `int` | `-1` | Number of reconnection attempts if the broker is unavailable at startup. `-1` retries indefinitely until the broker becomes reachable. `0` makes a single attempt and logs a permanent error on failure. |
 | `event_client_retry_delay` | `float` | `5.0` | Seconds to wait between reconnection attempts. |
 | `event_client_drain_timeout` | `float` | `30.0` | Seconds allowed at shutdown for in-flight message handlers to finish before the broker connection is closed. Bounds the whole shutdown sequence, so keep it below the pod's termination grace period. |
@@ -131,6 +132,7 @@ log_format = "text"
 # Event Bus
 event_bus = "nats"
 nats_url = "nats://localhost:4222"
+# nats_queue_group = "my_agent_service"  # defaults to app_name
 event_client_max_retries = -1   # retry indefinitely
 event_client_retry_delay = 5.0  # seconds between attempts
 event_client_drain_timeout = 30.0  # shutdown budget for in-flight handlers

@@ -15,6 +15,7 @@ _DAPR_CONFIG = {
 }
 
 _NATS_CONFIG = {
+    "app_name": "test-agent",
     "nats_url": "nats://localhost:4222",
     "nats_max_reconnect_attempts": 5,
     "nats_reconnect_time_wait": 2,

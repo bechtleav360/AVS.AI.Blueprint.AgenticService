@@ -421,6 +421,78 @@ class TestNATSClientManagedSubscriptions:
         assert nats_client.subscriptions_ready is False
 
 
+class TestNATSClientQueueGroup:
+    """P1 -- every Core NATS subscription joins a queue group (spec C1, sec. 7.1)."""
+
+    async def test_core_subscription_passes_queue_group(self, connected_nats_client: NATSClient, mock_nats_core: MagicMock) -> None:
+        connected_nats_client._queue_group = "test-agent"
+        await connected_nats_client._subscribe_one("topic.a", AsyncMock())
+        assert mock_nats_core.subscribe.await_args.kwargs["queue"] == "test-agent"
+
+    async def test_all_topics_share_one_queue_group(self, connected_nats_client: NATSClient, mock_nats_core: MagicMock) -> None:
+        connected_nats_client._queue_group = "test-agent"
+        await connected_nats_client._subscribe_one("topic.a", AsyncMock())
+        await connected_nats_client._subscribe_one("topic.b", AsyncMock())
+        queues = {call.kwargs["queue"] for call in mock_nats_core.subscribe.await_args_list}
+        assert queues == {"test-agent"}
+
+    async def test_subscribe_resolves_queue_group_from_app_name(self, nats_client: NATSClient) -> None:
+        with patch.object(nats_client, "_start_with_retry", new_callable=AsyncMock):
+            await nats_client.subscribe({"topic.a": AsyncMock()})
+        assert nats_client.queue_group == "test-agent"
+
+    async def test_explicit_queue_group_wins_over_app_name(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        mock_config.get.side_effect = lambda key, default=None: {"app_name": "test-agent", "nats_queue_group": "orders"}.get(key, default)
+        with patch.object(nats_client, "_start_with_retry", new_callable=AsyncMock):
+            await nats_client.subscribe({"topic.a": AsyncMock()})
+        assert nats_client.queue_group == "orders"
+
+    async def test_subscribe_raises_when_no_name_can_be_derived(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        mock_config.get.side_effect = lambda key, default=None: default
+        with pytest.raises(ValueError, match="queue group"):
+            await nats_client.subscribe({"topic.a": AsyncMock()})
+
+    async def test_subscribe_raises_when_configured_name_is_blank(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        """A blank name would reach NATS as no queue group at all -- silent fan-out."""
+        mock_config.get.side_effect = lambda key, default=None: {"app_name": "  ", "nats_queue_group": ""}.get(key, default)
+        with pytest.raises(ValueError, match="queue group"):
+            await nats_client.subscribe({"topic.a": AsyncMock()})
+
+    async def test_whitespace_in_name_raises_instead_of_reaching_nats(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        """nats-py rejects a queue name containing a space; an app_name like this was legal before P1."""
+        mock_config.get.side_effect = lambda key, default=None: {"app_name": "My Agent Service"}.get(key, default)
+        with pytest.raises(ValueError, match="whitespace"):
+            await nats_client.subscribe({"topic.a": AsyncMock()})
+
+    async def test_whitespace_error_names_the_key_and_value(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        mock_config.get.side_effect = lambda key, default=None: {"app_name": "My Agent Service"}.get(key, default)
+        with pytest.raises(ValueError, match="'My Agent Service'.*'app_name'"):
+            await nats_client.subscribe({"topic.a": AsyncMock()})
+
+    async def test_surrounding_whitespace_is_trimmed_not_rejected(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        mock_config.get.side_effect = lambda key, default=None: {"app_name": "  orders  "}.get(key, default)
+        with patch.object(nats_client, "_start_with_retry", new_callable=AsyncMock):
+            await nats_client.subscribe({"topic.a": AsyncMock()})
+        assert nats_client.queue_group == "orders"
+
+    async def test_dots_and_dashes_are_accepted(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        """Only whitespace is rejected -- NATS accepts these, and existing app_names use them."""
+        mock_config.get.side_effect = lambda key, default=None: {"app_name": "my-agent_service.v1"}.get(key, default)
+        with patch.object(nats_client, "_start_with_retry", new_callable=AsyncMock):
+            await nats_client.subscribe({"topic.a": AsyncMock()})
+        assert nats_client.queue_group == "my-agent_service.v1"
+
+    async def test_failed_resolution_starts_no_retry_task(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        """A config error must fail startup, not spin in the background retry loop forever."""
+        mock_config.get.side_effect = lambda key, default=None: default
+        with pytest.raises(ValueError):
+            await nats_client.subscribe({"topic.a": AsyncMock()})
+        assert nats_client._retry_task is None
+
+    async def test_queue_group_is_empty_before_subscribe(self, nats_client: NATSClient) -> None:
+        assert nats_client.queue_group == ""
+
+
 class TestNATSClientRetryLoop:
     async def test_success_on_first_attempt_sets_ready(self, nats_client: NATSClient) -> None:
         nats_client._subscriptions_managed = True

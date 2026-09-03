@@ -34,6 +34,22 @@ class NATSClient(IOClientBase):
     the ready flag.  On reconnect ``_on_reconnected`` re-subscribes (JetStream
     only — Core NATS re-subscribes automatically) and restores the flag.
 
+    Queue group
+    ~~~~~~~~~~~
+    Every Core NATS subscription joins a queue group, so exactly one replica
+    receives any given message.  The name is resolved once in ``subscribe()``
+    and is a pure function of the agent's own identity -- never of the pod,
+    container or replica it happens to run in.
+
+    One name covers every topic because a group is keyed by *(subject, queue
+    name)*: subscriptions sharing this name on different subjects are separate
+    groups, so unrelated event types never compete for the same delivery.  The
+    exception is a subject overlapping another of this client's own subjects
+    (a wildcard plus a literal it covers), where one message matches two of its
+    subscriptions -- the server is expected to merge them into one group and
+    deliver once, to either callback.  Unverified against a real broker; see the
+    feature changelog's broker-test open point.
+
     Config keys
     ~~~~~~~~~~~
     ``event_client_max_retries`` (int, default -1): retries after first failure;
@@ -50,6 +66,7 @@ class NATSClient(IOClientBase):
         self._use_jetstream: bool = False
         self._subscriptions: list[Any] = []
         self._topic_callbacks: dict[str, Callable[[CloudEvent[Any]], Awaitable[None]]] = {}
+        self._queue_group: str = ""
         self._subscriptions_ready: bool = False
         self._subscriptions_managed: bool = False
         self._retry_task: asyncio.Task[None] | None = None
@@ -67,6 +84,11 @@ class NATSClient(IOClientBase):
         return self._subscriptions_ready
 
     @property
+    def queue_group(self) -> str:
+        """Queue group joined by this client's subscriptions; ``""`` before ``subscribe()``."""
+        return self._queue_group
+
+    @property
     def inflight_handlers(self) -> int:
         """Number of message handlers currently executing."""
         return self._inflight
@@ -81,10 +103,48 @@ class NATSClient(IOClientBase):
         Returns immediately; connection and subscription happen in the background.
         """
         self._topic_callbacks = topic_callbacks
+        self._queue_group = self._resolve_queue_group()
         self._subscriptions_managed = True
         self._subscriptions_ready = False
         self._retry_task = asyncio.ensure_future(self._start_with_retry())
         self._retry_task.add_done_callback(self._on_retry_done)
+
+    def _resolve_queue_group(self) -> str:
+        """Return the queue group name, or raise if none can be derived.
+
+        The name identifies the *agent*, not the process that hosts it: moving an agent
+        into a different deployment group must not change which broker-side consumer it
+        is (spec C1). Today every component lives in the root namespace, so the name comes
+        from ``nats_queue_group`` and falls back to ``app_name``.
+
+        Resolved here rather than at subscription time so that a misconfiguration fails
+        the caller's startup instead of disappearing into the background retry loop, which
+        would retry a config error forever.
+
+        Raises:
+            ValueError: if neither key yields a non-empty name. NATS reads ``queue=""`` as
+                "no queue group", which is precisely the every-replica-processes-every-message
+                fan-out this exists to prevent, so there is no usable fallback.
+            ValueError: if the name contains whitespace. ``nats-py`` rejects such a queue
+                name with ``BadSubjectError``, and an ``app_name`` like ``"My Service"`` was
+                perfectly legal before subscriptions carried a queue group. Reported here,
+                naming the key and the value, rather than left to surface as a repeating
+                ``BadSubjectError`` inside the background retry task.
+        """
+        for key in ("nats_queue_group", "app_name"):
+            name = str(self.config.get(key, "") or "").strip()
+            if not name:
+                continue
+            if any(char.isspace() for char in name):
+                raise ValueError(
+                    f"Queue group name '{name}' (from '{key}') contains whitespace, which NATS does not accept. "
+                    "Set 'nats_queue_group' to a name without whitespace."
+                )
+            return name
+        raise ValueError(
+            "NATS subscriptions require a queue group: set 'nats_queue_group' or 'app_name'. "
+            "Without one every replica processes every message."
+        )
 
     # ------------------------------------------------------------------
     # Connection
@@ -340,16 +400,22 @@ class NATSClient(IOClientBase):
                     if "stream name already in use" not in str(e).lower():
                         logger.warning("Could not create stream: %s", str(e))
 
+                # No queue= here, deliberately. nats-py rejects a queue subscription whose
+                # durable name differs from the queue name, so passing the queue group next to
+                # a per-topic durable raises. A JetStream consumer shared across replicas needs
+                # its deliver group set on an explicitly created ConsumerConfig instead; that
+                # arrives with P3, which has to configure ack_wait and max_ack_pending on the
+                # same object. Until then JetStream stays single-subscriber.
                 sub = await client.jetstream().subscribe(
                     topic,
                     durable=durable_name,
                     manual_ack=True,
                     cb=message_handler,
                 )
-                logger.info("Subscribed to JetStream topic '%s'", topic)
+                logger.info("Subscribed to JetStream topic '%s' with durable '%s'", topic, durable_name)
             else:
-                sub = await client.subscribe(topic, cb=message_handler)
-                logger.info("Subscribed to Core NATS topic '%s'", topic)
+                sub = await client.subscribe(topic, queue=self._queue_group, cb=message_handler)
+                logger.info("Subscribed to Core NATS topic '%s' in queue group '%s'", topic, self._queue_group)
 
             self._subscriptions.append(sub)
 

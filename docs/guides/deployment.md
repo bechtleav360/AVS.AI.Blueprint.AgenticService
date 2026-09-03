@@ -5,9 +5,10 @@ This guide covers packaging, deploying, and operating Blueprint Agents applicati
 > **Running more than one replica is not safe in the current release.** Three defects make
 > horizontal scaling incorrect rather than merely inefficient:
 >
-> - **Every replica processes every message.** Core NATS subscriptions are created without a queue
->   group (`clients/io/nats_client.py`), and JetStream is off by default (`nats_use_jetstream`), so
->   two replicas silently double every side effect and every inference bill.
+> - **JetStream cannot yet spread load across replicas.** Core NATS subscriptions now join a queue
+>   group (`nats_queue_group`, default `app_name`), so on the default transport exactly one replica
+>   handles each message. JetStream consumers still have no deliver group, so a second replica fails
+>   to subscribe (`consumer is already bound to a subscription`) and stays out of service rotation.
 > - **JetStream messages are never acknowledged.** Subscriptions use `manual_ack=True` and no
 >   `msg.ack()` call exists anywhere, so every event redelivers until `max_deliver` — already
 >   true at a single replica.
@@ -16,8 +17,8 @@ This guide covers packaging, deploying, and operating Blueprint Agents applicati
 >
 > Until these are fixed, deploy one replica with `autoscaling.enabled: false`. The HPA example
 > below shows the chart's shape; it is not a recommendation. Required behaviour is specified in
-> `docs/specs/2026-08-28-multi-agent-grouping.md`, sec. 7.1, 7.2 and 7.5; the fixes are P1, P2 and
-> P5 in `docs/plans/2026-08-28-multi-agent-grouping.md`. This guide also assumes one Deployment
+> `docs/specs/2026-08-28-multi-agent-grouping.md`, sec. 7.1, 7.2 and 7.5; the remaining fixes are P2,
+> P3 and P5 in `docs/plans/2026-08-28-multi-agent-grouping.md`. This guide also assumes one Deployment
 > per agent, and will be rewritten when group-based deployment lands.
 
 ---
