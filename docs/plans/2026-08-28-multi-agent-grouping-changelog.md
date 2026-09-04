@@ -418,7 +418,7 @@ rather than faults, and the acceptance criterion carries the same conditions. A 
 implementation with the tracker, the warning and an accumulating set was replaced rather than
 committed.
 
-### P3 -- consumer tuning, deliver groups and dead letters
+### P3 -- consumer tuning, deliver groups and dead letters (`8ce9600`)
 
 Four settings, one object. `ack_wait`, `max_ack_pending`, `max_deliver` and the deliver group all
 live on `ConsumerConfig`, so the client stops letting `js.subscribe` invent a consumer and builds
