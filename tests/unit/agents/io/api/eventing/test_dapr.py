@@ -259,6 +259,73 @@ class TestDaprEventingUnparseableDelivery:
         assert response.json() == {"status": "SUCCESS"}
 
 
+class TestDaprEventingManualInjection:
+    """POST /events/{topic} is also the hand-injection path used when no broker is running.
+
+    The sidecar is one caller of this endpoint; `curl` is another. Nothing on the delivery
+    path touches the transport client, so an event posted by hand runs the same handler
+    chain a delivered one does. These tests exist to keep that true -- the endpoint is the
+    only way to exercise a handler without a broker, and every change to the delivery path
+    so far has been able to break it.
+    """
+
+    @staticmethod
+    def _app(dapr_eventing: DaprEventing) -> FastAPI:
+        app = FastAPI()
+        app.include_router(dapr_eventing.router)
+        return app
+
+    async def test_no_transport_client_is_needed(
+        self, dapr_eventing: DaprEventing, mock_registry: MagicMock, cloud_event: CloudEvent, processed_result: ProcessingResult
+    ) -> None:
+        """on_startup never ran, so there is no DaprClient -- and the endpoint does not want one."""
+        _wire_processing_result(mock_registry, processed_result)
+        assert dapr_eventing._client is None
+
+        async with AsyncClient(transport=ASGITransport(app=self._app(dapr_eventing)), base_url="http://local") as client:
+            response = await client.post("/events/orders.created", json=dict(cloud_event))
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "SUCCESS"}
+
+    async def test_the_posted_event_reaches_the_handler_chain(
+        self, dapr_eventing: DaprEventing, mock_registry: MagicMock, cloud_event: CloudEvent, processed_result: ProcessingResult
+    ) -> None:
+        _wire_processing_result(mock_registry, processed_result)
+
+        async with AsyncClient(transport=ASGITransport(app=self._app(dapr_eventing)), base_url="http://local") as client:
+            await client.post("/events/orders.created", json=dict(cloud_event))
+
+        dispatched = mock_registry.get_service.return_value.process_event.await_args.args[0]
+        assert dispatched.id == cloud_event.id
+        assert dispatched.type == cloud_event.type
+
+    async def test_the_topic_comes_from_the_url(
+        self, dapr_eventing: DaprEventing, mock_registry: MagicMock, cloud_event: CloudEvent, processed_result: ProcessingResult
+    ) -> None:
+        """So posting to a different path exercises a different subscription's handlers."""
+        _wire_processing_result(mock_registry, processed_result)
+
+        async with AsyncClient(transport=ASGITransport(app=self._app(dapr_eventing)), base_url="http://local") as client:
+            await client.post("/events/inventory.updated", json=dict(cloud_event))
+
+        context = mock_registry.get_service.return_value.process_event.await_args.args[1]
+        assert context["dapr_topic"] == "inventory.updated"
+
+    async def test_a_handler_failure_is_reported_back_to_the_caller(
+        self, dapr_eventing: DaprEventing, mock_registry: MagicMock, cloud_event: CloudEvent
+    ) -> None:
+        """Injecting by hand is only useful if the response says what the handler did."""
+        mock_registry.get_service.return_value.process_event = AsyncMock(side_effect=InvalidEventError(status="error", reason="no payload"))
+        mock_registry.correlation_context.set.return_value = MagicMock()
+
+        async with AsyncClient(transport=ASGITransport(app=self._app(dapr_eventing)), base_url="http://local") as client:
+            response = await client.post("/events/orders.created", json=dict(cloud_event))
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "DROP", "reason": "no payload"}
+
+
 class TestRestApiBaseRouteClass:
     """The route wrapper must stay scoped to the component that asks for it."""
 

@@ -62,6 +62,15 @@ Code:
   of answering 422; both transports now render one shared decision (`ce17f87`)
 - **P2 -- unhandled events are counted, not flagged**: `blueprint.events.unhandled` per
   (namespace, topic), read as a ratio; finding no work in an event is normal behaviour
+- **P3 -- consumer tuning**: `ack_wait`, `max_ack_pending` and `max_deliver` are configurable and
+  are enforced by the broker, on a `ConsumerConfig` the client creates itself
+- **P3 -- JetStream shares load**: the durable carries a deliver group, so JetStream stops being
+  single-subscriber; this was P1's other half
+- **P3 -- dead letters**: a message the framework gives up on is republished, payload unchanged,
+  to `<queue group>.dead-letter` before it is termed
+- **P3 -- three defects found on the way**: the stream never covered the subject its consumer
+  filtered on, only the first topic was ever added to it, and the derived durable name was illegal
+  for any dotted subject
 
 Documentation and process:
 
@@ -409,6 +418,76 @@ rather than faults, and the acceptance criterion carries the same conditions. A 
 implementation with the tracker, the warning and an accumulating set was replaced rather than
 committed.
 
+### P3 -- consumer tuning, deliver groups and dead letters
+
+Four settings, one object. `ack_wait`, `max_ack_pending`, `max_deliver` and the deliver group all
+live on `ConsumerConfig`, so the client stops letting `js.subscribe` invent a consumer and builds
+one itself: `_ensure_consumer` creates the durable through `add_consumer` and `_subscribe_one` binds
+to it with `subscribe_bind`. That is the only route by which P1's queue group can reach JetStream --
+`nats-py` refuses a queue subscription whose durable name differs from the queue name, and the
+durable is per topic while the queue group is per agent -- so **JetStream stops being
+single-subscriber**, which was the half of P1 that had to wait.
+
+New keys, all defaulting to working behaviour: `nats_ack_wait` (300 s), `nats_max_ack_pending` (16),
+`nats_max_deliver` (5), `nats_dead_letter_subject` (`<queue group>.dead-letter`). They are resolved
+and validated in `subscribe()` alongside the queue group, for the same reason: a config error must
+fail the caller's startup rather than repeat forever inside the background retry task.
+
+**Two defaults are opinions, and the reasoning is worth keeping.** `ack_wait` is 300 s against a
+NATS default of 30 s, because handlers here call models and a redelivery mid-inference costs the
+work twice. `max_ack_pending` is 16 rather than the NATS default of 1000, because a `nats-py` push
+subscription runs its callbacks one at a time: everything the broker pushes beyond what is actually
+being processed sits in the client's queue with its `ack_wait` already running down. A large window
+does not buy throughput here, it manufactures expiries.
+
+**Dead letters.** `_settle` gained one branch: a nak on the last delivery `max_deliver` permits is
+turned into a dead letter plus a term. Naking there is a lie -- the broker will not redeliver it --
+and it differs from a term only in that the message leaves the consumer with no trace of why, one
+`ack_wait` later than it needed to. `_dead_letter` republishes the **original bytes**, unchanged, so
+a payload that never parsed as a CloudEvent survives; what went wrong travels in
+`Blueprint-Dead-Letter-Reason`, `-Original-Subject`, `-Delivery-Count` and `-Event-Id` headers, where
+it cannot corrupt a body some dead-letter consumer will try to read. Terminal failures --
+`InvalidEventError`, `CriticalHandlerError`, an unparseable payload -- take the same path. Setting
+the subject to `""` disables it, and then each drop is logged as a lost payload rather than passing
+silently.
+
+The dead-letter subject is derived from the queue group, so it follows the agent's identity exactly
+as C1 requires, and it is validated at startup: a wildcard is rejected because it is published to,
+and a subject the same client subscribes to is rejected because dead-lettering onto a consumed
+subject turns one failure into an unbounded loop -- the kind that only shows up under load.
+
+**Three defects surfaced while building it**, none visible from P3's description, all of which
+blocked explicit consumer creation:
+
+1. **The stream never covered the subject its consumer filtered on.** `add_stream` was called with
+   `subjects=[f"{topic}.>"]`, which does not match `topic` itself. `js.subscribe` had been papering
+   over it by letting the server pick; an explicitly created consumer filtering `orders.created` is
+   simply rejected by a stream that only captures `orders.created.>`.
+2. **Only the first topic was ever added to the stream.** `add_stream` ran once per topic with the
+   same stream name; every call after the first answered "stream name already in use" and was logged
+   as a warning, leaving the remaining topics uncaptured. Provisioning now happens once per connect,
+   in `_provision_stream`, with the union of every subscribed subject plus the dead-letter subject,
+   and widens an existing stream additively rather than replacing it.
+3. **The derived durable name was illegal for any dotted subject.** NATS allows no `.`, `*`, `>` or
+   whitespace in a consumer name, so `f"{topic}-durable"` could not work for `orders.created` -- that
+   is, for essentially every idiomatic NATS subject. `_durable_for` replaces those characters, and
+   `_resolve_durables` rejects at startup both the collision that substitution can create and
+   `nats_durable_name` set while several topics are subscribed, since one durable filters one
+   subject.
+
+**An existing consumer is never rewritten.** `_ensure_consumer` reads `consumer_info` first and, when
+the durable already exists, binds to the server's config and logs which settings differ. A durable's
+filter subject and deliver group are broker-side state that the stream's pending and redelivery
+bookkeeping hangs off; rewriting one in place either replays messages it already handled or skips
+ones it never saw. The spec already called consumer reconfiguration a migration, and this is that
+rule in code -- a rolling restart must not perform one silently. The practical consequence is that
+an existing deployment upgrading into this change keeps its old consumer, without a deliver group,
+until someone deletes it deliberately; the warning names exactly which settings are not in force.
+
+The deliver subject is derived from the durable name rather than taken from a fresh inbox, because
+every replica has to bind to the same one -- two replicas generating random inboxes would define two
+consumers, which is the fan-out P1 removed.
+
 ### Deployment guide corrected (`2d80b63`)
 
 The guide recommended `replicaCount: 2`, an HPA, and `--set replicaCount=3` as ordinary scaling. It
@@ -483,6 +562,30 @@ No breaking change has landed. Specifically:
   from two to one -- see the broker-test open point.
 - **Dapr is untouched by P1.** The queue group is a NATS concept; `DaprClient` has no equivalent, and
   no Dapr code path reads the new key. Delivery under Dapr is unchanged by this change.
+- **Dapr is untouched by P3 as well.** Consumer tuning, deliver groups and dead-lettering are
+  JetStream concepts; under Dapr the sidecar owns retries and its own dead-letter topic, configured
+  on the Dapr component rather than here. No Dapr code path reads the new keys.
+- **Core NATS is untouched by P3.** The new keys are read only when `nats_use_jetstream = true`, and
+  `_settle` still returns immediately on Core NATS, where there is nothing to acknowledge.
+- **A JetStream deployment that already has a durable consumer keeps it, unchanged.** The client
+  binds to what the broker has and logs the difference. Until that consumer is deleted, the new
+  `ack_wait`, `max_ack_pending`, `max_deliver` and -- importantly -- the deliver group are not in
+  force, so such a deployment is still single-subscriber. This is deliberate: recreating a durable
+  replays or gaps.
+- **The JetStream stream may gain subjects on startup.** An existing stream is widened to cover each
+  subscribed subject and the dead-letter subject. Widening is additive and never removes a subject,
+  but it is a write against a resource an operator may consider theirs. A stream the application
+  cannot update is reported as an error naming the missing subjects, and the consumer bind then
+  fails visibly rather than silently consuming nothing.
+- **`nats_durable_name` set together with more than one subscribed topic now fails at startup.** It
+  could not have worked: a durable filters one subject, so the second consumer would have been
+  rejected by the broker. The error names both topics.
+- **Durable names change for dotted topics** -- `orders.created` now yields `orders_created-durable`
+  rather than the illegal `orders.created-durable`. No migration is possible or needed, because a
+  consumer under the old name could never have been created.
+- **JetStream now publishes to a second subject.** With dead-lettering enabled, which is the default,
+  the client publishes to `<queue group>.dead-letter`. A deployment whose broker permissions allow
+  publishing only to specific subjects has to grant that one, or set `nats_dead_letter_subject = ""`.
 
 The spec's one deliberate future break is `with_cache`'s `name` parameter (sec. 10.1), which must
 stay keyword-only and last, or an existing `with_cache(False)` would silently become a cache named
@@ -492,10 +595,14 @@ stay keyword-only and last, or an existing `with_cache(False)` would silently be
 
 ## Open points
 
-- **P2-P6 remain**, starting with P2 (the acknowledgement contract in code).
-- **JetStream competing consumers are still open**, carried into P3: the shared durable needs a
-  deliver group set through `ConsumerConfig`/`subscribe_bind`, alongside `ack_wait` and
-  `max_ack_pending`. Core NATS -- the default path -- is fixed by P1.
+- **P4-P6 remain**, starting with P4 (opt-in idempotency). P0-P3 have all landed.
+- **The dead-letter subject has no consumer.** Messages accumulate on it and are subject to the
+  stream's retention, so a deployment that never reads it will silently lose dead letters when the
+  stream ages them out. Draining it is an operational task the framework does not do, and no
+  guidance for it is written yet.
+- **Nothing observes dead-lettering.** It is logged, but there is no counter, so "how many messages
+  did we give up on today" cannot be answered from metrics. It belongs with the telemetry work in
+  phase 9, next to `blueprint.events.unhandled`.
 - **Local NATS and Dapr integration environment.** Everything above is covered by unit tests with
   mocked transports. Once the feature is implemented, stand both brokers up locally (compose file
   plus a CI job) and cover the behaviour that only a real broker exhibits: queue-group distribution
@@ -503,7 +610,12 @@ stay keyword-only and last, or an existing `with_cache(False)` would silently be
   reconnect, the shutdown drain acknowledging in-flight work, `filter_subjects` behaviour on a
   durable that already exists, and the Dapr sidecar actually fetching the discovery document and
   delivering to `/events/{topic}`. Depends on the unit/integration split in #80 being settled first,
-  since `tests/integration/` is currently not run by CI at all. Add to that list: **what a queue
+  since `tests/integration/` is currently not run by CI at all. P3 adds several items that only a
+  real broker can settle: whether `subscribe_bind` against a shared durable actually distributes
+  across replicas, whether widening a live stream's subjects behaves as expected, what the server
+  does with an `add_consumer` whose config differs from an existing durable, and whether the
+  delivery count read from `msg.metadata.num_delivered` lines up with `max_deliver` the way the
+  dead-letter trigger assumes. Add to that list: **what a queue
   group does when one agent's subjects overlap** -- a wildcard plus a literal it covers, both in the
   same group, both matching one message. `nats-server` is expected to merge subscriptions by queue
   name across matching nodes and deliver once (to either callback, non-deterministically), which

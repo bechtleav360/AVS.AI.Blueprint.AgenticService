@@ -2,23 +2,26 @@
 
 This guide covers packaging, deploying, and operating Blueprint Agents applications in production environments using Docker, Kubernetes, and Helm.
 
-> **Running more than one replica is not safe in the current release.** Three defects make
-> horizontal scaling incorrect rather than merely inefficient:
+> **Running more than one replica is not safe in the current release.** Message distribution is
+> now correct on both NATS paths -- Core NATS subscriptions join a queue group (`nats_queue_group`,
+> default `app_name`), JetStream consumers are durable and share a deliver group, and every
+> delivery is acknowledged, redelivered or dead-lettered explicitly. Two problems remain:
 >
-> - **JetStream cannot yet spread load across replicas.** Core NATS subscriptions now join a queue
->   group (`nats_queue_group`, default `app_name`), so on the default transport exactly one replica
->   handles each message. JetStream consumers still have no deliver group, so a second replica fails
->   to subscribe (`consumer is already bound to a subscription`) and stays out of service rotation.
-> - **JetStream messages are never acknowledged.** Subscriptions use `manual_ack=True` and no
->   `msg.ack()` call exists anywhere, so every event redelivers until `max_deliver` — already
->   true at a single replica.
 > - **Every replica runs its own scheduler.** `SchedulerBase` starts an `AsyncIOScheduler` per
 >   process with no leader election, so each cron tick fires once per replica.
+> - **Duplicate delivery is not handled.** Competing consumers make at-least-once permanent, and a
+>   handler that finishes its work and then fails to acknowledge -- a connection blip, a pod killed
+>   mid-handler -- has already committed its side effects when the message is redelivered. The
+>   framework offers no deduplication yet, so a handler that is not naturally idempotent will repeat
+>   itself.
 >
-> Until these are fixed, deploy one replica with `autoscaling.enabled: false`. The HPA example
+> The delivery behaviour above is covered by unit tests against mocked transports, and has not yet
+> been exercised against a real broker.
+>
+> Until these are addressed, deploy one replica with `autoscaling.enabled: false`. The HPA example
 > below shows the chart's shape; it is not a recommendation. Required behaviour is specified in
-> `docs/specs/2026-08-28-multi-agent-grouping.md`, sec. 7.1, 7.2 and 7.5; the remaining fixes are P2,
-> P3 and P5 in `docs/plans/2026-08-28-multi-agent-grouping.md`. This guide also assumes one Deployment
+> `docs/specs/2026-08-28-multi-agent-grouping.md`, sec. 7.4 and 7.5; the remaining fixes are P4 and
+> P5 in `docs/plans/2026-08-28-multi-agent-grouping.md`. This guide also assumes one Deployment
 > per agent, and will be rewritten when group-based deployment lands.
 
 ---

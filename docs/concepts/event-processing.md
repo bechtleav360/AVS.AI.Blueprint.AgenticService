@@ -234,6 +234,40 @@ default_pubsub_name = "default"
 "document.summarized" = "documents.processed"
 ```
 
+### JetStream delivery
+
+With `nats_use_jetstream = true` the framework creates one **durable consumer per topic** on the
+configured stream and binds every replica to it through the agent's queue group, so exactly one
+replica handles each message. What happens to a delivery is decided at the transport edge:
+
+| Outcome | Disposition |
+|---------|-------------|
+| The handler chain returned, including "no handler matched" | `ack` |
+| `RetryableHandlerError`, or any unexpected exception | `nak` -- redelivered after `nats_ack_wait` |
+| `InvalidEventError` or `CriticalHandlerError` | dead-lettered, then `term` |
+| The payload is not a parseable CloudEvent | dead-lettered, then `term` |
+| The last delivery `nats_max_deliver` allows failed again | dead-lettered, then `term` |
+
+Dead-lettering republishes the **original bytes**, unchanged, to `nats_dead_letter_subject`, with
+the reason, the original subject, the delivery count and the event id in headers. The subject is
+added to the stream when the framework provisions it, so dead letters are persisted rather than
+dropped on the floor, and consuming them is an ordinary subscription.
+
+Two settings interact and are worth choosing together:
+
+- **`nats_ack_wait` must exceed your slowest handler.** It is the broker's patience, not the
+  client's: when it expires the message is redelivered to another replica while the first one is
+  still working, so a model call that occasionally takes four minutes needs an `ack_wait` above
+  four minutes, not the NATS default of thirty seconds.
+- **`nats_max_ack_pending` should stay close to the replica count.** A push subscription processes
+  its callbacks one at a time, so anything larger parks messages in the client's queue -- where
+  their `ack_wait` is already counting down, unhandled.
+
+An existing consumer is never rewritten. Its filter subject and deliver group are broker-side
+state that the stream's redelivery bookkeeping hangs off, so changing them is a migration: the
+client logs which settings differ and keeps consuming with the ones the broker already has. Apply
+new values by deleting the consumer during a maintenance window.
+
 ## Broker Startup Resilience
 
 By default the framework does not require the broker to be reachable when the service starts. The broker connection and topic subscriptions are established in a background task so the application enters a live state immediately, even if the NATS server or Dapr sidecar is temporarily unavailable.

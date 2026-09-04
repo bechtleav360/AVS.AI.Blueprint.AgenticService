@@ -50,6 +50,31 @@ class TestNatsEventingPublish:
 # ---------------------------------------------------------------------------
 
 
+class TestNatsEventingPublishIsNotInjection:
+    """On the NATS transport POST /events/{topic} publishes; it does not inject.
+
+    Worth pinning down, because the same path on DaprEventing dispatches straight into the
+    handler chain. Here the event goes to the broker and comes back through a subscription,
+    so this endpoint needs a reachable NATS server -- it is not the no-broker escape hatch
+    the Dapr one is.
+    """
+
+    async def test_the_event_goes_to_the_broker(self, connected_nats_eventing: NatsEventing, cloud_event: CloudEvent) -> None:
+        await connected_nats_eventing.publish("orders.created", cloud_event)
+        connected_nats_eventing._client.publish.assert_awaited_once_with("orders.created", cloud_event)
+
+    async def test_the_handler_chain_is_not_called_directly(
+        self, connected_nats_eventing: NatsEventing, mock_registry: MagicMock, cloud_event: CloudEvent
+    ) -> None:
+        await connected_nats_eventing.publish("orders.created", cloud_event)
+        mock_registry.get_service.assert_not_called()
+
+    async def test_without_a_client_it_says_so(self, nats_eventing: NatsEventing, cloud_event: CloudEvent) -> None:
+        """A publish before on_startup has no broker connection to use."""
+        with pytest.raises(RuntimeError, match="not initialized"):
+            await nats_eventing.publish("orders.created", cloud_event)
+
+
 class TestNatsEventingOnStartup:
     async def test_fetches_nats_client_from_registry(
         self, nats_eventing: NatsEventing, mock_registry: MagicMock, mock_config: MagicMock

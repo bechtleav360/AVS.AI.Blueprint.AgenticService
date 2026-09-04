@@ -3,6 +3,7 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from nats.js.errors import NotFoundError
 
 from blueprint.agents.clients.io.dapr_client import DaprClient
 from blueprint.agents.clients.io.nats_client import NATSClient
@@ -89,11 +90,21 @@ def mock_nats_core() -> MagicMock:
 
 @pytest.fixture
 def mock_nats_jetstream() -> tuple[MagicMock, MagicMock]:
-    """Return a (nats_client_mock, jetstream_mock) pair with JetStream enabled."""
+    """Return a (nats_client_mock, jetstream_mock) pair with JetStream enabled.
+
+    Neither the stream nor the consumer exists by default: ``stream_info`` and
+    ``consumer_info`` raise ``NotFoundError``, which is what the broker answers for an
+    unprovisioned name, so the create path is what a test exercises unless it says otherwise.
+    """
     mock_js = MagicMock()
     mock_js.subscribe = AsyncMock(return_value=MagicMock(unsubscribe=AsyncMock()))
+    mock_js.subscribe_bind = AsyncMock(return_value=MagicMock(unsubscribe=AsyncMock(), drain=AsyncMock()))
     mock_js.publish = AsyncMock(return_value=MagicMock(seq=1))
     mock_js.add_stream = AsyncMock()
+    mock_js.stream_info = AsyncMock(side_effect=NotFoundError())
+    mock_js.update_stream = AsyncMock()
+    mock_js.add_consumer = AsyncMock()
+    mock_js.consumer_info = AsyncMock(side_effect=NotFoundError())
 
     mock_nc = MagicMock()
     mock_nc.is_closed = False

@@ -133,20 +133,28 @@ Work items:
 - Configure `max_deliver` and a dead-letter destination (with P3), since nak on an unexpected
   exception otherwise redelivers forever.
 
-**P3 — Consumer tuning is not configurable.** Expose `ack_wait` (must exceed p99 handler
-duration, or long LLM work is redelivered to another replica mid-flight) and `max_ack_pending`
-(the real cross-replica concurrency cap).
+~~**P3 — Consumer tuning is not configurable.**~~ **Done.** `ack_wait`, `max_ack_pending`,
+`max_deliver` and a dead-letter subject are configurable and are set on an explicitly constructed
+`ConsumerConfig`, which the client creates through `add_consumer` and binds with `subscribe_bind`.
+The two items deferred into P3 landed with it:
 
-Two items were deferred into P3 deliberately, because all four settings belong to the same
-explicitly constructed `ConsumerConfig`, and building it once is one change instead of three:
-
-- **`max_deliver` and a dead-letter destination** (from P2). Without them the nak P2 gives an
-  unexpected exception redelivers forever.
+- **`max_deliver` and a dead-letter destination** (from P2). The nak on the last delivery the
+  broker permits is now rendered as a dead letter plus a term, so a message the framework gives up
+  on keeps its payload instead of expiring silently out of the consumer.
 - **A deliver group on the JetStream durable** (from P1). `nats-py` rejects a queue subscription
-  whose durable name differs from the queue name, so P1's queue group could not be passed to
-  `js.subscribe`; a durable shared across replicas needs `deliver_group` set on the config and
-  bound with `subscribe_bind`. Until then JetStream is single-subscriber, and a second replica
-  fails to subscribe rather than double-processing.
+  whose durable name differs from the queue name, so the queue group could not reach `js.subscribe`;
+  it is now `deliver_group` on the consumer config, bound with `subscribe_bind`, and JetStream is no
+  longer single-subscriber.
+
+Three defects had to be fixed to get there, none of them visible from the P3 description:
+
+- The stream was created per topic as `f"{topic}.>"`, which does not cover `topic` itself, so an
+  explicitly created consumer filtering that subject could not be bound at all. Provisioning now
+  happens once per connect with the union of every subscribed subject plus the dead-letter subject.
+- Every `add_stream` call after the first hit "stream name already in use" and was logged as a
+  warning, so with more than one topic only the first was ever captured by the stream.
+- The derived durable name `f"{topic}-durable"` is illegal for any dotted subject -- NATS allows no
+  `.`, `*`, `>` or whitespace in a consumer name -- which is every idiomatic NATS subject.
 
 **P4 — Idempotency, flagged not enforced.** Competing consumers make at-least-once permanent, and
 ack loss makes duplicate delivery *certain* rather than possible: a handler that finishes 60s of
@@ -829,7 +837,7 @@ hidden by API design — so they must be caught mechanically rather than documen
 | `io/api/eventing/cloud_event_processor_mixin.py` | 5 |
 | `io/api/eventing/event_handling_base.py` | P2 (ack parity in `handle_event`), 5 |
 | `clients/client_base.py` | P0 (`subscribe(topic_callbacks)` abstract) |
-| `clients/io/nats_client.py` | P0 (managed subscribe, retry, reconnect, drain), P1-P3 (queue group, ack/nak/term, consumer tuning), 5 (durable naming) |
+| `clients/io/nats_client.py` | P0 (managed subscribe, retry, reconnect, drain), P1-P3 (queue group, ack/nak/term, consumer tuning, dead letters) -- **done**; 5 (durable naming) |
 | `clients/io/dapr_client.py` | P0 (same lifecycle, mirrored) |
 | `io/api/eventing/dapr.py` | P2 (ack parity: `NO_HANDLER_FOUND` → SUCCESS, `CriticalHandlerError` → DROP) |
 | `handler/event_handler_base.py` | 7 |

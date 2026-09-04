@@ -34,6 +34,13 @@ Settings for the event bus transport layer.
 | `event_client_max_retries` | `int` | `-1` | Number of reconnection attempts if the broker is unavailable at startup. `-1` retries indefinitely until the broker becomes reachable. `0` makes a single attempt and logs a permanent error on failure. |
 | `event_client_retry_delay` | `float` | `5.0` | Seconds to wait between reconnection attempts. |
 | `event_client_drain_timeout` | `float` | `30.0` | Seconds allowed at shutdown for in-flight message handlers to finish before the broker connection is closed. Bounds the whole shutdown sequence, so keep it below the pod's termination grace period. |
+| `nats_use_jetstream` | `bool` | `false` | Consume through a durable JetStream consumer instead of Core NATS. The keys below apply only when this is `true`. |
+| `nats_stream_name` | `str` | `"EVENTS"` | Stream the durable consumers are created on. The framework creates it if it is missing, and widens an existing one to cover every subscribed subject plus the dead-letter subject; it never removes a subject. |
+| `nats_durable_name` | `str` | `"<topic>-durable"` | Name of the durable consumer. Derived from the topic by default, with `.`, `*`, `>` and whitespace replaced by `_` because NATS rejects them in a consumer name. Setting it explicitly is only valid with a single subscribed topic: a durable filters one subject. |
+| `nats_ack_wait` | `float` | `300.0` | Seconds the broker waits for an acknowledgement before redelivering. **Must exceed the p99 duration of your slowest handler**, or long inference is redelivered to another replica while the first is still working. The default is deliberately far above the NATS default of 30 s because handlers in this framework call models. |
+| `nats_max_ack_pending` | `int` | `16` | Unacknowledged messages the consumer may have outstanding at once, counted across every replica sharing it. `-1` is unlimited. Keep it close to the number of replicas: a push subscription runs its callbacks one at a time, so anything much larger queues messages inside the client while their `nats_ack_wait` is already running down. |
+| `nats_max_deliver` | `int` | `5` | Delivery attempts before the message is dead-lettered. `-1` is unlimited, which means a permanently failing message is retried forever and never dead-lettered; the client logs a warning at startup if you set it. |
+| `nats_dead_letter_subject` | `str` | `"<nats_queue_group>.dead-letter"` | Subject a message is republished to when the framework gives up on it -- either a terminal failure (`InvalidEventError`, `CriticalHandlerError`, or a payload that is not a CloudEvent) or `nats_max_deliver` attempts spent. The original bytes are republished unchanged, with `Blueprint-Dead-Letter-Reason`, `Blueprint-Original-Subject`, `Blueprint-Delivery-Count` and `Blueprint-Event-Id` headers. Set to `""` to disable, which drops those messages and loses their payloads. Startup fails if the subject is a wildcard or is itself one of the subscribed subjects, since that would loop. |
 
 ---
 
@@ -136,6 +143,14 @@ nats_url = "nats://localhost:4222"
 event_client_max_retries = -1   # retry indefinitely
 event_client_retry_delay = 5.0  # seconds between attempts
 event_client_drain_timeout = 30.0  # shutdown budget for in-flight handlers
+
+# JetStream consumer (only when nats_use_jetstream = true)
+nats_use_jetstream = false
+nats_stream_name = "EVENTS"
+nats_ack_wait = 300.0        # must exceed the p99 handler duration
+nats_max_ack_pending = 16    # outstanding messages across all replicas
+nats_max_deliver = 5         # attempts before the message is dead-lettered
+# nats_dead_letter_subject = "my_agent_service.dead-letter"  # defaults to <queue group>.dead-letter
 
 # Prompts
 prompt_directory = "prompts"

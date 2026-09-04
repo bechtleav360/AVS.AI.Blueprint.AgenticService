@@ -259,8 +259,10 @@ changing them triggers a rolling update on their own.
 | `readiness_policy` | `"all"` | See C3. |
 | `executor_workers` | `os.cpu_count() + 4` | Per-namespace thread pool size. Bounded per #36. |
 | `nats_queue_group` | `app_name` | Queue group for the root namespace only. |
-| `nats_ack_wait` | -- | **MUST** exceed p99 handler duration. See sec. 7.3. |
-| `nats_max_ack_pending` | -- | Per-consumer, shared across replicas. |
+| `nats_ack_wait` | `300.0` | Seconds. **MUST** exceed p99 handler duration. See sec. 7.3. |
+| `nats_max_ack_pending` | `16` | Per-consumer, shared across replicas. `-1` unlimited. A push subscription dispatches its callbacks serially, so a value far above the replica count queues messages client-side while their `ack_wait` runs. |
+| `nats_max_deliver` | `5` | Attempts before the message is dead-lettered. `-1` unlimited, and then nothing is ever dead-lettered. |
+| `nats_dead_letter_subject` | `<queue group>.dead-letter` | Where a message the framework gives up on is republished. Derived from the agent's identity, as the queue group is (C1). `""` disables it and loses those payloads. **MUST NOT** be a wildcard or a subject the same namespace consumes. |
 | `idempotency_enabled` | `false` | Opt-in dedup. See sec. 7.4. |
 | `idempotency_ttl` | -- | Dedup window. |
 | `scheduler_mode` | `"event"` | `"event"` or `"in_process"`. See sec. 7.5. |
@@ -392,6 +394,13 @@ places today: `NO_HANDLER_FOUND` as above, and `CriticalHandlerError`, which `da
 
 `max_deliver` and a dead-letter destination **MUST** be configured, because nak on an unexpected
 exception otherwise redelivers indefinitely.
+
+The nak on the last delivery `max_deliver` permits **MUST** be rendered as a dead letter followed
+by a term, not as a nak. The broker will not redeliver it, so a nak there differs from a term only
+in that the message leaves the consumer without a trace of why, and one `ack_wait` later than it
+had to. A dead letter **MUST** carry the original payload bytes unchanged -- a payload that failed
+to parse is the one most worth keeping -- with the reason, origin subject, delivery count and event
+id in headers rather than in the body.
 
 Implementations **SHOULD** capture the ack reply subject and retry the ack after a reconnect,
 which narrows the duplicate window from "certain on any blip" to "only if the pod also dies".
