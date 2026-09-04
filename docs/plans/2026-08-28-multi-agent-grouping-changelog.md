@@ -71,13 +71,21 @@ Code:
 - **P3 -- three defects found on the way**: the stream never covered the subject its consumer
   filtered on, only the first topic was ever added to it, and the derived durable name was illegal
   for any dotted subject
+- **P4 -- opt-in deduplication**: the handler chain skips an event whose id and source it has
+  already dispatched, keyed in the cache with a required TTL. Off by default, and a failed
+  dispatch releases its claim so the nak's redelivery still runs
+- **P4 -- the author is made to decide**: a `DECIDE:` comment in the scaffolded handler, both
+  keys in the generated `settings.toml` and `CLAUDE.md`, and an `asbs validate` notice when a
+  project has handlers and has declared neither
+- **P4 -- duplicates are counted apart from unmatched events**: `blueprint.events.duplicate`,
+  so a redelivery storm does not read as a namespace subscribed too broadly
 
 Documentation and process:
 
 - Deployment guide now warns that multi-replica is unsafe, and its examples default to one replica
   (`2d80b63`)
 - New config keys documented: `event_client_drain_timeout`, `dapr_pubsub_name`,
-  `dapr_declarative_subscriptions`
+  `dapr_declarative_subscriptions`, `idempotency_enabled`, `idempotency_ttl`
 - Feature working rules in `CLAUDE.md`: one reviewable change at a time (`4cf2d51`), and a
   walkthrough whenever real code is written (`7735251`)
 
@@ -488,6 +496,129 @@ The deliver subject is derived from the durable name rather than taken from a fr
 every replica has to bind to the same one -- two replicas generating random inboxes would define two
 consumers, which is the fan-out P1 removed.
 
+### P4 -- opt-in deduplication, and the decision forced on the author
+
+At-least-once delivery is permanent (spec sec. 7.4). P2 and P3 made acknowledgement correct, which
+narrows redelivery to the cases where it is unavoidable -- a lost ack, a pod restart, a rolling
+deploy -- but does not remove them: a handler that finishes 60 s of inference and then cannot ack
+has already committed its side effects, and the broker sends the event again. Whether replaying
+those side effects is *correct* is a property of the product, not of the framework, so P4 provides
+the mechanism and refuses to make the choice.
+
+**The chain claims before it dispatches.** `HandlerChain.process` no longer runs the handler loop
+directly; it calls `_claim`, and only then `_dispatch` (the loop, moved verbatim). `_claim` returns
+whether to dispatch: with dedup off it always returns `True`, and with dedup on it asks the cache
+whether a marker for this event exists, writes one with the configured TTL if it does not, and
+returns `False` if it does. A `False` makes `process` set `DUPLICATE_CONTEXT_KEY` in the context,
+stamp `event.duplicate` on the span, and return `None` without touching a handler.
+
+**A failed dispatch releases the claim.** This is the part that is easy to leave out and expensive
+to leave out:
+
+```python
+try:
+    return await self._dispatch(event, context)
+except Exception:
+    self._release(event, policy)
+    raise
+```
+
+The claim has to be taken *before* dispatch -- that is the only point at which it can stop a
+concurrent duplicate -- which means a dispatch that raises has left a marker behind for an event
+that was never processed. The exception it re-raises is what P2 turns into a nak, and the broker
+sends the same event back. Without `_release`, that redelivery is swallowed as a duplicate, and so
+is the next one, until `max_deliver` is exhausted and the message is dead-lettered having never
+reached a handler. The test that pins this asserts the handler is entered on both attempts.
+
+**The key carries the source as well as the id.** `_idempotency_key` returns
+`{"id": ..., "source": ...}`. The spec says "keyed on the CloudEvent `id`", but the CloudEvents
+specification requires an id to be unique only *within* a source, so two producers may both legally
+emit id `"1"` and keying on the id alone would let one publisher's event suppress another's. It is
+sent as a dict because the cache sorts a dict by key before hashing it, which a two-element list --
+which the cache sorts by *value* -- would not preserve. An event missing either field is dispatched
+untracked with a warning rather than dropped.
+
+**`idempotency_ttl` is required, and deliberately has no default.** `_resolve_idempotency_policy`
+raises at startup if dedup is enabled without it. The window has to outlast the redelivery window it
+exists to cover -- `nats_ack_wait * nats_max_deliver` under JetStream, whatever the component's
+retry policy says under Dapr -- and neither number is one the dispatch layer can read without
+reaching into a transport it must not know about. A default here would ship a dedup window that
+silently expires before the last redelivery arrives, which presents exactly like dedup not working
+at all. So enabling dedup is two keys, and the second one is the decision spec sec. 7.4 asks the
+author to make. The same method rejects a non-boolean `idempotency_enabled`, a non-positive or
+non-numeric TTL, and -- the one that would otherwise fail silently -- dedup enabled with no cache
+registered, where there is nowhere to keep the markers.
+
+**Startup runs, because something now calls it.** `HandlerChain` is created by
+`EventProcessingService` with `should_register=False`, so nothing in the lifespan ever called its
+lifecycle hooks; its `on_startup` was a no-op and could stay one. It resolves the policy now, so
+`EventProcessingService.on_startup`/`on_shutdown` delegate to the chain -- a bad dedup setting has
+to fail the pod, not the first event that arrives on it. `process` also resolves the policy on first
+use if startup never ran, because a chain constructed outside `AppBuilder` inheriting "dedup is off"
+from a missed wiring step is the one failure this feature must not have.
+
+**A duplicate is counted apart from an unmatched event.** At the transport edge,
+`_process_cloud_event` checks the context flag before it looks at the status:
+
+```python
+if context.get(DUPLICATE_CONTEXT_KEY):
+    _DUPLICATE_EVENTS.add(1, {"namespace": self.ROOT_NAMESPACE, "topic": topic})
+elif processing_result.status is ProcessingStatus.NO_HANDLER_FOUND:
+    _UNHANDLED_EVENTS.add(1, {"namespace": self.ROOT_NAMESPACE, "topic": topic})
+```
+
+A deduplicated event arrives here looking exactly like an unmatched one -- no handler ran, so no
+result came back -- but the two say opposite things about the subscription. An unmatched event is
+one this namespace had no use for, and `blueprint.events.unhandled` is read as a ratio to spot a
+namespace subscribed too broadly (spec sec. 7.7); a duplicate is an event it *did* use, once.
+Counting them together would make a redelivery storm read as a bad subscription. The flag travels in
+`context` rather than as a third `ProcessingStatus` value because that enum is normative in spec
+sec. 7.2 -- it carries two values precisely so that no failure can reach the transport as a returned
+value, and adding to it invites exactly that. `context` is already the channel handlers use to pass
+information along the chain, and it is mutated in place all the way down.
+
+**Both dispositions are unchanged.** A duplicate acks, like any completed dispatch. Redelivering it
+forever would be the one outcome worse than processing it twice.
+
+**The claim is not a lock, and this is written into the class docstring.** `exists` then `set` is
+not atomic on either cache backend, so two replicas handed the same event at the same instant can
+both pass the check; a cache that is unreachable fails open, because both `DiskCacheService` and
+`RedisCacheService` swallow their own errors and return `False`/`None`. Dedup narrows the duplicate
+window, it does not close it, and a handler whose side effects must never repeat still needs its own
+reconciliation. The cache calls are also synchronous inside an async method, like every other cache
+call in the framework today; phase 2 moves them onto the namespace executor.
+
+**Surfacing the requirement (spec sec. 7.4, the second half).** The mechanism is only half of P4 --
+the author has to be told the choice exists:
+
+- **Scaffolded handler** (`base_files/src/handlers/handler.txt`): a `DECIDE:` comment at the top of
+  `handle_event` explaining that redelivery is normal behaviour rather than an edge case, naming
+  both ways out (write a repeatable handler, or set the two keys), and asking to be deleted once the
+  decision is made. `asbs setup` and `asbs create handler` share this template, so one edit covers
+  both.
+- **Generated `settings.toml`** (`base_files/settings.txt`): both keys, commented, inside `[default]`
+  -- not after `[default.logging]`, where uncommenting them would silently put them in the wrong
+  table.
+- **Generated project docs** (`claude_docs/CLAUDE.md`): a bullet under EventHandler and the two keys
+  in the settings example.
+- **`asbs validate`**: a new `Notices` section. `_idempotency_notice` reports when a project has
+  handlers and its `settings.toml` does not declare `idempotency_enabled` -- in any environment
+  table, since dynaconf environments are top-level tables. Declaring it `false` silences the notice
+  as much as `true` does: the point is that a decision was made, not which one. A project with no
+  handlers is not notified, and an unparseable `settings.toml` is left to the check that already
+  reports it rather than guessed at.
+
+There is no generated README to put the spec's third line in -- `asbs setup` does not write one --
+so the generated `CLAUDE.md` and `settings.toml` carry it instead. Listed under *Open points*.
+
+Tests: dedup off by default and repeat deliveries dispatching twice; the same event dispatching once
+and the second delivery flagged in context; the claim written with the configured TTL into its own
+cache namespace; the same id from a different source not being a duplicate; a failed dispatch
+releasing the claim and the retry reaching the handler; an event missing a source dispatching
+untracked; six policy-resolution failures and the string form an environment variable delivers; the
+duplicate counter firing while the unhandled counter does not, and the reverse; and seven cases for
+the `asbs validate` notice.
+
 ### Deployment guide corrected (`2d80b63`)
 
 The guide recommended `replicaCount: 2`, an HPA, and `--set replicaCount=3` as ordinary scaling. It
@@ -587,6 +718,22 @@ No breaking change has landed. Specifically:
   the client publishes to `<queue group>.dead-letter`. A deployment whose broker permissions allow
   publishing only to specific subjects has to grant that one, or set `nats_dead_letter_subject = ""`.
 
+- **P4 changes nothing for a project that does not opt in.** `idempotency_enabled` defaults to
+  `false`, and with it off `_claim` returns immediately and the cache is never touched. The handler
+  loop itself is unchanged -- it moved from `process` into `_dispatch` verbatim.
+- **`EventProcessingService.on_startup` and `on_shutdown` are no longer no-ops.** They delegate to
+  the handler chain's hooks. A subclass overriding either without calling `super()` now skips the
+  chain's startup, and with dedup enabled would run with an unresolved policy -- which `process`
+  then resolves on first use, so it degrades to a late error rather than a silent one.
+- **Enabling dedup without `idempotency_ttl`, or without a cache, fails at startup.** Both are
+  deliberate: the first is the decision the spec requires the author to make, and the second would
+  otherwise disable dedup silently at the moment it was switched on.
+- **`blueprint.events.duplicate` is a new counter.** `blueprint.events.unhandled` no longer counts a
+  deduplicated event, but it could not have: nothing could be deduplicated before this change.
+- **The `idempotency` cache namespace is new.** It shares the registered cache with application
+  data but not its namespace, so nothing an application stores can collide with a marker. A
+  deployment sizing its cache should account for one small entry per event within the TTL window.
+
 The spec's one deliberate future break is `with_cache`'s `name` parameter (sec. 10.1), which must
 stay keyword-only and last, or an existing `with_cache(False)` would silently become a cache named
 `False`.
@@ -595,7 +742,25 @@ stay keyword-only and last, or an existing `with_cache(False)` would silently be
 
 ## Open points
 
-- **P4-P6 remain**, starting with P4 (opt-in idempotency). P0-P3 have all landed.
+- **P5-P6 remain**, starting with P5 (cron as an event source, #73). P0-P4 have all landed.
+- **There is no generated README**, so the third surfacing channel spec sec. 7.4 asks for has
+  nowhere to go. `asbs setup` writes a Dockerfile, settings, secrets and source, and the
+  generated `CLAUDE.md` and `settings.toml` carry the idempotency note instead. If a README is
+  ever generated, the note belongs in it too.
+- **Dedup is best-effort and unverified against a real broker.** `exists` then `set` is not
+  atomic on either cache backend, so two replicas handed the same event simultaneously can both
+  dispatch, and a cache error fails open. Whether that window is ever hit in practice depends on
+  how the broker distributes a redelivery, which belongs on the broker-test list below. A
+  compare-and-set primitive on `CacheService` (Redis `SET NX`) would close most of it and is not
+  written yet.
+- **Nothing bounds the dedup cache.** Every dispatched event writes one entry for `idempotency_ttl`
+  seconds. `DiskCacheService` expires lazily -- an entry is removed when it is next read, so
+  markers nobody asks about again stay on disk. A long TTL on a high-volume topic grows the cache
+  directory without limit, and no metric reports its size.
+- **The dedup TTL question in spec sec. 13 is not answered, it is delegated.** Requiring the key
+  puts the number in the deployment that knows its own redelivery window; it does not tell that
+  deployment what the number is. Guidance -- worked from `nats_ack_wait * nats_max_deliver` --
+  belongs in the deployment guide and is not written.
 - **The dead-letter subject has no consumer.** Messages accumulate on it and are subject to the
   stream's retention, so a deployment that never reads it will silently lose dead letters when the
   stream ages them out. Draining it is an operational task the framework does not do, and no

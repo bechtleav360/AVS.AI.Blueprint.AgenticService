@@ -2,10 +2,25 @@
 
 import logging
 import sys
+import tomllib
 from argparse import Namespace
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
+
+IDEMPOTENCY_NOTICE = "\n".join(
+    [
+        "Event deduplication is off ('idempotency_enabled' is not set), so every handler in",
+        "    this project can be run more than once for the same event. Delivery is at-least-once:",
+        "    a lost acknowledgement, a pod restart or a rolling deploy each produce a redelivery,",
+        "    after the first attempt has already committed its side effects.",
+        "    Decide which one this project needs:",
+        "      - handlers that are safe to repeat -- nothing to change; or",
+        "      - set 'idempotency_enabled = true' and 'idempotency_ttl = <seconds>' in settings.toml,",
+        "        with a window that outlasts the broker redelivery window.",
+    ]
+)
 
 
 def run(args: Namespace) -> None:
@@ -25,6 +40,7 @@ def run(args: Namespace) -> None:
 
     issues = []
     warnings = []
+    notices = []
 
     # Check for required directories
     required_dirs = ["src", "tests"]
@@ -98,9 +114,20 @@ def run(args: Namespace) -> None:
     if docker_compose.is_file():
         print("✓ Found docker-compose.yml")
 
+    # Idempotency decision (spec sec. 7.4): the framework must not choose for the author,
+    # so it says nothing at all only when the project has no handlers to run twice.
+    notice = _idempotency_notice(project_dir)
+    if notice:
+        notices.append(notice)
+
     # Print summary
     print()
     print("=" * 60)
+
+    if notices:
+        print(f"\nNotices ({len(notices)}):")
+        for item in notices:
+            print(f"  - {item}")
 
     if not issues and not warnings:
         print("✓ Validation passed! Project structure looks good.")
@@ -120,3 +147,41 @@ def run(args: Namespace) -> None:
     else:
         print("\n✓ Validation passed with warnings.")
         sys.exit(0)
+
+
+def _idempotency_notice(project_dir: Path) -> str | None:
+    """Return the dedup notice if this project has handlers and has not opted into dedup.
+
+    Returns ``None`` when the project declares ``idempotency_enabled``, whichever way it
+    declares it: the author has then made the decision spec sec. 7.4 asks for, and saying
+    it again on every run is how a notice stops being read. Also ``None`` when there are no
+    handlers, since nothing can be dispatched twice.
+    """
+    handlers_dir = project_dir / "src" / "handlers"
+    if not handlers_dir.is_dir() or not any(handlers_dir.glob("*_handler.py")):
+        return None
+
+    settings_file = project_dir / "settings.toml"
+    if not settings_file.is_file():
+        return IDEMPOTENCY_NOTICE
+
+    try:
+        with settings_file.open("rb") as handle:
+            settings = tomllib.load(handle)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        # A settings file that cannot be read is reported by its own check; guessing at the
+        # dedup setting from an unparseable file would be worse than staying quiet.
+        logger.debug("Could not read settings.toml for the idempotency check: %s", exc)
+        return None
+
+    # Dynaconf environments are top-level tables, and the key is valid in any of them.
+    if _declares_idempotency(settings):
+        return None
+    return IDEMPOTENCY_NOTICE
+
+
+def _declares_idempotency(settings: dict[str, Any]) -> bool:
+    """Report whether ``idempotency_enabled`` appears at the top level or in any environment."""
+    if "idempotency_enabled" in settings:
+        return True
+    return any(isinstance(value, dict) and "idempotency_enabled" in value for value in settings.values())

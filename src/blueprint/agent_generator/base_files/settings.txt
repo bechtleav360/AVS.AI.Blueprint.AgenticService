@@ -6,6 +6,14 @@ debug = true
 model_provider = "vllm"
 model_base_url = "https://avs-vllm.q14.net/v1"
 
+# Event deduplication is off by default: a handler may be run more than once for the
+# same event, because delivery is at-least-once and an acknowledgement can always be
+# lost. Turn it on only after deciding it is what your handlers need -- see the DECIDE
+# comment in src/handlers/. idempotency_ttl is required when it is enabled, and must
+# outlast the broker redelivery window (nats_ack_wait * nats_max_deliver on JetStream).
+# idempotency_enabled = true
+# idempotency_ttl = 1500
+
 [default.logging]
 level = "DEBUG"
 format = "json"

@@ -30,10 +30,18 @@ class EventProcessingService(ServiceBase):
         self._correlation_context = self.registry.correlation_context
 
     async def on_startup(self) -> None:
-        """No startup actions required."""
+        """Start the handler chain.
+
+        The chain is not a registered component, so nothing else calls its lifecycle
+        hooks. Its startup resolves the idempotency policy, and that has to happen while
+        the application is starting: a misconfigured dedup window must fail the pod, not
+        the first event that arrives on it.
+        """
+        await self._handler_chain.on_startup()
 
     async def on_shutdown(self) -> None:
-        """No shutdown actions required."""
+        """Stop the handler chain, for the same reason startup starts it."""
+        await self._handler_chain.on_shutdown()
 
     @traced("event")
     async def process_event(
