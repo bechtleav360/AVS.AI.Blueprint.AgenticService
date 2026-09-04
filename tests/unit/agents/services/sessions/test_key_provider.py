@@ -9,7 +9,7 @@ import pytest
 import respx
 from cachetools import TTLCache
 
-from blueprint.agents.services.sessions.key_provider import SessionKeyProvider
+from blueprint.agents.services.sessions.key_provider import SessionKeyClaimConflictError, SessionKeyProvider
 
 _SESSION_ID = UUID("00000000-0000-0000-0000-000000000001")
 
@@ -220,3 +220,107 @@ class TestGetSessionKeyRemote:
         provider = _make_remote_provider(remote_url="")
         with pytest.raises(ValueError, match="session_key_remote_url not configured"):
             await provider.get_session_key(uuid4())
+
+
+# ---------------------------------------------------------------------------
+# get_session_key — job source (bechtleav360/AVS.AI.Blueprint.AgenticService#76,
+# bechtleav360/avs.ai.idac.service-sessions#194 Finding 2 / #196)
+# ---------------------------------------------------------------------------
+
+_JOB_REMOTE_URL = "http://sessions.local:8001"
+
+
+def _make_job_provider(remote_url: str = _JOB_REMOTE_URL, api_key: str = "test-key", agent_id: str = "agent-1") -> SessionKeyProvider:
+    provider = SessionKeyProvider()
+    provider._source = "job"
+    provider._remote_url = remote_url
+    provider._api_key = api_key
+    provider._agent_id = agent_id
+    provider._cache = TTLCache(maxsize=100, ttl=60)
+    return provider
+
+
+class TestGetSessionKeyJob:
+    @respx.mock
+    async def test_returns_key_from_job_endpoint(self) -> None:
+        job_id = uuid4()
+        respx.get(f"{_JOB_REMOTE_URL}/internal/jobs/{job_id}/session-key").mock(
+            return_value=httpx.Response(200, json={"session_key": "job-secret"})
+        )
+        provider = _make_job_provider()
+        result = await provider.get_session_key(uuid4(), job_id=job_id)
+        assert result == "job-secret"
+
+    @respx.mock
+    async def test_sends_agent_id_and_api_key(self) -> None:
+        job_id = uuid4()
+        route = respx.get(f"{_JOB_REMOTE_URL}/internal/jobs/{job_id}/session-key").mock(
+            return_value=httpx.Response(200, json={"session_key": "job-secret"})
+        )
+        provider = _make_job_provider(agent_id="agent-42", api_key="sekrit")
+        await provider.get_session_key(uuid4(), job_id=job_id)
+        request = route.calls.last.request
+        assert request.url.params["agent_id"] == "agent-42"
+        assert request.headers["X-Api-Key"] == "sekrit"
+
+    @respx.mock
+    async def test_caches_key_under_session_id_after_first_fetch(self) -> None:
+        session_id = uuid4()
+        job_id = uuid4()
+        route = respx.get(f"{_JOB_REMOTE_URL}/internal/jobs/{job_id}/session-key").mock(
+            return_value=httpx.Response(200, json={"session_key": "job-secret"})
+        )
+        provider = _make_job_provider()
+        await provider.get_session_key(session_id, job_id=job_id)
+        await provider.get_session_key(session_id, job_id=job_id)
+        assert route.call_count == 1  # AC-2: cache hit skips the fetch
+
+    async def test_raises_when_job_id_missing_before_any_network_call(self) -> None:
+        """AC-3: no job_id -> ValueError, no HTTP attempted (no respx mock registered at all)."""
+        provider = _make_job_provider()
+        with pytest.raises(ValueError, match="job_id required"):
+            await provider.get_session_key(uuid4(), job_id=None)
+
+    async def test_raises_when_agent_id_missing_before_any_network_call(self) -> None:
+        """AC-4: no agent_id -> ValueError, no HTTP attempted."""
+        provider = _make_job_provider(agent_id="")
+        with pytest.raises(ValueError, match="agent_id not configured"):
+            await provider.get_session_key(uuid4(), job_id=uuid4())
+
+    async def test_raises_when_remote_url_missing_before_any_network_call(self) -> None:
+        provider = _make_job_provider(remote_url="")
+        with pytest.raises(ValueError, match="session_key_remote_url not configured"):
+            await provider.get_session_key(uuid4(), job_id=uuid4())
+
+    @respx.mock
+    async def test_409_raises_claim_conflict_not_http_status_error(self) -> None:
+        """AC-5: 409 is SessionKeyClaimConflictError, distinguishable from the 404/HTTPStatusError
+        case — a caller catching this specifically can log a claim conflict, not "gone"."""
+        job_id = uuid4()
+        respx.get(f"{_JOB_REMOTE_URL}/internal/jobs/{job_id}/session-key").mock(return_value=httpx.Response(409))
+        provider = _make_job_provider()
+        with pytest.raises(SessionKeyClaimConflictError):
+            await provider.get_session_key(uuid4(), job_id=job_id)
+
+    @respx.mock
+    async def test_404_raises_http_status_error_not_claim_conflict(self) -> None:
+        job_id = uuid4()
+        respx.get(f"{_JOB_REMOTE_URL}/internal/jobs/{job_id}/session-key").mock(return_value=httpx.Response(404))
+        provider = _make_job_provider()
+        with pytest.raises(httpx.HTTPStatusError):
+            await provider.get_session_key(uuid4(), job_id=job_id)
+
+    @respx.mock
+    async def test_repeat_fetch_after_cache_eviction_succeeds(self) -> None:
+        """r4 behavior change from r3: the server is no longer single-use, so a second fetch for
+        the same job_id/agent_id (simulating a client-side cache eviction) must succeed, not be
+        assumed to 404."""
+        job_id = uuid4()
+        route = respx.get(f"{_JOB_REMOTE_URL}/internal/jobs/{job_id}/session-key").mock(
+            return_value=httpx.Response(200, json={"session_key": "job-secret"})
+        )
+        provider = _make_job_provider()
+        first = await provider._get_from_job(job_id)
+        second = await provider._get_from_job(job_id)  # bypasses the cache directly, as an eviction would
+        assert first == second == "job-secret"
+        assert route.call_count == 2
