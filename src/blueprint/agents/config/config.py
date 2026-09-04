@@ -8,8 +8,17 @@ from typing import Any
 from dynaconf import Dynaconf, Validator
 from dynaconf.utils.boxing import DynaBox
 from dynaconf.validator import ValidationError
+from pydantic import ValidationError as PydanticValidationError
 
-from ..models.config import AIConfig, CacheConfig, EventPublishingConfig, ObservabilityConfig, PromptConfig, UsageLimits
+from ..models.config import (
+    AIConfig,
+    CacheConfig,
+    EventPublishingConfig,
+    ObservabilityConfig,
+    PromptConfig,
+    SessionsServiceConfig,
+    UsageLimits,
+)
 from .custom_logging import LoggingManager
 
 logger = logging.getLogger(__name__)
@@ -425,6 +434,39 @@ class Config:
             redis_tls=self.get("cache.redis_tls", False),
             fallback_to_local=self.get("cache.fallback_to_local", False),
         )
+
+    def get_sessions_config(self) -> SessionsServiceConfig | None:
+        """Get sessions-service configuration.
+
+        Reads the ``[sessions_service]`` block and validates it against
+        ``SessionsServiceConfig``. Unlike the other specialised getters, the
+        block is entirely optional: agents that run REST-only never configure
+        it, so an absent block is a normal state rather than an error.
+
+        Returns:
+            A validated ``SessionsServiceConfig`` when the block is present, or
+            ``None`` only when the block is entirely absent — letting callers
+            graceful-degrade (e.g. boot REST-only when sessions isn't configured).
+
+        Raises:
+            ConfigError: When the block is present but invalid — a missing
+                required field (``base_url`` / ``api_key`` / ``agent_id``), an
+                empty table (the limiting case of a missing required field), or
+                a non-table value (e.g. an ``[[sessions_service]]`` array-of-tables
+                typo). Only an absent key degrades to ``None``; any present-but-wrong
+                block fails fast rather than masking a misconfiguration.
+        """
+
+        block = self.get("sessions_service")
+        if block is None:
+            return None
+        if not isinstance(block, dict):
+            raise ConfigError(f"Invalid sessions_service configuration: expected a table, got {type(block).__name__}")
+        try:
+            return SessionsServiceConfig.model_validate(block)
+        except PydanticValidationError as exc:
+            logger.error("Invalid [sessions_service] configuration: %s", exc)
+            raise ConfigError(f"Invalid sessions_service configuration: {exc}") from None
 
     def validate(self) -> bool:
         """Validate the configuration."""
