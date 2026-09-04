@@ -1,17 +1,20 @@
 """Unit tests for Config specialised config getters.
 
 Covers: get_prompt_config, get_observability_config,
-        get_cache_config, get_event_publishing_config, get_nats_subscription_config.
+        get_cache_config, get_event_publishing_config, get_nats_subscription_config,
+        get_sessions_config.
 """
 
 import pytest
 
 from blueprint.agents.config import Config
+from blueprint.agents.config.config import ConfigError
 from blueprint.agents.models.config import (
     CacheConfig,
     EventPublishingConfig,
     ObservabilityConfig,
     PromptConfig,
+    SessionsServiceConfig,
 )
 
 
@@ -209,3 +212,111 @@ class TestGetNatsSubscriptionConfig:
             lambda key, default=None: ["valid.topic", "", None] if key == "nats_subscriptions" else default,
         )
         assert base_config.get_nats_subscription_config() == ["valid.topic"]
+
+
+class TestGetSessionsConfig:
+    def test_returns_none_when_block_absent(self, base_config: Config) -> None:
+        # The base fixture has no [sessions_service] block — REST-only agents are
+        # a normal state, so absence must degrade to None, not raise.
+        assert base_config.get_sessions_config() is None
+
+    def test_returns_validated_config_when_present(self, write_settings) -> None:
+        settings_file = write_settings("""
+            [development]
+            app_name = "test"
+            app_port = 8000
+            app_environment = "development"
+            model_provider = "openai"
+            model_api_key = "key"
+
+            [development.sessions_service]
+            base_url = "http://sessions.local:8000"
+            api_key = "test-api-key"
+            agent_id = "classifier-1"
+            capabilities = ["classify.document"]
+            max_concurrent_jobs = 4
+        """)
+        config = Config(settings_files=[str(settings_file)], root_path=str(settings_file.parent))
+        result = config.get_sessions_config()
+        assert isinstance(result, SessionsServiceConfig)
+        assert result.base_url == "http://sessions.local:8000"
+        assert result.api_key == "test-api-key"
+        assert result.agent_id == "classifier-1"
+        assert result.capabilities == ["classify.document"]
+        assert result.max_concurrent_jobs == 4
+
+    def test_optional_fields_fall_back_to_model_defaults(self, write_settings) -> None:
+        # Only the required fields are set; everything else must come from the
+        # framework's SessionsServiceConfig defaults, not a re-declared contract.
+        settings_file = write_settings("""
+            [development]
+            app_name = "test"
+            app_port = 8000
+            app_environment = "development"
+            model_provider = "openai"
+            model_api_key = "key"
+
+            [development.sessions_service]
+            base_url = "http://sessions.local:8000"
+            api_key = "test-api-key"
+            agent_id = "classifier-1"
+        """)
+        config = Config(settings_files=[str(settings_file)], root_path=str(settings_file.parent))
+        result = config.get_sessions_config()
+        assert result is not None
+        assert result.capabilities == []
+        assert result.session_key_env_var == "SESSION_KEY"
+        assert result.session_key_cache_ttl_seconds == 3600
+        assert result.max_concurrent_jobs == 10
+        assert result.health_check_enabled is True
+
+    def test_partial_block_missing_required_field_raises_config_error(self, write_settings) -> None:
+        # Block present but missing the required agent_id — a misconfiguration,
+        # so it fails fast as a ConfigError rather than silently returning None.
+        settings_file = write_settings("""
+            [development]
+            app_name = "test"
+            app_port = 8000
+            app_environment = "development"
+            model_provider = "openai"
+            model_api_key = "key"
+
+            [development.sessions_service]
+            base_url = "http://sessions.local:8000"
+            api_key = "test-api-key"
+        """)
+        config = Config(settings_files=[str(settings_file)], root_path=str(settings_file.parent))
+        with pytest.raises(ConfigError, match="sessions_service"):
+            config.get_sessions_config()
+
+    def test_empty_block_raises_config_error_not_none(self, base_config: Config, monkeypatch) -> None:
+        # A present-but-empty table is the limiting case of "missing required
+        # fields" — it must fail fast, not degrade to None like an absent key.
+        monkeypatch.setattr(
+            base_config,
+            "get",
+            lambda key, default=None: {} if key == "sessions_service" else default,
+        )
+        with pytest.raises(ConfigError, match="sessions_service"):
+            base_config.get_sessions_config()
+
+    def test_non_table_value_raises_config_error(self, base_config: Config, monkeypatch) -> None:
+        # A non-mapping value (e.g. an [[sessions_service]] array-of-tables typo
+        # surfacing as a list) must raise ConfigError, not leak a bare TypeError
+        # from the model validation — callers catch ConfigError to degrade.
+        monkeypatch.setattr(
+            base_config,
+            "get",
+            lambda key, default=None: [{"base_url": "x"}] if key == "sessions_service" else default,
+        )
+        with pytest.raises(ConfigError, match="expected a table"):
+            base_config.get_sessions_config()
+
+    def test_absent_key_still_returns_none(self, base_config: Config, monkeypatch) -> None:
+        # Only a genuinely absent key (get -> None) degrades to None.
+        monkeypatch.setattr(
+            base_config,
+            "get",
+            lambda key, default=None: None if key == "sessions_service" else default,
+        )
+        assert base_config.get_sessions_config() is None
