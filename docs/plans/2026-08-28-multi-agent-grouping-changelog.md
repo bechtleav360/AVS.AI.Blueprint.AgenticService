@@ -79,7 +79,7 @@ Code:
   project has handlers and has declared neither
 - **P4 -- duplicates are counted apart from unmatched events**: `blueprint.events.duplicate`,
   so a redelivery storm does not read as a namespace subscribed too broadly
-- **P5 -- the cron timer becomes a stated choice**: `scheduler_mode` is **required** and has no
+- **P5 (`662f7b5`) -- the cron timer becomes a stated choice**: `scheduler_mode` is **required** and has no
   default. `"event"` starts no in-process timer -- the tick arrives as an ordinary event on the
   scheduler's own topic, so the queue group picks a single replica and nothing is elected;
   `"in_process"` keeps the timer for local development and plain Docker. Registering a scheduler
@@ -646,7 +646,7 @@ untracked; six policy-resolution failures and the string form an environment var
 duplicate counter firing while the unhandled counter does not, and the reverse; and seven cases for
 the `asbs validate` notice.
 
-### P5 (first half) -- the cron timer becomes a stated choice, and the tick becomes an event
+### P5 -- the cron timer becomes a stated choice, and the tick becomes an event (`662f7b5`)
 
 `SchedulerBase.on_startup` created an `AsyncIOScheduler` per process with no leader election
 (#73), so every replica fired every cron tick. Grouping widens that: one pod hosting 20 agents
@@ -969,7 +969,7 @@ an environment variable delivers, and three rejections -- no transport, `"sessio
 non-boolean value -- plus the regression that a consuming application still publishes without the
 key.
 
-### P5 -- the event-mode crontab is validated, and the manifest generator was tried and dropped
+### P5 -- the event-mode crontab is validated, and the manifest generator was tried and dropped (`662f7b5`)
 
 Event mode has no publisher yet: the schedule is declared in agent code and something outside the
 process has to fire it. A `CronJob` renderer was written for that, reviewed, and then **removed
@@ -1025,7 +1025,7 @@ to be avoided again wherever the generation ends up living:
   suffixes leaves 52; truncating lets two schedulers differing only past the cut collapse into one
   object, where the second silently overwrites the first.
 
-### P5 -- `"in_process"` fires once across replicas, and the cache gains a claim primitive
+### P5 -- `"in_process"` fires once across replicas, and the cache gains a claim primitive (`662f7b5`)
 
 `"in_process"` mode was still #73 exactly as reported: an `AsyncIOScheduler` per replica, so three
 replicas fired every cron job three times. Event mode was fixed by the queue group; this is the
