@@ -1,6 +1,9 @@
 # Changelog
 ## [Unreleased]
 
+### Added
+- **`Config.get_sessions_config()` typed accessor for the `[sessions_service]` block** (#87). `Config` already exposed a typed getter for every other config block (`get_ai_config`, `get_cache_config`, `get_observability_config`, `get_event_publishing_config`, `get_prompt_config`, `get_nats_subscription_config`) — sessions was the one gap, even though `SessionsServiceConfig` already shipped. The new getter reads and validates the block against `SessionsServiceConfig`, so downstream agents running in `event_bus = "sessions"` mode can retire the local wrappers they hand-rolled to read the raw `sessions_service` sub-dict (which duplicated the framework's field/default contract and drifted from upstream defaults). Behaviour on an **absent** block is `None` (not an error) — REST-only agents never configure sessions, so absence graceful-degrades rather than raising; a **present but invalid** block (e.g. missing a required `base_url` / `api_key` / `agent_id`) fails fast as a `ConfigError`. Unblocks bechtleav360/avs.ai.idac.agents-document-classifier#44.
+
 ## [0.7.0] - 2026-09-02
 
 ### Added

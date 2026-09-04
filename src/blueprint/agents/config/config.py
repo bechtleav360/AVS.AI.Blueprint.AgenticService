@@ -8,8 +8,17 @@ from typing import Any
 from dynaconf import Dynaconf, Validator
 from dynaconf.utils.boxing import DynaBox
 from dynaconf.validator import ValidationError
+from pydantic import ValidationError as PydanticValidationError
 
-from ..models.config import AIConfig, CacheConfig, EventPublishingConfig, ObservabilityConfig, PromptConfig, UsageLimits
+from ..models.config import (
+    AIConfig,
+    CacheConfig,
+    EventPublishingConfig,
+    ObservabilityConfig,
+    PromptConfig,
+    SessionsServiceConfig,
+    UsageLimits,
+)
 from .custom_logging import LoggingManager
 
 logger = logging.getLogger(__name__)
@@ -171,9 +180,7 @@ class Config:
                         (
                             self._process_dynabox(item, placeholder, replacement)
                             if isinstance(item, (dict, DynaBox)) or hasattr(item, "items")
-                            else _try_parse_json(item)
-                            if isinstance(item, str)
-                            else item
+                            else _try_parse_json(item) if isinstance(item, str) else item
                         )
                         for item in value
                     ]
@@ -425,6 +432,33 @@ class Config:
             redis_tls=self.get("cache.redis_tls", False),
             fallback_to_local=self.get("cache.fallback_to_local", False),
         )
+
+    def get_sessions_config(self) -> SessionsServiceConfig | None:
+        """Get sessions-service configuration.
+
+        Reads the ``[sessions_service]`` block and validates it against
+        ``SessionsServiceConfig``. Unlike the other specialised getters, the
+        block is entirely optional: agents that run REST-only never configure
+        it, so an absent block is a normal state rather than an error.
+
+        Returns:
+            A validated ``SessionsServiceConfig`` when the block is present, or
+            ``None`` when it is absent — letting callers graceful-degrade (e.g.
+            boot REST-only when sessions isn't configured).
+
+        Raises:
+            ConfigError: When the block is present but invalid — e.g. missing a
+                required field (``base_url`` / ``api_key`` / ``agent_id``).
+        """
+
+        block = self.get("sessions_service")
+        if not block:
+            return None
+        try:
+            return SessionsServiceConfig.model_validate(dict(block))
+        except PydanticValidationError as exc:
+            logger.error("Invalid [sessions_service] configuration: %s", exc)
+            raise ConfigError(f"Invalid sessions_service configuration: {exc}") from None
 
     def validate(self) -> bool:
         """Validate the configuration."""
