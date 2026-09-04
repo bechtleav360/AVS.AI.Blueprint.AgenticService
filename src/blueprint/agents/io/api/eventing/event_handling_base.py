@@ -8,10 +8,11 @@ from typing import Any
 
 from ....component.component import traced
 from ....models import ProcessingResult, ProcessingStatus
-from ....models.errors import CriticalHandlerError, InvalidEventError, RetryableHandlerError
+from ....models.errors import DeliveryDisposition
 from ....models.events import CloudEvent
 from ..rest_api_base import RestApiBase
 from .cloud_event_processor_mixin import CloudEventProcessorMixin
+from .dapr_response import dapr_status
 
 logger = logging.getLogger(__name__)
 
@@ -31,11 +32,17 @@ class EventHandlingBase(RestApiBase, CloudEventProcessorMixin, ABC):
 
     @traced("topic", "cloud_event")
     async def handle_event(self, topic: str, cloud_event: CloudEvent[Any]) -> dict[str, Any]:
+        """Dispatch an event and return the acknowledgement dict Dapr reads.
+
+        A handler chain that returned acknowledges whatever its status, per spec sec. 7.2:
+        ``ProcessingStatus`` carries no failure value, so ``NO_HANDLER_FOUND`` means the
+        dispatch completed and found nothing to do -- and no amount of redelivery makes a
+        handler appear. Exceptions are not caught here; the transport edge classifies them.
+        """
         processing_result = await self._process_cloud_event(cloud_event, {"topic": topic})
-        if processing_result.status == ProcessingStatus.PROCESSED:
-            return {"status": "SUCCESS"}
-        failure_reason = processing_result.message or processing_result.status.value or "unknown_status"
-        return {"status": "RETRY", "reason": failure_reason}
+        if processing_result.status != ProcessingStatus.PROCESSED:
+            logger.warning("No handler matched event %s on topic '%s'; acknowledging it anyway", cloud_event.id, topic)
+        return {"status": dapr_status(DeliveryDisposition.ACK)}
 
     @abstractmethod
     async def publish(self, topic: str, event: CloudEvent[Any]) -> dict[str, Any]:
@@ -47,23 +54,13 @@ class EventHandlingBase(RestApiBase, CloudEventProcessorMixin, ABC):
         cloud_event: CloudEvent[Any],
         context: dict[str, Any],
     ) -> ProcessingResult:
-        """Dispatch a CloudEvent with structured error-handling and logging.
+        """Dispatch a CloudEvent through the handler chain, letting failures propagate.
 
-        Wraps ``_dispatch_cloud_event`` and re-raises all exceptions after
-        logging them at the appropriate level.
+        Deliberately does not log them. Every caller of this method is a transport edge
+        that must both decide the delivery disposition and report the failure (spec
+        sec. 7.2), so logging here duplicated each error in the caller's output while
+        adding nothing the edge does not already know -- and the edge knows the topic and
+        the disposition, which this layer does not.
         """
-        try:
-            logger.debug("Processing CloudEvent: %s", cloud_event.id)
-            return await self._dispatch_cloud_event(cloud_event, context)
-        except RetryableHandlerError as exc:
-            logger.error("Retrying event: %s", str(exc), exc_info=True)
-            raise
-        except InvalidEventError as exc:
-            logger.error("Dropping invalid event: %s", str(exc), exc_info=True)
-            raise
-        except CriticalHandlerError as exc:
-            logger.error("Critical error processing event: %s", str(exc), exc_info=True)
-            raise
-        except Exception as exc:
-            logger.error("Processing service failed: %s", str(exc), exc_info=True)
-            raise
+        logger.debug("Processing CloudEvent: %s", cloud_event.id)
+        return await self._dispatch_cloud_event(cloud_event, context)

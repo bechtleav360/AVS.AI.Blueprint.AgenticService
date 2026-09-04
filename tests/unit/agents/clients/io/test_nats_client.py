@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from blueprint.agents.clients.io.nats_client import NATSClient
+from blueprint.agents.models.errors import CriticalHandlerError, InvalidEventError, RetryableHandlerError
 from blueprint.agents.models.events import CloudEvent
 
 
@@ -240,6 +241,129 @@ class TestNATSClientMessageBoundary:
         await handler(MagicMock(data=b"garbage"))
 
         assert nats_client.inflight_handlers == 0
+
+
+class TestNATSClientAcknowledgement:
+    """P2 -- a normal return acks, a raised exception does not (spec sec. 7.2)."""
+
+    @staticmethod
+    async def _js_handler(nats_client: NATSClient, mock_nats_jetstream: tuple, callback) -> object:
+        mock_nc, _ = mock_nats_jetstream
+        nats_client._nats_client = mock_nc
+        nats_client._client = mock_nc
+        nats_client._use_jetstream = True
+        await nats_client._subscribe_one("orders.created", callback)
+        return mock_nc.jetstream().subscribe.await_args.kwargs["cb"]
+
+    @staticmethod
+    def _msg(cloud_event: CloudEvent) -> MagicMock:
+        return MagicMock(
+            data=json.dumps(dict(cloud_event)).encode(),
+            reply="$JS.ACK.x",
+            ack=AsyncMock(),
+            nak=AsyncMock(),
+            term=AsyncMock(),
+        )
+
+    async def test_normal_return_acks(self, nats_client: NATSClient, mock_nats_jetstream: tuple, cloud_event: CloudEvent) -> None:
+        handler = await self._js_handler(nats_client, mock_nats_jetstream, AsyncMock())
+        msg = self._msg(cloud_event)
+        await handler(msg)
+        msg.ack.assert_awaited_once()
+        msg.nak.assert_not_awaited()
+        msg.term.assert_not_awaited()
+
+    async def test_no_handler_found_still_acks(self, nats_client: NATSClient, mock_nats_jetstream: tuple, cloud_event: CloudEvent) -> None:
+        """An unmatched event has nothing to do, and redelivery cannot make a handler appear."""
+        handler = await self._js_handler(nats_client, mock_nats_jetstream, AsyncMock(return_value=None))
+        msg = self._msg(cloud_event)
+        await handler(msg)
+        msg.ack.assert_awaited_once()
+
+    async def test_retryable_error_naks(self, nats_client: NATSClient, mock_nats_jetstream: tuple, cloud_event: CloudEvent) -> None:
+        async def _callback(event: CloudEvent) -> None:
+            raise RetryableHandlerError(status="error", reason="upstream down")
+
+        handler = await self._js_handler(nats_client, mock_nats_jetstream, _callback)
+        msg = self._msg(cloud_event)
+        await handler(msg)
+        msg.nak.assert_awaited_once()
+        msg.ack.assert_not_awaited()
+
+    async def test_invalid_event_error_terms(self, nats_client: NATSClient, mock_nats_jetstream: tuple, cloud_event: CloudEvent) -> None:
+        async def _callback(event: CloudEvent) -> None:
+            raise InvalidEventError(status="error", reason="no payload")
+
+        handler = await self._js_handler(nats_client, mock_nats_jetstream, _callback)
+        msg = self._msg(cloud_event)
+        await handler(msg)
+        msg.term.assert_awaited_once()
+        msg.nak.assert_not_awaited()
+
+    async def test_critical_error_terms(self, nats_client: NATSClient, mock_nats_jetstream: tuple, cloud_event: CloudEvent) -> None:
+        """A critical error is not made less critical by being delivered again."""
+
+        async def _callback(event: CloudEvent) -> None:
+            raise CriticalHandlerError(status="error", reason="corrupt state")
+
+        handler = await self._js_handler(nats_client, mock_nats_jetstream, _callback)
+        msg = self._msg(cloud_event)
+        await handler(msg)
+        msg.term.assert_awaited_once()
+
+    async def test_unexpected_exception_naks(self, nats_client: NATSClient, mock_nats_jetstream: tuple, cloud_event: CloudEvent) -> None:
+        async def _callback(event: CloudEvent) -> None:
+            raise RuntimeError("boom")
+
+        handler = await self._js_handler(nats_client, mock_nats_jetstream, _callback)
+        msg = self._msg(cloud_event)
+        await handler(msg)
+        msg.nak.assert_awaited_once()
+
+    async def test_undecodable_payload_terms_without_dispatching(self, nats_client: NATSClient, mock_nats_jetstream: tuple) -> None:
+        dispatched = []
+        handler = await self._js_handler(nats_client, mock_nats_jetstream, lambda e: dispatched.append(e))
+        msg = MagicMock(data=b"not json", reply="$JS.ACK.x", ack=AsyncMock(), nak=AsyncMock(), term=AsyncMock())
+        await handler(msg)
+        msg.term.assert_awaited_once()
+        msg.ack.assert_not_awaited()
+        assert dispatched == []
+
+    async def test_core_nats_settles_nothing(self, nats_client: NATSClient, mock_nats_core: MagicMock, cloud_event: CloudEvent) -> None:
+        """Core NATS is fire-and-forget; msg.ack() would raise NotJSMessageError there."""
+        nats_client._nats_client = mock_nats_core
+        nats_client._client = mock_nats_core
+        await nats_client._subscribe_one("orders.created", AsyncMock())
+        handler = mock_nats_core.subscribe.await_args.kwargs["cb"]
+        msg = self._msg(cloud_event)
+        await handler(msg)
+        msg.ack.assert_not_awaited()
+        msg.nak.assert_not_awaited()
+        msg.term.assert_not_awaited()
+
+    async def test_failure_to_ack_does_not_escape_the_callback(
+        self, nats_client: NATSClient, mock_nats_jetstream: tuple, cloud_event: CloudEvent, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The ack travels over the delivering connection, so it fails when that is gone."""
+        handler = await self._js_handler(nats_client, mock_nats_jetstream, AsyncMock())
+        msg = self._msg(cloud_event)
+        msg.ack = AsyncMock(side_effect=Exception("connection closed"))
+        with caplog.at_level("ERROR"):
+            await handler(msg)
+        assert "Could not ack" in caplog.text
+        assert nats_client.inflight_handlers == 0
+
+    async def test_dispatch_failure_log_names_the_disposition(
+        self, nats_client: NATSClient, mock_nats_jetstream: tuple, cloud_event: CloudEvent, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        async def _callback(event: CloudEvent) -> None:
+            raise InvalidEventError(status="error", reason="no payload")
+
+        handler = await self._js_handler(nats_client, mock_nats_jetstream, _callback)
+        with caplog.at_level("ERROR"):
+            await handler(self._msg(cloud_event))
+        assert "will term" in caplog.text
+        assert cloud_event.id in caplog.text
 
 
 class TestNATSClientShutdownDrain:

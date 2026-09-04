@@ -12,6 +12,7 @@ from nats.aio.client import Client as NatsClient
 from nats.js.client import JetStreamContext
 
 from ...models.api import ComponentHealth
+from ...models.errors import DeliveryDisposition, disposition_for
 from ...models.events import CloudEvent
 from .io_client_base import IOClientBase
 
@@ -372,20 +373,25 @@ class NATSClient(IOClientBase):
             try:
                 cloud_event = self._decode_message(msg, topic)
                 if cloud_event is None:
+                    # A payload that will not parse now will not parse on redelivery either.
+                    await self._settle(msg, DeliveryDisposition.TERM, topic, None)
                     return
 
                 try:
                     await callback(cloud_event)
                 except Exception as ex:
-                    # The dispatch failed, but the same event may well succeed later, so this is
-                    # the retryable case: P2 naks here (spec sec. 7.2).
+                    disposition = disposition_for(ex)
                     logger.error(
-                        "Handler failed for event %s on topic '%s': %s",
+                        "Handler failed for event %s on topic '%s', will %s: %s",
                         cloud_event.id,
                         topic,
+                        disposition.value,
                         ex,
                         exc_info=True,
                     )
+                    await self._settle(msg, disposition, topic, cloud_event.id)
+                else:
+                    await self._settle(msg, DeliveryDisposition.ACK, topic, cloud_event.id)
             finally:
                 self._exit_handler()
 
@@ -422,6 +428,44 @@ class NATSClient(IOClientBase):
         except Exception as e:
             logger.error("Failed to subscribe to topic '%s': %s", topic, str(e))
             raise
+
+    # ------------------------------------------------------------------
+    # Internal — acknowledgement
+    # ------------------------------------------------------------------
+
+    async def _settle(self, msg: Any, disposition: DeliveryDisposition, topic: str, event_id: str | None) -> None:
+        """Tell the broker what became of a delivery (spec sec. 7.2).
+
+        Only JetStream deliveries can be settled. Core NATS is fire-and-forget and
+        ``msg.ack()`` raises ``NotJSMessageError`` there, so the JetStream flag gates the
+        whole method. It gates on ``_use_jetstream`` rather than on ``msg.reply`` because a
+        Core NATS request/reply message also carries a reply subject, and publishing ``+ACK``
+        to a waiting requester would be worse than not acknowledging at all.
+
+        A failure to settle is logged and swallowed. An acknowledgement is published to the
+        delivering connection's reply subject, so it fails precisely when that connection is
+        gone -- raising into the ``nats-py`` callback would neither deliver it nor recover it.
+        The message is redelivered after ``ack_wait`` instead, which is the at-least-once
+        behaviour sec. 7.4 already requires handlers to tolerate.
+        """
+        if not self._use_jetstream:
+            return
+
+        try:
+            if disposition is DeliveryDisposition.ACK:
+                await msg.ack()
+            elif disposition is DeliveryDisposition.NAK:
+                await msg.nak()
+            else:
+                await msg.term()
+        except Exception as exc:
+            logger.error(
+                "Could not %s event %s on topic '%s' (%s); it will be redelivered after ack_wait",
+                disposition.value,
+                event_id or "<undecodable>",
+                topic,
+                exc,
+            )
 
     # ------------------------------------------------------------------
     # Internal — reconnect callbacks

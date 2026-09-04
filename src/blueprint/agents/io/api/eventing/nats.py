@@ -5,7 +5,6 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ....clients.io.nats_client import NATSClient
-from ....models.errors import CriticalHandlerError, InvalidEventError, RetryableHandlerError
 from ....models.events import CloudEvent
 from ..rest_api_base import RestApiBase
 from .event_handling_base import EventHandlingBase
@@ -19,6 +18,11 @@ class NatsEventing(EventHandlingBase):
     ``on_startup`` collects the full topic→callback mapping from all registered
     handlers and config, then hands it to ``NATSClient.subscribe()``.  The client
     owns connection, retry, reconnect, and subscription-readiness tracking.
+
+    The callback lets every exception through. A handler failure is the only way a
+    failure reaches the transport -- ``ProcessingStatus`` has no failure value -- and
+    the transport edge is what turns it into a nak or a term (spec sec. 7.2). Catching
+    one here would acknowledge the event as successfully processed.
     """
 
     def __init__(self) -> None:
@@ -49,17 +53,14 @@ class NatsEventing(EventHandlingBase):
         """Return an async callback that routes an incoming event through the handler chain."""
 
         async def _process_event(event: CloudEvent[Any]) -> None:
-            try:
-                context = {"nats_topic": topic}
-                processing_result = await self._process_cloud_event(event, context)
-                logger.debug(
-                    "Processed CloudEvent %s on topic %s with status %s",
-                    event.id,
-                    topic,
-                    processing_result.status.value,
-                )
-            except (RetryableHandlerError, InvalidEventError, CriticalHandlerError) as exc:
-                logger.error("Event processing failed: %s", str(exc), exc_info=True)
+            context = {"nats_topic": topic}
+            processing_result = await self._process_cloud_event(event, context)
+            logger.debug(
+                "Processed CloudEvent %s on topic %s with status %s",
+                event.id,
+                topic,
+                processing_result.status.value,
+            )
 
         return _process_event
 

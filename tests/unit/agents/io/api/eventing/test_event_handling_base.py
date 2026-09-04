@@ -3,6 +3,8 @@
 import json
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from blueprint.agents.io.api.eventing.dapr import DaprEventing
 from blueprint.agents.models.events import CloudEvent
 from blueprint.agents.models.result import ProcessingResult
@@ -103,28 +105,61 @@ class TestHandleEvent:
         result = await dapr_eventing.handle_event("topic", cloud_event)
         assert result["status"] == "SUCCESS"
 
-    async def test_non_processed_status_returns_retry(
+    async def test_non_processed_status_also_returns_success(
         self,
         dapr_eventing: DaprEventing,
         mock_registry: MagicMock,
         cloud_event: CloudEvent,
         unhandled_result: ProcessingResult,
     ) -> None:
+        """A handler chain that returned acknowledges whatever its status (spec sec. 7.2)."""
         mock_registry.get_service.return_value.process_event = AsyncMock(return_value=unhandled_result)
         mock_registry.correlation_context.set.return_value = MagicMock()
 
         result = await dapr_eventing.handle_event("topic", cloud_event)
-        assert result["status"] == "RETRY"
+        assert result == {"status": "SUCCESS"}
 
-    async def test_retry_result_includes_reason(
+    async def test_non_processed_status_is_warned_about(
         self,
         dapr_eventing: DaprEventing,
         mock_registry: MagicMock,
         cloud_event: CloudEvent,
         unhandled_result: ProcessingResult,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         mock_registry.get_service.return_value.process_event = AsyncMock(return_value=unhandled_result)
         mock_registry.correlation_context.set.return_value = MagicMock()
 
-        result = await dapr_eventing.handle_event("topic", cloud_event)
-        assert "reason" in result
+        with caplog.at_level("WARNING"):
+            await dapr_eventing.handle_event("topic", cloud_event)
+        assert "No handler matched" in caplog.text
+
+    async def test_exceptions_are_not_caught_here(
+        self,
+        dapr_eventing: DaprEventing,
+        mock_registry: MagicMock,
+        cloud_event: CloudEvent,
+    ) -> None:
+        """The transport edge classifies failures; catching one here would acknowledge it."""
+        mock_registry.get_service.return_value.process_event = AsyncMock(side_effect=RuntimeError("boom"))
+        mock_registry.correlation_context.set.return_value = MagicMock()
+
+        with pytest.raises(RuntimeError, match="boom"):
+            await dapr_eventing.handle_event("topic", cloud_event)
+
+
+class TestProcessCloudEventDoesNotLogAndReraise:
+    """P2 -- the transport edge is the single place that logs a failure and settles it."""
+
+    async def test_exception_propagates(self, dapr_eventing: DaprEventing, cloud_event: CloudEvent) -> None:
+        dapr_eventing._dispatch_cloud_event = AsyncMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
+        with pytest.raises(RuntimeError, match="boom"):
+            await dapr_eventing._process_cloud_event(cloud_event, {})
+
+    async def test_exception_is_not_logged_here(
+        self, dapr_eventing: DaprEventing, cloud_event: CloudEvent, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        dapr_eventing._dispatch_cloud_event = AsyncMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
+        with caplog.at_level("ERROR"), pytest.raises(RuntimeError):
+            await dapr_eventing._process_cloud_event(cloud_event, {})
+        assert caplog.records == []

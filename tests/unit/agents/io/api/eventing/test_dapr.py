@@ -2,12 +2,20 @@
 
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-
-from blueprint.agents.io.api.eventing.dapr import DaprEventing
-from blueprint.agents.models.errors import CriticalHandlerError, InvalidEventError, RetryableHandlerError
+from blueprint.agents.io.api.eventing.dapr import DaprDeliveryRoute, DaprEventing
+from blueprint.agents.io.api.eventing.dapr_response import dapr_status
+from blueprint.agents.io.api.eventing.nats import NatsEventing
+from blueprint.agents.models.errors import (
+    CriticalHandlerError,
+    DeliveryDisposition,
+    InvalidEventError,
+    RetryableHandlerError,
+    disposition_for,
+)
 from blueprint.agents.models.events import CloudEvent
 from blueprint.agents.models.result import ProcessingResult
 
@@ -30,27 +38,31 @@ class TestDaprEventingPublish:
         result = await dapr_eventing.publish("topic", cloud_event)
         assert result == {"status": "SUCCESS"}
 
-    async def test_no_handler_result_returns_retry(
+    async def test_no_handler_result_returns_success(
         self,
         dapr_eventing: DaprEventing,
         mock_registry: MagicMock,
         cloud_event: CloudEvent,
         unhandled_result: ProcessingResult,
     ) -> None:
+        """Redelivery cannot make a handler appear, and under a queue group RETRY walks every replica."""
         _wire_processing_result(mock_registry, unhandled_result)
         result = await dapr_eventing.publish("topic", cloud_event)
-        assert result["status"] == "RETRY"
+        assert result == {"status": "SUCCESS"}
 
-    async def test_no_handler_retry_includes_reason(
+    async def test_no_handler_result_is_warned_about(
         self,
         dapr_eventing: DaprEventing,
         mock_registry: MagicMock,
         cloud_event: CloudEvent,
         unhandled_result: ProcessingResult,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
+        """Acknowledging an unmatched event must not make it invisible."""
         _wire_processing_result(mock_registry, unhandled_result)
-        result = await dapr_eventing.publish("topic", cloud_event)
-        assert "reason" in result
+        with caplog.at_level("WARNING"):
+            await dapr_eventing.publish("topic", cloud_event)
+        assert "No handler matched" in caplog.text
 
     async def test_retryable_error_returns_retry(
         self,
@@ -80,17 +92,57 @@ class TestDaprEventingPublish:
         assert result["status"] == "DROP"
         assert result["reason"] == "bad schema"
 
-    async def test_critical_error_returns_retry(
+    async def test_critical_error_returns_drop(
         self,
         dapr_eventing: DaprEventing,
         mock_registry: MagicMock,
         cloud_event: CloudEvent,
     ) -> None:
+        """A critical error is not made less critical by being delivered again."""
         mock_registry.get_service.return_value.process_event = AsyncMock(side_effect=CriticalHandlerError(status="critical", reason="oom"))
         mock_registry.correlation_context.set.return_value = MagicMock()
         result = await dapr_eventing.publish("topic", cloud_event)
-        assert result["status"] == "RETRY"
+        assert result["status"] == "DROP"
         assert result["reason"] == "oom"
+
+    async def test_unexpected_exception_returns_retry(
+        self,
+        dapr_eventing: DaprEventing,
+        mock_registry: MagicMock,
+        cloud_event: CloudEvent,
+    ) -> None:
+        """Previously a 500, which left the disposition to the sidecar's own policy."""
+        mock_registry.get_service.return_value.process_event = AsyncMock(side_effect=RuntimeError("boom"))
+        mock_registry.correlation_context.set.return_value = MagicMock()
+        result = await dapr_eventing.publish("topic", cloud_event)
+        assert result["status"] == "RETRY"
+        assert result["reason"] == "boom"
+
+    @pytest.mark.parametrize(
+        ("error", "expected"),
+        [
+            (RetryableHandlerError(status="e", reason="r"), "RETRY"),
+            (InvalidEventError(status="e", reason="r"), "DROP"),
+            (CriticalHandlerError(status="e", reason="r"), "DROP"),
+            (RuntimeError("boom"), "RETRY"),
+        ],
+        ids=["retryable", "invalid", "critical", "unexpected"],
+    )
+    async def test_matches_the_nats_disposition_for_the_same_error(
+        self,
+        dapr_eventing: DaprEventing,
+        mock_registry: MagicMock,
+        cloud_event: CloudEvent,
+        error: Exception,
+        expected: str,
+    ) -> None:
+        """Both transports render one shared decision; this pins the rendering."""
+        assert dapr_status(disposition_for(error)) == expected
+
+        mock_registry.get_service.return_value.process_event = AsyncMock(side_effect=error)
+        mock_registry.correlation_context.set.return_value = MagicMock()
+        result = await dapr_eventing.publish("topic", cloud_event)
+        assert result["status"] == expected
 
 
 class TestDaprEventingSubscribe:
@@ -155,6 +207,76 @@ class TestDaprEventingSubscribe:
 
         assert response.status_code == 200
         assert response.json() == [{"pubsubname": "pubsub", "topic": "orders.created", "route": "/events/orders.created"}]
+
+
+class TestDaprEventingUnparseableDelivery:
+    """P2 -- a body that cannot become a CloudEvent drops, as it terms under NATS."""
+
+    @staticmethod
+    def _app(dapr_eventing: DaprEventing) -> FastAPI:
+        app = FastAPI()
+        app.include_router(dapr_eventing.router)
+        return app
+
+    async def test_malformed_body_answers_drop_not_422(self, dapr_eventing: DaprEventing, mock_registry: MagicMock) -> None:
+        async with AsyncClient(transport=ASGITransport(app=self._app(dapr_eventing)), base_url="http://sidecar") as client:
+            response = await client.post("/events/orders.created", json={"not": "a cloud event"})
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "DROP"
+
+    async def test_malformed_body_is_not_dispatched(self, dapr_eventing: DaprEventing, mock_registry: MagicMock) -> None:
+        process_event = AsyncMock()
+        mock_registry.get_service.return_value.process_event = process_event
+
+        async with AsyncClient(transport=ASGITransport(app=self._app(dapr_eventing)), base_url="http://sidecar") as client:
+            await client.post("/events/orders.created", json={"not": "a cloud event"})
+
+        process_event.assert_not_awaited()
+
+    async def test_drop_matches_what_nats_does_with_the_same_payload(self, dapr_eventing: DaprEventing) -> None:
+        """NATS terms an undecodable payload; DROP is the same disposition in Dapr's words."""
+        assert dapr_status(DeliveryDisposition.TERM) == "DROP"
+
+    async def test_unparseable_delivery_is_logged(
+        self, dapr_eventing: DaprEventing, mock_registry: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        async with AsyncClient(transport=ASGITransport(app=self._app(dapr_eventing)), base_url="http://sidecar") as client:
+            with caplog.at_level("ERROR"):
+                await client.post("/events/orders.created", json={"not": "a cloud event"})
+
+        assert "unparseable delivery" in caplog.text
+
+    async def test_a_valid_delivery_is_unaffected(
+        self, dapr_eventing: DaprEventing, mock_registry: MagicMock, cloud_event: CloudEvent, processed_result: ProcessingResult
+    ) -> None:
+        _wire_processing_result(mock_registry, processed_result)
+
+        async with AsyncClient(transport=ASGITransport(app=self._app(dapr_eventing)), base_url="http://sidecar") as client:
+            response = await client.post("/events/orders.created", json=dict(cloud_event))
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "SUCCESS"}
+
+
+class TestRestApiBaseRouteClass:
+    """The route wrapper must stay scoped to the component that asks for it."""
+
+    def test_dapr_eventing_uses_the_delivery_route(self, dapr_eventing: DaprEventing) -> None:
+        assert all(isinstance(route, DaprDeliveryRoute) for route in dapr_eventing.router.routes)
+
+    def test_other_components_keep_the_default_route(self, nats_eventing: NatsEventing) -> None:
+        assert not any(isinstance(route, DaprDeliveryRoute) for route in nats_eventing.router.routes)
+
+    async def test_an_ordinary_endpoint_still_answers_422(self, nats_eventing: NatsEventing) -> None:
+        """422 is the right answer for a REST caller; only a Dapr delivery earns DROP."""
+        app = FastAPI()
+        app.include_router(nats_eventing.router)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://caller") as client:
+            response = await client.post("/events/orders.created", json={"not": "a cloud event"})
+
+        assert response.status_code == 422
 
 
 class TestDaprEventingOnStartup:

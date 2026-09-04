@@ -1,19 +1,51 @@
 """Generic Dapr pub/sub endpoints for the agent service (framework-level)."""
 
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any
 
-from fastapi import HTTPException, status
+from fastapi import Request, Response
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
 
-from ....models.errors import CriticalHandlerError, InvalidEventError, RetryableHandlerError
 from ....clients.io.dapr_client import DaprClient
 from ....models import ProcessingStatus
+from ....models.errors import DeliveryDisposition, HandlerError, disposition_for
 from ....models.events import CloudEvent
-from .event_handling_base import EventHandlingBase
 from ..rest_api_base import RestApiBase
+from .dapr_response import dapr_status
+from .event_handling_base import EventHandlingBase
 
 logger = logging.getLogger(__name__)
+
+
+class DaprDeliveryRoute(APIRoute):
+    """Answer an unparseable delivery with ``DROP`` instead of letting FastAPI answer 422.
+
+    Under NATS the framework decodes the payload itself, so a body that cannot become a
+    CloudEvent is terminated by ``NATSClient._settle`` -- it will not parse on redelivery
+    either. Under Dapr the body is parsed by FastAPI before any framework code runs, so
+    that same payload produced a 422 the sidecar reads as a failed call and retries to
+    ``max_deliver``: the one row of the spec sec. 7.2 table where the two transports
+    disagreed for a structural reason rather than a coding one.
+
+    Wrapping the route handler is what makes the answer route-scoped. An application-wide
+    ``RequestValidationError`` handler would also answer for ordinary REST endpoints, where
+    422 is the correct reply and ``{"status": "DROP"}`` would be nonsense.
+    """
+
+    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+        handle = super().get_route_handler()
+
+        async def drop_unparseable_delivery(request: Request) -> Response:
+            try:
+                return await handle(request)
+            except RequestValidationError as exc:
+                logger.error("Discarding unparseable delivery on '%s': %s", request.url.path, exc)
+                return JSONResponse({"status": dapr_status(DeliveryDisposition.TERM), "reason": "payload is not a CloudEvent"})
+
+        return drop_unparseable_delivery
 
 
 class DaprEventing(EventHandlingBase):
@@ -40,6 +72,8 @@ class DaprEventing(EventHandlingBase):
     subscriptions are declared outside the application (CRD or YAML) so the discovery
     endpoint returns an empty document and the sidecar cannot subscribe twice.
     """
+
+    route_class = DaprDeliveryRoute
 
     def __init__(self) -> None:
         super().__init__(should_register=False)
@@ -110,41 +144,36 @@ class DaprEventing(EventHandlingBase):
 
     @RestApiBase.post("/events/{topic}", tags=["dapr"])
     async def publish(self, topic: str, cloud_event: CloudEvent[Any]) -> dict[str, Any]:
-        """Generic Dapr event handler that processes events through the unified service."""
+        """Receive an event from the sidecar and answer with its acknowledgement.
+
+        The returned dict is the acknowledgement, so this method is Dapr's equivalent of
+        ``NATSClient._settle`` and follows the same table (spec sec. 7.2): a handler chain
+        that returned answers ``SUCCESS`` whatever its status, and a raised exception is
+        classified by ``disposition_for`` and rendered into Dapr's words. One ``except``
+        rather than one per error type, so the two transports cannot drift apart.
+        """
 
         try:
-            context = {
-                "dapr_topic": topic,
-            }
+            processing_result = await self._process_cloud_event(cloud_event, {"dapr_topic": topic})
+        except Exception as exc:
+            disposition = disposition_for(exc)
+            reason = exc.reason if isinstance(exc, HandlerError) else str(exc)
+            logger.error(
+                "Handler failed for event %s on topic '%s', answering %s: %s",
+                cloud_event.id,
+                topic,
+                dapr_status(disposition),
+                exc,
+                exc_info=True,
+            )
+            return {"status": dapr_status(disposition), "reason": reason}
 
-            processing_result = await self._process_cloud_event(cloud_event, context)
-
-            if processing_result.status == ProcessingStatus.PROCESSED:
-                return {"status": "SUCCESS"}
-
+        if processing_result.status != ProcessingStatus.PROCESSED:
+            # Acknowledged, because redelivery cannot make a handler appear -- but a topic
+            # nobody handles is usually a declaration error, so it must not pass in silence.
             logger.warning(
-                "Processing service returned non-success status %s for topic %s",
-                processing_result.status.value,
+                "No handler matched event %s on topic '%s'; acknowledging it anyway",
+                cloud_event.id,
                 topic,
             )
-            failure_reason = processing_result.message or processing_result.status.value or "unknown_status"
-            return {"status": "RETRY", "reason": failure_reason}
-
-        except RetryableHandlerError as exc:
-            logger.error("Retrying message for topic %s: %s", topic, str(exc), exc_info=True)
-            return {"status": "RETRY", "reason": exc.reason}
-
-        except InvalidEventError as exc:
-            logger.error("Dropping message for topic %s: %s", topic, str(exc), exc_info=True)
-            return {"status": "DROP", "reason": exc.reason}
-
-        except CriticalHandlerError as exc:
-            logger.error("Critical error for topic %s: %s", topic, str(exc), exc_info=True)
-            return {"status": "RETRY", "reason": exc.reason}
-
-        except Exception as exc:  # pragma: no cover - integration behaviour
-            logger.error("Processing service failed for Dapr topic %s: %s", topic, str(exc), exc_info=True)
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Dapr event handling failed",
-            ) from exc
+        return {"status": dapr_status(DeliveryDisposition.ACK)}

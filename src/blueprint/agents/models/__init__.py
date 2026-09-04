@@ -13,7 +13,7 @@ from .api import (
     ProcessResourceResponse,
 )
 from .config import AIConfig, CacheConfig, EventPublishingConfig, ObservabilityConfig, PromptConfig, RuntimeConfig, TopicConfig, UsageLimits
-from .errors import CriticalHandlerError, HandlerError, InvalidEventError, RetryableHandlerError
+from .errors import CriticalHandlerError, DeliveryDisposition, HandlerError, InvalidEventError, RetryableHandlerError, disposition_for
 from .events import CloudEvent, GenericCloudEvent, HandlerResult, create_cloud_event
 from .result import AgentOutput, Evidence, ProcessingResult, ProcessingStatus
 from .status import BuildStatus, EnvironmentStatus, LLMStatus, ServiceInfo, VLLMInfo
@@ -41,6 +41,7 @@ __all__ = [
     "InvalidEventError",
     "RetryableHandlerError",
     "CriticalHandlerError",
+    "DeliveryDisposition",
     "LLMStatus",
     "ObservabilityConfig",
     "ProcessResourceRequest",
@@ -54,4 +55,5 @@ __all__ = [
     "CacheStatsResponse",
     "CacheEvictRequest",
     "create_cloud_event",
+    "disposition_for",
 ]

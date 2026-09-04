@@ -55,6 +55,11 @@ Code:
   /dapr/subscribe` no longer answers 422 (#81, `fac528b`)
 - **P1 -- queue groups**: Core NATS subscriptions join a queue group derived from the agent, so a
   second replica no longer processes every message a second time (`05083c8`)
+- **P2 (NATS half) -- acknowledgement**: a normal return acks, a raised exception naks or terms per
+  the spec table; the two layers that swallowed the classification are gone
+- **P2 (Dapr half) -- parity**: `NO_HANDLER_FOUND` answers `SUCCESS` instead of looping until
+  `max_deliver`, a critical error drops instead of retrying, and an unparseable body drops instead
+  of answering 422; both transports now render one shared decision
 
 Documentation and process:
 
@@ -280,6 +285,90 @@ Both properties rest on the names being distinct per agent, and two things can b
   collapses all its topics onto one durable name; pre-existing, and worth fixing where Phase 5
   touches that line.
 
+### P2 -- acknowledgement at the NATS transport edge
+
+JetStream messages were subscribed with `manual_ack=True` and never acknowledged, so every event
+redelivered until `max_deliver` -- a defect at a single replica, not just at scale. The transport
+edge now settles every delivery, and the classification needed to settle it correctly survives the
+trip from the handler.
+
+**The disposition table lives in one place.** `models/errors.py` gains `DeliveryDisposition`
+(`ACK`/`NAK`/`TERM`) and `disposition_for(exc)`, next to the exceptions it classifies. Spec sec. 7.2
+requires both transports to map the same outcome to the same disposition, so encoding the table once
+is what makes that checkable rather than aspirational -- and a new `HandlerError` subclass is now
+added in the same file that decides what its failures do to a delivery. Matching is by `isinstance`,
+so a project's own subclass inherits its parent's disposition. The function never returns `ACK`:
+acknowledgement is what a *normal return* means, and the edge decides that without asking.
+
+**`NATSClient._settle` applies it.** `message_handler` acks on normal return, terms an undecodable
+payload before dispatch, and otherwise settles with whatever `disposition_for` says. Two details:
+
+- It gates on `_use_jetstream`, not on `msg.reply`. Core NATS is fire-and-forget and `msg.ack()`
+  raises `NotJSMessageError` there, but a Core NATS *request/reply* message does carry a reply
+  subject -- gating on the subject would publish `+ACK` to a waiting requester.
+- A failure to settle is logged and swallowed. The acknowledgement is published to the delivering
+  connection's reply subject, so it fails exactly when that connection is gone; raising into the
+  `nats-py` callback would neither deliver it nor recover it. The message redelivers after
+  `ack_wait`, which is the at-least-once behaviour sec. 7.4 already requires handlers to tolerate.
+
+**Two swallowing layers removed.** `NatsEventing._process_event` caught the three classified handler
+errors, logged them and returned normally -- which, once the edge acks on normal return, would have
+acknowledged every failed event as processed. `EventHandlingBase._process_cloud_event` logged each
+exception and re-raised it; the logging is gone and the exception now passes through untouched. Both
+transports already log at their own edge, where the topic and the disposition are known, so the
+removed logging was duplicate output that knew less than the line beside it. It also brings the
+method in line with the repo's log-or-raise rule.
+
+**Still open in P2**, each its own step: Dapr parity (`NO_HANDLER_FOUND` -> `SUCCESS`,
+`CriticalHandlerError` -> `DROP`, and the same in `handle_event`), the unhandled-event counter with
+its first-occurrence warning, and `max_deliver` plus a dead-letter destination, which lands with P3
+because a nak on an unexpected exception otherwise redelivers forever.
+
+### P2 -- Dapr parity
+
+Dapr acknowledges by response body, so `POST /events/{topic}` is its `_settle`. It disagreed with
+the spec table in two places, and both disagreements were live defects:
+
+- **`NO_HANDLER_FOUND` returned `RETRY`.** An event no handler wanted was redelivered until
+  `max_deliver`, and now that P1 puts every replica in a queue group, that loop visits each replica
+  in turn before giving up. It answers `SUCCESS`.
+- **`CriticalHandlerError` returned `RETRY`.** A critical error is not made less critical by being
+  delivered again. It answers `DROP`, matching NATS's `term`.
+
+An unexpected exception previously raised `HTTPException(500)`. That is a third behaviour rather than
+a disposition: the sidecar sees a failed call and applies whatever its own resiliency policy says,
+which need not be retry and is not visible from this code. It now answers `RETRY` explicitly, as the
+table requires. **The tradeoff is deliberate**: a 500 showed up in HTTP metrics and traces as a
+failure, and a 200 with `RETRY` does not, so an unexpected handler exception is now visible only in
+the log line and in Dapr's own retry counters until the P2 counters land.
+
+**One `except`, not four.** The four per-error-type blocks collapsed into a single one that calls
+`disposition_for(exc)` and renders the result. The rendering lives in a new
+`io/api/eventing/dapr_response.py` -- three lines of mapping from `DeliveryDisposition` to
+`SUCCESS`/`RETRY`/`DROP`. It sits there rather than in `models` so Dapr's vocabulary does not leak
+into the shared layer, and rather than in `dapr.py` so `EventHandlingBase.handle_event` can render
+identically without importing a subclass. What an outcome deserves is decided once; each transport
+only says it in its own words, and adding a new error type can no longer update one transport and
+miss the other.
+
+`EventHandlingBase.handle_event` got the same treatment: acknowledge whatever status the chain
+returned, warn when nothing matched, and let exceptions through to the edge.
+
+**Unparseable deliveries now drop, which changes an HTTP response.** A payload that cannot become a
+CloudEvent must `DROP` (spec sec. 7.2), but under Dapr the body is parsed by FastAPI before any
+framework code runs, so that payload was answered **422** and the sidecar retried it to
+`max_deliver` -- the one row of the table where the transports disagreed for a structural reason
+rather than a coding one. `DaprDeliveryRoute`, an `APIRoute` subclass, wraps the route handler and
+converts `RequestValidationError` into `200 {"status": "DROP"}`.
+
+*This is a deliberate behaviour change*: `POST /events/{topic}` no longer answers 422 for a malformed
+body under Dapr. That is the correct answer to a *REST caller* and the wrong answer to a *sidecar
+delivery*, and the same path serves both roles. The wrapper is therefore scoped to the component
+that asks for it via a new `RestApiBase.route_class` hook -- an application-wide
+`RequestValidationError` handler would have answered `DROP` for ordinary REST endpoints too, where
+422 is right. `NatsEventing`, which owns the same path for the outbound direction, keeps the default
+route class and still answers 422; there is a test for exactly that.
+
 ### Deployment guide corrected (`2d80b63`)
 
 The guide recommended `replicaCount: 2`, an HPA, and `--set replicaCount=3` as ordinary scaling. It
@@ -328,6 +417,11 @@ No breaking change has landed. Specifically:
   Whether Dapr merges the two or delivers twice needs checking against a real sidecar; it belongs on
   the broker-test list.
 - New config keys all default to current behaviour.
+- **`POST /events/{topic}` answers `200 {"status": "DROP"}` instead of `422` for a body that is not
+  a CloudEvent -- but only on `DaprEventing`.** Chosen so the two transports dispose of an
+  unparseable payload identically; NATS already terminated it. A caller that treated 422 from this
+  path as its error signal sees a 200 instead. The same path on `NatsEventing` is unchanged and
+  still answers 422, since there the caller is a REST client rather than a sidecar.
 - `nats_queue_group` is new and defaults to `app_name`, so no deployment has to set it. It does
   change broker-side behaviour for anyone already running more than one replica on Core NATS:
   duplicate processing stops, which is the point. A deployment whose correctness depended on every

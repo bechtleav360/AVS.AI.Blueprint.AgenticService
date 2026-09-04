@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from blueprint.agents.io.api.eventing.nats import NatsEventing
+from blueprint.agents.models.errors import CriticalHandlerError, InvalidEventError, RetryableHandlerError
 from blueprint.agents.models.events import CloudEvent
 
 
@@ -154,3 +155,37 @@ class TestNatsEventingOnStartup:
         mock_config.get_nats_subscription_config.return_value = []
 
         await nats_eventing.on_startup()  # must not raise or hang
+
+
+# ---------------------------------------------------------------------------
+# the callback must let failures reach the transport (spec sec. 7.2)
+# ---------------------------------------------------------------------------
+
+
+class TestNatsEventingCallbackPropagatesFailures:
+    """P2 -- catching here would acknowledge a failed event as processed."""
+
+    @staticmethod
+    def _callback(nats_eventing: NatsEventing, result_or_error) -> object:
+        nats_eventing._process_cloud_event = AsyncMock(side_effect=result_or_error)  # type: ignore[method-assign]
+        return nats_eventing._make_event_callback("orders.created")
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            RetryableHandlerError(status="e", reason="upstream down"),
+            InvalidEventError(status="e", reason="no payload"),
+            CriticalHandlerError(status="e", reason="corrupt state"),
+            RuntimeError("boom"),
+        ],
+        ids=["retryable", "invalid", "critical", "unexpected"],
+    )
+    async def test_handler_errors_reach_the_caller(self, nats_eventing: NatsEventing, cloud_event: CloudEvent, error: Exception) -> None:
+        callback = self._callback(nats_eventing, error)
+        with pytest.raises(type(error)):
+            await callback(cloud_event)
+
+    async def test_successful_dispatch_returns_none(self, nats_eventing: NatsEventing, cloud_event: CloudEvent, processed_result) -> None:
+        callback = self._callback(nats_eventing, None)
+        nats_eventing._process_cloud_event = AsyncMock(return_value=processed_result)  # type: ignore[method-assign]
+        assert await callback(cloud_event) is None
