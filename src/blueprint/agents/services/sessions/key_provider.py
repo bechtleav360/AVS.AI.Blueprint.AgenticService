@@ -103,6 +103,12 @@ class SessionKeyProvider(ServiceBase):
             SessionKeyClaimConflictError: ``"job"`` source only — the job's key was already
                 claimed by a different ``agent_id`` (HTTP 409)
         """
+        # Cached under session_id even for the "job" source: the sessions-service
+        # /internal/jobs/{job_id}/session-key endpoint is documented (server-side) to return
+        # the session-scoped key of the job's own session, so two jobs in the same session are
+        # expected to resolve to the same key. If that ever changes to a true per-job key, this
+        # must key on job_id instead (e.g. f"job:{job_id}") or a second job in the same session
+        # will silently be served the first job's cached key.
         cache_key = str(session_id) if session_id else "default"
 
         # Check cache first
@@ -197,6 +203,16 @@ class SessionKeyProvider(ServiceBase):
         # - AWS Secrets Manager
         raise NotImplementedError("Vault integration not yet implemented. Use session_key_source='env' or 'config' for now.")
 
+    async def _fetch_key_response(self, url: str, *, params: dict[str, str] | None = None) -> httpx.Response:
+        """Shared request/auth mechanics for the remote key-vault and job-handoff endpoints.
+
+        Returns the raw response so callers can apply their own status-code special-casing
+        (the "job" source's 409 claim-conflict has no equivalent on the plain remote source)
+        before calling ``raise_for_status()``.
+        """
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            return await client.get(url, params=params, headers={"X-Api-Key": self._api_key})
+
     async def _get_from_remote(self, session_id: UUID | None) -> str:
         """Fetch session key from a remote key vault endpoint.
 
@@ -216,11 +232,9 @@ class SessionKeyProvider(ServiceBase):
             raise ValueError("sessions_service.session_key_remote_url not configured")
 
         url = f"{self._remote_url}/{session_id}/key"
-
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(url, headers={"X-Api-Key": self._api_key})
-            response.raise_for_status()
-            data = response.json()
+        response = await self._fetch_key_response(url)
+        response.raise_for_status()
+        data = response.json()
 
         logger.debug("Session key retrieved from remote: session_id=%s", session_id)
         return data["session_key"]
@@ -249,13 +263,11 @@ class SessionKeyProvider(ServiceBase):
             raise ValueError("sessions_service.agent_id not configured — required for session_key_source='job'")
 
         url = f"{self._remote_url}/internal/jobs/{job_id}/session-key"
-
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(url, params={"agent_id": self._agent_id}, headers={"X-Api-Key": self._api_key})
-            if response.status_code == 409:
-                raise SessionKeyClaimConflictError(f"job {job_id}'s session key was already claimed by a different agent")
-            response.raise_for_status()  # 404 (expired/unknown) raises here
-            data = response.json()
+        response = await self._fetch_key_response(url, params={"agent_id": self._agent_id})
+        if response.status_code == 409:
+            raise SessionKeyClaimConflictError(f"job {job_id}'s session key was already claimed by a different agent")
+        response.raise_for_status()  # 404 (expired/unknown) raises here
+        data = response.json()
 
         logger.debug("Session key retrieved for job: job_id=%s, agent_id=%s", job_id, self._agent_id)
         return data["session_key"]

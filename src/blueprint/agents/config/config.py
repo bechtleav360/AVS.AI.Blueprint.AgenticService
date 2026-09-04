@@ -180,7 +180,9 @@ class Config:
                         (
                             self._process_dynabox(item, placeholder, replacement)
                             if isinstance(item, (dict, DynaBox)) or hasattr(item, "items")
-                            else _try_parse_json(item) if isinstance(item, str) else item
+                            else _try_parse_json(item)
+                            if isinstance(item, str)
+                            else item
                         )
                         for item in value
                     ]
