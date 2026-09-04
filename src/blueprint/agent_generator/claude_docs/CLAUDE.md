@@ -156,14 +156,28 @@ class CleanupScheduler(SchedulerBase):
 
     async def on_startup(self) -> None:
         self._service = self.registry.get_service(CleanupService)
+        await super().on_startup()   # required: without it the scheduler never runs
 
     async def on_shutdown(self) -> None:
-        pass
+        await super().on_shutdown()
 
     async def tick(self) -> None:
         """Called on each cron interval."""
         await self._service.cleanup()
 ```
+
+- **Override `on_startup` only if you also call `super().on_startup()`.** The base class is
+  what starts the timer, wires the tick handler and registers `POST /api/<name>/trigger`.
+- **`scheduler_mode` decides what calls `tick()`, and it is required.** It has no default:
+  registering a scheduler without setting it fails at startup, because neither value is safe to
+  inherit silently. `"event"` starts no timer in the process -- the tick arrives as an ordinary
+  event on `<app_name>.scheduler.<scheduler_name>`, published by an external `CronJob`, so the
+  queue group already guarantees that exactly one replica runs it; it needs `event_bus` set to
+  `"dapr"` or `"nats"`. `"in_process"` runs an APScheduler timer in **every** replica and
+  claims each tick in the cache so one replica runs it -- so it needs `.with_cache()` to fire a
+  tick once. Without a cache every replica runs every tick, and startup says so.
+- The crontab stays declared here in both modes; it is what the `CronJob` is generated from.
+- **A scheduler that wants to *publish* an event needs `event_publishing_enabled = true`.** Consuming and publishing are separate: a handler implies a transport client, a scheduler does not. The key creates the client and subscribes to nothing, and it needs `event_bus` set.
 
 ### AgentRuntime (via AgentBuilder)
 
@@ -217,6 +231,10 @@ model_max_tokens = 2000
 # Event deduplication -- off by default, both keys required to switch it on.
 # idempotency_enabled = true
 # idempotency_ttl = 1500          # seconds; must outlast the broker redelivery window
+
+# Required once a scheduler is registered; no default. "in_process" runs a timer in
+# every replica; "event" takes the tick as an event and needs event_bus set.
+scheduler_mode = "in_process"
 
 [default.runtimes.my_agent]     # Per-agent overrides
 model_name = "gpt-4-turbo"

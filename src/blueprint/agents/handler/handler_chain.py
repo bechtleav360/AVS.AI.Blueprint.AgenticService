@@ -9,6 +9,7 @@ from opentelemetry import trace
 
 from ..component.component import Component, traced
 from ..models.events import CloudEvent, HandlerResult
+from ..utils import parse_bool
 
 logger = logging.getLogger(__name__)
 
@@ -267,13 +268,4 @@ class HandlerChain(Component):
 
     def _read_bool(self, key: str, default: bool) -> bool:
         """Read a boolean config key, accepting the strings an environment variable delivers."""
-        raw = self.config.get(key, default)
-        if isinstance(raw, bool):
-            return raw
-        if isinstance(raw, str):
-            normalized = raw.strip().lower()
-            if normalized in ("true", "1", "yes"):
-                return True
-            if normalized in ("false", "0", "no"):
-                return False
-        raise ValueError(f"Config key '{key}' must be a boolean, got {raw!r}.")
+        return parse_bool(self.config.get(key, default), key)

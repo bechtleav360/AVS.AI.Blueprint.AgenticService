@@ -24,6 +24,7 @@ from .io.api.eventing.sessions_bus import SessionsBus
 from .io.api.utilities.root import RootApi
 from .io.api.utilities.cache import CacheManagementApi
 from .clients.io.dapr_client import DaprClient
+from .clients.io.io_client_base import TOPIC_TRANSPORTS
 from .clients.io.nats_client import NATSClient
 from .services.service_base import ServiceBase
 from .services.eventing.event_processing_service import EventProcessingService
@@ -31,6 +32,7 @@ from .services.eventing.event_publishing_service import EventPublishingService
 from .services.sessions import SessionKeyProvider, SessionsApiClient
 from .services.infrastructure.cache_backend_factory import CacheBackendFactory
 from .config import Config, TelemetryManager
+from .utils import parse_bool
 
 HandlerT = TypeVar("HandlerT", bound=EventHandlerBase)
 ServiceT = TypeVar("ServiceT", bound=ServiceBase)
@@ -159,24 +161,61 @@ class AppBuilder:
 
         This method:
         1. Injects Config into the Component class hierarchy
-        2. Creates IO clients and internal services based on configuration
-        3. Wires health checkers from all registered clients
-        4. Returns a FastAPI app with lifespan management
+        2. Wires each registered scheduler for its scheduler_mode
+        3. Creates the IO client, and the eventing endpoint only if something consumes
+        4. Wires health checkers from all registered clients
+        5. Returns a FastAPI app with lifespan management
         """
         # 1. Inject config — enforced once-only by metaclass guard
         Component.configure(self._config)
 
         registry: Registry = Component.shared_registry  # type: ignore[assignment]
 
-        # 2. Create IO transport client and eventing endpoint if handlers registered
-        if registry.get_event_handler():
-            event_bus_type = self._config.get("event_bus", "").lower()
+        # 2. Wire the schedulers, before step 3 decides whether this application needs a
+        # transport at all. A scheduler in 'event' mode has no in-process timer:
+        # its tick arrives as an event, so its tick handler must be registered by now or an
+        # application whose only event consumer is a scheduler gets no transport and is never
+        # ticked. wire() also adds the trigger route while the router can still be copied.
+        for scheduler in registry.get_schedulers():
+            tick_handler = scheduler.wire()
+            if tick_handler is not None:
+                logger.info(
+                    "Scheduler '%s' is in event mode; its tick arrives on topic '%s' (crontab '%s')",
+                    scheduler.name,
+                    tick_handler.topic,
+                    scheduler.crontab,
+                )
+
+        # 3. Create the IO transport client, and the eventing endpoint only if something
+        # consumes. Publishing and consuming are decided separately: an application that
+        # only emits events -- a scheduler that reports what it did, a REST API that hands
+        # work on -- needs a client but must not be subscribed to anything it never asked
+        # for. Consuming still implies publishing, because a handler returning a
+        # HandlerResult with an event_type has always published through the same client.
+        consumes = bool(registry.get_event_handler())
+        publishes = self._publishing_requested()
+        event_bus_type = str(self._config.get("event_bus", "") or "").strip().lower()
+
+        if publishes and event_bus_type not in TOPIC_TRANSPORTS:
+            # Strict where the handler branch below only warns: 'event_publishing_enabled' is
+            # a new key, and setting it is an explicit statement that this application emits
+            # events. Honouring that with no transport would mean the first publish fails at
+            # runtime, inside whatever business operation produced the event.
+            raise ValueError(
+                f"'event_publishing_enabled' is true but 'event_bus' is {event_bus_type or 'not set'!r}, so there is "
+                f"no client to publish through. Set 'event_bus' to one of {', '.join(TOPIC_TRANSPORTS)}, or remove "
+                "'event_publishing_enabled'."
+            )
+
+        if consumes or publishes:
             if event_bus_type == "dapr":
                 DaprClient()  # auto-registers
-                self._eventing_component = DaprEventing()
+                if consumes:
+                    self._eventing_component = DaprEventing()
             elif event_bus_type == "nats":
                 NATSClient()  # auto-registers
-                self._eventing_component = NatsEventing()
+                if consumes:
+                    self._eventing_component = NatsEventing()
             elif event_bus_type == "sessions":
                 SessionsApiClient()  # ServiceBase → auto-registers
                 SessionKeyProvider()  # ServiceBase → auto-registers
@@ -190,16 +229,24 @@ class AppBuilder:
                     "('dapr', 'nats', or 'sessions'). Event handling will be disabled."
                 )
 
-        # 3. Create internal services (auto-register)
+            if publishes and not consumes:
+                logger.info(
+                    "Event publishing is enabled without any handler: a '%s' client is created, and nothing is subscribed",
+                    event_bus_type,
+                )
+
+        # 4. Create internal services (auto-register)
         # EventProcessingService is only useful when there's a handler to route
-        # requests to — whether via an eventing endpoint (see step 2) or a REST
+        # requests to -- whether via an eventing endpoint (see step 3) or a REST
         # API calling RestApiBase._process_resource() directly.
-        if registry.get_event_handler():
+        if consumes:
             EventProcessingService()
+        # Keyed on the client rather than on 'publishes', so a consuming application keeps
+        # the publishing service it has always had without opting in.
         if registry.get_io_clients():
             EventPublishingService()
 
-        # 4. Create ActuatorApi and wire health checkers from all registered clients
+        # 5. Create ActuatorApi and wire health checkers from all registered clients
         self._actuator_api = ActuatorApi()
         health_providers: dict[str, HealthCheckerBase] = {client.name: ClientHealthChecker([client]) for client in registry.get_clients()}
         # Pull the registered cache (if any) into the readiness probe so a Redis
@@ -212,7 +259,7 @@ class AppBuilder:
         if health_providers:
             self._actuator_api.add_health_providers(health_providers)
 
-        # 5. Build FastAPI app
+        # 6. Build FastAPI app
         app = FastAPI(
             title=self._config.get("app_name", "blueprint-service"),
             description=self._config.get("app_description", ""),
@@ -225,6 +272,39 @@ class AppBuilder:
 
         self._build_rest_endpoints(app, registry)
         return app
+
+    @staticmethod
+    def _lifecycle_rest_apis(registry: Registry) -> list[RestApiBase]:
+        """Return the REST APIs the lifespan owns, which is every one that is not a scheduler.
+
+        A scheduler is a ``RestApiBase`` -- that is how ``POST /{name}/trigger`` reaches the
+        app -- so it appears in ``get_rest_apis()`` as well as in ``get_schedulers()``. The
+        lifespan drives both lists, so without this filter every scheduler's ``on_startup``
+        and ``on_shutdown`` run twice.
+        """
+        return [rest_api for rest_api in registry.get_rest_apis() if not isinstance(rest_api, SchedulerBase)]
+
+    def _publishing_requested(self) -> bool:
+        """Report whether this application has opted into publishing events.
+
+        ``event_publishing_enabled`` (bool, default ``False``). Off by default because
+        publishing needs broker access, and a project that only wants a scheduler or a REST
+        API may have none -- creating a client it never asked for would fail its readiness
+        probe on a broker it does not run. Consuming applications never need the key: a
+        registered handler already implies a client.
+
+        An absent or empty value both mean "off". Empty is not treated as a typo because an
+        unset environment override arrives as ``""``, and an operator writing
+        ``BLUEPRINT_EVENT_PUBLISHING_ENABLED=`` means the key is not set. Anything else that
+        is not a boolean does raise.
+
+        Raises:
+            ValueError: if the key holds a non-empty value that is not a boolean.
+        """
+        raw = self._config.get("event_publishing_enabled", False)
+        if raw is None or (isinstance(raw, str) and not raw.strip()):
+            return False
+        return parse_bool(raw, "event_publishing_enabled")
 
     def _build_rest_endpoints(self, app: FastAPI, registry: Registry) -> None:
         """Include all routers into the FastAPI app."""
@@ -305,8 +385,15 @@ class AppBuilder:
                     logger.error("Agent %s startup failed: %s", agent_name, e, exc_info=True)
                     raise
 
-            # User REST APIs
-            for rest_api in registry.get_rest_apis():
+            # User REST APIs. Schedulers are excluded because SchedulerBase extends
+            # RestApiBase for its trigger route, so every scheduler is in this list *and* in
+            # get_schedulers() below -- driving both loops called on_startup twice on the same
+            # object. Before the guard in SchedulerBase.on_startup that meant two
+            # AsyncIOScheduler instances per scheduler, only one of which on_shutdown could
+            # reach: every cron job fired twice in a single replica, and one timer could never
+            # be stopped (#43). Their routers are still mounted from get_rest_apis() in
+            # _build_rest_endpoints, which is where that inheritance is wanted.
+            for rest_api in self._lifecycle_rest_apis(registry):
                 try:
                     await rest_api.on_startup()
                     logger.info("REST API %s startup completed", rest_api.name)
@@ -377,7 +464,7 @@ class AppBuilder:
                 except Exception as e:
                     logger.error("Scheduler %s shutdown failed: %s", scheduler.name, e, exc_info=True)
 
-            for rest_api in registry.get_rest_apis():
+            for rest_api in self._lifecycle_rest_apis(registry):
                 try:
                     await rest_api.on_shutdown()
                 except Exception as e:

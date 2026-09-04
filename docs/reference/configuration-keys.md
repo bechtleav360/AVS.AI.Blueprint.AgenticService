@@ -44,6 +44,27 @@ Settings for the event bus transport layer.
 
 ---
 
+## Event Deduplication
+
+Delivery is at-least-once on both transports, so a handler can be run twice for the same
+event. Deduplication is opt-in and off by default: whether replaying a handler's side
+effects is acceptable is a property of the product, not of the framework.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `idempotency_enabled` | `bool` | `false` | Skip an event whose `id` and `source` were already dispatched within the window. Requires `idempotency_ttl` and a registered cache (`.with_cache()`); startup fails if either is missing, rather than leaving deduplication silently off. Best-effort: the claim is check-then-set, so two replicas handed the same event at the same instant can both dispatch, and a cache error fails open. |
+| `idempotency_ttl` | `int` | -- | Seconds a processed event is remembered. No default on purpose -- it must outlast the broker's redelivery window (`nats_ack_wait` * `nats_max_deliver` on JetStream, the component's retry policy under Dapr), and a window that expires before the last redelivery looks exactly like deduplication not working. |
+
+---
+
+## Scheduling
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `scheduler_mode` | `str` | -- (**required** when a scheduler is registered) | Where a scheduler's tick comes from. `"event"` starts no in-process timer: the tick arrives as an ordinary event on the scheduler's own topic (`<app_name>.scheduler.<scheduler_name>` unless overridden with `topic=` in the scheduler's constructor), published by an external `CronJob`, so the queue group already picks exactly one replica and nothing is elected -- it requires `event_bus` to be `"dapr"` or `"nats"`, since `"sessions"` cannot deliver a topic. `"in_process"` runs an APScheduler timer inside every replica and coordinates them through the registered cache: each tick is claimed under a key derived from the scheduler and the scheduled minute, and only the replica that stores the marker runs it. Intended for local development and un-orchestrated Docker, where no `CronJob` exists. **With no cache registered the ticks cannot be coordinated and every replica runs every tick**; startup warns about it. **No default:** neither value is safe to inherit silently, and which one applies depends on the deployment (is a broker reachable, does more than one replica run, is there an orchestrator at all) rather than on the code, so the author states it -- the same reasoning as `idempotency_ttl`. An absent, empty or unrecognised value fails startup. |
+
+---
+
 ## Event Publishing
 
 Section: `[default.event_publishing]`
@@ -52,6 +73,7 @@ Controls how outbound events are published to topics.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+| `event_publishing_enabled` | `bool` | `false` | Top-level key (not in this section). Opt into publishing events **without consuming any**. A registered handler already implies a transport client, so a consuming application never needs this key; an application that only emits -- a scheduler reporting what it did, a REST API handing work on -- had no way to get a client at all before it existed. When set, the client is created and **nothing is subscribed**: no eventing endpoint, no subscription document, no `/events/{topic}` route. Off by default because publishing needs broker access a scheduler-only project may not have, and a client it never asked for becomes a readiness dependency on infrastructure it does not run. Requires `event_bus` to be `"dapr"` or `"nats"`; startup fails otherwise. |
 | `default_pubsub_name` | `str` | `"pubsub"` | Default pub/sub component name (used with Dapr). |
 | `topic_mapping` | `dict` | `{}` | Maps event type strings to topic names. Events not in this mapping use the event type as the topic. |
 
@@ -151,6 +173,14 @@ nats_ack_wait = 300.0        # must exceed the p99 handler duration
 nats_max_ack_pending = 16    # outstanding messages across all replicas
 nats_max_deliver = 5         # attempts before the message is dead-lettered
 # nats_dead_letter_subject = "my_agent_service.dead-letter"  # defaults to <queue group>.dead-letter
+
+# Event deduplication (off by default; both keys are needed to turn it on)
+# idempotency_enabled = true
+# idempotency_ttl = 1500      # seconds; must outlast the redelivery window
+
+# Scheduling -- required once a scheduler is registered, no default
+scheduler_mode = "in_process"   # or "event", which needs event_bus set
+# event_publishing_enabled = true   # publish without consuming; needs event_bus
 
 # Prompts
 prompt_directory = "prompts"

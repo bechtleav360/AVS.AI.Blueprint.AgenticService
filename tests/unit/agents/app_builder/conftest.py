@@ -126,4 +126,5 @@ def wire_empty_registry(mock_registry: MagicMock) -> None:
     mock_registry.get_io_clients.return_value = []
     mock_registry.get_clients.return_value = []
     mock_registry.get_rest_apis.return_value = []
+    mock_registry.get_schedulers.return_value = []
     mock_registry.has_cache.return_value = False

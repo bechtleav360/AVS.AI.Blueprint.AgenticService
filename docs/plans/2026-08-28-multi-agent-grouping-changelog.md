@@ -79,13 +79,38 @@ Code:
   project has handlers and has declared neither
 - **P4 -- duplicates are counted apart from unmatched events**: `blueprint.events.duplicate`,
   so a redelivery storm does not read as a namespace subscribed too broadly
+- **P5 -- the cron timer becomes a stated choice**: `scheduler_mode` is **required** and has no
+  default. `"event"` starts no in-process timer -- the tick arrives as an ordinary event on the
+  scheduler's own topic, so the queue group picks a single replica and nothing is elected;
+  `"in_process"` keeps the timer for local development and plain Docker. Registering a scheduler
+  without the key, or choosing `"event"` with no usable `event_bus`, fails at startup
+- **P5 -- a second `build()` pass no longer starts a second timer** (#43), and the manual trigger
+  route is registered before `include_router` copies it, so it is actually served
+- **P5 -- two defects in the generated scheduler**: the scaffold emitted a file that did not
+  parse, and its `on_startup` override never called `super()`, so a scaffolded scheduler never ran
+- **P5 -- publishing no longer requires consuming**: `event_publishing_enabled` gives an
+  application that only emits events a transport client and no subscription. Off by default,
+  because a project that wants only a timer may have no broker access
+- **P5 -- #43's other cause**: `SchedulerBase` extends `RestApiBase`, so every scheduler sat in the
+  REST-API lifespan loop *and* the scheduler loop. A single lifespan started two
+  `AsyncIOScheduler` instances per scheduler, and `on_shutdown` could reach only one
+- **P5 -- an event-mode crontab is validated at startup**: nothing else parses it in that mode, so
+  a typo used to surface as a tick that never arrives. Manifest generation itself is deliberately
+  deferred, and the renderer written for it was removed rather than carried as dead code
+- **P5 -- `"in_process"` fires a tick once across replicas**: every replica's timer fires and each
+  tick is claimed in the shared cache, so one replica runs it. Not a leader lease: nothing is held,
+  so there is no renewal task and no takeover bound -- which answers the open question the spec
+  left on that mode
+- **New cache primitive `CacheService.claim`**: set-if-absent, atomic on both backends (`add` on
+  disk, `SET NX EX` on Redis). This is the compare-and-set operation P4 flagged as missing
 
 Documentation and process:
 
 - Deployment guide now warns that multi-replica is unsafe, and its examples default to one replica
   (`2d80b63`)
 - New config keys documented: `event_client_drain_timeout`, `dapr_pubsub_name`,
-  `dapr_declarative_subscriptions`, `idempotency_enabled`, `idempotency_ttl`
+  `dapr_declarative_subscriptions`, `idempotency_enabled`, `idempotency_ttl`, `scheduler_mode`,
+  `event_publishing_enabled`
 - Feature working rules in `CLAUDE.md`: one reviewable change at a time (`4cf2d51`), and a
   walkthrough whenever real code is written (`7735251`)
 
@@ -95,7 +120,9 @@ Issues opened along the way:
   unenforced
 - **#81** -- Dapr declared topics never subscribe (fixed here)
 
-**Breaking changes: none so far.** See *Compatibility* at the end.
+**Breaking changes: one, and it is loud.** `scheduler_mode` is required, so an existing project
+with a scheduler fails at startup until it states which mode it wants. Nothing changes behaviour
+silently. See *Compatibility* at the end.
 
 ---
 
@@ -619,6 +646,506 @@ untracked; six policy-resolution failures and the string form an environment var
 duplicate counter firing while the unhandled counter does not, and the reverse; and seven cases for
 the `asbs validate` notice.
 
+### P5 (first half) -- the cron timer becomes a stated choice, and the tick becomes an event
+
+`SchedulerBase.on_startup` created an `AsyncIOScheduler` per process with no leader election
+(#73), so every replica fired every cron tick. Grouping widens that: one pod hosting 20 agents
+runs 20 timers, and two replicas duplicate all 20 agents' crons at once. The fix spec sec. 7.5
+asks for is not leader election -- it is taking the timer off the path nobody chose.
+
+**`scheduler_mode` selects what calls `tick()`, and it has no default.** `_resolve_mode` reads the
+key, lower-cases and strips it, rejects an absent or empty value, and then accepts only `"event"`
+or `"in_process"`:
+
+```python
+raw = self.config.get("scheduler_mode", None)
+mode = str(raw or "").strip().lower()
+if not mode:
+    raise ValueError(
+        f"Scheduler '{self.name}' is registered but 'scheduler_mode' is not set, and it has no default. "
+        f"Set it to '{SCHEDULER_MODE_EVENT}' to take the tick as an event on '{self.tick_topic}', published "
+        f"by an external CronJob -- exactly one replica then runs it. Set it to '{SCHEDULER_MODE_IN_PROCESS}' "
+        "to run an APScheduler timer inside the process, which is correct for local development and plain "
+        "Docker but fires once per replica."
+    )
+if mode not in SCHEDULER_MODES:
+    raise ValueError(f"Config key 'scheduler_mode' must be one of {', '.join(SCHEDULER_MODES)}, got {raw!r}.")
+```
+
+The error names both values and what each one costs, because it is the only thing an existing
+project sees. The result is cached on the instance, so the mode cannot change under a running
+scheduler. *Why there is no default* is argued below -- it is a deliberate departure from spec
+sec. 7.5, which names `"event"` as the default.
+
+**Event mode without a transport fails too.** `_require_event_transport`, called from `wire()`
+before the handler is created, insists on `event_bus` being one of `EVENT_MODE_TRANSPORTS =
+("dapr", "nats")`. `"sessions"` is excluded on purpose: `SessionsBus` consumes SSE job
+notifications and never reads `get_subscribed_topics()`, so a tick published to a topic would not
+arrive. Without this check, event mode with no broker is the one failure that is pure silence --
+the scheduler starts, subscribes to nothing, and never ticks.
+
+**In event mode nothing in the process keeps time.** `on_startup` now branches:
+
+```python
+if self._started:
+    logger.warning("Scheduler '%s' is already started; ignoring the repeated startup", self.name)
+    return
+self._started = True
+self.wire()
+
+if self.scheduler_mode == SCHEDULER_MODE_EVENT:
+    logger.info(..., self.name, self.tick_topic, self._crontab)
+    return
+
+trigger = CronTrigger.from_crontab(self._crontab)
+self._scheduler = AsyncIOScheduler()
+self._scheduler.add_job(self.tick, trigger, name=self.name)
+self._scheduler.start()
+```
+
+The `AsyncIOScheduler` block is unchanged and now runs only under `"in_process"`. `on_shutdown`
+clears `_scheduler` and `_started` after shutting the timer down, so a stop/start cycle in one
+process starts one timer again rather than none.
+
+**`SchedulerTickHandler` is what turns an external tick into a `tick()`.** A new
+`EventHandlerBase` subclass in the same module, holding a scheduler and a topic:
+
+```python
+def get_subscribed_topics(self) -> list[str]:
+    return [self._topic]
+
+async def can_handle_event(self, event, context) -> bool:
+    return any(context.get(key) == self._topic for key in _TOPIC_CONTEXT_KEYS)
+
+async def handle_event(self, event, context) -> dict[str, Any]:
+    logger.info("Scheduler '%s' ticking from event '%s' on topic '%s'", self._scheduler.name, event.id, self._topic)
+    await self._scheduler.tick()
+    return {"status": "ticked", "scheduler": self._scheduler.name}
+```
+
+That is the entire event mode. Declaring the topic is what makes the transport subscribe --
+`NatsEventing.on_startup` and `DaprEventing._declared_topics` both walk
+`registry.get_event_handler()` and call `get_subscribed_topics()` -- so the tick arrives on the
+path the framework already has, and the queue group is what guarantees a single replica runs it.
+Nothing is elected. Dedup, the unhandled/duplicate counters and the P2 acknowledgement contract
+apply to a tick exactly as they do to any other event: a `tick()` that raises reaches the
+transport edge and is naked or termed there, which is why `handle_event` does not catch.
+
+Three details in that class are load-bearing:
+
+- **It matches the topic, not the event type.** `_TOPIC_CONTEXT_KEYS = ("nats_topic",
+  "dapr_topic", "topic")` -- every key a transport spells the delivery topic with. Those keys
+  reach user handlers and were deliberately left un-unified
+  (`EventHandlingBase._process_cloud_event` says so), so a consumer that wants the topic has to
+  read all three. Matching the topic rather than a type string also means a hand-published tick
+  during development works with any body.
+- **`PRIORITY = 10`, ahead of the default 100.** A handler that declares nothing is still
+  evaluated for every event its namespace receives (spec sec. 7.7, rule 1), so a permissive
+  `can_handle_event` in user code would otherwise claim the tick first.
+- **It renames itself in `__init__`.** `Component.__init__` registers under the class-derived
+  name, and `Registry.add_component` raises on a duplicate, so a second scheduler's handler would
+  collide with the first on `scheduler_tick_handler`. Assigning `self.name = f"{scheduler.name}_tick"`
+  immediately pops that key back out of the registry, which is what leaves it free for the next
+  instance. A test builds two schedulers against a real `Registry` to pin it.
+
+**The tick topic derives from the agent, not the deployment.** `_resolve_topic` returns
+`f"{namespace}.scheduler.{self.name}"`, falling back to `app_name` while `ROOT_NAMESPACE` is still
+`""` -- the same identity the queue group derives from, so moving a scheduler between deployment
+groups does not change the subject a `CronJob` publishes to (C1). It raises if no identity is
+available, and rejects `*` and `>` in either the derived or the `topic=`-overridden form -- a
+wildcard would subscribe the scheduler to traffic that is not its tick. Whitespace is treated
+asymmetrically: rejected in an explicitly named topic, but rewritten to `_` in a derived one, the
+way `NATSClient._durable_for` already rewrites a subject into a legal durable name.
+`app_name = "Health Monitor"` is legal and common -- `examples/health_monitor` uses exactly that --
+and since the topic is derived rather than typed there is no author mistake to catch, only a name
+to make usable. The `topic=` override exists because the subject taxonomy is still unratified
+(spec sec. 13): an agent whose ticks are already published on someone else's subject can name it.
+
+**`wire()` runs at build time, and that placement is the fix for two silent failures.**
+
+```python
+def wire(self) -> SchedulerTickHandler | None:
+    self.register_trigger_route()
+    if self.scheduler_mode != SCHEDULER_MODE_EVENT:
+        return None
+    if self._tick_handler is None:
+        self._tick_handler = SchedulerTickHandler(self, self.tick_topic)
+    return self._tick_handler
+```
+
+`AppBuilder.build()` calls it in a new step 2, before the existing `if registry.get_event_handler():`
+block that creates the transport and the eventing endpoint:
+
+```python
+for scheduler in registry.get_schedulers():
+    tick_handler = scheduler.wire()
+    if tick_handler is not None:
+        logger.info(
+            "Scheduler '%s' is in event mode; its tick arrives on topic '%s' (crontab '%s')",
+            scheduler.name, tick_handler.topic, scheduler.crontab,
+        )
+```
+
+- **Without that ordering, an application whose only event consumer is a scheduler gets no
+  transport.** `build()` creates `NATSClient`/`DaprClient` and the eventing component only when a
+  handler is registered. A tick handler created during `on_startup` would arrive after that
+  decision, so the scheduler would be registered, subscribed to nothing, and never ticked.
+- **The manual trigger route was already broken, and this is where it gets fixed.**
+  `POST /{name}/trigger` was added to `self.router` inside `on_startup`, but
+  `_build_rest_endpoints` calls `app.include_router` during `build()`, and `include_router` copies
+  the routes a router holds *at that moment*. Every route added during startup therefore existed
+  on the scheduler's own router and was served by nothing. `register_trigger_route` is idempotent
+  and now runs from `wire()`, before the copy. It stays out of `__init__` because
+  `with_scheduler(name=...)` can rename the component afterwards and the path carries the name.
+
+`on_startup` still calls `wire()` itself, so a scheduler driven without `AppBuilder` gets its
+handler and its route; both calls are no-ops the second time.
+
+**#43 -- and it had a second cause, worse than the one on record.** The plan describes two
+`build()` passes driving the lifespan hooks twice over the same registry; the `_started` guard
+covers that. But it happens in a *single* pass too, and it always has:
+
+```python
+print([x.name for x in registry.get_schedulers()])   # ['nightly_scheduler']
+print([x.name for x in registry.get_rest_apis()])    # ['nightly_scheduler']
+```
+
+`SchedulerBase` extends `RestApiBase` -- that is how `POST /{name}/trigger` reaches the app -- so
+every scheduler is in `get_rest_apis()` as well as in `get_schedulers()`, and the lifespan iterates
+both lists. `on_startup` therefore ran twice on the same object in one startup, and the old
+implementation created a fresh `AsyncIOScheduler` each time and overwrote `self._scheduler`. The
+first one was already started and stayed started, holding the same job, while the attribute pointed
+at the second -- so **every cron job fired twice in a single replica, and `on_shutdown` could only
+ever stop one of the two timers.** `on_shutdown` was likewise called twice, which for a subclass
+doing anything non-idempotent in either hook is its own problem.
+
+Two changes, because the two failures are different:
+
+- `SchedulerBase.on_startup` guards on `_started` and warns on a repeated call. That absorbs both
+  causes and is the safety net.
+- `AppBuilder._lifecycle_rest_apis` removes schedulers from the REST-API lifespan loops, so the
+  double drive stops happening at all:
+
+  ```python
+  return [rest_api for rest_api in registry.get_rest_apis() if not isinstance(rest_api, SchedulerBase)]
+  ```
+
+  Their routers are still mounted from `get_rest_apis()` in `_build_rest_endpoints`, which is where
+  that inheritance is wanted. Without this the guard would fire a warning on every startup of every
+  scheduler, which is a fix that reports itself as a fault forever.
+
+An integration test asserts a scheduler's hooks run once per lifespan and that no "already started"
+warning is emitted.
+
+**Publishing no longer requires consuming.** Both transport clients were constructed only inside
+`build()`'s `if registry.get_event_handler():` branch, and `EventPublishingService` only when an IO
+client existed -- so a scheduler-only application could not publish an event at all, whatever its
+`event_bus` said. A nightly job that emits `reconciliation.completed` had no way to do it. The two
+decisions are now separate:
+
+```python
+consumes = bool(registry.get_event_handler())
+publishes = self._publishing_requested()
+event_bus_type = str(self._config.get("event_bus", "") or "").strip().lower()
+
+if publishes and event_bus_type not in TOPIC_TRANSPORTS:
+    raise ValueError(...)
+
+if consumes or publishes:
+    if event_bus_type == "dapr":
+        DaprClient()
+        if consumes:
+            self._eventing_component = DaprEventing()
+    elif event_bus_type == "nats":
+        NATSClient()
+        if consumes:
+            self._eventing_component = NatsEventing()
+    ...
+```
+
+`event_publishing_enabled` (bool, default `False`) is the opt-in, and it stays opt-in on purpose: a
+project that wants only a timer may have no broker access at all, and a client created on its
+behalf becomes a readiness dependency on infrastructure it does not run. An absent or empty value
+both mean off -- an unset environment override arrives as `""` -- while a non-empty non-boolean
+raises, through a new shared `parse_bool` in `utils` that `HandlerChain._read_bool` had implemented
+privately for `idempotency_enabled`.
+
+The publish-only shape gets a client and **nothing else**: no eventing component, so no
+`GET /dapr/subscribe`, no `POST /events/{topic}`, no subscription and no consumer. That is the
+property that makes it safe for an agent that was never meant to consume -- it cannot accidentally
+receive anything, because nothing was subscribed. `EventProcessingService` is still keyed on
+`consumes`, and `EventPublishingService` still on the client existing, so a consuming application
+keeps the publishing it has always had without touching the new key.
+
+`TOPIC_TRANSPORTS = ("dapr", "nats")` now lives next to `IOClientBase` -- the class that exists only
+for those two -- rather than in the scheduler module, because two callers need the same fact:
+publishing needs a client, and an event-mode scheduler needs a subscription. `"sessions"` is
+excluded from both; it wires `SessionsApiClient` and `SessionsBus`, which consumes SSE job
+notifications and never reads `get_subscribed_topics()`.
+
+**Two defects in the generated scheduler, found on the way.**
+
+- **`asbs create scheduler` emitted a file that does not parse.** The template's `tick` body was a
+  `try:` containing only comments, followed by `except Exception as e:` -- a `SyntaxError`, so the
+  scaffolded module could not even be imported. The `try` is gone; `tick` is now a documented
+  TODO that lets its exceptions out, which is also what the acknowledgement contract needs (and
+  the old body logged *and* re-raised).
+- **The scaffolded `on_startup` never called `super().on_startup()`.** It overrode the base method
+  with a comment-only body, so a scaffolded scheduler that did parse would have started no timer
+  and registered no trigger route -- in either mode. Both hooks now call `super()`, with a comment
+  saying what breaks without it. The same omission was in the scheduler example in the generated
+  `CLAUDE.md` and is fixed there too.
+
+**Why `scheduler_mode` has no default (a departure from spec sec. 7.5).** The spec names `"event"`
+as the default. It is not implemented that way, and the reasoning belongs on the record because it
+is the first question a reviewer will ask.
+
+Neither value is a defensible thing to inherit silently:
+
+- **`"in_process"` as the default would ship the defect.** It *is* #73 -- a timer in every replica,
+  so scaling past one fires every tick N times, and a pod hosting 20 grouped agents runs 20 timers.
+  Defaulting to it means only the projects that read the release notes closely enough to opt in get
+  the fix, and the ones that do not are precisely the multi-replica production deployments that can
+  least afford duplicated side effects.
+- **`"event"` as the default would ship silence.** It is correct under an orchestrator, but it needs
+  something outside the process to publish the tick and a transport to receive it. A service whose
+  only job is periodic work may have neither -- `examples/health_monitor` registers two schedulers
+  and configures no `event_bus` at all -- and for those, event mode is not a line of config but a
+  broker they do not have. On upgrade they would simply stop ticking.
+
+Which value is right depends on facts this layer cannot read: whether a broker is reachable,
+whether more than one replica runs, whether an orchestrator exists at all. That is the same shape
+as `idempotency_ttl` in sec. 7.4, and it gets the same answer -- the framework provides the
+mechanism and the author states the choice. The cost is one line of config per existing project,
+paid once, against a startup error that names both options.
+
+The counter-argument, for the record: `"in_process"` as the default would have made this change
+fully backward-compatible, and a required key does break every existing project with a scheduler.
+That is accepted deliberately -- the break is loud, one-time and actionable, where the alternative
+is a wrong default that stays wrong. It should be an amendment to spec sec. 7.5 rather than an
+implementation detail that quietly contradicts it.
+
+**What is surfaced to the author.** `scheduler_mode = "event"` is written explicitly into the
+scaffolded `settings.toml` as `"in_process"` -- the right value for the local `asbs dev` loop a new
+project starts in -- with the trade-off and the requirement in a comment, the generated `CLAUDE.md`
+gains three bullets on the two modes and the `super()` requirement, and
+`docs/reference/configuration-keys.md` gains a `## Scheduling` section.
+`examples/health_monitor`, the one project in this repository with schedulers, states
+`"in_process"` and says why in a comment. That reference was also missing `idempotency_enabled` and
+`idempotency_ttl` from P4 -- documented there now, in a `## Event Deduplication` section, together
+with both keys in the example `settings.toml`.
+
+Tests: both modes read back, case tolerance, an absent/empty/whitespace value and an absent key
+each rejected with both values named, rejection of an unknown value, single resolution; topic
+derivation from `app_name` and from a renamed scheduler, the `topic=` override, a missing identity,
+two wildcards, whitespace rejected in an explicit topic and rewritten in a derived one; `wire()`
+creating a handler in event mode only, its idempotency, one trigger route in both modes, event mode
+refusing three unusable `event_bus` values and accepting both broker transports, and in-process
+mode needing no transport; `parse_bool` accepting a bool, the four true/false strings and rejecting
+anything else; `on_startup` starting no timer in event mode, starting and
+scheduling one in in-process mode, and starting no second timer or route when called twice (#43);
+shutdown allowing a restart; the tick handler's declared topic, priority, name, the three context
+keys it accepts, the topics it declines, the tick it runs, the absence of a published event, a
+failing tick reaching the transport edge, and two schedulers registering distinct names against a
+real `Registry`; `build()` wiring an event-mode scheduler before the transport decision and
+creating no transport for an in-process one; and six assertions on the generated scaffold,
+including that it parses.
+
+One offline integration test (`tests/integration/test_scheduler_event_mode.py`) exercises the
+whole of event mode with nothing listening anywhere, which the Dapr transport makes possible: a
+real `Config`, a real `build()`, the tick topic appearing in `GET /dapr/subscribe`, a CloudEvent
+posted to `POST /events/<tick topic>` answering `SUCCESS` and the scheduler's `tick()` having run
+once. It also pins the two things a unit test cannot see, both about what `build()` hands to
+FastAPI: `POST /api/<scheduler>/trigger` answering 200, and an in-process scheduler producing no
+subscription document at all. Two more assert the loud failures at `build()`: a scheduler with no
+`scheduler_mode`, and `"event"` with no `event_bus`. Three more cover the publish-only shape end to
+end -- a pure scheduler that opts in gets a client and a publishing service while
+`GET /dapr/subscribe` and `POST /events/...` both answer 404, one that does not opt in gets
+neither, and a scheduler's lifecycle hooks run exactly once per lifespan (#43).
+
+Seven unit tests on `build()` cover the publish/consume split: no client without the opt-in, the
+opt-in creating a client but no eventing component and no `EventProcessingService`, the string form
+an environment variable delivers, and three rejections -- no transport, `"sessions"`, and a
+non-boolean value -- plus the regression that a consuming application still publishes without the
+key.
+
+### P5 -- the event-mode crontab is validated, and the manifest generator was tried and dropped
+
+Event mode has no publisher yet: the schedule is declared in agent code and something outside the
+process has to fire it. A `CronJob` renderer was written for that, reviewed, and then **removed
+before it was ever committed** -- the image and entrypoint model is about to change what a manifest
+even belongs to (see *Open points*), and an unused module in the framework would only mislead the
+next reader. What survives is the one part that was not specific to generating manifests, plus a
+record of what the attempt established.
+
+**`validate_crontab` stays, in `scheduler.py`, called from `wire()`.** In `"in_process"` mode
+`CronTrigger.from_crontab` parses the expression, so a typo fails the pod. In `"event"` mode
+nothing parsed it at all -- the tick arrives from outside -- so a bad expression surfaced as a
+scheduler that reported itself healthy and never ticked:
+
+```python
+if not croniter.is_valid(expression):
+    raise ValueError(f"The declared crontab '{crontab}' is not a valid cron expression.")
+
+fields = expression.split()
+if len(fields) != 5:
+    raise ValueError(
+        f"The declared crontab '{crontab}' has {len(fields)} fields. An external scheduler reads the five standard "
+        "ones (minute hour day-of-month month day-of-week); seconds and year are apscheduler extensions it will not "
+        "understand."
+    )
+```
+
+`croniter` rather than apscheduler's parser, because the consumer is an external cron reading the
+five standard fields and apscheduler accepts extensions -- a leading seconds field among them --
+that no cron implementation does. That six-field form is rejected explicitly, since it is the
+mistake an author familiar with apscheduler would actually make.
+
+**What the removed renderer established**, kept here because each of these is a trap that will have
+to be avoided again wherever the generation ends up living:
+
+- **A Dapr publisher has to shut its own sidecar down.** The injected sidecar never exits, so the
+  Job stays `Running` -- and with `concurrencyPolicy: Forbid`, which the spec requires, every later
+  tick is then suppressed. A nightly job would fire exactly once and afterwards look like a broken
+  scheduler. `POST /v1.0/shutdown` after the publish is what lets the Job complete.
+- **The tick's CloudEvent `id` must vary per run, and the shell quoting is where that breaks.** A
+  fixed id makes every tick after the first a duplicate once `idempotency_enabled` is on, so the
+  scheduler runs once and never again. Writing `$TICK_ID` inside a single-quoted JSON body -- the
+  obvious way to write it -- publishes the literal characters, because a single-quoted shell string
+  expands nothing. The quote has to be closed, the variable inserted double-quoted, and the quote
+  reopened. String assertions did not catch this; executing the generated script did.
+- **The tick needs a `source`.** The dedup key is `(id, source)` and an event missing either is
+  dispatched untracked (sec. 7.4).
+- **`time` is better left out.** The CloudEvent model defaults it correctly; a shell-formatted
+  timestamp can fail its ISO-8601-with-timezone validator.
+- **A NATS URL can carry credentials, and a manifest is a repository file.** `nats://user:pass@host`
+  in `settings.toml` would be committed verbatim by any generator that inlines the configured URL.
+  It has to be detected and replaced with a secret reference.
+- **Derived Kubernetes names must fail rather than truncate.** 63 characters minus the job and pod
+  suffixes leaves 52; truncating lets two schedulers differing only past the cut collapse into one
+  object, where the second silently overwrites the first.
+
+### P5 -- `"in_process"` fires once across replicas, and the cache gains a claim primitive
+
+`"in_process"` mode was still #73 exactly as reported: an `AsyncIOScheduler` per replica, so three
+replicas fired every cron job three times. Event mode was fixed by the queue group; this is the
+other half, and it is the last thing that stood between the feature and the acceptance criterion
+*cron fires once across three replicas in **both** `scheduler_mode` values*.
+
+**`CacheService.claim` -- set-if-absent, and the reason it had to exist.** P4's dedup and this
+tick guard both use the cache to decide *which one of several processes does a piece of work*, and
+`exists` followed by `set` cannot do that: two callers racing on one key both pass the check before
+either write lands, and both believe they hold it. P4 recorded that as an open point ("a
+compare-and-set primitive on `CacheService` (Redis `SET NX`) would close most of it and is not
+written yet"). It is written now, as a new abstract method with an implementation per backend.
+
+Redis is the easy half -- one server-side operation, and expiry is the server's job:
+
+```python
+stored = self._client.set(full_key, json.dumps(value), nx=True, ex=effective_ttl)
+return bool(stored)
+```
+
+The disk backend needed a measurement first. `diskcache_rs.Cache.add` is set-if-absent and atomic
+across processes sharing the directory, because the cache is opened with file locking. But its
+`expire` argument is **not honoured**: an entry added with `expire=1` was still readable minutes
+later. That is presumably why `DiskCacheService` already keeps TTLs in a parallel metadata entry,
+and it is what shapes the implementation:
+
+```python
+if not self._cache.add(namespaced_key, value):
+    if not self._logically_expired(ttl_key):
+        return False
+    self._cache.set(namespaced_key, value)
+
+if effective_ttl is not None:
+    self._cache.set(ttl_key, str(time.time() + effective_ttl))
+```
+
+Had the backend's own expiry been trusted, a claim would never have expired and the scheduler would
+have ticked exactly once and then never again -- the same shape of failure as a fixed CloudEvent id
+under dedup. The stale branch is the one non-atomic path: `add` refuses a key whose *logical* TTL
+has passed because physically it is still there, and taking it over is a read then a write. It is
+only reached by a caller that reuses a key beyond its TTL, which the scheduler never does -- see
+the key choice below. Both implementations fail **open** on an unreachable cache, matching every
+other operation on the service: a cache that cannot answer must not stop the caller from working.
+
+**The scheduler claims the slot, not a lease.** The timer now runs a wrapper rather than `tick`:
+
+```python
+async def _claimed_tick(self) -> None:
+    if not self._claim_tick_slot():
+        logger.debug("Scheduler '%s' did not win this tick; another replica is running it", self.name)
+        return
+    await self.tick()
+
+def _claim_tick_slot(self) -> bool:
+    if not self.registry.has_cache():
+        return True
+    slot = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M")
+    return self.registry.cache_service.claim(
+        {"scheduler": self.name, "slot": slot},
+        {"claimed_at": time.time()},
+        namespace=TICK_CACHE_NAMESPACE,
+        ttl=TICK_CLAIM_TTL_SECONDS,
+    )
+```
+
+`add_job(self._claimed_tick, ...)` replaces `add_job(self.tick, ...)`, so nothing else about the
+timer changes.
+
+**Why a slot claim instead of the leader lease the spec asked for.** This is a deliberate
+departure, argued because it *removes* the question rather than answering it. Spec sec. 13 asked
+whether that mode needs true failover -- a dead leader taken over within a bound -- or whether "one
+designated instance runs it, others no-op" is enough, and noted that the cheap ordinal answer does
+not work under a Deployment. With a per-tick claim there is no leader:
+
+- Nothing is held, so there is **no renewal task** to schedule -- and therefore no framework-created
+  background task to leak, which C7 exists to prevent -- and no lease left behind by a replica that
+  dies holding one.
+- There is **no takeover bound to specify**, because the next slot is claimed from scratch by
+  whoever is alive. The failover question dissolves; the spec's open item is deleted rather than
+  answered.
+
+**The key is the slot, and that is what keeps set-if-absent sufficient.** `(scheduler, minute)`,
+not `scheduler`. Cron granularity is one minute, so every replica firing for the same scheduled
+time derives the same key and the next scheduled time derives a different one. Keying on the
+scheduler alone would need a compare-*and-swap* on every tick after the first -- read the stored
+slot, decide it is stale, write yours -- which is the racy path all over again. With a fresh key
+per slot, the atomic `add` path is the normal path and the stale branch is never taken.
+
+The consequence, stated because it is real: replicas whose clocks differ enough to straddle a
+minute boundary derive different slots and both tick. Container clock skew is milliseconds, and
+sec. 7.4 covers a repeated tick as it covers every other repeat.
+
+**No cache means the mode behaves as it did before, loudly.** There is nothing to claim with, so
+`_claim_tick_slot` returns `True` and every replica ticks. That is deliberate -- `"in_process"`
+exists for local development, and demanding `.with_cache()` there would be gratuitous -- so
+`on_startup` warns once, at startup, rather than per tick:
+
+```
+Scheduler 'x' started an in-process timer with crontab '...' and NO cache is registered, so its
+ticks cannot be coordinated: every replica of this process will run every tick. Add '.with_cache()'
+to the AppBuilder chain, or use 'scheduler_mode = "event"' where an orchestrator schedules the tick.
+```
+
+Event mode does **not** claim. The queue group already delivers a published tick to one replica, so
+a claim there would be a second mechanism doing the same job; a test pins that the event path
+touches the cache not at all.
+
+**Spec amended** (sec. 7.5): the modes table and the coordination paragraph now describe a per-tick
+claim, the set-if-absent requirement and the slot-derived key are normative, the no-cache warning
+is required, and the sec. 13 failover question is deleted. Three acceptance criteria were added --
+the three-replica case for both modes, `claim` being set-if-absent on both backends, and the
+no-cache warning.
+
+Tests: the tick claim (winner ticks, loser does not, the key carries scheduler and minute, the
+namespace and TTL are passed, **three replicas sharing a real `DiskCacheService` run one tick
+between them**, a later slot is claimable again, no cache means every replica ticks, startup warns,
+the timer is wired to the wrapper, and event mode claims nothing); and `claim` on both backends
+(first wins, second refused, the loser does not overwrite, exactly one of five concurrent callers
+wins, TTL behaviour, namespace isolation, stale takeover on disk, and failing open).
+
 ### Deployment guide corrected (`2d80b63`)
 
 The guide recommended `replicaCount: 2`, an HPA, and `--set replicaCount=3` as ordinary scaling. It
@@ -644,7 +1171,27 @@ to unpick.
 
 ## Compatibility
 
-No breaking change has landed. Specifically:
+**One breaking change has landed: `scheduler_mode` is required.** A project that registers a
+scheduler and does not set it fails at `build()` with an error naming both values and what each
+one costs. Nothing changes behaviour silently: the alternative -- defaulting the key -- would
+either keep firing a timer per replica (#73) or stop ticking a service that has no broker, and
+neither is safe to inherit. The reasoning, including the counter-argument, is under *P5* above; it
+is a deliberate departure from spec sec. 7.5 and needs a spec amendment.
+
+**Migrating an existing service with a scheduler** is one line, and which line depends on the
+deployment:
+
+| Situation | Set |
+|---|---|
+| No `event_bus`, or plain Docker, or local development | `scheduler_mode = "in_process"` |
+| Kubernetes with `event_bus = "dapr"` / `"nats"`, more than one replica | `scheduler_mode = "event"`, plus a `CronJob` publishing to `<app_name>.scheduler.<scheduler_name>` |
+
+`"in_process"` reproduces today's behaviour exactly, including its once-per-replica firing -- it is
+the no-op migration. `"event"` is the one that fixes #73, and until P5's second half generates the
+`CronJob` the publisher has to be written by hand, which is why the second row is not yet the
+recommended answer for anyone.
+
+Everything else remains non-breaking. Specifically:
 
 - `ClientBase.subscribe`'s abstract signature changed from `(topic, callback)` to
   `(topic_callbacks)` in P0. This is the one signature change in the feature so far; it affects
@@ -734,6 +1281,56 @@ No breaking change has landed. Specifically:
   data but not its namespace, so nothing an application stores can collide with a marker. A
   deployment sizing its cache should account for one small entry per event within the TTL window.
 
+- **A spaced `app_name` no longer breaks an event-mode scheduler.** Whitespace in a *derived* tick
+  topic is rewritten to `_`, so `app_name = "Health Monitor"` yields
+  `Health_Monitor.scheduler.<name>`. An explicitly passed `topic=` is not rewritten and still
+  fails on whitespace, and a wildcard fails in either form.
+- **P5 adds a subscription and a publish permission an event-mode scheduler needs.** The scheduler
+  subscribes to `<app_name>.scheduler.<scheduler_name>`, and whatever publishes its tick has to be
+  allowed to publish there. Under JetStream that subject also has to be covered by the stream, which
+  the client widens on startup.
+- **A registered scheduler now makes the application create a transport, in event mode only.** The
+  scheduler contributes a tick handler, and `build()` creates `NATSClient`/`DaprClient` and the
+  eventing endpoint when any handler is registered. A project that had a scheduler and no handlers
+  previously started no transport at all; in event mode it now requires `event_bus`, enforced by
+  `_require_event_transport` rather than left to the generic "no valid event_bus configured"
+  warning. In `"in_process"` mode nothing is contributed and no transport is created.
+- **`POST /api/{scheduler_name}/trigger` starts working.** It was added to the router during startup,
+  after `include_router` had already copied it, so it was never served. Anything relying on it
+  answering 404 sees a behaviour change.
+- **A subclass overriding `on_startup` without calling `super()` was already broken and still is.**
+  The base method is what starts the timer, wires the tick handler and registers the trigger route.
+  The scaffold and the generated docs no longer show an override without the `super()` call.
+- **`SchedulerBase.__init__` gained a keyword-only `topic` parameter.** Positional callers are
+  unaffected; `crontab` is still the first positional argument.
+- **A scheduler's `on_startup` and `on_shutdown` now run once per lifespan instead of twice.** A
+  subclass that relied on the second call -- for instance by counting on an idempotent resolve
+  happening twice -- changes behaviour. Every scheduler in this repository and in the scaffold is
+  unaffected. The visible effect is the opposite of a regression: an in-process scheduler now runs
+  one timer where it used to run two.
+- **`event_publishing_enabled` is new and defaults to off**, so no existing application creates a
+  client it did not create before. A consuming application is unaffected: its handler already
+  implies the client, and `EventPublishingService` is still keyed on the client existing rather
+  than on the new key. Setting it with no `event_bus`, or with `event_bus = "sessions"`, fails at
+  startup rather than at the first publish.
+- **`parse_bool` is new in `blueprint.agents.utils`** and is exported from that package. Nothing
+  was removed: `HandlerChain._read_bool` keeps its signature and behaviour.
+- **`CacheService` gained an abstract method, `claim`.** Both bundled backends implement it. A
+  third-party subclass of `CacheService` outside this repository will not instantiate until it
+  does too -- the one signature change in this step, and it is additive to the interface rather
+  than a change to an existing method.
+- **An `"in_process"` scheduler now consults the cache on every tick.** With a cache registered
+  the tick fires once per scheduled slot across all replicas instead of once per replica, which is
+  the fix; a deployment that was (knowingly or not) relying on N replicas each doing the work will
+  see it done once. With no cache registered nothing changes except a startup warning.
+- **An event-mode scheduler's crontab is now validated at startup.** A project whose declared
+  expression is not a five-field cron -- including an apscheduler six-field form with seconds --
+  fails `build()` where it previously started and waited for a tick. In `"in_process"` mode nothing
+  changes: `CronTrigger.from_crontab` already rejected the same expressions.
+- **`blueprint.agents.io.api.scheduling` exports exactly what it did before**, plus
+  `SchedulerTickHandler` and the three `SCHEDULER_MODE*` names. `validate_crontab` is importable
+  from `...scheduling.scheduler` but is not part of the package's public surface.
+
 The spec's one deliberate future break is `with_cache`'s `name` parameter (sec. 10.1), which must
 stay keyword-only and last, or an existing `with_cache(False)` would silently become a cache named
 `False`.
@@ -742,7 +1339,78 @@ stay keyword-only and last, or an existing `with_cache(False)` would silently be
 
 ## Open points
 
-- **P5-P6 remain**, starting with P5 (cron as an event source, #73). P0-P4 have all landed.
+- **P0-P5 have landed. P6 is next**, and two requirements for it were settled during P5 (see the
+  namespace bullet below). What remains open from P5 is deferred work rather than unfinished work:
+  both modes now fire a cron once across three replicas, which was P5's acceptance criterion.
+  Still open, in rough order of how much it matters:
+  - **Manifest generation is deliberately deferred** (decided 2026-09-04), and the renderer
+    written for it was removed rather than left unused. Two constraints settled the shape of the
+    missing caller and then removed the ground it would stand on:
+    - **Nothing may import a project's `src/main.py`.** Stated as an absolute rule. The
+      declaration is readable without it -- configure `Config` from the project's
+      `settings.toml`, import the leaf modules under `src/schedulers/`, instantiate each
+      `SchedulerBase` subclass and read its `crontab`, `scheduler_mode` and `tick_topic` --
+      verified against
+      `examples/health_monitor`. What that cannot see is a `with_scheduler(Klass, name=...)`
+      rename, which changes both the tick topic and the object name, and a scheduler whose
+      `__init__` takes arguments passed at registration.
+    - **The image and entrypoint model is about to change underneath it.** Phase work turns
+      `main.py` into a pure `AgentRegistration` declaration with no `build()` call and the
+      Dockerfile's command into `python -m blueprint.agents.entrypoint`, with one image for the
+      platform and the group injected at container start. Manifests then belong to a *group*,
+      not to a project, and the agent-to-schedule map falls out of the in-image agent map the
+      entrypoint already has to construct. A per-project CLI written now would target a project
+      shape that is being replaced.
+
+    The design decisions to carry forward when it resumes: **generate at scaffolding time**,
+    where the tool authored the registrations itself and therefore knows them; **a developer who
+    then edits the registration by hand owns the drift**; and **fail loudly** on anything the
+    generator cannot see rather than emitting a manifest that publishes to a subject nobody
+    subscribes to. The six traps the removed renderer surfaced are listed in the *P5* section
+    above, so they do not have to be rediscovered.
+  - **Timezone is not reconciled between the two modes.** Spec sec. 7.5 requires them not to
+    diverge. `"in_process"` uses apscheduler's timezone handling for the declared crontab; whatever
+    ends up publishing the tick in `"event"` mode will have its own. A scheduler tested locally in
+    one zone and deployed in another fires at a different hour, and nothing would notice. Dormant
+    while manifest generation is parked, since there is no second timezone to disagree with yet.
+  - **The tick claim is verified against a real cache but not a real cluster.** Three replicas
+    are simulated in one process against one `DiskCacheService` directory, which exercises the
+    set-if-absent path but not file locking across genuinely separate processes, nor Redis under
+    contention. Both belong on the broker/integration list below.
+  - **`asbs validate` says nothing about schedulers.** A project in `"event"` mode with no
+    generated `CronJob` is the remaining silent-failure case -- the missing `event_bus` and the
+    missing mode both fail at startup now, but a mode and a transport with nothing publishing
+    does not. Validate is where it should be caught.
+- **Two requirements this raised for later phases, now written into the spec.**
+  `scheduler_mode` **must** resolve per namespace through C5 rather than once per process, or a
+  group cannot host a pure-scheduler agent on `"in_process"` next to an event-driven agent on
+  `"event"` -- which is precisely the deployment freedom grouping exists to provide. Today
+  `Config` is scope-aware only when `agent_scope` is set on the single shared instance, so every
+  scheduler in a process shares one mode. And P6 **must not** create a client for a namespace that
+  neither subscribes nor publishes: sec. 6 argues connection count is cheap and refuses a knob,
+  which is right per namespace that uses a connection and wrong for one that does not. Both are
+  recorded in spec sec. 7.5 and sec. 6 with acceptance criteria; neither is implemented.
+- **Exclusivity between scheduling and event consumption is not enforced, and deliberately so.**
+  `scheduler_mode = "in_process"` with no handlers already produces a process that subscribes to
+  nothing and opens no connection, and publish-only produces one that subscribes to nothing while
+  still emitting -- so the shapes are expressible without a new switch. A third key would only
+  overlap `event_bus` and `scheduler_mode` and create a contradiction to resolve. What is *not*
+  covered is making it observable: spec sec. 9.2 already requires the startup log to carry each
+  namespace's queue group and durable names, and extending that to "namespace X consumes: nothing"
+  is what would let a regrouping be checked by diffing logs. If a hard guarantee is wanted later,
+  the right form is an opt-in per-namespace declaration validated at build time, not an execution
+  mode.
+- **The tick subject is provisional.** `<identity>.scheduler.<scheduler_name>` is a choice this
+  change had to make, and the subject taxonomy is explicitly unratified (spec sec. 13: who owns
+  `<domain>.<entity>.<action>`, and how a subject is added). Changing it later moves a subscription,
+  which under JetStream means a durable's filter changes -- a migration, not a config change
+  (sec. 7.7). The `topic=` override exists so an agent can opt out of the guess, but the default is
+  what the generated `CronJob` will encode.
+- **Nothing observes a tick.** A tick is counted as an ordinary event, so a `CronJob` that stopped
+  publishing looks like silence, not a fault: no metric says "this scheduler has not ticked within
+  two intervals". The declared crontab is in the process and the last tick is knowable, so this is
+  cheap, and it belongs with the telemetry work in phase 9. Until it exists, event mode trades a
+  duplicated tick for a possibly missing one, and only the second failure is invisible.
 - **There is no generated README**, so the third surfacing channel spec sec. 7.4 asks for has
   nowhere to go. `asbs setup` writes a Dockerfile, settings, secrets and source, and the
   generated `CLAUDE.md` and `settings.toml` carry the idempotency note instead. If a README is
@@ -753,8 +1421,13 @@ stay keyword-only and last, or an existing `with_cache(False)` would silently be
   how the broker distributes a redelivery, which belongs on the broker-test list below. A
   compare-and-set primitive on `CacheService` (Redis `SET NX`) would close most of it and is not
   written yet.
-- **Nothing bounds the dedup cache.** Every dispatched event writes one entry for `idempotency_ttl`
-  seconds. `DiskCacheService` expires lazily -- an entry is removed when it is next read, so
+- **Nothing bounds the dedup cache, and the same now applies to tick claims.** Every dispatched
+  event writes one entry for `idempotency_ttl` seconds, and every scheduler tick writes one for
+  `TICK_CLAIM_TTL_SECONDS`. On Redis both expire server-side. On disk they expire *logically* --
+  `exists` and `get` honour the TTL metadata -- but the bytes are reclaimed only when the entry is
+  read again, and a slot key is never read again. One small entry per tick is negligible next to a
+  per-event marker, but it is unbounded on the same terms. Every dispatched event writes one entry
+  for `idempotency_ttl` `DiskCacheService` expires lazily -- an entry is removed when it is next read, so
   markers nobody asks about again stay on disk. A long TTL on a high-volume topic grows the cache
   directory without limit, and no metric reports its size.
 - **The dedup TTL question in spec sec. 13 is not answered, it is delegated.** Requiring the key
@@ -786,7 +1459,14 @@ stay keyword-only and last, or an existing `with_cache(False)` would silently be
   name across matching nodes and deliver once (to either callback, non-deterministically), which
   would also end the double dispatch such a pair caused before P1. If it does not merge, the agent
   receives the event twice and P2 acks both copies as ordinary work, so the answer changes what P2
-  has to handle.
+  has to handle. P5's in-process claim adds two that no unit test reaches: whether
+  `diskcache-rs` file locking actually makes `add` atomic across separate processes sharing a
+  volume, and whether Redis `SET NX` holds up under real contention from several replicas firing in
+  the same instant. P5 adds two more: whether a `CronJob` publishing to the scheduler's
+  subject is in fact delivered to exactly one replica through the queue group, and what a
+  `CronJob` restart or a missed `startingDeadlineSeconds` actually produces -- both modes are
+  at-least-once, so the answer decides whether an event-mode scheduler needs `idempotency_enabled`
+  on by default in the generated settings.
 - **The two design questions in spec sec. 13** that change the shape rather than the parameters: 20
   or 100 agents, and whether the 4 GB host budget is real.
 - **#80** -- the failing example tests and the unenforced test split.
