@@ -95,6 +95,15 @@ touched, a summary of intent, or "tests pass and lint is clean" is not a report 
 is the wrapper around it. Tests, documentation and the changelog are listed, not walked through:
 they are how the change is verified and recorded, not the change itself.
 
+This is not satisfied by having reported the code in an earlier message. **Every message that
+reports a step as done carries the walkthrough**, including the one that follows a background test
+run finishing -- that message reports the step, so it repeats the code detail rather than shrinking
+to a status line. Err towards showing the actual changed lines: a paraphrase of what a function now
+does is weaker than the function.
+
+The rule has been missed repeatedly, so treat it as a checklist item before writing any completion
+message: *have I shown the changed code, not described it?*
+
 Read the spec before changing `component/registry.py`, `app_builder.py`, `handler/`,
 `services/eventing/`, `io/api/eventing/`, `clients/io/nats_client.py`, the schedulers or
 telemetry: those paths carry invariants that are not visible from the code.

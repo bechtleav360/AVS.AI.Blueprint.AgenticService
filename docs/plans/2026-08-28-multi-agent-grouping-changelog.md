@@ -56,10 +56,10 @@ Code:
 - **P1 -- queue groups**: Core NATS subscriptions join a queue group derived from the agent, so a
   second replica no longer processes every message a second time (`05083c8`)
 - **P2 (NATS half) -- acknowledgement**: a normal return acks, a raised exception naks or terms per
-  the spec table; the two layers that swallowed the classification are gone
+  the spec table; the two layers that swallowed the classification are gone (`ce17f87`)
 - **P2 (Dapr half) -- parity**: `NO_HANDLER_FOUND` answers `SUCCESS` instead of looping until
   `max_deliver`, a critical error drops instead of retrying, and an unparseable body drops instead
-  of answering 422; both transports now render one shared decision
+  of answering 422; both transports now render one shared decision (`ce17f87`)
 
 Documentation and process:
 
@@ -285,7 +285,7 @@ Both properties rest on the names being distinct per agent, and two things can b
   collapses all its topics onto one durable name; pre-existing, and worth fixing where Phase 5
   touches that line.
 
-### P2 -- acknowledgement at the NATS transport edge
+### P2 -- acknowledgement at the NATS transport edge (`ce17f87`)
 
 JetStream messages were subscribed with `manual_ack=True` and never acknowledged, so every event
 redelivered until `max_deliver` -- a defect at a single replica, not just at scale. The transport
@@ -324,7 +324,7 @@ method in line with the repo's log-or-raise rule.
 its first-occurrence warning, and `max_deliver` plus a dead-letter destination, which lands with P3
 because a nak on an unexpected exception otherwise redelivers forever.
 
-### P2 -- Dapr parity
+### P2 -- Dapr parity (`ce17f87`)
 
 Dapr acknowledges by response body, so `POST /events/{topic}` is its `_settle`. It disagreed with
 the spec table in two places, and both disagreements were live defects:
