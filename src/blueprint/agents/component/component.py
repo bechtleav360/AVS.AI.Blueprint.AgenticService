@@ -191,8 +191,12 @@ def traced(*extract: str) -> Callable[..., Any]:
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         sig = inspect.signature(func)
 
-        def _open_span_and_stamp(self: Component, bound_args: dict[str, Any]) -> trace.Span:
-            span = trace.get_current_span()  # already entered via context manager below
+        def _stamp_from_args(span: trace.Span, self: Component, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
+            # Only worth binding/inspecting arguments if the span is actually recording —
+            # a no-op span (no OTel provider configured) discards attributes anyway.
+            bound = sig.bind(self, *args, **kwargs)
+            bound.apply_defaults()
+            bound_args = bound.arguments
             if extract:
                 for name in extract:
                     if name in bound_args:
@@ -204,21 +208,19 @@ def traced(*extract: str) -> Callable[..., Any]:
                     if _is_cloud_event(value):
                         _stamp_span(span, name, value)
                         break
-            return span
 
         if inspect.iscoroutinefunction(func):
 
             @functools.wraps(func)
             async def async_wrapper(self: Component, *args: Any, **kwargs: Any) -> Any:
-                bound = sig.bind(self, *args, **kwargs)
-                bound.apply_defaults()
                 span_name = f"{self.name}.{func.__name__}"
-                with self.tracer.start_as_current_span(span_name):
-                    _open_span_and_stamp(self, bound.arguments)
+                with self.tracer.start_as_current_span(span_name) as span:
+                    if span.is_recording():
+                        _stamp_from_args(span, self, args, kwargs)
                     try:
                         return await func(self, *args, **kwargs)
                     except Exception as e:
-                        trace.get_current_span().set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
+                        span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
                         raise
 
             return async_wrapper
@@ -226,15 +228,14 @@ def traced(*extract: str) -> Callable[..., Any]:
 
             @functools.wraps(func)
             def sync_wrapper(self: Component, *args: Any, **kwargs: Any) -> Any:
-                bound = sig.bind(self, *args, **kwargs)
-                bound.apply_defaults()
                 span_name = f"{self.name}.{func.__name__}"
-                with self.tracer.start_as_current_span(span_name):
-                    _open_span_and_stamp(self, bound.arguments)
+                with self.tracer.start_as_current_span(span_name) as span:
+                    if span.is_recording():
+                        _stamp_from_args(span, self, args, kwargs)
                     try:
                         return func(self, *args, **kwargs)
                     except Exception as e:
-                        trace.get_current_span().set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
+                        span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
                         raise
 
             return sync_wrapper

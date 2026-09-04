@@ -374,7 +374,7 @@ class SessionsBus(Component, CloudEventProcessorMixin):
             event = self._convert_to_cloud_event(notification)
 
             try:
-                session_key = await self._require_key_provider().get_session_key(session_id)
+                session_key = await self._require_key_provider().get_session_key(session_id, job_id=job_id)
                 context = self._build_context(session_id, job_id, session_key, pipeline_id=notification.pipeline_id)
                 result = await self._dispatch_cloud_event(event, context)
 
@@ -418,7 +418,7 @@ class SessionsBus(Component, CloudEventProcessorMixin):
     async def _cancel_invalid_job(self, session_id: UUID, job_id: UUID, error: InvalidEventError) -> None:
         logger.error("Invalid job %s: %s. Cancelling.", job_id, error)
         try:
-            session_key = await self._require_key_provider().get_session_key(session_id)
+            session_key = await self._require_key_provider().get_session_key(session_id, job_id=job_id)
             await self._require_api_client().cancel_job(
                 session_id=session_id,
                 job_id=job_id,
@@ -442,7 +442,7 @@ class SessionsBus(Component, CloudEventProcessorMixin):
         key_provider = self._require_key_provider()
         key_provider.invalidate_cache(session_id)
         try:
-            session_key = await key_provider.get_session_key(session_id)
+            session_key = await key_provider.get_session_key(session_id, job_id=job_id)
             context = self._build_context(session_id, job_id, session_key, pipeline_id=pipeline_id)
             await self._dispatch_cloud_event(event, context)
         except Exception as retry_error:

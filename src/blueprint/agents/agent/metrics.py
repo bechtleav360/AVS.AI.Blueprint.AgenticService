@@ -27,6 +27,8 @@ class MetricsRecorder:
         self._config = config
         self._meter = meter
         self._model = model
+        self._token_counter: Any | None = None
+        self._latency_histogram: Any | None = None
 
     def record(
         self,
@@ -92,12 +94,14 @@ class MetricsRecorder:
         # Record to OpenTelemetry if enabled and meter is provided
         if otel_metrics_enabled and self._meter is not None and usage:
             try:
-                # Record token usage as counter
-                token_counter = self._meter.create_counter(
-                    name="llm.tokens.count",
-                    description="Number of tokens processed by the LLM",
-                    unit="tokens",
-                )
+                # Record token usage as counter (instrument created once, then reused)
+                if self._token_counter is None:
+                    self._token_counter = self._meter.create_counter(
+                        name="llm.tokens.count",
+                        description="Number of tokens processed by the LLM",
+                        unit="tokens",
+                    )
+                token_counter = self._token_counter
                 token_counter.add(
                     usage.get("total_tokens", 0),
                     {"model": model_name, "type": "total"},
@@ -117,13 +121,14 @@ class MetricsRecorder:
                         {"model": model_name, "type": "completion"},
                     )
 
-                # Record response latency as histogram
-                latency_histogram = self._meter.create_histogram(
-                    name="llm.response.latency",
-                    description="Distribution of LLM response times",
-                    unit="ms",
-                )
-                latency_histogram.record(duration_ms, {"model": model_name})
+                # Record response latency as histogram (instrument created once, then reused)
+                if self._latency_histogram is None:
+                    self._latency_histogram = self._meter.create_histogram(
+                        name="llm.response.latency",
+                        description="Distribution of LLM response times",
+                        unit="ms",
+                    )
+                self._latency_histogram.record(duration_ms, {"model": model_name})
 
                 logger.debug("OpenTelemetry metrics recorded successfully")
             except Exception as e:

@@ -292,3 +292,52 @@ class TestTraced:
         spans = span_exporter.get_finished_spans()
         attrs = dict(spans[0].attributes or {})
         assert attrs.get("topic") == "orders"
+
+
+# ---------------------------------------------------------------------------
+# traced() decorator — skips arg binding/stamping when span isn't recording
+# ---------------------------------------------------------------------------
+
+
+def _non_recording_mock_span() -> MagicMock:
+    span = MagicMock()
+    span.is_recording.return_value = False
+    return span
+
+
+class TestTracedSkipsWhenNotRecording:
+    async def test_async_skips_stamping_for_non_recording_span(self) -> None:
+        comp = _TopicHandlerComp()
+        span = _non_recording_mock_span()
+        mock_tracer = MagicMock()
+        mock_tracer.start_as_current_span.return_value.__enter__.return_value = span
+        comp.__dict__["tracer"] = mock_tracer  # override the cached_property
+
+        await comp.handle(topic="orders")
+
+        span.set_attribute.assert_not_called()
+
+    def test_sync_skips_stamping_for_non_recording_span(self) -> None:
+        comp = _SyncTracedComp()
+        span = _non_recording_mock_span()
+        mock_tracer = MagicMock()
+        mock_tracer.start_as_current_span.return_value.__enter__.return_value = span
+        comp.__dict__["tracer"] = mock_tracer
+
+        result = comp.my_sync_action()
+
+        assert result == "done"
+        span.set_attribute.assert_not_called()
+
+    async def test_async_still_sets_error_status_when_not_recording(self) -> None:
+        comp = _AsyncFailingComp()
+        span = _non_recording_mock_span()
+        mock_tracer = MagicMock()
+        mock_tracer.start_as_current_span.return_value.__enter__.return_value = span
+        comp.__dict__["tracer"] = mock_tracer
+
+        with pytest.raises(ValueError, match="boom"):
+            await comp.failing_action()
+
+        span.set_status.assert_called_once()
+        assert span.set_status.call_args[0][0].status_code == StatusCode.ERROR

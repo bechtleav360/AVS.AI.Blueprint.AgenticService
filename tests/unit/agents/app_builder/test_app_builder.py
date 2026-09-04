@@ -216,6 +216,31 @@ class TestBuild:
         all_build_mocks.nats_client.assert_not_called()
         all_build_mocks.nats_eventing.assert_not_called()
 
+    def test_event_processing_service_created_only_with_handlers(
+        self,
+        builder_for_build: AppBuilder,
+        mock_registry: MagicMock,
+        all_build_mocks: types.SimpleNamespace,
+    ) -> None:
+        wire_empty_registry(mock_registry)
+        mock_registry.get_event_handler.return_value = [MagicMock()]  # has handler
+
+        builder_for_build.build()
+
+        all_build_mocks.eps.assert_called_once()
+
+    def test_event_processing_service_not_created_without_handlers(
+        self,
+        builder_for_build: AppBuilder,
+        mock_registry: MagicMock,
+        all_build_mocks: types.SimpleNamespace,
+    ) -> None:
+        wire_empty_registry(mock_registry)  # get_event_handler returns []
+
+        builder_for_build.build()
+
+        all_build_mocks.eps.assert_not_called()
+
     def test_event_publishing_service_created_only_with_io_clients(
         self,
         builder_for_build: AppBuilder,
