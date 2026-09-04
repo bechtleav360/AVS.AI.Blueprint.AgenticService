@@ -2,8 +2,9 @@
 
 | | |
 |---|---|
-| **Status** | not started -- no phase implemented |
+| **Status** | P0, P1 and P2 landed on `feature/multi-agent-namespaces`; P3 is next. No phase (0-9) started. |
 | **Spec (normative)** | `docs/specs/2026-08-28-multi-agent-grouping.md` |
+| **What landed, and why** | `docs/plans/2026-08-28-multi-agent-grouping-changelog.md` -- read before resuming |
 
 This is the phased work breakdown. The spec is normative: it carries the MUST/SHOULD requirements,
 the API surface, the config reference and the acceptance criteria, and where the two documents
@@ -135,6 +136,17 @@ Work items:
 **P3 — Consumer tuning is not configurable.** Expose `ack_wait` (must exceed p99 handler
 duration, or long LLM work is redelivered to another replica mid-flight) and `max_ack_pending`
 (the real cross-replica concurrency cap).
+
+Two items were deferred into P3 deliberately, because all four settings belong to the same
+explicitly constructed `ConsumerConfig`, and building it once is one change instead of three:
+
+- **`max_deliver` and a dead-letter destination** (from P2). Without them the nak P2 gives an
+  unexpected exception redelivers forever.
+- **A deliver group on the JetStream durable** (from P1). `nats-py` rejects a queue subscription
+  whose durable name differs from the queue name, so P1's queue group could not be passed to
+  `js.subscribe`; a durable shared across replicas needs `deliver_group` set on the config and
+  bound with `subscribe_bind`. Until then JetStream is single-subscriber, and a second replica
+  fails to subscribe rather than double-processing.
 
 **P4 — Idempotency, flagged not enforced.** Competing consumers make at-least-once permanent, and
 ack loss makes duplicate delivery *certain* rather than possible: a handler that finishes 60s of

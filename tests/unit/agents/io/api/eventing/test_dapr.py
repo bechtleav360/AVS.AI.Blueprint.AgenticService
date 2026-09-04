@@ -50,7 +50,7 @@ class TestDaprEventingPublish:
         result = await dapr_eventing.publish("topic", cloud_event)
         assert result == {"status": "SUCCESS"}
 
-    async def test_no_handler_result_is_warned_about(
+    async def test_no_handler_result_is_not_reported_as_a_fault(
         self,
         dapr_eventing: DaprEventing,
         mock_registry: MagicMock,
@@ -58,11 +58,11 @@ class TestDaprEventingPublish:
         unhandled_result: ProcessingResult,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """Acknowledging an unmatched event must not make it invisible."""
+        """An agent finding no work in an event is normal, not a problem the blueprint reports."""
         _wire_processing_result(mock_registry, unhandled_result)
-        with caplog.at_level("WARNING"):
+        with caplog.at_level("DEBUG"):
             await dapr_eventing.publish("topic", cloud_event)
-        assert "No handler matched" in caplog.text
+        assert [r for r in caplog.records if r.levelname in {"WARNING", "ERROR", "CRITICAL"}] == []
 
     async def test_retryable_error_returns_retry(
         self,

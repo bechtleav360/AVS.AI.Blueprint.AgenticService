@@ -54,7 +54,7 @@ class NatsEventing(EventHandlingBase):
 
         async def _process_event(event: CloudEvent[Any]) -> None:
             context = {"nats_topic": topic}
-            processing_result = await self._process_cloud_event(event, context)
+            processing_result = await self._process_cloud_event(event, context, topic)
             logger.debug(
                 "Processed CloudEvent %s on topic %s with status %s",
                 event.id,

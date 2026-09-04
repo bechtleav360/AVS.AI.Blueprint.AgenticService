@@ -6,6 +6,8 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Any
 
+from opentelemetry import metrics
+
 from ....component.component import traced
 from ....models import ProcessingResult, ProcessingStatus
 from ....models.errors import DeliveryDisposition
@@ -15,6 +17,12 @@ from .cloud_event_processor_mixin import CloudEventProcessorMixin
 from .dapr_response import dapr_status
 
 logger = logging.getLogger(__name__)
+
+_UNHANDLED_EVENTS = metrics.get_meter(__name__).create_counter(
+    name="blueprint.events.unhandled",
+    description="Events a namespace received and found nothing to do with",
+    unit="{event}",
+)
 
 
 class EventHandlingBase(RestApiBase, CloudEventProcessorMixin, ABC):
@@ -30,6 +38,13 @@ class EventHandlingBase(RestApiBase, CloudEventProcessorMixin, ABC):
     their own REST endpoints via concrete ``publish`` implementations.
     """
 
+    ROOT_NAMESPACE = ""
+    """Namespace this component's events belong to.
+
+    Components gain a real namespace in phase 2; until then every one of them lives in the
+    root namespace, and this constant is the single place that assumption is written down.
+    """
+
     @traced("topic", "cloud_event")
     async def handle_event(self, topic: str, cloud_event: CloudEvent[Any]) -> dict[str, Any]:
         """Dispatch an event and return the acknowledgement dict Dapr reads.
@@ -39,9 +54,7 @@ class EventHandlingBase(RestApiBase, CloudEventProcessorMixin, ABC):
         dispatch completed and found nothing to do -- and no amount of redelivery makes a
         handler appear. Exceptions are not caught here; the transport edge classifies them.
         """
-        processing_result = await self._process_cloud_event(cloud_event, {"topic": topic})
-        if processing_result.status != ProcessingStatus.PROCESSED:
-            logger.warning("No handler matched event %s on topic '%s'; acknowledging it anyway", cloud_event.id, topic)
+        await self._process_cloud_event(cloud_event, {"topic": topic}, topic)
         return {"status": dapr_status(DeliveryDisposition.ACK)}
 
     @abstractmethod
@@ -53,14 +66,32 @@ class EventHandlingBase(RestApiBase, CloudEventProcessorMixin, ABC):
         self,
         cloud_event: CloudEvent[Any],
         context: dict[str, Any],
+        topic: str,
     ) -> ProcessingResult:
         """Dispatch a CloudEvent through the handler chain, letting failures propagate.
 
-        Deliberately does not log them. Every caller of this method is a transport edge
-        that must both decide the delivery disposition and report the failure (spec
-        sec. 7.2), so logging here duplicated each error in the caller's output while
-        adding nothing the edge does not already know -- and the edge knows the topic and
-        the disposition, which this layer does not.
+        Deliberately does not log those failures. Every caller of this method is a transport
+        edge that must both decide the delivery disposition and report the failure (spec
+        sec. 7.2), so logging here duplicated each error in the caller's output while adding
+        nothing the edge does not already know -- and the edge knows the topic and the
+        disposition, which this layer does not.
+
+        A dispatch that matched no handler is counted, not reported. Deciding there is
+        nothing to do is a handler's job and an ordinary outcome of it: an agent reads an
+        event, finds no work in it, and says so. The count exists so an operator can see the
+        *proportion* -- a namespace that declines nearly everything it receives is subscribed
+        too broadly (spec sec. 7.7) -- and for no other reason. Nothing about it is an error,
+        so it is not logged as one, and no per-topic state is kept: the topic arrives from a
+        URL path under Dapr, and remembering each distinct value would let a caller grow this
+        process's memory.
+
+        ``topic`` is passed separately from ``context`` because each transport spells its
+        own key there (``nats_topic``, ``dapr_topic``), and those keys reach user handlers,
+        so they cannot be unified without breaking them.
         """
         logger.debug("Processing CloudEvent: %s", cloud_event.id)
-        return await self._dispatch_cloud_event(cloud_event, context)
+        processing_result = await self._dispatch_cloud_event(cloud_event, context)
+        if processing_result.status is ProcessingStatus.NO_HANDLER_FOUND:
+            _UNHANDLED_EVENTS.add(1, {"namespace": self.ROOT_NAMESPACE, "topic": topic})
+            logger.debug("No handler had work for event %s on topic '%s'", cloud_event.id, topic)
+        return processing_result

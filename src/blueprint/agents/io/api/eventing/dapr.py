@@ -10,7 +10,6 @@ from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 
 from ....clients.io.dapr_client import DaprClient
-from ....models import ProcessingStatus
 from ....models.errors import DeliveryDisposition, HandlerError, disposition_for
 from ....models.events import CloudEvent
 from ..rest_api_base import RestApiBase
@@ -103,7 +102,7 @@ class DaprEventing(EventHandlingBase):
         async def _process_event(event: CloudEvent[Any]) -> None:
             try:
                 context = {"dapr_topic": topic}
-                await self._process_cloud_event(event, context)
+                await self._process_cloud_event(event, context, topic)
             except Exception as exc:
                 logger.error("Event processing failed on topic %s: %s", topic, str(exc), exc_info=True)
 
@@ -154,7 +153,7 @@ class DaprEventing(EventHandlingBase):
         """
 
         try:
-            processing_result = await self._process_cloud_event(cloud_event, {"dapr_topic": topic})
+            await self._process_cloud_event(cloud_event, {"dapr_topic": topic}, topic)
         except Exception as exc:
             disposition = disposition_for(exc)
             reason = exc.reason if isinstance(exc, HandlerError) else str(exc)
@@ -168,12 +167,6 @@ class DaprEventing(EventHandlingBase):
             )
             return {"status": dapr_status(disposition), "reason": reason}
 
-        if processing_result.status != ProcessingStatus.PROCESSED:
-            # Acknowledged, because redelivery cannot make a handler appear -- but a topic
-            # nobody handles is usually a declaration error, so it must not pass in silence.
-            logger.warning(
-                "No handler matched event %s on topic '%s'; acknowledging it anyway",
-                cloud_event.id,
-                topic,
-            )
+        # An unmatched event acknowledges like any other completed dispatch; the accounting
+        # that keeps it visible lives in _process_cloud_event, shared with the NATS edge.
         return {"status": dapr_status(DeliveryDisposition.ACK)}

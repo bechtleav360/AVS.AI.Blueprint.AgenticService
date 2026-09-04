@@ -373,10 +373,16 @@ to do, and redelivery cannot make a handler appear: a nak is a pointless loop un
 and under a queue group a loop that visits every replica in turn. `dapr.py:75` returns `RETRY` for
 this case today and **MUST** change.
 
-Acknowledging it **MUST NOT** make it invisible. A subscribed topic with no matching handler is
-usually a declaration error, and the acknowledgement is what would otherwise hide it forever. The
-framework **MUST** count unhandled events per namespace and topic, and **MUST** log at WARNING the
-first time a given (namespace, topic) pair produces one.
+**An unmatched event is normal, and the framework MUST treat it as normal.** Deciding there is
+nothing to do is the handler's job and an ordinary outcome of doing it: an agent reads an event,
+finds no work in it for whatever domain reason, and says so. Why is the agent's business and not
+the framework's. The framework therefore **MUST NOT** log it at WARNING or otherwise present it as
+a fault, and **MUST NOT** accumulate per-topic state about it -- under Dapr the topic arrives from a
+URL path, so remembering each distinct value lets a caller grow the process's memory.
+
+It **MUST** be counted per namespace and topic, for one purpose: the *proportion* of received
+events a namespace declines is how a too-broad subscription shows up (sec. 7.7). A high count is a
+question about the subject filter, not about the handler.
 
 **Both transports MUST map the same outcome to the same disposition.** Dapr's response dict *is*
 its acknowledgement, so the table above is normative for `dapr.py` and
@@ -512,8 +518,10 @@ replay or a gap is expected. This binds the durable renaming that C1 requires
 filter derivation: on first deploy, every pre-existing consumer becomes a new consumer.
 
 **Fan-out MUST be observable.** The framework **MUST** expose, per subject, how many namespaces
-select it. With the unhandled-event counter of sec. 7.2 this covers both directions of the same
-error: an event nobody wanted, and an event offered to far too many.
+select it. Together with the unhandled-event counter of sec. 7.2 this covers both directions of a
+subscription that is shaped wrongly: a subject delivered to namespaces that find no work in it, and
+a subject copied to far more namespaces than need it. Neither counter reports a fault on its own --
+they are read as ratios against the volume a namespace receives.
 
 Build-time gates on subject breadth belong to the implementation plan rather than here, because
 they constrain projects rather than the framework. They **SHOULD** ship as warnings before they
@@ -689,8 +697,8 @@ Two things an author still needs to know: their agent's name, and that handlers 
       namespace receives (sec. 7.7).
 - [ ] A namespace's derived `filter_subjects` is never narrower than its declared topics unioned
       with `nats_subscriptions` (sec. 7.7).
-- [ ] Unhandled events per (namespace, topic) and namespaces-per-subject fan-out are both exposed
-      (sec. 7.2, sec. 7.7).
+- [ ] Unhandled events per (namespace, topic) and namespaces-per-subject fan-out are both exposed,
+      neither reported as a fault and neither keeping per-topic state (sec. 7.2, sec. 7.7).
 - [ ] Frozen compat suite and generated-project smoke test both green (sec. 10.2).
 - [ ] Idempotency off by default, with the requirement surfaced at scaffold time and in
       `asbs validate`.

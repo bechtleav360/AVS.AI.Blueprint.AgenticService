@@ -60,6 +60,8 @@ Code:
 - **P2 (Dapr half) -- parity**: `NO_HANDLER_FOUND` answers `SUCCESS` instead of looping until
   `max_deliver`, a critical error drops instead of retrying, and an unparseable body drops instead
   of answering 422; both transports now render one shared decision (`ce17f87`)
+- **P2 -- unhandled events are counted, not flagged**: `blueprint.events.unhandled` per
+  (namespace, topic), read as a ratio; finding no work in an event is normal behaviour
 
 Documentation and process:
 
@@ -369,6 +371,44 @@ that asks for it via a new `RestApiBase.route_class` hook -- an application-wide
 422 is right. `NatsEventing`, which owns the same path for the outbound direction, keeps the default
 route class and still answers 422; there is a test for exactly that.
 
+### P2 -- unhandled-event accounting, and a spec correction
+
+An event that matches no handler is acknowledged, and it is also **ordinary**. Deciding there is
+nothing to do is the handler's job and an ordinary outcome of doing it: an agent reads an event,
+finds no work in it, and says so. Why is the agent's business -- wrong tenant, wrong state, a
+condition that is not met -- and none of it is the framework's concern.
+
+`_process_cloud_event` therefore does exactly two things with such a dispatch: increments
+`blueprint.events.unhandled` with `namespace` and `topic` attributes, and logs at DEBUG.
+
+- **Counted, because the ratio is the signal.** A namespace declining nearly everything it receives
+  is subscribed too broadly (spec sec. 7.7). That is a question about the subject filter, and it is
+  only answerable against received volume -- so the count must not be deduplicated.
+- **Not flagged, because nothing is wrong.** No WARNING, no error.
+- **No state kept.** Under Dapr the topic comes from a URL path, so remembering distinct topics
+  would let a caller grow this process's memory.
+
+It lives in `_process_cloud_event`, shared by both transports, because an unmatched dispatch is a
+property of the dispatch rather than of the transport carrying it -- and both edges keeping their
+own copy of a delivery rule is how they came to disagree about `NO_HANDLER_FOUND` in the first
+place. The interim per-event warnings the Dapr work left in `publish` and `handle_event` are gone.
+
+`_process_cloud_event` gains a `topic` parameter. The topic is already in `context`, but each
+transport spells its key differently (`nats_topic`, `dapr_topic`) and those keys reach user
+handlers, so they cannot be unified without breaking them.
+
+`EventHandlingBase.ROOT_NAMESPACE` is the one place the "no namespaces yet" assumption is written
+down; phase 2 replaces it and the counter's `namespace` attribute starts varying.
+
+**The spec was wrong and is corrected.** Sec. 7.2 had required a WARNING on the first
+(namespace, topic) pair and called an unmatched event "usually a declaration error"; sec. 7.7 called
+it one of "both directions of the same error". That premise is false -- it treats a handler's
+domain decision as a framework fault -- and it was implemented before being questioned. Sec. 7.2 now
+forbids reporting it as a fault and forbids per-topic state, sec. 7.7 frames both counters as ratios
+rather than faults, and the acceptance criterion carries the same conditions. A first
+implementation with the tracker, the warning and an accumulating set was replaced rather than
+committed.
+
 ### Deployment guide corrected (`2d80b63`)
 
 The guide recommended `replicaCount: 2`, an HPA, and `--set replicaCount=3` as ordinary scaling. It
@@ -417,6 +457,9 @@ No breaking change has landed. Specifically:
   Whether Dapr merges the two or delivers twice needs checking against a real sidecar; it belongs on
   the broker-test list.
 - New config keys all default to current behaviour.
+- **`EventHandlingBase._process_cloud_event` takes a third argument, `topic`.** A protected method,
+  so this affects only a third-party transport implementation that called it -- of which the repo
+  contains two, both updated.
 - **`POST /events/{topic}` answers `200 {"status": "DROP"}` instead of `422` for a body that is not
   a CloudEvent -- but only on `DaprEventing`.** Chosen so the two transports dispose of an
   unparseable payload identically; NATS already terminated it. A caller that treated 422 from this
