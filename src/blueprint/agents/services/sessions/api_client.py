@@ -258,7 +258,16 @@ class SessionsApiClient(ServiceBase):
             httpx.HTTPStatusError: If the request fails
             ValueError: If client not initialized
         """
-        logger.warning("Failing job: session_id=%s, job_id=%s, error=%s", session_id, job_id, error)
+        # Only the code + message length are logged, not the message body itself — `error`
+        # is caller-supplied (may originate from exception text or job payload content) and
+        # could carry personal data that shouldn't be persisted into log storage.
+        logger.warning(
+            "Failing job: session_id=%s, job_id=%s, code=%s, message_len=%d",
+            session_id,
+            job_id,
+            error.get("code"),
+            len(error.get("message", "")),
+        )
         response = await self._request(
             "POST",
             f"/sessions/{session_id}/jobs/{job_id}/fail",

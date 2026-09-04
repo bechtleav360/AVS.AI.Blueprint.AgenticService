@@ -80,6 +80,13 @@ class _FailureHandler(_Handler):
         return None
 
 
+class _RaisingFailureOfHandler(_Handler):
+    """failure_of() raises instead of returning — must map like a `process` raise."""
+
+    def failure_of(self, result: _Result) -> JobError | None:  # type: ignore[override]
+        raise AttributeError("result has no such field")
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -125,6 +132,35 @@ def _started(mock_config: MagicMock) -> _Handler:
     """Build a handler with agent_id configured and on_startup applied."""
     mock_config.get.return_value = {"agent_id": "test-agent"}
     return _Handler()
+
+
+# ---------------------------------------------------------------------------
+# Deprecated COMPLETE_* class-attribute override must fail loudly, not shadow
+# the read-only alias property silently.
+# ---------------------------------------------------------------------------
+
+
+class TestDeprecatedCompleteAliasGuard:
+    def test_complete_max_attempts_override_raises_at_class_definition(self) -> None:
+        with pytest.raises(TypeError, match="COMPLETE_MAX_ATTEMPTS"):
+
+            class _BadHandler(_Handler):
+                COMPLETE_MAX_ATTEMPTS = 10
+
+    def test_complete_retry_backoff_seconds_override_raises_at_class_definition(self) -> None:
+        with pytest.raises(TypeError, match="COMPLETE_RETRY_BACKOFF_SECONDS"):
+
+            class _BadHandler(_Handler):
+                COMPLETE_RETRY_BACKOFF_SECONDS = 0.5
+
+    def test_terminal_name_override_is_still_allowed(self) -> None:
+        class _GoodHandler(_Handler):
+            TERMINAL_MAX_ATTEMPTS = 10
+            TERMINAL_RETRY_BACKOFF_SECONDS = 0.5
+
+        handler = _GoodHandler()
+        assert handler.COMPLETE_MAX_ATTEMPTS == 10
+        assert handler.COMPLETE_RETRY_BACKOFF_SECONDS == 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -472,6 +508,31 @@ class TestFailureOfHook:
 
         api_client.complete_job.assert_awaited_once()
         api_client.fail_job.assert_not_awaited()
+
+    async def test_failure_of_raising_fails_job_instead_of_escaping(
+        self,
+        mock_config: MagicMock,
+        mock_registry: MagicMock,
+        event: GenericCloudEvent,
+        context: dict[str, Any],
+        api_client: MagicMock,
+        job_id: UUID,
+    ) -> None:
+        # A `failure_of` override that raises must map like a `process` raise
+        # (-> fail_job, marked seen) instead of propagating out of handle_event
+        # and leaving the job stuck RUNNING with no terminal write.
+        handler = _RaisingFailureOfHandler()
+        mock_config.get.return_value = {"agent_id": "test-agent"}
+        await handler.on_startup()
+
+        result = await handler.handle_event(event, context)
+
+        assert result is None
+        api_client.fail_job.assert_awaited_once()
+        _, kwargs = api_client.fail_job.call_args
+        assert kwargs["error"]["code"] == "AttributeError"
+        api_client.complete_job.assert_not_awaited()
+        assert job_id in handler._seen
 
 
 # ---------------------------------------------------------------------------

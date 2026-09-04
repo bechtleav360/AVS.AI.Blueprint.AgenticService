@@ -46,6 +46,7 @@ carrying an error-shaped result:
 ``ValueError`` / other                fail_job (FAILED, exception-shaped error)
 returns; ``failure_of`` -> JobError   fail_job (FAILED)
 returns; ``failure_of`` -> None       complete_job (COMPLETED)
+returns; ``failure_of`` raises        same mapping as a raise from ``process`` itself
 ====================================  =====================================
 """
 
@@ -102,6 +103,25 @@ class SessionsJobHandler(EventHandlerBase, ABC):
     def COMPLETE_RETRY_BACKOFF_SECONDS(self) -> float:
         """Deprecated read-only alias of :attr:`TERMINAL_RETRY_BACKOFF_SECONDS` (pre-0.7.0 name)."""
         return self.TERMINAL_RETRY_BACKOFF_SECONDS
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        """Reject a subclass-level ``COMPLETE_*`` override before it can silently shadow the alias property.
+
+        A plain class attribute named like the property wins over it in the MRO, so
+        ``h.COMPLETE_MAX_ATTEMPTS`` would read back the override while ``_terminal_with_retry``
+        (which only reads ``TERMINAL_*``) never sees it — a stale pre-0.7.0 tuning value would
+        silently stop taking effect instead of raising.
+        """
+        super().__init_subclass__(**kwargs)
+        for old_name, new_name in (
+            ("COMPLETE_MAX_ATTEMPTS", "TERMINAL_MAX_ATTEMPTS"),
+            ("COMPLETE_RETRY_BACKOFF_SECONDS", "TERMINAL_RETRY_BACKOFF_SECONDS"),
+        ):
+            if old_name in cls.__dict__:
+                raise TypeError(
+                    f"{cls.__name__} sets {old_name!r}, which shadows the deprecated read-only "
+                    f"alias property and is silently ignored by the retry logic. Set {new_name!r} instead."
+                )
 
     def __init__(self, priority: int = 100) -> None:
         super().__init__(priority=priority)
@@ -209,6 +229,10 @@ class SessionsJobHandler(EventHandlerBase, ABC):
             # `_seen` so a redelivery is not silently ignored.
             try:
                 result = await self.process(payload, context)
+                # `failure_of` runs inside this try so a raise from an overridden hook goes
+                # through the same error->status mapping as `process` itself, instead of
+                # escaping `handle_event` uncaught (see module docstring's outcome table).
+                failure = self.failure_of(result)
             except (RetryableHandlerError, CriticalHandlerError):
                 # Retryable -> SessionsBus leaves pending; Critical -> forces restart.
                 # Both keep their framework semantics; never neutralise into a result.
@@ -231,7 +255,6 @@ class SessionsJobHandler(EventHandlerBase, ABC):
                 return None
 
             # --- Terminal: fail if the handler signalled failure, else complete. ---
-            failure = self.failure_of(result)
             if failure is not None:
                 await self._fail(api_client, session_id, job_id, session_key, started, failure, status_log="failed")
             else:
