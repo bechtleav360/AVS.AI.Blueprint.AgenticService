@@ -1,11 +1,7 @@
 # Changelog
 ## [Unreleased]
 
-### Fixed
-- **`SessionsJobHandler`: setting the deprecated `COMPLETE_MAX_ATTEMPTS` / `COMPLETE_RETRY_BACKOFF_SECONDS` class attributes on a subclass now raises `TypeError` at class-definition time** instead of silently shadowing the read-only alias property — a stale pre-0.7.0 override previously kept reading back its own value while `TERMINAL_*`-based retry logic ignored it entirely. Tune `TERMINAL_MAX_ATTEMPTS` / `TERMINAL_RETRY_BACKOFF_SECONDS` instead.
-- **`SessionsJobHandler.failure_of()` raising an exception now maps through the same outcome table as a raise from `process()` itself** (e.g. fails the job via `fail_job`) instead of propagating out of `handle_event` uncaught, which previously left the job stuck `RUNNING` with no terminal write and no redelivery.
-
-## [0.7.0] - 2026-09-02
+## [0.7.0] - 2026-09-04
 
 ### Added
 - **`SessionsJobHandler` can now mark a job `FAILED`** (#72). `SessionsApiClient` gains `fail_job(session_id, job_id, session_key, error)`, posting a `JobError`-shaped `{"message", "code"}` to the svc-sessions `/fail` endpoint (running→failed, live since 2026-06-24) — the write-side counterpart to the already-generic read side. A new overridable hook `SessionsJobHandler.failure_of(result) -> JobError | None` lets a handler whose `process()` returns a failure *without raising* route that result to `fail_job` instead of `complete_job`; it defaults to `None` (complete), so existing consumers are unchanged until they override it. This unblocks `document-analyser`, whose `AnalyseBatchHandler` computes an internal "failed" outcome and returns it normally (bechtleav360/avs.ai.idac.agents-document-analyser#167, #169). Supersedes the `fail_job`-specific part of #41, whose "jmes-validator-only" premise never applied to `SessionsJobHandler` consumers. The error shape is a new `JobError` `TypedDict` (`blueprint.agents.models.sessions`), so a mistyped key is caught by mypy at the construction site rather than at runtime. The shared terminal-write retry knobs are now `TERMINAL_MAX_ATTEMPTS` / `TERMINAL_RETRY_BACKOFF_SECONDS` (they retry both `complete_job` and `fail_job`); the former `COMPLETE_*` names remain as read-only deprecated aliases (see the ⚠️ note under _Changed_).
@@ -13,6 +9,10 @@
 
 ### Changed
 - **⚠️ BREAKING (behavioural, non-opt-in) — an unrecoverable exception from `process()` now marks the job `FAILED` instead of `COMPLETED`** (#72). Previously `ValueError` and any other non-retryable, non-`InvalidEventError` exception were routed to `complete_job` with an error-shaped result (`{"status": "failed", "error": ...}`), leaving the job's top-level status `COMPLETED`. They now route to `fail_job` (svc-sessions `FAILED`). This applies to **all** consumers on upgrade (unlike the opt-in `failure_of` hook), with **no consumer code change required to be affected**. Two consequences to check before upgrading: (1) svc-sessions spawns pipeline-downstream jobs only on `COMPLETED`, so a step that previously ran through despite an error now **halts its chain** instead of silently continuing on bad data; (2) a consumer that reads a failed job's `result` body sees only `error.message`/`error.code` for these cases (verified: no known consumer does — see PR #79). Deprecated retry knobs `COMPLETE_MAX_ATTEMPTS` / `COMPLETE_RETRY_BACKOFF_SECONDS` are now **read-only** aliases of `TERMINAL_MAX_ATTEMPTS` / `TERMINAL_RETRY_BACKOFF_SECONDS`; overriding the old names no longer changes retry behaviour — tune the `TERMINAL_*` names instead.
+
+### Fixed
+- **`SessionsJobHandler`: setting the deprecated `COMPLETE_MAX_ATTEMPTS` / `COMPLETE_RETRY_BACKOFF_SECONDS` class attributes on a subclass now raises `TypeError` at class-definition time** instead of silently shadowing the read-only alias property — a stale pre-0.7.0 override previously kept reading back its own value while `TERMINAL_*`-based retry logic ignored it entirely. Tune `TERMINAL_MAX_ATTEMPTS` / `TERMINAL_RETRY_BACKOFF_SECONDS` instead.
+- **`SessionsJobHandler.failure_of()` raising an exception now maps through the same outcome table as a raise from `process()` itself** (e.g. fails the job via `fail_job`) instead of propagating out of `handle_event` uncaught, which previously left the job stuck `RUNNING` with no terminal write and no redelivery.
 
 ## [0.6.4] - 2026-07-29
 
