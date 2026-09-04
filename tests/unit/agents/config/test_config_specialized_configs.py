@@ -288,3 +288,35 @@ class TestGetSessionsConfig:
         config = Config(settings_files=[str(settings_file)], root_path=str(settings_file.parent))
         with pytest.raises(ConfigError, match="sessions_service"):
             config.get_sessions_config()
+
+    def test_empty_block_raises_config_error_not_none(self, base_config: Config, monkeypatch) -> None:
+        # A present-but-empty table is the limiting case of "missing required
+        # fields" — it must fail fast, not degrade to None like an absent key.
+        monkeypatch.setattr(
+            base_config,
+            "get",
+            lambda key, default=None: {} if key == "sessions_service" else default,
+        )
+        with pytest.raises(ConfigError, match="sessions_service"):
+            base_config.get_sessions_config()
+
+    def test_non_table_value_raises_config_error(self, base_config: Config, monkeypatch) -> None:
+        # A non-mapping value (e.g. an [[sessions_service]] array-of-tables typo
+        # surfacing as a list) must raise ConfigError, not leak a bare TypeError
+        # from the model validation — callers catch ConfigError to degrade.
+        monkeypatch.setattr(
+            base_config,
+            "get",
+            lambda key, default=None: [{"base_url": "x"}] if key == "sessions_service" else default,
+        )
+        with pytest.raises(ConfigError, match="expected a table"):
+            base_config.get_sessions_config()
+
+    def test_absent_key_still_returns_none(self, base_config: Config, monkeypatch) -> None:
+        # Only a genuinely absent key (get -> None) degrades to None.
+        monkeypatch.setattr(
+            base_config,
+            "get",
+            lambda key, default=None: None if key == "sessions_service" else default,
+        )
+        assert base_config.get_sessions_config() is None

@@ -445,19 +445,25 @@ class Config:
 
         Returns:
             A validated ``SessionsServiceConfig`` when the block is present, or
-            ``None`` when it is absent — letting callers graceful-degrade (e.g.
-            boot REST-only when sessions isn't configured).
+            ``None`` only when the block is entirely absent — letting callers
+            graceful-degrade (e.g. boot REST-only when sessions isn't configured).
 
         Raises:
-            ConfigError: When the block is present but invalid — e.g. missing a
-                required field (``base_url`` / ``api_key`` / ``agent_id``).
+            ConfigError: When the block is present but invalid — a missing
+                required field (``base_url`` / ``api_key`` / ``agent_id``), an
+                empty table (the limiting case of a missing required field), or
+                a non-table value (e.g. an ``[[sessions_service]]`` array-of-tables
+                typo). Only an absent key degrades to ``None``; any present-but-wrong
+                block fails fast rather than masking a misconfiguration.
         """
 
         block = self.get("sessions_service")
-        if not block:
+        if block is None:
             return None
+        if not isinstance(block, dict):
+            raise ConfigError(f"Invalid sessions_service configuration: expected a table, got {type(block).__name__}")
         try:
-            return SessionsServiceConfig.model_validate(dict(block))
+            return SessionsServiceConfig.model_validate(block)
         except PydanticValidationError as exc:
             logger.error("Invalid [sessions_service] configuration: %s", exc)
             raise ConfigError(f"Invalid sessions_service configuration: {exc}") from None
