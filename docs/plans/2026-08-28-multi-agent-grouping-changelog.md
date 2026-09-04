@@ -496,7 +496,7 @@ The deliver subject is derived from the durable name rather than taken from a fr
 every replica has to bind to the same one -- two replicas generating random inboxes would define two
 consumers, which is the fan-out P1 removed.
 
-### P4 -- opt-in deduplication, and the decision forced on the author
+### P4 -- opt-in deduplication, and the decision forced on the author (`d127843`)
 
 At-least-once delivery is permanent (spec sec. 7.4). P2 and P3 made acknowledgement correct, which
 narrows redelivery to the cases where it is unavoidable -- a lost ack, a pod restart, a rolling
