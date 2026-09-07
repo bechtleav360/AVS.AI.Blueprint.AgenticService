@@ -48,7 +48,7 @@ Code:
 
 - **P6 review follow-up -- namespace identity**: one definition of the root namespace, one
   alphabet validated where a namespace enters the framework, an unambiguous durable name and
-  unforgeable connection-name placeholders (uncommitted)
+  unforgeable connection-name placeholders (`be5e489`)
 - **P0 -- transport lifecycle**: managed whole-map `subscribe()`, background retry, reconnect
   re-subscription, `subscriptions_ready` readiness gating (`77af507`)
 - **P0 -- shutdown drain**: in-flight handlers finish before the connection closes (`585e58c`)
@@ -1158,7 +1158,7 @@ the timer is wired to the wrapper, and event mode claims nothing); and `claim` o
 (first wins, second refused, the loser does not overwrite, exactly one of five concurrent callers
 wins, TTL behaviour, namespace isolation, stale takeover on disk, and failing open).
 
-### P6 -- one transport connection per namespace, and named connections
+### P6 -- one transport connection per namespace, and named connections (`be5e489`)
 
 The transport client stops being a process singleton and becomes namespace-owned. Nothing
 creates a second one yet -- Phases 5 and 6 do that -- so for every application that exists
@@ -1254,7 +1254,7 @@ section for `BLUEPRINT_GROUP`, `POD_NAME` and `HOSTNAME`, and the `nats_queue_gr
 `nats_durable_name` rows now say what a namespace does to them. Spec sec. 6 gains the placeholder
 rule.
 
-### P6 review follow-up -- the namespace gets one definition, one alphabet, one gate
+### P6 review follow-up -- the namespace gets one definition, one alphabet, one gate (`be5e489`)
 
 Four defects found reviewing P6, all of which turned out to be the same defect: nothing said what
 a namespace is allowed to look like, so each consumer of it decided separately. `component/namespace.py`
