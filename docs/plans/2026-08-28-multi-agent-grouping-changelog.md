@@ -1430,6 +1430,47 @@ P6 is what makes the guide's central claim checkable rather than asserted: an ex
 keeps every registry key, queue group and durable name because the root namespace keeps them, and
 that is now enforced by tests.
 
+### Config rework, step 1 -- logging leaves `Config`, and `app_port` leaves the scope
+
+The two prerequisites for one `Config` per namespace (C5). Neither is a namespace feature; both are
+things that only work once, and therefore break the moment a process holds N of them.
+
+**`Config.__init__` no longer configures logging.** The call at the end of the constructor is gone;
+the body it called is now the public `Config.configure_logging()`, and `AppBuilder.__init__` makes
+the call before any `with_*()` runs, so components are constructed with the format already set.
+
+Two reasons, and the second is the one that forced it now. It is the application's decision, not
+the loader's -- a library that configures logging on construction takes the root logger from
+whatever imported it and cannot be silenced by the caller. And one `Config` per namespace means N
+constructions per process: each one built a fresh `LoggingManager`, whose `_configured` flag is
+per-instance and therefore never helped, so each re-attached the correlation and health-check
+filters, logged "Logging configured" again, and let the last namespace's `log_level` win. Verified
+before the change by constructing three scoped `Config`s in one process: three configuration lines.
+
+Existing projects are unaffected, because they all reach `AppBuilder`. What does change: code that
+builds a `Config` and never an `AppBuilder` -- a script, a test -- now gets Python's default
+logging until it calls `configure_logging()` itself, which is the correct behaviour for a library
+and is why the method is public rather than private.
+
+**`app_port` is a root key even when a `Config` is scoped.** The scoped validator required
+`<scope>.app_port` alongside `<scope>.app_name`. A group is one process behind one HTTP server, so
+only one port can ever be bound: requiring it per agent makes every agent declare a value that all
+but one of them cannot have. `app_name` stays scoped -- it is the agent's identity and reaches
+telemetry and the queue group -- while the port is validated at root with the same `default=8000`
+the unscoped path uses.
+
+**Tests.** 1361 unit tests pass (up from 1354). `TestLoggingIsTheApplicationsDecision` asserts that
+construction configures nothing, that `configure_logging()` does, that it passes the resolved
+settings, and that three constructions still configure nothing. `TestLoggingOwnership` asserts
+`AppBuilder` makes the call exactly once and that a later `with_*()` does not repeat it. The
+`app_port` test inverted from "missing scoped port raises" to two cases: a scoped config reads the
+root port, and falls back to 8000 when there is none.
+
+`config.py` remains on `black`'s pre-existing reformat list: the nested conditional in
+`_process_dynabox` is one of the places where `black` and `ruff-format` genuinely disagree -- unlike
+the `actuator_api.py` hunk, `ruff-format` rejects `black`'s version here -- so it was left as it is
+rather than picking a winner inside an unrelated change.
+
 ### Deployment guide corrected (`2d80b63`)
 
 The guide recommended `replicaCount: 2`, an HPA, and `--set replicaCount=3` as ordinary scaling. It

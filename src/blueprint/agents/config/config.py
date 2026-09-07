@@ -50,11 +50,16 @@ class Config:
         app_env = temp_settings.get("app_environment", "development")
         logger.info("Loading configuration properties for environment: %s", app_env)
 
-        # Validators differ when scoped: app_name/app_port must live under the scope.
+        # Validators differ when scoped: app_name is per agent, app_port is not.
+        #
+        # A group is one process behind one HTTP server, so only one port can be bound no
+        # matter how many agents share it. Requiring `<scope>.app_port` would make every
+        # agent declare a value that all but one of them cannot have, so the port stays a
+        # root key and is validated as one.
         if agent_scope:
             validators = [
                 Validator(f"{agent_scope}.app_name", must_exist=True),
-                Validator(f"{agent_scope}.app_port", must_exist=True, is_type_of=int),
+                Validator("app_port", must_exist=True, is_type_of=int, default=8000),
                 Validator("app_environment", must_exist=True, default="development"),
             ]
         else:
@@ -90,19 +95,24 @@ class Config:
             for key, value in processed.items():
                 self.settings[key] = value
 
-        # Initialize logging after config is fully loaded
-        self._initialize_logging()
-
     def get_package_root(self) -> Path:
         """Return the root path where configuration files are located."""
 
         return self._root_path
 
-    def _initialize_logging(self) -> None:
-        """Initialize logging based on configuration.
+    def configure_logging(self) -> None:
+        """Configure the root logger from ``log_level``, ``log_format`` and ``suppress_noisy_loggers``.
 
-        Called automatically at the end of Config initialization.
-        Sets up logging with the configured log level and format from settings.
+        **Called by the application, not by this constructor.** Configuring logging is the
+        application's decision: a library that does it on import steals the root logger from
+        whatever imported it, and cannot be silenced by the caller. ``AppBuilder.__init__``
+        makes the call, so an existing ``main.py`` that builds an app is unaffected.
+
+        It also has to leave the constructor for the namespace work: one ``Config`` per
+        namespace means N constructions in one process, and each one re-ran this. It is
+        idempotent in the sense that matters -- ``LoggingManager`` only touches the root
+        logger when it has no handlers -- but it re-attached filters and logged
+        "Logging configured" once per namespace, and the last namespace's level won.
         """
         log_level = self.settings.get("log_level", "INFO")
         log_format = self.settings.get("log_format", "text")

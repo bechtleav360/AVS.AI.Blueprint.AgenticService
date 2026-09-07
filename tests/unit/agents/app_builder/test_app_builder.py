@@ -10,6 +10,36 @@ from blueprint.agents.services.service_base import ServiceBase
 from tests.unit.agents.app_builder.conftest import StubHandler, wire_empty_registry
 
 # ---------------------------------------------------------------------------
+# logging ownership
+# ---------------------------------------------------------------------------
+
+
+class TestLoggingOwnership:
+    """The application configures logging; Config only supplies the values."""
+
+    def test_construction_configures_logging(self, mock_config: MagicMock) -> None:
+        AppBuilder(mock_config)
+        mock_config.configure_logging.assert_called_once()
+
+    def test_it_happens_before_any_component_is_registered(self, mock_config: MagicMock, mock_registry: MagicMock) -> None:
+        """A with_*() call constructs components that log, so the format must already be set."""
+        builder = AppBuilder(mock_config)
+        assert mock_config.configure_logging.call_count == 1
+        builder.with_service(StubService)
+        assert mock_config.configure_logging.call_count == 1
+
+
+class StubService(ServiceBase):
+    """Minimal service for the ordering test above."""
+
+    async def on_startup(self) -> None:
+        pass
+
+    async def on_shutdown(self) -> None:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # with_handler
 # ---------------------------------------------------------------------------
 
