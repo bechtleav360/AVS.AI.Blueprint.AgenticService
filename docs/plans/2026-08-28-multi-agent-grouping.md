@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | P0-P6 landed on `feature/multi-agent-namespaces`; the prerequisites are done. No phase (0-9) started. |
+| **Status** | P0-P6 landed on `feature/multi-agent-namespaces`; the prerequisites are done. No phase (0-10) started. |
 | **Spec (normative)** | `docs/specs/2026-08-28-multi-agent-grouping.md` |
 | **What landed, and why** | `docs/plans/2026-08-28-multi-agent-grouping-changelog.md` -- read before resuming |
 
@@ -824,6 +824,56 @@ hidden by API design — so they must be caught mechanically rather than documen
 | Blocking the event loop | dev mode sets `loop.set_debug(True)` with a slow-callback threshold; production keeps a higher-threshold watchdog naming the executing namespace (C7) |
 | Module-level side effects | CI: import each agent module, assert registry empty and root logger has no handlers |
 | Non-idempotent handlers | explicit flag at scaffold time and in `asbs validate` (P4) |
+
+---
+
+## Phase 10 — Migration and setup documentation (last, deliberately)
+
+**Files:** `docs/guides/multi-agent-setup.md` (new), `docs/guides/deployment.md` (rewrite),
+`agent_generator` CLI (`asbs setup`, `asbs create agent`, `asbs validate`)
+
+**Last on purpose.** Everything a migration guide would describe -- `AgentRegistration`, the
+group configuration, the entry point, the single image -- is built in phases 0, 2 and 8. A guide
+written before them documents an API that does not exist, which is worse than no guide: a reader
+cannot tell which half is aspiration. So this phase adds no framework behaviour; it makes what the
+earlier phases built usable by someone who has only ever written a single-agent service.
+
+**What already holds, and is what makes migration safe to document at all.** P6 fixed the
+guarantee rather than asserting it: an existing project keeps every registry key, every queue
+group and every durable name, because the root namespace keeps them, and that is enforced by tests
+rather than by prose. The guide states this as the reason a migration is a no-op on the broker, and
+it is a claim the reader can check.
+
+**`docs/guides/multi-agent-setup.md`:**
+
+1. Scaffolding a fresh multi-agent repository -- what `asbs setup` produces and why one image
+   serves every group.
+2. Migrating an existing single-agent project -- the two file changes from *Migration path for an
+   existing agent* above, and nothing else.
+3. What stays byte-identical and why: registry names, queue group, durable, telemetry
+   `service.name` (C1, C2). This is the section that decides whether anyone trusts the migration.
+4. The one decision to get right **before** migrating: the agent name becomes the queue group and
+   part of the durable name, so renaming it afterwards is a consumer migration (sec. 7.7), and it
+   must satisfy the namespace alphabet (C1) -- `""` or `[a-z][a-z0-9_]*`, no `-`.
+5. Group configuration, the entry point, and what regrouping does and does not change (C6).
+
+**CLI, and one deliberate omission.** `asbs setup` scaffolds a group; `asbs create agent` wires a
+new agent into the registration; `asbs validate` reports what a single-agent project must state
+before it can be grouped (`scheduler_mode` per namespace, `app_port` at root only). There is
+**no `asbs migrate` command**: `main.py` is the developer's own declaration, and a tool that
+rewrites it either guesses at intent or fails on anything hand-edited. A checklist plus a
+`validate` that names what is missing is the honest shape, and it matches the rule that a
+generator must fail loudly rather than emit something plausible.
+
+**`docs/guides/deployment.md` must be rewritten here or removed.** It ships today, assumes one
+Deployment per agent, recommends `replicaCount: 2` plus an HPA as ordinary scaling, and says
+nothing about schedulers (#73) or duplicate consumption (P1). It is listed under *Planned, not yet
+written* as a Phase 8 obligation; if Phase 8 does not get to it, it lands here, because the setup
+guide will contradict it directly.
+
+**Done when** a developer holding a single-agent service can follow the guide to a grouped
+deployment without reading the spec, the plan, or this changelog -- and a reviewer can verify from
+the guide alone that nothing broker-side changed.
 
 ---
 

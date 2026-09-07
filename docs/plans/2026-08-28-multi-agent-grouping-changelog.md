@@ -147,7 +147,7 @@ The multi-agent work breakdown lived as a 900-line section inside `CLAUDE.md`. I
 configuration, transport topology, event delivery, caches, startup, backwards compatibility,
 acceptance criteria, open questions) and
 `docs/plans/2026-08-28-multi-agent-grouping.md` (the phased breakdown: prerequisites P0-P6 and
-phases 0-9). `CLAUDE.md` keeps pointers plus the list of paths that require reading the spec first.
+phases 0-10). `CLAUDE.md` keeps pointers plus the list of paths that require reading the spec first.
 
 **Motivation.** `CLAUDE.md` is loaded into every session, so a 900-line plan costs context on every
 task regardless of relevance, and it cannot be reviewed the way a document under `docs/` can. The
@@ -1402,6 +1402,33 @@ left alone. 1354 unit tests pass.
 One unrelated formatting fix rode along: the nested conditional in `llm_status` was the one hunk
 `black` wanted to rewrite in this file, and `ruff-format` accepts its version, so the file is now
 clean under both formatters.
+
+### Phase 10 added to the plan -- migration and setup documentation, last
+
+Recorded on the user's prompt so it is not rediscovered later. No code: it adds a phase to
+`docs/plans/2026-08-28-multi-agent-grouping.md` after Phase 9, and moves the phase range to 0-10 in
+the plan's status line, `CLAUDE.md` and this changelog's header.
+
+**Why last rather than now.** Everything a migration guide would describe -- `AgentRegistration`,
+group configuration, the entry point, the single image -- is built in phases 0, 2 and 8. Written
+before them, a guide documents an API that does not exist, and a reader cannot tell which half is
+aspiration. The plan already carries the migration *design* (*Migration path for an existing
+agent*); what Phase 10 adds is the part a developer can read and run.
+
+**What it covers:** a new `docs/guides/multi-agent-setup.md` (scaffolding a group; migrating a
+single-agent project; the section listing what stays byte-identical and why, which is what decides
+whether anyone trusts the migration; and the one decision to make before migrating, since the agent
+name becomes the queue group and part of the durable); `asbs setup` / `asbs create agent` /
+`asbs validate` support; and the rewrite of `docs/guides/deployment.md`, which ships today and
+contradicts this design.
+
+**One deliberate omission, stated in the phase:** there is no `asbs migrate` command. `main.py` is
+the developer's own declaration, so a rewriter either guesses at intent or breaks on hand edits; a
+checklist plus a `validate` that names what is missing is the honest shape.
+
+P6 is what makes the guide's central claim checkable rather than asserted: an existing project
+keeps every registry key, queue group and durable name because the root namespace keeps them, and
+that is now enforced by tests.
 
 ### Deployment guide corrected (`2d80b63`)
 
