@@ -15,7 +15,7 @@ def reset_component_state() -> Generator[None]:
     """Reset shared Component class state after every test.
 
     Mirrors the pattern from clients/conftest.py — _ComponentMeta stores
-    shared_config and shared_registry as class-level attributes and must be
+    the config and registry as class-level attributes and must be
     cleared between tests to prevent cross-test leakage.
     """
     with patch(
@@ -23,8 +23,7 @@ def reset_component_state() -> Generator[None]:
         return_value=MagicMock(),
     ):
         yield
-    Component.shared_config = None
-    Component.shared_registry = None
+    Component.reset_shared_state()
 
 
 @pytest.fixture

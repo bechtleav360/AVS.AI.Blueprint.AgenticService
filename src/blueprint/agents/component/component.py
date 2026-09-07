@@ -27,27 +27,51 @@ if TYPE_CHECKING:
 
 
 class _ComponentMeta(ABCMeta):
-    """Metaclass owning class-level config/registry state and their one-time initialisation."""
+    """Metaclass owning class-level config/registry state and their one-time initialisation.
 
-    shared_config: Config | None = None
+        Both attributes are private, and the asymmetry between them is deliberate.
+
+        ``_shared_config`` has **no** public read path. The only way for a component to reach
+        configuration is the instance property ``Component.config``, which returns that component's
+        own namespace view (C5) and logs any read of the raw tree. A public class-level accessor
+        would defeat both: it hands out the *unscoped loader*, so an agent reads its neighbours'
+        keys with no scoping and no warning. Note that ``configure()`` assigns through ``cls``, so
+        the value lands on ``Component`` itself and a public name would also be reachable as
+        ``self.<name>`` -- the easiest thing to type, and a silent bypass.
+
+    ``shared_registry`` stays **public**, and not out of inconsistency: nothing is protected by
+        hiding it. Looking up collaborators is the registry's whole purpose, every component already
+        reaches it through the public instance property, and ``AppBuilder`` needs it before any
+        component instance exists. A class-level property named ``registry`` was tried and reverted --
+        it collides with the instance property of the same name, which mypy resolves in preference to
+        the metaclass one.
+    """
+
+    _shared_config: Config | None = None
     shared_registry: Registry | None = None
-
-    @property
-    def config(cls) -> Config | None:
-        return cls.shared_config
-
-    @property
-    def registry(cls) -> Registry | None:
-        return cls.shared_registry
 
     def configure(cls, config: Config) -> None:
         """Inject configuration once for all components. Called by AppBuilder.build().
 
         Raises RuntimeError if called more than once.
         """
-        if cls.shared_config is not None:
+        if cls._shared_config is not None:
             raise RuntimeError("Config is already set — can only be configured once")
-        cls.shared_config = config
+        cls._shared_config = config
+
+    def has_config(cls) -> bool:
+        """Whether configuration has been injected, without handing out the loader."""
+        return cls._shared_config is not None
+
+    def reset_shared_state(cls) -> None:
+        """Drop the injected config and registry. For test isolation only.
+
+        Exists so that tests do not have to assign to the private attributes: the class-level
+        state is process-wide and one-time, so a suite that builds more than one application has
+        to clear it between cases.
+        """
+        cls._shared_config = None
+        cls.shared_registry = None
 
     def init_registry(cls, value: Registry) -> None:
         """Initialise the shared registry. Called lazily on the first Component.__init__().
@@ -151,11 +175,11 @@ class Component(ABC, metaclass=_ComponentMeta):
         an optimisation but the definition: the root namespace *is* the unscoped configuration,
         so every existing single-agent application reads exactly what it read before.
         """
-        if Component.shared_config is None:
+        if Component._shared_config is None:
             raise RuntimeError(f"Config not linked to component '{self._name}'")
         if not self._namespace:
-            return Component.shared_config
-        return Component.shared_config.for_namespace(self._namespace)
+            return Component._shared_config
+        return Component._shared_config.for_namespace(self._namespace)
 
     @cached_property
     def tracer(self) -> trace.Tracer:

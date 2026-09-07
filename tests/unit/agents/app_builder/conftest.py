@@ -37,8 +37,7 @@ def reset_component_state() -> Generator[None]:
         return_value=MagicMock(),
     ):
         yield
-    Component.shared_config = None
-    Component.shared_registry = None
+    Component.reset_shared_state()
 
 
 @pytest.fixture
@@ -60,13 +59,13 @@ def mock_registry() -> MagicMock:
 
 @pytest.fixture
 def builder(mock_config: MagicMock) -> AppBuilder:
-    """AppBuilder with shared_config pre-configured — for fluent-setter tests."""
+    """AppBuilder with the shared config pre-configured — for fluent-setter tests."""
     return AppBuilder(mock_config)
 
 
 @pytest.fixture
 def build_config() -> MagicMock:
-    """Config for build() tests — NOT pre-configured in Component.shared_config.
+    """Config for build() tests — NOT pre-configured in Component._shared_config.
 
     build() calls Component.configure(self._config) internally; injecting via
     mock_config first would make that call raise 'already configured'.
@@ -78,7 +77,7 @@ def build_config() -> MagicMock:
 
 @pytest.fixture
 def builder_for_build(build_config: MagicMock, mock_registry: MagicMock) -> AppBuilder:
-    """AppBuilder ready for build() — shared_config is still None."""
+    """AppBuilder ready for build() — no config has been injected yet."""
     return AppBuilder(build_config)
 
 

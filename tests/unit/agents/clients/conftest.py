@@ -14,7 +14,7 @@ def reset_component_state() -> Generator[None]:
     """Reset shared Component class state after every test.
 
     Mirrors the pattern in tests/unit/agents/component/conftest.py:
-    _ComponentMeta stores shared_config and shared_registry as class-level
+    _ComponentMeta stores the config and registry as class-level
     attributes, so they must be cleared to prevent cross-test leakage.
     """
     with patch(
@@ -22,8 +22,7 @@ def reset_component_state() -> Generator[None]:
         return_value=MagicMock(),
     ):
         yield
-    Component.shared_config = None
-    Component.shared_registry = None
+    Component.reset_shared_state()
 
 
 @pytest.fixture
@@ -31,7 +30,7 @@ def mock_config() -> MagicMock:
     """Inject a MagicMock Config as the shared component config.
 
     All client classes read configuration via self.config, which resolves
-    to Component.shared_config. This fixture sets that up once per test.
+    to Component._shared_config. This fixture sets that up once per test.
     """
     config = MagicMock(spec=Config)
     # A namespaced component reads through Config.for_namespace(); the mock stands in for

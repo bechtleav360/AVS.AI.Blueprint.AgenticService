@@ -1536,6 +1536,51 @@ The alternative -- making `Component.config` tolerate a missing `_namespace` via
 rejected deliberately: it would hide a real ordering bug in any subclass that reads configuration
 before calling `super().__init__()`, which is exactly the failure that should be loud.
 
+### Config rework, step 2b -- the loader stops being reachable from agent code
+
+Found by review immediately after step 2: the scoped view and its audit could be walked past. Every
+class in this framework is a `Component`, so `Component.shared_config` was in reach of every
+handler, service and client -- and it hands out the **unscoped loader**, so a read through it is
+neither namespaced nor logged.
+
+It was worse than a class-level name. `configure()` assigns through `cls`, so the value lands on the
+`Component` class itself, which *is* in the instance MRO: `self.shared_config` resolved too, which
+is the easiest thing to type and the least likely to look wrong. Probed rather than assumed -- all
+four of `self.shared_config`, `Component.shared_config`, `type(self).shared_config` and
+`type(self).config` returned the loader.
+
+**`shared_config` is now `_shared_config`, with no public read path at all.** The only route to
+configuration is the instance property `Component.config`, which returns the component's own view
+(C5) and logs any raw-tree read. Two small public additions on the metaclass replace what tests
+were using the attribute for: `has_config()` reports whether configuration has been injected without
+handing over the loader, and `reset_shared_state()` clears the process-wide state, which a suite
+building more than one application has to do between cases. 13 assignments and 3 reads across the
+suite moved onto them.
+
+**The metaclass `config` property is deleted, and it was the sharper trap.** It returned
+`cls._shared_config` -- the *unscoped loader* -- under the name that means *scoped view* on an
+instance, so `MyHandler.config` and `self.config` were two different things one character apart.
+Nothing used it: a grep for class-level `.config`/`.registry` access across `src/` and `tests/`
+found no hits, so it was dead code as well as a trap.
+
+**`shared_registry` deliberately stays public.** Hiding it protects nothing: looking up
+collaborators is the registry's whole purpose, every component already reaches it through the public
+instance property, and `AppBuilder` needs it before any component instance exists. A class-level
+property named `registry` was tried and reverted -- it collides with the instance property of the
+same name, and mypy resolves the instance one in preference to the metaclass one, so
+`Component.registry.cache_service` failed to type-check. The reverted attempt is recorded in the
+metaclass docstring so it is not retried.
+
+**Tests.** 1391 unit tests pass (up from 1387). `TestTheConfigLoaderIsNotReachable` asserts the
+class-level accessor is gone, that no instance answers to `shared_config`, and that `has_config()`
+and `reset_shared_state()` do their jobs. Three `Component.registry` class-level reads in
+`test_component.py` moved to `shared_registry`, since deleting the metaclass property is what made
+them resolve to the property object rather than the registry.
+
+`tests/integration/test_sessions_startup_resilience.py` keeps its pre-existing formatting: `black`
+wants to rewrite one assertion there and `ruff-format` rejects the result, so the file stays on the
+known-debt list rather than having a winner picked inside an unrelated change.
+
 ### Deployment guide corrected (`2d80b63`)
 
 The guide recommended `replicaCount: 2`, an HPA, and `--set replicaCount=3` as ordinary scaling. It

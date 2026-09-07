@@ -114,7 +114,7 @@ class TestComponentMeta:
     def test_configure_sets_shared_config(self) -> None:
         mock_config = MagicMock(spec=Config)
         Component.configure(mock_config)
-        assert Component.shared_config is mock_config
+        assert Component._shared_config is mock_config
 
     def test_configure_raises_on_second_call(self) -> None:
         Component.configure(MagicMock(spec=Config))
@@ -372,3 +372,33 @@ class TestConfigIsScopedToTheNamespace:
         component = ConcreteComponent()
         with pytest.raises(RuntimeError, match="Config not linked"):
             _ = component.config
+
+
+class TestTheConfigLoaderIsNotReachable:
+    """The scoped view is the only route to configuration, so the class-level state stays private."""
+
+    def test_no_public_class_level_config_accessor(self, reset_component_state: None) -> None:
+        """Component.config as a *class* attribute used to return the unscoped loader."""
+        config = MagicMock(spec=Config)
+        Component.configure(config)
+        assert not isinstance(Component.config, Config)
+        assert isinstance(Component.config, property)
+
+    def test_the_public_name_is_gone_from_instances_too(self, reset_component_state: None) -> None:
+        """configure() assigns through cls, so a public name would also answer to self.<name>."""
+        config = MagicMock(spec=Config)
+        Component.configure(config)
+        component = ConcreteComponent(namespace="orders")
+        assert not hasattr(component, "shared_config")
+
+    def test_presence_is_reportable_without_handing_over_the_loader(self, reset_component_state: None) -> None:
+        assert Component.has_config() is False
+        Component.configure(MagicMock(spec=Config))
+        assert Component.has_config() is True
+
+    def test_reset_clears_both(self, reset_component_state: None) -> None:
+        Component.configure(MagicMock(spec=Config))
+        Component.init_registry(MagicMock())
+        Component.reset_shared_state()
+        assert Component.has_config() is False
+        assert Component.shared_registry is None
