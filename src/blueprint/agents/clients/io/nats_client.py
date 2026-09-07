@@ -4,7 +4,9 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import re
+import socket
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -15,12 +17,63 @@ from nats.js import api as js_api
 from nats.js.client import JetStreamContext
 from nats.js.errors import NotFoundError
 
+from ...component.namespace import ROOT_LABEL, ROOT_NAMESPACE, display_segment
 from ...models.api import ComponentHealth
 from ...models.errors import DeliveryDisposition, disposition_for
 from ...models.events import CloudEvent
-from .io_client_base import IOClientBase
+from .io_client_base import IOClientBase, validate_subject_segment
 
 logger = logging.getLogger(__name__)
+
+UNGROUPED_LABEL = "<ungrouped>"
+"""Stands in for an unset ``BLUEPRINT_GROUP`` in a connection name, so its three positions stay filled.
+
+Bracketed for the same reason as ``ROOT_LABEL``: ``display_segment`` strips brackets from every
+environment-supplied segment, so no real group can produce this string and "not deployed as part of
+a group" cannot be confused with a group that happens to be called ``ungrouped``.
+"""
+
+UNKNOWN_POD_LABEL = "<unknown-pod>"
+"""Stands in when neither the environment nor the host can say which pod this is."""
+
+
+def _deployment_group() -> str:
+    """Return the deployment group this process was started as, or a placeholder.
+
+    Read straight from the environment rather than through ``Config``: group composition
+    decides which agents get a ``Config`` at all, so it is resolved before Dynaconf exists
+    and carries the ``BLUEPRINT_`` prefix rather than Dynaconf's (spec sec. 5.1). The
+    group loader that will own this variable arrives with the group configuration; until
+    then an unset value simply means "not deployed as part of a group".
+
+    The group is deployment identity, so it belongs in the connection name and nowhere
+    near the queue group or the durable (C1).
+
+    Passed through ``display_segment`` because this value is owned by the deployment, not by
+    the framework: it keeps a group called ``a.b`` from turning a three-segment connection name
+    into four, and keeps any group from forging a placeholder.
+    """
+    return display_segment(os.environ.get("BLUEPRINT_GROUP", ""), UNGROUPED_LABEL)
+
+
+def _pod_identity() -> str:
+    """Return the replica this process runs in, for the connection name only.
+
+    ``POD_NAME`` is the Kubernetes downward-API convention and is preferred because a
+    deployment can set it explicitly; ``HOSTNAME`` is what the kubelet sets anyway and is
+    the pod name in practice; the host name covers plain Docker and local runs.
+
+    Sanitised on the same terms as the group: a host name is frequently an FQDN, and its dots
+    would otherwise split one segment into several.
+    """
+    for variable in ("POD_NAME", "HOSTNAME"):
+        value = os.environ.get(variable, "").strip()
+        if value:
+            return display_segment(value, UNKNOWN_POD_LABEL)
+    try:
+        return display_segment(socket.gethostname(), UNKNOWN_POD_LABEL)
+    except OSError:
+        return UNKNOWN_POD_LABEL
 
 
 @dataclass(frozen=True)
@@ -55,6 +108,24 @@ class NATSClient(IOClientBase):
     On disconnect the NATS library fires ``_on_disconnected``, which clears
     the ready flag.  On reconnect ``_on_reconnected`` re-subscribes (JetStream
     only — Core NATS re-subscribes automatically) and restores the flag.
+
+    One connection per namespace
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    A client belongs to one namespace (spec sec. 6), so a process hosting three
+    agents opens three connections rather than multiplexing one. That confines
+    the two failures that are per-connection: a dropped connection strands the
+    acknowledgements of only that namespace's in-flight messages, and a
+    slow-consumer kick removes only the namespace that flooded its buffer. It is
+    **not** a durability mechanism -- JetStream pending state lives on the server,
+    so what the topology decides is how many namespaces repeat work after a drop.
+
+    Each connection is named ``f"{namespace}.{group}.{pod}"``, which is what makes
+    a pod's contents legible in ``/connz``; before this, every connection the
+    framework opened was anonymous. An absent segment becomes a bracketed placeholder
+    (``<root>``, ``<ungrouped>``, ``<unknown-pod>``) that no real namespace, group or
+    pod can produce, so a missing value never reads as a present one. The name contains
+    the pod, so it must never reach queue-group or durable naming (C1) -- those two are
+    the only broker-side identifiers, and both derive from the namespace alone.
 
     Queue group
     ~~~~~~~~~~~
@@ -99,8 +170,9 @@ class NATSClient(IOClientBase):
     message goes when the framework gives up on it; ``""`` disables it and loses the payload.
     """
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, namespace: str = ROOT_NAMESPACE) -> None:
+        super().__init__(namespace=namespace)
+        self._connection_name: str = ""
         self._nats_client: NatsClient | None = None
         self._js: JetStreamContext | None = None
         self._use_jetstream: bool = False
@@ -140,6 +212,11 @@ class NATSClient(IOClientBase):
         """JetStream consumer settings resolved by ``subscribe()``; ``None`` on Core NATS."""
         return self._tuning
 
+    @property
+    def connection_name(self) -> str:
+        """Name this connection reports to the broker; ``""`` before the first connect."""
+        return self._connection_name
+
     # ------------------------------------------------------------------
     # Managed subscription API
     # ------------------------------------------------------------------
@@ -164,8 +241,16 @@ class NATSClient(IOClientBase):
 
         The name identifies the *agent*, not the process that hosts it: moving an agent
         into a different deployment group must not change which broker-side consumer it
-        is (spec C1). Today every component lives in the root namespace, so the name comes
-        from ``nats_queue_group`` and falls back to ``app_name``.
+        is (spec C1).
+
+        A namespaced client therefore uses its namespace verbatim -- it was validated at
+        construction, so it needs no checking or rewriting here -- and only the root namespace
+        falls back to ``nats_queue_group`` then ``app_name`` -- which is what
+        ``nats_queue_group`` is documented to be, "the queue group for the root namespace
+        only". Without that branch every client in a process would resolve the same
+        ``app_name``, and two co-hosted agents subscribing to one topic would form a
+        single group and steal each other's messages: exactly one of them would see any
+        given event.
 
         Resolved here rather than at subscription time so that a misconfiguration fails
         the caller's startup instead of disappearing into the background retry loop, which
@@ -175,21 +260,22 @@ class NATSClient(IOClientBase):
             ValueError: if neither key yields a non-empty name. NATS reads ``queue=""`` as
                 "no queue group", which is precisely the every-replica-processes-every-message
                 fan-out this exists to prevent, so there is no usable fallback.
-            ValueError: if the name contains whitespace. ``nats-py`` rejects such a queue
-                name with ``BadSubjectError``, and an ``app_name`` like ``"My Service"`` was
-                perfectly legal before subscriptions carried a queue group. Reported here,
-                naming the key and the value, rather than left to surface as a repeating
-                ``BadSubjectError`` inside the background retry task.
+            ValueError: if a configured name contains whitespace or a wildcard. ``nats-py``
+                rejects such a queue name with ``BadSubjectError``, and an ``app_name`` like
+                ``"My Service"`` was perfectly legal before subscriptions carried a queue group.
+                A wildcard additionally reaches the default dead-letter subject, which is derived
+                from this name. Reported here, naming the key and the value, rather than left to
+                surface as a repeating ``BadSubjectError`` inside the background retry task. A
+                *namespace* cannot reach this check: it is rejected at construction instead.
         """
+        if self.namespace:
+            return self.namespace
+
         for key in ("nats_queue_group", "app_name"):
             name = str(self.config.get(key, "") or "").strip()
             if not name:
                 continue
-            if any(char.isspace() for char in name):
-                raise ValueError(
-                    f"Queue group name '{name}' (from '{key}') contains whitespace, which NATS does not accept. "
-                    "Set 'nats_queue_group' to a name without whitespace."
-                )
+            validate_subject_segment(name, source=f"The queue group (from '{key}')", subject=f"{name}.dead-letter")
             return name
         raise ValueError(
             "NATS subscriptions require a queue group: set 'nats_queue_group' or 'app_name'. "
@@ -287,6 +373,14 @@ class NATSClient(IOClientBase):
                 "A JetStream durable filters one subject, so one name cannot serve them all. "
                 "Remove the key to derive a durable per topic."
             )
+        if configured and self.namespace:
+            logger.warning(
+                "Namespace '%s' is using the configured durable name '%s'. A durable is broker-side state "
+                "shared by everything that binds to it, so unless this key is scoped per namespace, every "
+                "namespace in this process binds to the same consumer and they consume each other's events.",
+                self.namespace,
+                configured,
+            )
 
         durables: dict[str, str] = {}
         for topic in topics:
@@ -301,15 +395,28 @@ class NATSClient(IOClientBase):
             durables[topic] = name
         return durables
 
-    @staticmethod
-    def _durable_for(topic: str) -> str:
+    def _durable_for(self, topic: str) -> str:
         """Derive a legal durable consumer name from a subject.
 
         NATS rejects ``.``, ``*``, ``>`` and whitespace in a consumer name, so the dotted
         subjects that are idiomatic in NATS -- ``orders.created`` -- cannot serve as one
-        directly.
+        directly. Only the *topic* is rewritten: the namespace was validated against an
+        alphabet a consumer name already accepts, so it is used as it was declared.
+
+        A namespaced client puts its namespace in front, for the same reason its queue
+        group is the namespace (C1): two co-hosted agents subscribing to one topic each
+        need their own consumer, or the broker hands every message to whichever of them
+        binds first. The root namespace keeps the bare ``<topic>-durable``, so no existing
+        consumer is renamed and no deployment of this change becomes a consumer migration.
+
+        The result -- ``orders-orders_created-durable`` for namespace ``orders`` on topic
+        ``orders.created`` -- reads back unambiguously because ``-`` is excluded from the
+        namespace alphabet: the first ``-`` is always the boundary between the namespace and
+        the topic. Were it allowed, ``orders-eu`` on ``created`` and ``orders`` on
+        ``eu-created`` would name one consumer and two agents would share it.
         """
-        return f"{re.sub(r'[.*>\s]', '_', topic)}-durable"
+        prefix = f"{self.namespace}-" if self.namespace else ""
+        return f"{prefix}{re.sub(r'[.*>\s]', '_', topic)}-durable"
 
     @staticmethod
     def _subject_matches(pattern: str, subject: str) -> bool:
@@ -344,6 +451,30 @@ class NATSClient(IOClientBase):
             raise ValueError(f"Config key '{key}' must be an integer, got {raw!r}.") from exc
 
     # ------------------------------------------------------------------
+    # Connection identity (P6)
+    # ------------------------------------------------------------------
+
+    def _resolve_connection_name(self) -> str:
+        """Return the name this connection reports to the broker (spec sec. 6).
+
+        ``f"{namespace}.{group}.{pod}"``: which agent, which deployment group, which
+        replica. It exists for attribution only -- ``nats.connect()`` was previously
+        called with no ``name=`` at all, so every connection the framework opened showed
+        up anonymous in ``/connz`` and a pod hosting several agents was unreadable.
+
+        All three positions are always filled, using a placeholder where a value is
+        absent, so the name cannot degenerate into ``"..pod-7"`` and "no group" stays
+        distinguishable from "a group whose name is empty".
+
+        **This value must never reach the queue group or the durable name.** It contains
+        the pod, so a consumer identity derived from it would change on every restart and
+        on every regrouping, which is precisely what C1 forbids. It is deliberately not
+        stored anywhere those two are resolved from.
+        """
+        namespace = self.namespace or ROOT_LABEL
+        return f"{namespace}.{_deployment_group()}.{_pod_identity()}"
+
+    # ------------------------------------------------------------------
     # Connection
     # ------------------------------------------------------------------
 
@@ -356,9 +487,11 @@ class NATSClient(IOClientBase):
             return
 
         nats_url = self.config.get("nats_url", "nats://localhost:4222")
+        self._connection_name = self._resolve_connection_name()
         try:
             self._nats_client = await nats.connect(
                 nats_url,
+                name=self._connection_name,
                 max_reconnect_attempts=self.config.get("nats_max_reconnect_attempts", 5),
                 reconnect_time_wait=self.config.get("nats_reconnect_time_wait", 2),
                 connect_timeout=10,
@@ -370,13 +503,13 @@ class NATSClient(IOClientBase):
             if self._use_jetstream:
                 try:
                     self._js = self._nats_client.jetstream()
-                    logger.info("Connected to NATS server with JetStream at %s", nats_url)
+                    logger.info("Connected to NATS server with JetStream at %s as '%s'", nats_url, self._connection_name)
                 except Exception as e:
                     logger.warning("JetStream initialization failed, falling back to Core NATS: %s", str(e))
                     self._use_jetstream = False
 
             if not self._use_jetstream:
-                logger.info("Connected to NATS server (Core NATS) at %s", nats_url)
+                logger.info("Connected to NATS server (Core NATS) at %s as '%s'", nats_url, self._connection_name)
         except Exception as e:
             logger.error("Failed to connect to NATS: %s", str(e))
             raise

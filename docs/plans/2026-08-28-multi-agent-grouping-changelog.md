@@ -46,6 +46,9 @@ Design and specification:
 
 Code:
 
+- **P6 review follow-up -- namespace identity**: one definition of the root namespace, one
+  alphabet validated where a namespace enters the framework, an unambiguous durable name and
+  unforgeable connection-name placeholders (uncommitted)
 - **P0 -- transport lifecycle**: managed whole-map `subscribe()`, background retry, reconnect
   re-subscription, `subscriptions_ready` readiness gating (`77af507`)
 - **P0 -- shutdown drain**: in-flight handlers finish before the connection closes (`585e58c`)
@@ -103,6 +106,15 @@ Code:
   left on that mode
 - **New cache primitive `CacheService.claim`**: set-if-absent, atomic on both backends (`add` on
   disk, `SET NX EX` on Redis). This is the compare-and-set operation P4 flagged as missing
+- **P6 -- the transport client belongs to a namespace, not to the process**: clients take a
+  namespace, register under a namespace-qualified name so two can coexist in one registry, and
+  derive queue group and durable from the namespace alone -- without that, two co-hosted agents
+  subscribing to one topic would share a queue group and each see half its events
+- **P6 -- connections are no longer anonymous**: `nats.connect()` is called with
+  `name=f"{namespace}.{group}.{pod}"`, which makes a pod's contents legible in `/connz`. The name
+  carries the pod, so nothing broker-side may derive from it (C1) -- asserted by test
+- **P6 -- `EventPublishingService` publishes on its own namespace's client**, resolved namespace
+  first then root, raising rather than guessing when that is ambiguous
 
 Documentation and process:
 
@@ -1146,6 +1158,214 @@ the timer is wired to the wrapper, and event mode claims nothing); and `claim` o
 (first wins, second refused, the loser does not overwrite, exactly one of five concurrent callers
 wins, TTL behaviour, namespace isolation, stale takeover on disk, and failing open).
 
+### P6 -- one transport connection per namespace, and named connections
+
+The transport client stops being a process singleton and becomes namespace-owned. Nothing
+creates a second one yet -- Phases 5 and 6 do that -- so for every application that exists
+today this is a no-op with one visible change: connections are no longer anonymous.
+
+**`IOClientBase` takes a namespace, and derives the registry name from it.**
+`IOClientBase.__init__(namespace="")` stores the namespace, exposes it as a public
+`namespace` property, and registers the component as `qualified_component_name(namespace,
+camel_to_snake(cls.__name__))` -- `nats_client` at the root, `orders_nats_client` under a
+namespace. That last part is what makes the topology possible at all: `Registry.add_component`
+raises on a duplicate name, so before this a second transport client of the same class raised
+at construction. `NATSClient` and `DaprClient` both forward the parameter.
+
+Naming had to move *into* the constructor to work. `Component.__init__` registers the instance,
+so the pre-existing pattern of renaming afterwards (`AIClientBase` still does it) cannot help:
+the collision happens during `super().__init__()`, before any rename could run. `Component`
+therefore gained a `name: str | None = None` parameter that overrides the class-derived name,
+forwarded through `ClientBase` and `ServiceBase`. Both default to the old behaviour.
+
+**Connections are named `f"{namespace}.{group}.{pod}"`.** `nats.connect()` was called with no
+`name=`, so every connection this framework opened was anonymous in `/connz` and a pod hosting
+several agents was unreadable from the broker side. `_resolve_connection_name()` fills the three
+positions from the namespace, `BLUEPRINT_GROUP` and `POD_NAME`/`HOSTNAME`/`socket.gethostname()`,
+and `connect()` passes the result and records it on a public `connection_name` property.
+
+The group and pod are read from `os.environ` rather than through `Config`, because group
+composition decides which agents get a `Config` at all (spec sec. 5.1) -- the group loader that
+will own the variable arrives with the group configuration in Phase 8. Absent segments get a
+placeholder (`root`, `ungrouped`, `unknown-pod`) rather than being left empty, so a name cannot
+degenerate into `..pod-7` and "no group" stays distinguishable from a group whose name is empty.
+The spec was amended to state that rule.
+
+**Consumer identity follows the namespace, which is the part that had to land with the
+ownership change rather than after it.** Once two clients can share a process, the queue group
+and the durable name can no longer come from process-wide config:
+
+- `_resolve_queue_group()` returns the namespace when there is one. Only the root namespace still
+  falls back to `nats_queue_group` then `app_name` -- which is what `nats_queue_group` is
+  documented to be, "the queue group for the root namespace only". Without the branch, every
+  client in a process resolves the same `app_name`, and two co-hosted agents subscribing to one
+  topic form a single queue group: the broker then hands each event to exactly one of the two
+  agents, so each silently sees about half of what it subscribed to.
+- `_durable_for()` prefixes the namespace, so `orders` on `orders.created` binds
+  `orders-orders_created-durable`. Same failure otherwise, one layer down: two namespaces
+  resolving one durable name bind to the same JetStream consumer and consume each other's
+  events. The whole name is still sanitised, so a dotted namespace stays a legal consumer name.
+- A configured `nats_durable_name` under a namespace now warns, naming the consequence. It is
+  legitimate when the key is scoped per namespace, and fatal when it is not, and the framework
+  cannot yet tell which -- config scoping (C5) is Phase 1.
+
+The durable prefix is Phase 5's item in the plan, taken early deliberately: P6 is what makes
+co-hosted clients possible, so shipping it without namespace-qualified durables would ship a
+latent cross-agent collision. It is dormant until a namespace exists -- the root namespace keeps
+`<topic>-durable` -- so no deployment of this change is a consumer migration. Phase 5's own
+migration note still applies to the filter-set work.
+
+**Deployment identity must never reach broker identity (C1).** The connection name contains the
+pod, so a queue group or durable derived from it would change on every restart and every
+regrouping. It is deliberately not stored where either is resolved, and a test asserts that a
+junk `BLUEPRINT_GROUP` and `POD_NAME` leave both untouched.
+
+**`EventPublishingService` becomes per-namespace.** It takes a `namespace`, registers under the
+qualified name, and `on_startup` resolves *its own* namespace's client instead of asking the
+registry for "the" `IOClientBase`. Publishing another namespace's events down a shared
+connection would make outbound traffic unattributable, which is the whole of reason 3.
+
+Resolution is the spec's rule -- own namespace, then root, raising rather than guessing -- and
+lives in the new `component/namespace.py` alongside the naming helper, because the registry has
+no namespace dimension yet (Phase 1) and both operations recur wherever a component becomes
+namespace-owned. `resolve_for_namespace` raises on ambiguity instead of taking the first match:
+picking one of two silently attaches an agent to another agent's transport. A namespace with no
+client of its own falls back to the root one, so a namespaced agent in a process with a single
+shared transport keeps working.
+
+**What P6 does not do, on purpose.** `DaprClient` accepts a namespace for health attribution and
+C4, and its docstring says plainly that it confines neither ack loss nor slow-consumer
+disconnects: it holds no broker connection, the sidecar owns and multiplexes one per pod, and
+there is correspondingly nothing to name. Nothing in `app_builder.py` changed -- it still creates
+one root-namespace client, which is exactly what a single-agent application should get, and the
+rule that a namespace which neither subscribes nor publishes gets no client is already the
+process-level behaviour there. `NatsEventing` still resolves the client by type; Phase 5 owns that
+call site and reworks it per namespace.
+
+**Tests.** 50 new unit tests: namespace naming and resolution (`test_namespace.py`), client
+ownership and coexistence, queue-group and durable derivation including the two-namespaces-on-one-topic
+cases, the connection-name shape and every fallback in it, the C1 assertion that deployment identity
+reaches neither, the Dapr namespace parameter, and the publishing service's resolution and its four
+failure modes. Two existing publishing-service tests were updated: client resolution moved from
+`get_component(IOClientBase)` to `get_io_clients()` plus the namespace filter.
+
+**Documentation.** `configuration-keys.md` gains a *Deployment Identity (environment only)*
+section for `BLUEPRINT_GROUP`, `POD_NAME` and `HOSTNAME`, and the `nats_queue_group` and
+`nats_durable_name` rows now say what a namespace does to them. Spec sec. 6 gains the placeholder
+rule.
+
+### P6 review follow-up -- the namespace gets one definition, one alphabet, one gate
+
+Four defects found reviewing P6, all of which turned out to be the same defect: nothing said what
+a namespace is allowed to look like, so each consumer of it decided separately. `component/namespace.py`
+is now the single answer, and the four symptoms fall out of it.
+
+**One definition of the root namespace.** `ROOT_NAMESPACE` was declared three times -- in
+`component/namespace.py`, as a class attribute on `EventHandlingBase` (`event_handling_base.py:48`)
+and at module level in `scheduler.py:66`, the last two predating P6. Both now import the one in
+`namespace.py`; the metric labels in `handle_event` read the imported constant instead of
+`self.ROOT_NAMESPACE`. The constant's docstring now also says why it is not configurable: three
+call sites branch on it being falsy, so a root namespace with a value renames every registry key
+and every broker-side consumer, which is what C1 exists to prevent.
+
+**One alphabet, enforced at the point of entry.** New `validate_namespace()`: a namespace is `""`
+or matches `[a-z][a-z0-9_]*`, and is rejected rather than repaired. It is called from
+`IOClientBase.__init__` and `EventPublishingService.__init__`, replacing the `.strip()` that used
+to silently repair `"  orders  "` while `"my orders"` blew up much later. Two exclusions carry
+their reason in the error message: `-`, because it separates the fields of the durable name, and
+`<`/`>`, because they are what make the connection-name placeholders unforgeable.
+
+The check it replaces was in `_resolve_queue_group()`, which is reached only by a NATS client that
+subscribes -- so a publish-only namespace, or a Dapr one, kept an illegal name in its registry key,
+its durable and (from C2) its telemetry resource without anything raising. Validation at
+construction covers all of them, and the queue group now returns the namespace verbatim.
+
+**The durable name became unambiguous.** Forbidding `-` in a namespace is what makes
+`f"{namespace}-{topic}-durable"` readable back: the first `-` is always the namespace boundary.
+Before, namespace `orders-eu` on topic `created` and namespace `orders` on topic `eu-created`
+produced the same durable, so two agents would have bound one JetStream consumer and consumed each
+other's events -- the exact failure the namespace prefix was added to prevent. `_durable_for` now
+rewrites only the topic (`f"{prefix}{re.sub(...)}-durable"` rather than sanitising the whole
+string), because the namespace was already validated against an alphabet a consumer name accepts.
+
+**The connection-name placeholders became unforgeable.** `UNNAMED_NAMESPACE = "root"` collided with
+a namespace actually called `root`, which is the ambiguity the placeholders were introduced to
+remove. There is now one bracketed spelling -- `ROOT_LABEL` (`"<root>"`), reused for messages and
+for the connection name -- plus `UNGROUPED_LABEL` and `UNKNOWN_POD_LABEL`. Since `<` and `>` are
+outside the namespace alphabet, no namespace can spell one.
+
+The group and the pod are not ours to validate: they arrive from a pod template, and failing a
+rollout over a display string is the wrong trade. New `display_segment()` sanitises them instead --
+`<`, `>`, `.` and whitespace become `_` -- so a group called `eu.west` cannot turn a three-segment
+name into four (`<root>.eu_west.pod-1`), an FQDN in `HOSTNAME` stays one segment, and nothing from
+the environment can forge a placeholder. Sanitising is acceptable only because C1 forbids anything
+deriving from the connection name, so a mangled segment loses no information downstream.
+
+**The gate moved from the two namespace-owned bases into `Component.__init__`, and `Component`
+now owns the namespace.** `Component.__init__(should_register, name, namespace="")` validates the
+namespace, then derives the registry name from it through `qualified_component_name`, and exposes a
+public `namespace` property. `IOClientBase.__init__` collapsed to `super().__init__(namespace=namespace)`
+-- its `_namespace` assignment, its `namespace` property and its `_base_component_name` classmethod
+are all gone, and `EventPublishingService` lost the same three. `ClientBase` and `ServiceBase`
+forward the parameter.
+
+Two reasons this is not `Registry.add_component`, which was the other candidate. Coverage: eight
+components construct with `should_register=False` -- `agent_runtime`, `handler_chain`,
+`actuator_api`, `cache`, `root`, `telemetry`, and the `nats.py` and `dapr.py` eventing endpoints,
+the last two of which become namespace-owned in phase 2 -- and a gate in the registry never sees
+them. Ordering: `Component.__init__` runs before the name is derived and before registration, so
+the illegal namespace never becomes a registry key even transiently. Having `Component` own the
+namespace outright is what makes the gate sound: reading it back off a subclass attribute would
+have left the check dependent on every subclass assigning `_namespace` before calling
+`super().__init__()`.
+
+**Names that cross the process boundary are validated, not repaired.** New
+`validate_subject_segment(segment, *, source, subject)` in `io_client_base.py`, applied at three
+call sites, replacing two silent rewrites and one partial check:
+
+- `SchedulerBase.tick_topic` derived the subject as `re.sub(r"\s+", "_", f"{identity}.scheduler.{self.name}")`.
+  That subject is the contract: a `CronJob`, usually in another repository, publishes to it. An
+  `app_name` of `"Health Monitor"` silently became `Health_Monitor.scheduler.nightly`, so the
+  manifest author -- who cannot see the rewrite -- publishes to a subject this scheduler does not
+  subscribe to, the tick never arrives, and neither side logs anything. Both derived parts are now
+  validated instead, and the error names the key, the value and the subject it would have produced.
+  The scheduler's own name is checked too, because `with_scheduler(name=...)` reaches the subject.
+- The explicit `topic=` override kept its whitespace check but had a separate wildcard check below
+  it; both are now the one helper, so the two paths cannot drift apart again.
+- `_resolve_queue_group()`'s root fallback checked whitespace only. A queue group is read in
+  `/connz` *and* seeds the default dead-letter subject `<queue group>.dead-letter`, so an
+  `app_name` of `my*service` produced a wildcard subject that the framework then publishes to.
+  Now rejected with the rest.
+
+The two rewrites that stay are named in the helper's docstring and in the spec: the topic portion
+of a durable name (dots are legal in subjects, illegal in consumer names, so there is no
+alternative -- bounded by the existing collision error) and the connection name (attribution only,
+and C1 forbids anything deriving from it, so nothing outside can depend on its spelling).
+
+**One defect introduced and caught during this change:** inserting the `namespace` property between
+`Component.name`'s getter and its `@name.setter` silently deleted the setter, which
+`with_agent(name=...)`, `with_scheduler(name=...)`, `with_rest_api(name=...)` and `AIClientBase`
+all assign through. `mypy` caught it as eight errors across four files; the property now sits below
+the setter.
+
+**Tests.** 1337 unit tests pass (up from 1323). `test_namespace.py` gains `TestValidateNamespace`
+and `TestDisplaySegment`, including the assertion that `ROOT_LABEL` cannot be produced by a legal
+namespace. Four NATS tests changed to match the new behaviour rather than the old: whitespace and
+dotted namespaces are now rejected at construction instead of trimmed or rewritten, and a
+hyphenated one is rejected with the collision named. Three new connection-name tests cover the
+dotted group, the forged placeholder and the FQDN host name. Five scheduler tests changed or were
+added around the tick subject: the spaced `app_name` case inverted from "is rewritten" to "is
+rejected", plus a wildcard identity, a spaced scheduler name, and an assertion that the error names
+the key, the value and the subject. One NATS test gained the wildcard queue group; another had its
+message assertion reordered.
+
+**Documentation.** Spec sec. 6 gains the unforgeability rule and the sanitise-not-validate rule for
+group and pod; C1 gains the namespace alphabet and both exclusions with their reasons.
+`configuration-keys.md` gains a *Namespace names* table, a *Names that become subjects are never
+rewritten for you* section and the corrected placeholder spellings. C1 also gains the
+validate-never-repair rule for boundary-crossing names, the two permitted exceptions, and the
+requirement that the namespace gate live in `Component.__init__`.
+
 ### Deployment guide corrected (`2d80b63`)
 
 The guide recommended `replicaCount: 2`, an HPA, and `--set replicaCount=3` as ordinary scaling. It
@@ -1191,8 +1411,34 @@ the no-op migration. `"event"` is the one that fixes #73, and until P5's second 
 `CronJob` the publisher has to be written by hand, which is why the second row is not yet the
 recommended answer for anyone.
 
+**A spaced `app_name` now fails an event-mode scheduler's startup instead of being rewritten.**
+This is the one behaviour change here that can affect an existing project: `app_name = "Health
+Monitor"` with `scheduler_mode = "event"` used to derive the tick subject
+`Health_Monitor.scheduler.<name>` and now raises at startup, naming the key, the value and that
+subject. The rewrite was never safe -- the `CronJob` publishing the tick is written against the
+subject by someone who cannot see the rewrite, so the failure it produced was a tick that never
+arrived and no log line anywhere explaining it. Migration is either renaming `app_name` to a
+subject-safe value or passing `topic=` explicitly. A wildcard in `app_name` or `nats_queue_group`
+likewise now fails, where before it reached the broker as a queue name and seeded a wildcard
+dead-letter subject.
+
+**The namespace alphabet is a constraint on code that does not exist yet.** Nothing constructs a
+namespaced client today, so no name in any deployment is affected; a namespace must now be `""` or
+`[a-z][a-z0-9_]*`, which is enforced before the first namespaced agent can be declared. Doing it
+now is free -- after the first namespaced deployment, changing the alphabet would rename durables,
+and renaming a durable is a consumer migration (spec sec. 7.7).
+
 Everything else remains non-breaking. Specifically:
 
+- `Component.__init__`, `ClientBase.__init__` and `ServiceBase.__init__` gained an optional
+  `name` parameter, and `IOClientBase.__init__`, `NATSClient.__init__`, `DaprClient.__init__` and
+  `EventPublishingService.__init__` an optional `namespace`. All default to the previous
+  behaviour, and the root namespace keeps every existing registry name, so no existing
+  construction site or lookup changes.
+- `NATSClient._durable_for` became an instance method (it reads the namespace). It is private;
+  the public `nats_durable_name` behaviour is unchanged for the root namespace.
+- `EventPublishingService.on_startup` now raises a different message when no transport client is
+  registered -- it names the namespace it looked in. It raised before too, so this is wording.
 - `ClientBase.subscribe`'s abstract signature changed from `(topic, callback)` to
   `(topic_callbacks)` in P0. This is the one signature change in the feature so far; it affects
   implementations of the transport-client interface, of which the repo contains two (`NATSClient`,

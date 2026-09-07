@@ -38,7 +38,6 @@ Example::
 from __future__ import annotations
 
 import logging
-import re
 import time
 from abc import abstractmethod
 from datetime import UTC, datetime
@@ -47,8 +46,9 @@ from typing import Any
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from ....clients.io.io_client_base import TOPIC_TRANSPORTS
+from ....clients.io.io_client_base import TOPIC_TRANSPORTS, validate_subject_segment
 from ....component.component import traced
+from ....component.namespace import ROOT_NAMESPACE
 from ....handler.event_handler_base import EventHandlerBase
 from ....models.events import GenericCloudEvent
 from ..rest_api_base import RestApiBase
@@ -62,15 +62,6 @@ SCHEDULER_MODE_IN_PROCESS = "in_process"
 """An APScheduler timer inside every replica of the process."""
 
 SCHEDULER_MODES = (SCHEDULER_MODE_EVENT, SCHEDULER_MODE_IN_PROCESS)
-
-ROOT_NAMESPACE = ""
-"""Namespace a scheduler's tick topic is derived from.
-
-Components gain a real namespace in phase 2; until then every one of them lives in the
-root namespace, and the tick topic falls back to ``app_name`` exactly as the queue group
-does (C1). Mirrors ``EventHandlingBase.ROOT_NAMESPACE``.
-"""
-
 
 TICK_CACHE_NAMESPACE = "scheduler_tick"
 """Cache namespace holding the per-tick claims, kept away from application data."""
@@ -390,40 +381,37 @@ class SchedulerBase(RestApiBase):
         moving the scheduler between deployment groups does not change the subject a
         ``CronJob`` has to publish to (C1).
 
-        Whitespace in a *derived* topic is replaced with ``_`` rather than rejected, the way
-        ``NATSClient._durable_for`` already rewrites a subject into a legal durable name.
-        ``app_name = "Health Monitor"`` is legal and common, the topic is derived rather than
-        typed, so there is no author mistake to catch -- only a name to make usable. A
-        wildcard is still an error in either form: it would subscribe the scheduler to
-        traffic that is not its tick.
+        A derived topic is **validated, not repaired**, and both of the names it is derived
+        from -- the identity and the scheduler's own name -- are checked. This subject is the
+        contract with whatever publishes the tick: a ``CronJob`` in another repository, written
+        by someone who has never read this method. Rewriting ``app_name = "Health Monitor"``
+        into ``Health_Monitor.scheduler.nightly`` leaves that author publishing to a subject
+        this scheduler does not subscribe to, and nothing anywhere says why -- the tick simply
+        never arrives. Failing the startup of the side that knows the name is unusable is the
+        only version of this that is debuggable.
 
         Raises:
-            ValueError: if no identity is available, if an explicit ``topic`` contains
-                whitespace, or if either form contains ``*`` or ``>``. All are startup
+            ValueError: if no identity is available, or if the identity, the scheduler name or
+                an explicit ``topic`` contains whitespace or a wildcard. All are startup
                 failures rather than a silently unsubscribed scheduler.
         """
         if self._topic_override:
             topic = self._topic_override
-            if any(char.isspace() for char in topic):
-                raise ValueError(
-                    f"Scheduler '{self.name}' was given the tick topic '{topic}', which contains whitespace. "
-                    "A NATS subject cannot, and an explicitly named topic is not rewritten."
-                )
-        else:
-            # ROOT_NAMESPACE is still "" for every component; phase 2 is what gives this a value.
-            identity = ROOT_NAMESPACE or str(self.config.get("app_name", "") or "").strip()
-            if not identity:
-                raise ValueError(
-                    f"Scheduler '{self.name}' runs in event mode but its tick topic cannot be derived: "
-                    "set 'app_name', or pass topic=... to SchedulerBase.__init__."
-                )
-            topic = re.sub(r"\s+", "_", f"{identity}.scheduler.{self.name}")
+            validate_subject_segment(topic, source=f"The tick topic given to scheduler '{self.name}'", subject=topic)
+            return topic
 
-        if "*" in topic or ">" in topic:
+        # ROOT_NAMESPACE is still "" for every component; phase 2 is what gives this a value.
+        identity = ROOT_NAMESPACE or str(self.config.get("app_name", "") or "").strip()
+        if not identity:
             raise ValueError(
-                f"Scheduler '{self.name}' resolved the tick topic '{topic}', which is not a usable subject: "
-                "the wildcards '*' and '>' would subscribe it to traffic that is not its tick."
+                f"Scheduler '{self.name}' runs in event mode but its tick topic cannot be derived: "
+                "set 'app_name', or pass topic=... to SchedulerBase.__init__."
             )
+
+        topic = f"{identity}.scheduler.{self.name}"
+        source = "'app_name'" if not ROOT_NAMESPACE else "The scheduler's namespace"
+        validate_subject_segment(identity, source=source, subject=topic)
+        validate_subject_segment(self.name, source=f"The name of scheduler '{self.name}'", subject=topic)
         return topic
 
     # ------------------------------------------------------------------
@@ -469,8 +457,7 @@ class SchedulerBase(RestApiBase):
 
         if self.registry.has_cache():
             logger.info(
-                "Scheduler '%s' started an in-process timer with crontab '%s'; each tick is claimed in the cache, "
-                "so one replica runs it",
+                "Scheduler '%s' started an in-process timer with crontab '%s'; each tick is claimed in the cache, so one replica runs it",
                 self.name,
                 self._crontab,
             )

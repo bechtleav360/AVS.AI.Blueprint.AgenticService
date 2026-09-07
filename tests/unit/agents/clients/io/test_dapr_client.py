@@ -259,3 +259,33 @@ class TestDaprClientRetryLoop:
             with pytest.raises(OSError):
                 await dapr_client._start_with_retry()
         assert dapr_client.subscriptions_ready is False
+
+
+# ---------------------------------------------------------------------------
+# P6 -- a namespaced Dapr client, and what it does not buy (spec sec. 6)
+# ---------------------------------------------------------------------------
+
+
+class TestDaprClientNamespaceOwnership:
+    """Useful for health attribution and C4; it confines neither ack loss nor a slow consumer."""
+
+    def test_default_is_the_root_namespace(self, dapr_client: DaprClient) -> None:
+        assert dapr_client.namespace == ""
+
+    def test_root_client_keeps_the_unqualified_registry_name(self, dapr_client: DaprClient) -> None:
+        assert dapr_client.name == "dapr_client"
+
+    def test_namespaced_client_registers_under_a_qualified_name(self, mock_config: MagicMock) -> None:
+        assert DaprClient(namespace="orders").name == "orders_dapr_client"
+
+    def test_two_namespaces_coexist_in_one_registry(self, mock_config: MagicMock) -> None:
+        orders = DaprClient(namespace="orders")
+        invoice = DaprClient(namespace="invoice")
+        assert orders.registry.get_component("orders_dapr_client") is orders
+        assert invoice.registry.get_component("invoice_dapr_client") is invoice
+
+    async def test_no_broker_connection_is_named(self, mock_config: MagicMock) -> None:
+        """The sidecar owns the broker connection, so there is nothing here to name."""
+        client = DaprClient(namespace="orders")
+        await client.connect()
+        assert not hasattr(client, "connection_name")
