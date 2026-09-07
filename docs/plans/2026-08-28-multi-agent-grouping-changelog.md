@@ -1366,6 +1366,43 @@ rewritten for you* section and the corrected placeholder spellings. C1 also gain
 validate-never-repair rule for boundary-crossing names, the two permitted exceptions, and the
 requirement that the namespace gate live in `Component.__init__`.
 
+### `/status/env` stopped returning credentials (#91)
+
+Found auditing configuration handling for the config rework, and **pre-existing on `main` and
+`develop`** -- introduced in `4e6421b`, unrelated to this feature. Filed as #91 and fixed here
+because the grouped-process work makes the same endpoint cross-agent.
+
+`ActuatorApi._sanitize_config` masked a key only when the whole key equalled one of four words
+(`api_key`, `secret`, `token`, `password`), so every compound key this framework actually uses was
+returned in clear by `GET /status/env`: `openai_api_key`, `nats_password`, `azure_client_secret`,
+any `*_token`. Lists were not walked either, so a list of provider entries was returned verbatim,
+and a URL carrying inline credentials passed through because its key names nothing sensitive.
+
+`_sanitize_config` now delegates per pair to `_sanitize_value`, and the rules are stated in order:
+
+- `SECRET_KEY_MARKERS` is matched as a **substring** of the lowercased key (`key`, `secret`,
+  `token`, `password`, `passwd`, `pwd`, `credential`, `auth`, `private`, `salt`). Deliberately
+  over-broad -- `api_key_header` is masked although it holds nothing -- because a lost diagnostic
+  line is cheaper than a published credential, and the docstring says so.
+- Dicts **and lists** are walked.
+- `_strip_url_userinfo` removes `user:password@` from any string that parses as a URL carrying
+  userinfo, whatever its key, so `redis://admin:pw@cache:6379/0` under `redis_url` becomes
+  `redis://cache:6379/0` and stays diagnostic instead of becoming `***`. It returns non-URLs
+  unchanged -- unlike `_sanitize_redis_url`, which is handed a value already known to be a Redis
+  URL and can safely fall back to a placeholder. The docstring records why the two differ, so they
+  are not unified wrongly.
+- Booleans pass through even under a matching key: a flag cannot carry a credential, and
+  `auth_enabled` is what someone reads this endpoint for.
+
+**Tests.** 17 new cases: ten compound keys as a parametrised set, secrets inside a list of dicts
+and inside a list of strings, URL userinfo stripped under an innocuous key, a URL without userinfo
+left alone, IPv6 brackets preserved, a boolean passing through, and a plain string containing `@`
+left alone. 1354 unit tests pass.
+
+One unrelated formatting fix rode along: the nested conditional in `llm_status` was the one hunk
+`black` wanted to rewrite in this file, and `ruff-format` accepts its version, so the file is now
+clean under both formatters.
+
 ### Deployment guide corrected (`2d80b63`)
 
 The guide recommended `replicaCount: 2`, an HPA, and `--set replicaCount=3` as ordinary scaling. It
