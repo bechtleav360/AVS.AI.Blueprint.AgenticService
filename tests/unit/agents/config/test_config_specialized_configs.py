@@ -320,3 +320,22 @@ class TestGetSessionsConfig:
             lambda key, default=None: None if key == "sessions_service" else default,
         )
         assert base_config.get_sessions_config() is None
+
+    def test_validation_error_does_not_leak_offending_value(self, base_config: Config, caplog, monkeypatch) -> None:
+        # A mistyped api_key (wrapped in a list) still carries the real secret;
+        # neither the raised ConfigError nor the log line may echo the value.
+        secret = "sk-REAL-SECRET-abc123"
+        monkeypatch.setattr(
+            base_config,
+            "get",
+            lambda key, default=None: (
+                {"base_url": "http://s.local", "agent_id": "a1", "api_key": [secret]} if key == "sessions_service" else default
+            ),
+        )
+        with caplog.at_level("ERROR"):
+            with pytest.raises(ConfigError) as excinfo:
+                base_config.get_sessions_config()
+        # Field name is still reported (useful), but never the value.
+        assert "api_key" in str(excinfo.value)
+        assert secret not in str(excinfo.value)
+        assert secret not in caplog.text

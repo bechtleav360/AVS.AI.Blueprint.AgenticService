@@ -465,8 +465,13 @@ class Config:
         try:
             return SessionsServiceConfig.model_validate(block)
         except PydanticValidationError as exc:
-            logger.error("Invalid [sessions_service] configuration: %s", exc)
-            raise ConfigError(f"Invalid sessions_service configuration: {exc}") from None
+            # Report field/type/message only — never the offending input value.
+            # Pydantic's default rendering embeds ``input_value=...``, which would
+            # leak a secret if ``api_key`` is mistyped (e.g. wrapped in a list) and
+            # still carries the real credential.
+            safe_errors = exc.errors(include_input=False)
+            logger.error("Invalid [sessions_service] configuration: %s", safe_errors)
+            raise ConfigError(f"Invalid sessions_service configuration: {safe_errors}") from None
 
     def validate(self) -> bool:
         """Validate the configuration."""
