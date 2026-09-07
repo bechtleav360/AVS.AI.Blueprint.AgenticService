@@ -1471,6 +1471,71 @@ root port, and falls back to 8000 when there is none.
 the `actuator_api.py` hunk, `ruff-format` rejects `black`'s version here -- so it was left as it is
 rather than picking a winner inside an unrelated change.
 
+### Config rework, step 2 -- one loaded tree, one view per namespace (C5)
+
+`Config` becomes the loader and the owner of the settings tree; each agent reads through a view of
+it. This is C5 ("each namespace **MUST** receive a `Config` with `agent_scope` set"), implemented
+without N loads and without giving each agent a window on its neighbours.
+
+**`Config.for_namespace(namespace)` returns a scoped view sharing the loaded tree.** The view is a
+shallow copy differing only in `_agent_scope`, so `for_namespace("orders").get("model_name")`
+resolves `orders.model_name` and falls back to the root `model_name`, while `nats_url` and the rest
+of the infrastructure keys stay shared. The files are parsed once per process, not once per agent:
+a test asserts `view._settings is config._settings`. Views are cached per namespace, so a component
+asking twice gets the same object.
+
+This cost almost nothing because every read already funnelled through one place: the nine typed
+getters call `self.get()` 25 times and never touch the tree directly, so scoping `get` scopes all
+of them. A test covers that rather than trusting it.
+
+`for_namespace("")` returns the object itself -- not an optimisation but the definition, since the
+root namespace *is* the unscoped configuration. Calling `for_namespace` **on a view raises**: a
+view is one agent's window, not a factory for other agents' windows, and allowing it would hand
+every namespace an unlogged route to its neighbours' keys.
+
+**`Component.config` returns the component's own view.** A root-namespace component gets the
+configuration object unchanged, so every existing application reads exactly what it read before;
+a namespaced one gets `shared_config.for_namespace(self._namespace)`. This is what makes the view
+more than an unused abstraction, and it is available now only because P6 put the namespace on
+`Component` itself.
+
+**The raw tree becomes an audited escape hatch.** `self.settings` was a public attribute; it is now
+a property over `self._settings` that logs on every access. The user asked for a hatch that logs
+rather than a wall, so isolation here is **audited, not enforced** -- and the docstring says so,
+because the difference matters to anyone relying on it. Enforcing it would mean making the tree
+unreachable, which breaks the actuator environment endpoint and any project reading a key the typed
+getters do not model.
+
+The level distinguishes the two cases, which is what keeps the audit useful rather than noisy: the
+loader is the application's own object and owns the tree, so its access is DEBUG; a **namespaced
+view** handing out the whole tree is an agent reading past its own subsection, so that is WARNING
+and names the namespace. An existing single-agent application therefore logs nothing new.
+
+**Deployment identity is refused, not returned as `None`.** New `DEPLOYMENT_IDENTITY_KEYS`
+(`blueprint_group`, `pod_name`, `hostname`) raises from `get()` with the reason: code that can read
+its group or pod can be written to depend on them, and regrouping then breaks it (C6). `None` would
+have read as "not configured" and sent the caller hunting for a missing setting. The check sits in
+`get()`, the single reader every typed getter funnels through, and it is case-insensitive. This is
+also the prerequisite for step 3: with `envvar_prefix` disabled Dynaconf absorbs the entire process
+environment -- `BLUEPRINT_GROUP` included -- and this is what keeps it out of reach.
+
+**Tests.** 1387 unit tests pass (up from 1361). New `test_namespace_views.py`: scoped resolution and
+root fallback, two agents disagreeing only where they override, the root being the object itself,
+caching, the shared tree, the view-of-a-view refusal, the typed getters being scoped, the C6
+refusals including case and the `default=` argument, and the audit -- a view warns and names itself,
+the loader does not, and the hatch still returns the whole tree. `TestConfigIsScopedToTheNamespace`
+covers the `Component` side.
+
+**Two test-fixture changes the production change forced, both worth noting.** Six `mock_config`
+fixtures are `MagicMock(spec=Config)`, so `for_namespace()` returned a *different* mock and any test
+asserting on `mock_config.get` for a namespaced component broke; they now set
+`config.for_namespace.return_value = config`, so the mock stands in for both the loader and its
+views. And `tests/unit/agents/agent/conftest.py` builds `AgentRuntime` with `object.__new__`,
+bypassing `Component.__init__`, so it now supplies `_namespace` the way it already supplied `_name`.
+The alternative -- making `Component.config` tolerate a missing `_namespace` via `getattr` -- was
+rejected deliberately: it would hide a real ordering bug in any subclass that reads configuration
+before calling `super().__init__()`, which is exactly the failure that should be loud.
+
 ### Deployment guide corrected (`2d80b63`)
 
 The guide recommended `replicaCount: 2`, an HPA, and `--set replicaCount=3` as ordinary scaling. It

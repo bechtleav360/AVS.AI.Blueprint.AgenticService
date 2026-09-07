@@ -2,6 +2,7 @@
 
 import json
 import logging
+from copy import copy
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,20 @@ logger = logging.getLogger(__name__)
 
 class ConfigError(Exception):
     """Custom exception for configuration-related errors."""
+
+
+DEPLOYMENT_IDENTITY_KEYS = frozenset({"blueprint_group", "pod_name", "hostname"})
+"""Environment values describing *where* a process runs, and therefore not configuration.
+
+Kept unreadable through ``Config`` because C6 forbids any API reachable from agent code exposing
+the deployment group, its membership or its size: an agent that can read them can be written to
+depend on them, and regrouping then breaks it. Framework code that needs them reads the
+environment directly (``clients/io/nats_client.py``), where no agent can follow.
+
+The list matters most once ``envvar_prefix`` can be disabled, because Dynaconf then absorbs the
+whole process environment -- ``BLUEPRINT_GROUP`` and ``POD_NAME`` included -- and this is what
+keeps them out of reach.
+"""
 
 
 class Config:
@@ -42,6 +57,8 @@ class Config:
         self._validation_errors: list[str] = []
         self._root_path = Path(root_path) if root_path else Path.cwd()
         self._agent_scope = agent_scope
+        self._is_view = False
+        self._views: dict[str, Config] = {}
 
         # First pass: load config to get app_environment
         temp_settings = Dynaconf(
@@ -70,7 +87,7 @@ class Config:
             ]
 
         # Second pass: load with the correct environment
-        self.settings = Dynaconf(
+        self._settings = Dynaconf(
             settings_files=settings_files,
             environments=True,
             current_env=app_env,
@@ -82,18 +99,97 @@ class Config:
 
         # Validate first. Dynaconf's lazy _setup() triggers validators on the
         # first attribute access, so this needs to run before any other access
-        # to self.settings to ensure ValidationError is converted to ConfigError
+        # to self._settings to ensure ValidationError is converted to ConfigError
         # by validate()'s exception handler.
         self.validate()
 
         # Replace DOT placeholders
-        dot_placeholder = self.settings.get("dot_placeholder", "")
+        dot_placeholder = self._settings.get("dot_placeholder", "")
         if dot_placeholder:
             # Process the entire settings object
-            processed = self._process_dynabox(self.settings, dot_placeholder, ".")
+            processed = self._process_dynabox(self._settings, dot_placeholder, ".")
             # Update settings with processed values
             for key, value in processed.items():
-                self.settings[key] = value
+                self._settings[key] = value
+
+    @property
+    def settings(self) -> Any:
+        """The raw, unscoped settings tree -- the deliberate escape hatch.
+
+        Everything a component should need is on ``get`` and the typed getters, which resolve
+        ``<namespace>.<key>`` before the root key. This property is what stays reachable when that
+        is not enough, and **every use of it is logged**, so reaching around a namespace view is
+        visible rather than merely discouraged.
+
+        Isolation between agents is therefore *audited, not enforced*. Enforcing it would mean
+        making the tree unreachable, which breaks the actuator environment endpoint and any project
+        reading a key the typed getters do not model. The trade is deliberate: a hatch that leaves
+        a trace beats a wall with a hole in it.
+
+        The level distinguishes the two cases. The loader is the application's own object and owns
+        the tree, so its access is DEBUG. A **namespaced view** handing out the whole tree is an
+        agent reading past its own subsection, which is the case worth seeing, so that is WARNING.
+        """
+        if self._is_view:
+            logger.warning(
+                "Namespace '%s' read the raw settings tree, which is not scoped to it: it can see every other "
+                "agent's configuration. Prefer get() or a typed getter, which resolve '%s.<key>' before the root key.",
+                self._agent_scope,
+                self._agent_scope,
+            )
+        else:
+            logger.debug("Raw settings tree read from the root configuration")
+        return self._settings
+
+    def for_namespace(self, namespace: str) -> "Config":
+        """Return a view of this configuration scoped to one agent (C5).
+
+        The view shares this object's loaded tree -- the files are parsed once per process, not
+        once per agent -- and differs only in which scope its lookups try first. So
+        ``for_namespace("orders").get("model_name")`` resolves ``orders.model_name`` and falls back
+        to the root ``model_name``, while infrastructure keys stay shared at the root.
+
+        Views are cached, so a component asking twice gets the same object.
+
+        Args:
+            namespace: The agent to scope to. ``""`` returns this object unchanged, because the
+                root namespace *is* the unscoped configuration.
+
+        Raises:
+            RuntimeError: if called on a view. A view is one agent's window on the configuration,
+                not a factory for other agents' windows -- allowing it would hand every namespace
+                an unlogged route to its neighbours' keys, which is exactly what ``settings``
+                exists to make visible.
+        """
+        if self._is_view:
+            raise RuntimeError(
+                f"Namespace '{self._agent_scope}' asked its own configuration view for a view of namespace "
+                f"'{namespace}'. Views are created from the application's configuration, not from another "
+                "agent's view."
+            )
+        if not namespace:
+            return self
+
+        cached = self._views.get(namespace)
+        if cached is not None:
+            return cached
+
+        view = copy(self)
+        view._agent_scope = namespace
+        view._is_view = True
+        view._views = {}
+        self._views[namespace] = view
+        return view
+
+    @property
+    def agent_scope(self) -> str | None:
+        """The namespace whose keys this object resolves first; ``None`` at the root."""
+        return self._agent_scope
+
+    @property
+    def is_view(self) -> bool:
+        """Whether this is a per-namespace view rather than the application's own configuration."""
+        return self._is_view
 
     def get_package_root(self) -> Path:
         """Return the root path where configuration files are located."""
@@ -114,9 +210,9 @@ class Config:
         logger when it has no handlers -- but it re-attached filters and logged
         "Logging configured" once per namespace, and the last namespace's level won.
         """
-        log_level = self.settings.get("log_level", "INFO")
-        log_format = self.settings.get("log_format", "text")
-        suppress_noisy = self.settings.get("suppress_noisy_loggers", True)
+        log_level = self._settings.get("log_level", "INFO")
+        log_format = self._settings.get("log_format", "text")
+        suppress_noisy = self._settings.get("suppress_noisy_loggers", True)
 
         manager = LoggingManager()
         manager.configure(log_level=log_level, log_format=log_format, suppress_noisy_loggers=suppress_noisy)
@@ -202,20 +298,34 @@ class Config:
 
         When ``agent_scope`` is set, tries ``<scope>.<key>`` first; if missing or
         ``None``, falls back to ``<key>`` at root. When ``agent_scope`` is None,
-        behaves exactly like ``self.settings.get(key, default)``.
+        behaves exactly like a plain unscoped lookup in the tree.
 
         ``None`` from a scoped lookup is treated as "not set" so the root
         fallback fires. Empty containers (``[]``, ``{}``, ``""``) at the scoped
         key are returned as-is — only ``None`` triggers fallback.
         """
         if self._agent_scope:
-            scoped = self.settings.get(f"{self._agent_scope}.{key}")
+            scoped = self._settings.get(f"{self._agent_scope}.{key}")
             if scoped is not None:
                 return scoped
-        return self.settings.get(key, default)
+        return self._settings.get(key, default)
 
     def get(self, key: str, default: Any = None) -> Any:
-        """Get a configuration value, scope-aware when ``agent_scope`` is set."""
+        """Get a configuration value, scope-aware when ``agent_scope`` is set.
+
+        Raises:
+            ValueError: for a key in :data:`DEPLOYMENT_IDENTITY_KEYS`. Raised rather than answered
+                with ``None``, because ``None`` reads as "not configured" and would send the caller
+                hunting for a missing setting instead of telling them the value is deliberately out
+                of reach (C6). Every typed getter funnels through here, so one check covers them all.
+        """
+        if key.lower() in DEPLOYMENT_IDENTITY_KEYS:
+            raise ValueError(
+                f"'{key}' is deployment identity, not configuration, and is deliberately unreadable through "
+                "Config (C6): code that can read the group or the pod can be written to depend on them, and "
+                "moving the agent to another group then breaks it. Framework code reads these from the "
+                "environment directly."
+            )
 
         env_var = self._scoped_get(key, default)
         # Convert DynaBox to dict
@@ -440,7 +550,7 @@ class Config:
         """Validate the configuration."""
         self._validation_errors.clear()
         try:
-            self.settings.validators.validate()
+            self._settings.validators.validate()
             if not 1 <= self.get("app_port") <= 65535:
                 raise ConfigError(f"Invalid app port: {self.get('app_port')}")
 

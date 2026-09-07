@@ -26,6 +26,9 @@ def reset_component_state() -> Generator[None]:
 @pytest.fixture
 def mock_config() -> MagicMock:
     config = MagicMock(spec=Config)
+    # A namespaced component reads through Config.for_namespace(); the mock stands in for
+    # both the loader and its views, so a test controls one object rather than two.
+    config.for_namespace.return_value = config
     Component.configure(config)
     return config
 
@@ -46,6 +49,9 @@ def runtime(mock_config: MagicMock, mock_registry: MagicMock) -> AgentRuntime:
     """
     rt = object.__new__(AgentRuntime)
     rt._name = "test-agent"
+    # Component.__init__ is skipped here, so the namespace it would set has to be supplied:
+    # self.config resolves through it to pick the right per-namespace view.
+    rt._namespace = ""
     # pydantic_ai Agent.name calls self._override_name.get() (no default — raises LookupError if unset).
     # Setting it to None makes the property return self._name as the fallback.
     rt._override_name = contextvars.ContextVar("_override_name")

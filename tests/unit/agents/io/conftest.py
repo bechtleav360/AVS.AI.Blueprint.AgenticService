@@ -31,6 +31,9 @@ def reset_component_state() -> Generator[None]:
 def mock_config() -> MagicMock:
     """Inject a MagicMock Config as the shared component config."""
     config = MagicMock(spec=Config)
+    # A namespaced component reads through Config.for_namespace(); the mock stands in for
+    # both the loader and its views, so a test controls one object rather than two.
+    config.for_namespace.return_value = config
     Component.configure(config)
     return config
 

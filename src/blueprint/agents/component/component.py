@@ -140,10 +140,22 @@ class Component(ABC, metaclass=_ComponentMeta):
 
     @property
     def config(self) -> Config:
-        """Get the configuration linked to this component."""
+        """Get the configuration linked to this component, scoped to its namespace (C5).
+
+        A namespaced component receives a *view*: ``get`` and the typed getters resolve
+        ``<namespace>.<key>`` before the root key, so prompts, model choice and limits become
+        per-agent while infrastructure keys stay shared. The view shares the loaded tree, so
+        this costs one dictionary lookup, not another parse of the settings files.
+
+        A root-namespace component gets the configuration object itself, unchanged. That is not
+        an optimisation but the definition: the root namespace *is* the unscoped configuration,
+        so every existing single-agent application reads exactly what it read before.
+        """
         if Component.shared_config is None:
             raise RuntimeError(f"Config not linked to component '{self._name}'")
-        return Component.shared_config
+        if not self._namespace:
+            return Component.shared_config
+        return Component.shared_config.for_namespace(self._namespace)
 
     @cached_property
     def tracer(self) -> trace.Tracer:

@@ -341,3 +341,34 @@ class TestTracedSkipsWhenNotRecording:
 
         span.set_status.assert_called_once()
         assert span.set_status.call_args[0][0].status_code == StatusCode.ERROR
+
+
+class TestConfigIsScopedToTheNamespace:
+    """C5 -- a namespaced component reads its own subsection, the root reads the whole thing."""
+
+    def test_root_component_gets_the_configuration_itself(self, reset_component_state: None) -> None:
+        config = MagicMock(spec=Config)
+        Component.configure(config)
+        component = ConcreteComponent()
+        assert component.config is config
+        config.for_namespace.assert_not_called()
+
+    def test_namespaced_component_gets_its_view(self, reset_component_state: None) -> None:
+        config = MagicMock(spec=Config)
+        view = MagicMock(spec=Config)
+        config.for_namespace.return_value = view
+        Component.configure(config)
+        component = ConcreteComponent(namespace="orders")
+        assert component.config is view
+        config.for_namespace.assert_called_once_with("orders")
+
+    def test_two_namespaces_get_different_views(self, reset_component_state: None) -> None:
+        config = MagicMock(spec=Config)
+        config.for_namespace.side_effect = lambda ns: MagicMock(spec=Config, name=f"view-{ns}")
+        Component.configure(config)
+        assert ConcreteComponent(namespace="orders").config is not ConcreteComponent(namespace="billing").config
+
+    def test_missing_config_still_raises(self, reset_component_state: None) -> None:
+        component = ConcreteComponent()
+        with pytest.raises(RuntimeError, match="Config not linked"):
+            _ = component.config

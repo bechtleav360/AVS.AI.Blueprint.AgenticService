@@ -34,5 +34,8 @@ def mock_config() -> MagicMock:
     to Component.shared_config. This fixture sets that up once per test.
     """
     config = MagicMock(spec=Config)
+    # A namespaced component reads through Config.for_namespace(); the mock stands in for
+    # both the loader and its views, so a test controls one object rather than two.
+    config.for_namespace.return_value = config
     Component.configure(config)
     return config
