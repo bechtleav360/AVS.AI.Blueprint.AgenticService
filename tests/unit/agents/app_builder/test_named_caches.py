@@ -11,7 +11,7 @@ in ``tests/unit/agents/services/infrastructure/test_cache_backend_factory.py``.
 """
 
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -38,6 +38,10 @@ def builder(cache_dir: Path) -> AppBuilder:
     """
     config = MagicMock(spec=Config)
     config.get_cache_config.return_value = CacheConfig(cache_dir=str(cache_dir), backend="disk")
+    config.get.return_value = ""
+    # build() reads per-agent keys through Config.for_namespace(); the mock stands in for
+    # both the loader and its views, so a test controls one object.
+    config.for_namespace.return_value = config
     return AppBuilder(config)
 
 
@@ -153,3 +157,43 @@ class TestCacheNameValidation:
         with pytest.raises(ValueError):
             builder.with_cache(name="../evil")
         assert Component.shared_registry is None or not Component.shared_registry.get_all_caches()
+
+
+class TestEveryCacheReachesReadiness:
+    """A named cache is a real backend; one that nothing probes is an outage nobody is told about."""
+
+    def test_the_default_cache_keeps_the_entry_name_it_has_always_had(self, builder: AppBuilder) -> None:
+        builder.with_cache()
+
+        with patch("blueprint.agents.app_builder.FastAPI"):
+            builder.build()
+
+        assert "cache" in builder._actuator_api._pending_providers  # type: ignore[union-attr]
+
+    def test_a_named_cache_gets_its_own_entry(self, builder: AppBuilder) -> None:
+        builder.with_cache().with_cache(name="sessions")
+
+        with patch("blueprint.agents.app_builder.FastAPI"):
+            builder.build()
+
+        providers = builder._actuator_api._pending_providers  # type: ignore[union-attr]
+        assert {"cache", "cache:sessions"} <= set(providers)
+
+    def test_a_named_cache_alone_still_reaches_readiness(self, builder: AppBuilder) -> None:
+        """Previously the probe was keyed on the default name, so this cache went unprobed."""
+        builder.with_cache(name="sessions")
+
+        with patch("blueprint.agents.app_builder.FastAPI"):
+            builder.build()
+
+        assert "cache:sessions" in builder._actuator_api._pending_providers  # type: ignore[union-attr]
+
+    def test_each_entry_probes_its_own_cache(self, builder: AppBuilder) -> None:
+        builder.with_cache().with_cache(name="sessions")
+
+        with patch("blueprint.agents.app_builder.FastAPI"):
+            builder.build()
+
+        providers = builder._actuator_api._pending_providers  # type: ignore[union-attr]
+        assert providers["cache"]._cache is registry().get_cache()
+        assert providers["cache:sessions"]._cache is registry().get_cache("sessions")

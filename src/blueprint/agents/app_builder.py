@@ -693,11 +693,15 @@ class AppBuilder:
         # 5. Create ActuatorApi and wire health checkers from all registered clients
         self._actuator_api = ActuatorApi()
         health_providers: dict[str, HealthCheckerBase] = {client.name: ClientHealthChecker([client]) for client in registry.get_clients()}
-        # Pull the registered cache (if any) into the readiness probe so a Redis
-        # outage takes the pod out of service rotation instead of letting it
-        # silently serve cache misses.
-        if registry.has_cache():
-            health_providers["cache"] = CacheHealthChecker(registry.cache_service)
+        # Pull every registered cache into the readiness probe so a Redis outage takes the pod
+        # out of service rotation instead of letting it silently serve cache misses. Every
+        # cache, not just the default one: a named cache is a real backend with a real
+        # connection, and one that only the default cache was probed would be an unreachable
+        # Redis nobody was told about. The default keeps the entry name 'cache' it has always
+        # had, so an existing /readiness payload is unchanged.
+        for cache_name, cache in registry.get_all_caches().items():
+            entry = "cache" if cache_name == DEFAULT_CACHE_NAME else f"cache:{cache_name}"
+            health_providers[entry] = CacheHealthChecker(cache)
         if hasattr(self, "_custom_health_checkers"):
             health_providers.update(self._custom_health_checkers)
         if health_providers:

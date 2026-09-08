@@ -3219,7 +3219,7 @@ to the sidecar-facing contract rather than an internal detail, so it is **not** 
 listed under *Open points*. Refusing loudly is the interim, because the alternative is a pod that
 looks healthy and consumes nothing.
 
-Tests: `tests/unit/agents/app_builder/test_route_namespacing.py`, 17 cases, asserting through
+Tests: `tests/unit/agents/app_builder/test_route_namespacing.py`, 18 cases, asserting through
 `app.openapi()["paths"]` rather than `app.routes` -- FastAPI stores an included router as one
 opaque entry rather than flattening its routes, so `app.routes` does not contain the paths under
 test while the OpenAPI document is exactly what is served. Covered: the prefix for a root and a
@@ -3229,6 +3229,73 @@ rather than added to, two agents' tags not merging, and a root component's tags 
 Dapr refused with both agents named, one agent on Dapr fine, two on NATS fine; the root delivery
 path unchanged; an agent's delivery path moved; two agents on NATS getting their own; and the
 subscription document naming the mounted path for an agent and the unchanged path for the root.
+
+### Phase 6, part 3 -- every cache is manageable and every cache is probed
+
+Phase 3 part 2 let a process hold several named caches. Two things still only knew about the
+default one, and both were listed as phase 6's work.
+
+**`CacheManagementApi` takes an optional `?name=` on every endpoint:**
+
+```python
+    async def get_cache_stats(self, name: str = DEFAULT_CACHE_NAME) -> CacheStatsResponse:
+        stats = self._cache(name).get_stats()
+```
+
+One router for the process rather than one per cache, and that is a correctness point rather
+than tidiness: caches can be registered *after* startup (`registry.add_cache` exists for that),
+routes cannot, so anything keyed on the set of caches at build time would serve a stale list.
+Resolving the name per request has no such window. A request that names nothing reaches the
+default cache, so every existing call is unchanged.
+
+**`_cache(name)` answers the two failures differently, and the distinction is the point:**
+
+```python
+        if not self.registry.get_all_caches():
+            raise HTTPException(status_code=503, detail="Cache service not available")
+        try:
+            return self.registry.get_cache(name)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+```
+
+**503** when no cache is registered at all: the application was built without one, it is not the
+caller's doing, and it may resolve without a redeploy -- which is what 503 says, and it is what
+this endpoint has always answered. **404** when caches exist but none has that name: that is a
+bad request for a resource that is not there, and answering 503 would invite a retry that can
+never succeed. The registered names go in the 404 body, because a caller who mistypes a name has
+no other way to discover the right one -- there is no endpoint that lists them.
+
+The eviction response gained a `"cache"` field naming which cache was cleared. With one cache the
+answer was implicit; with several, a response that does not say what it cleared is not usable.
+
+**Readiness probes every cache, not just the default:**
+
+```python
+        for cache_name, cache in registry.get_all_caches().items():
+            entry = "cache" if cache_name == DEFAULT_CACHE_NAME else f"cache:{cache_name}"
+            health_providers[entry] = CacheHealthChecker(cache)
+```
+
+This was a real gap rather than a missing feature. `CacheHealthChecker` pings Redis and flips
+readiness when it cannot be reached; keyed on the default name, a project whose `sessions` cache
+was a Redis instance had that instance unprobed -- so a Redis outage there took the pod out of
+nothing, and the agent silently served cache misses. Worse, a project that registered *only* a
+named cache had no cache health check at all, because the old gate was `registry.has_cache()`,
+which asks about the default.
+
+The default keeps the entry name `cache` it has always had, so an existing `/readiness` payload
+does not change; a named cache appears as `cache:<name>`.
+
+Tests: `tests/unit/agents/io/api/utilities/test_cache.py` rewritten onto the new registry calls
+and grown to 20 cases -- the three endpoints reading and clearing a named cache, the default used
+when no name is given, the response naming the cache it cleared, 503 with no cache registered,
+404 for an unknown name on all three endpoints, and the 404 body listing the registered names.
+Four cases added to `test_named_caches.py` for the readiness wiring: the default keeping the
+`cache` entry name, a named cache getting its own, a *named-only* application still reaching
+readiness, and each entry probing its own cache object.
+
+Also corrected here: part 2's entry said 17 test cases where the file has 18.
 
 ---
 
@@ -3303,6 +3370,12 @@ Everything else remains non-breaking. Specifically:
   Whether Dapr merges the two or delivers twice needs checking against a real sidecar; it belongs on
   the broker-test list.
 - New config keys all default to current behaviour.
+- **The `/cache/*` endpoints take an optional `?name=`, defaulting to `default`.** Every existing
+  call is unchanged. New answer: an unknown name is `404` rather than `503`, and `POST
+  /cache/evict` now includes a `"cache"` field in its response body.
+- **`/readiness` gains one entry per named cache, as `cache:<name>`.** The default cache keeps
+  the entry name `cache`, so an existing payload is unchanged. A project that registered only a
+  named cache previously had no cache health check at all.
 - **A namespaced component's routes move to `/api/<agent>/...`, and its tags gain an
   `<agent>.` prefix.** Nothing moves for an application that declares no namespace: a root REST
   API stays under `/api`, and a root transport endpoint stays at `/events/{topic}` and
