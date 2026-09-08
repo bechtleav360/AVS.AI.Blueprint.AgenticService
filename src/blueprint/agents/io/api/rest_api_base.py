@@ -168,7 +168,9 @@ class RestApiBase(IOBase, ABC):
             from ...services.eventing.event_processing_service import EventProcessingService  # noqa: PLC0415
 
             event_processing_service = self.registry.get_service(EventProcessingService)
-            processing_result = await event_processing_service.process_rest_request(payload, context)
+            # This API's own namespace: a REST call into one agent must not be offered to
+            # another agent's handlers.
+            processing_result = await event_processing_service.process_rest_request(payload, context, namespace=self.namespace)
 
             success = processing_result.status == ProcessingStatus.PROCESSED
             success_message = processing_result.message or "Processing completed successfully"

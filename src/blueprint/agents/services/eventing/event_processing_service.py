@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from opentelemetry import trace
 from ...component.component import traced
+from ...component.namespace import ROOT_LABEL, ROOT_NAMESPACE, namespace_of
 from ...handler.handler_chain import HandlerChain
 from ...models import ProcessingResult, ProcessingStatus
 from ...models.events import GenericCloudEvent, HandlerResult, CloudEvent
@@ -22,26 +23,72 @@ class EventProcessingService(ServiceBase):
     This service provides a consistent interface for all API endpoints
     (REST, Events, Dapr) to process requests using the registered handlers
     and agent runtimes.
+
+    One service, one chain per agent
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    There is a single instance of this service in a process, at the root, because what it does
+    -- correlation context, request ids, unwrapping, normalising handler output -- is the same
+    for every agent. What is *not* the same is the dispatch: which handlers an event is offered
+    to, which dedup policy applies, and which cache partition the markers go in. All three are
+    properties of a :class:`HandlerChain`, so the service keeps one chain per namespace and
+    every caller says which agent it is dispatching for.
+
+    A caller that says nothing gets the root chain, which in a single-agent application is
+    every handler in the process.
     """
 
     def __init__(self) -> None:
         super().__init__()
-        self._handler_chain: HandlerChain = HandlerChain()
+        # The root chain always exists, so an application that never mentions a namespace --
+        # every application that exists today -- behaves exactly as it did.
+        self._handler_chains: dict[str, HandlerChain] = {ROOT_NAMESPACE: HandlerChain()}
         self._correlation_context = self.registry.correlation_context
 
     async def on_startup(self) -> None:
-        """Start the handler chain.
+        """Start one handler chain per namespace that has handlers registered in it.
 
-        The chain is not a registered component, so nothing else calls its lifecycle
-        hooks. Its startup resolves the idempotency policy, and that has to happen while
-        the application is starting: a misconfigured dedup window must fail the pod, not
-        the first event that arrives on it.
+        The chains are not registered components, so nothing else calls their lifecycle hooks.
+        A chain's startup resolves its idempotency policy, and that has to happen while the
+        application is starting: a misconfigured dedup window must fail the pod, not the first
+        event that arrives on it.
+
+        That guarantee is per agent, which is why the chains are built here rather than on first
+        delivery. Otherwise a group whose second agent has a bad ``idempotency_ttl`` would start
+        cleanly and fail on an event hours later, and the first agent's clean startup would have
+        said nothing about it.
+
+        The namespaces come from the registered handlers, not from any list of agents. The
+        registry deliberately cannot enumerate agents (C6) and this service is not the builder;
+        what it needs is not "which agents exist" but "which namespaces have handlers to
+        dispatch to", and the handlers themselves are the authority on that.
         """
-        await self._handler_chain.on_startup()
+        for namespace in sorted({namespace_of(handler) for handler in self.registry.get_event_handler()}):
+            self._chain_for(namespace)
+
+        for namespace, chain in self._handler_chains.items():
+            await chain.on_startup()
+            logger.debug("Handler chain for namespace '%s' started", namespace or ROOT_LABEL)
 
     async def on_shutdown(self) -> None:
-        """Stop the handler chain, for the same reason startup starts it."""
-        await self._handler_chain.on_shutdown()
+        """Stop every handler chain, for the same reason startup starts them."""
+        for chain in self._handler_chains.values():
+            await chain.on_shutdown()
+
+    def _chain_for(self, namespace: str) -> HandlerChain:
+        """Return the chain for ``namespace``, creating it if there is not one yet.
+
+        Creation is lazy for a namespace that had no handler at startup. A chain is cheap, and
+        raising here would turn a handler registered after startup into a failed delivery
+        instead of a dispatch that finds nobody -- which is the outcome the acknowledgement
+        contract already has a disposition for. A chain created this way resolves its own dedup
+        policy on first use, which ``HandlerChain.process`` already does for exactly this case.
+        """
+        chain = self._handler_chains.get(namespace)
+        if chain is None:
+            chain = HandlerChain(namespace=namespace)
+            self._handler_chains[namespace] = chain
+            logger.debug("Created a handler chain for namespace '%s'", namespace or ROOT_LABEL)
+        return chain
 
     @traced("event")
     async def process_event(
@@ -50,14 +97,19 @@ class EventProcessingService(ServiceBase):
         context: dict[str, Any] | None = None,
         runtime_name: str | None = None,
         new_subject: str | None = None,
+        *,
+        namespace: str = ROOT_NAMESPACE,
     ) -> ProcessingResult:
-        """Process a CloudEvent through the handler chain.
+        """Process a CloudEvent through one agent's handler chain.
 
         Args:
             event: The CloudEvent to process
             context: Additional context for processing
             runtime_name: Specific runtime to use, or None for default
             new_subject: New subject for the CloudEvent
+            namespace: The agent this delivery belongs to. Keyword-only, because the four
+                parameters before it are passed positionally by existing callers. ``""`` is the
+                root, which is what every caller that does not know about agents gets.
 
         Returns:
             ProcessingResult describing the processing outcome
@@ -80,19 +132,25 @@ class EventProcessingService(ServiceBase):
                 "event_source": event.source,
                 "event_id": getattr(event, "id", None),
                 "runtime_name": runtime_name,
+                "agent": namespace or ROOT_LABEL,
             },
         )
 
         event = self._unwrap_dapr_event(event)
 
         try:
-            handler_result: Any | HandlerResult | list[HandlerResult] | None = await self._handler_chain.process(event, context)
+            handler_result: Any | HandlerResult | list[HandlerResult] | None = await self._chain_for(namespace).process(event, context)
 
             handler_results: list[HandlerResult] = self._extract_handler_results(handler_result)
 
             for result in handler_results:
                 if result.event_type:
-                    await self.registry.get_component(EventPublishingService).publish_handler_event(
+                    # This agent's publishing service, falling back to a root one. Not the
+                    # unscoped lookup this used to be: with one publishing service per
+                    # namespace (P6) that finds several and refuses to choose, so a grouped
+                    # process would fail on the first handler that returns an event_type.
+                    publisher = self.registry.get_component(EventPublishingService, namespace=namespace)
+                    await publisher.publish_handler_event(
                         event_type=result.event_type,
                         data=result.data,
                         metadata=result.metadata or {},
@@ -120,6 +178,8 @@ class EventProcessingService(ServiceBase):
         payload: dict[str, Any],
         context: dict[str, Any] | None = None,
         runtime_name: str | None = None,
+        *,
+        namespace: str = ROOT_NAMESPACE,
     ) -> ProcessingResult:
         """Process a REST request by converting it to a CloudEvent and processing.
 
@@ -127,6 +187,8 @@ class EventProcessingService(ServiceBase):
             payload: The REST request payload
             context: Additional context for processing
             runtime_name: Specific runtime to use, or None for default
+            namespace: The agent whose REST API received the request, so the synthesised event
+                is dispatched to that agent's handlers and no other's.
 
         Returns:
             ProcessingResult describing the processing outcome
@@ -142,7 +204,7 @@ class EventProcessingService(ServiceBase):
             data=payload,
             subject="rest.request",
         )
-        return await self.process_event(event, context, runtime_name)
+        return await self.process_event(event, context, runtime_name, namespace=namespace)
 
     # ------------------------------------------------------------------
     # Private helpers

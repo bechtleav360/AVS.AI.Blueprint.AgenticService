@@ -2629,6 +2629,137 @@ subdirectory including a Windows separator in the configured path; the Redis pre
 on the derivation and on the kwargs the service is constructed with; both fallback paths isolating
 as disk rather than as Redis; and the name being validated before any directory is created.
 
+### Phase 4, part 1 -- dispatch happens per agent, and the root stops reaching into one
+
+Phase 1 and 2 made the registry answer per namespace and gave every component its own view of
+it. The dispatch path never used any of that: one `HandlerChain` served the process, and it asked
+the *application's* registry for handlers -- which in a grouped process means every agent's. This
+step makes an event reach one agent's handlers and no other's. The dispatch index (spec sec. 7.7,
+the second half of plan phase 4) is a separate step and is not in this one.
+
+**A `HandlerChain` now belongs to a namespace, and that is the only line about it in the class:**
+
+```python
+    def __init__(self, namespace: str = ROOT_NAMESPACE) -> None:
+        super().__init__(should_register=False, namespace=namespace)
+```
+
+Everything else follows from `Component.registry` and `Component.config` handing a component its
+own namespace's view: the handlers it dispatches to, the `idempotency_enabled` / `idempotency_ttl`
+it reads, and the cache partition the dedup markers are claimed in (the agent-scoped lens from
+spec sec. 8) are all that agent's already, with no further plumbing. Two agents in one process can
+therefore run different dedup windows, and the tests assert exactly that against one settings
+tree.
+
+**The namespace is named explicitly in `_dispatch`, and that is the load-bearing part:**
+
+```python
+        handlers = sorted(self.registry.get_event_handler(namespace=self.namespace))
+```
+
+It looks redundant -- the registry view already defaults to its own namespace -- and it is not.
+`Registry.for_namespace("")` returns the registry *itself*, whose `_default_namespace` is `None`,
+and on the registry an omitted namespace means **every namespace**. So a root chain in a grouped
+process would have dispatched one delivery through every agent's handlers. Naming the namespace
+makes the root chain mean strictly the root, which in a single-agent application is every handler
+there is -- unchanged. `test_the_root_chain_does_not_reach_into_an_agent` is the test for it.
+
+There is deliberately **no fallback to root handlers** either, unlike the singleton lookups that
+resolve namespace-then-root. A handler registered at the root of a grouped process would
+otherwise run for every agent in it, and nothing in a handler's code could tell its author that
+was happening.
+
+**`EventProcessingService` keeps one chain per agent and stays a single root service.** What it
+does -- correlation context, request ids, Dapr unwrapping, normalising handler output -- is the
+same for every agent; what differs is the dispatch. So:
+
+```python
+        self._handler_chains: dict[str, HandlerChain] = {ROOT_NAMESPACE: HandlerChain()}
+```
+
+The root chain always exists, so an application that never mentions a namespace behaves exactly
+as it did. `_chain_for(namespace)` creates the others:
+
+```python
+        chain = self._handler_chains.get(namespace)
+        if chain is None:
+            chain = HandlerChain(namespace=namespace)
+            self._handler_chains[namespace] = chain
+```
+
+**The chains are built at startup, not on first delivery**, and the namespaces come from the
+handlers rather than from a list of agents:
+
+```python
+        for namespace in sorted({namespace_of(handler) for handler in self.registry.get_event_handler()}):
+            self._chain_for(namespace)
+
+        for namespace, chain in self._handler_chains.items():
+            await chain.on_startup()
+```
+
+A chain's startup resolves its idempotency policy, and the existing guarantee is that a
+misconfigured dedup window fails the pod rather than the first event. That guarantee is *per
+agent*: built lazily, a group whose second agent has a bad `idempotency_ttl` would start cleanly
+and fail on a delivery hours later, while the first agent's clean startup said nothing about it.
+
+Reading the namespaces off the registered handlers is not a way around C6. The registry
+deliberately cannot enumerate agents, and this service is not the builder -- but what it needs is
+not "which agents exist", it is "which namespaces have handlers to dispatch to", and the handlers
+are the authority on that. `_chain_for` stays lazy for anything that arrives later, because a
+handler registered after startup should produce a dispatch that finds nobody -- an outcome the
+acknowledgement contract already has a disposition for -- rather than a failed delivery.
+
+**`process_event` and `process_rest_request` take a keyword-only `namespace`.** Keyword-only
+because both already have positional tails that existing callers use; `""` is the root, which is
+what every caller that does not know about agents gets.
+
+**The publishing-service lookup became namespace-aware, and that was a latent crash:**
+
+```python
+                    # This agent's publishing service, falling back to a root one. Not the
+                    # unscoped lookup this used to be: with one publishing service per
+                    # namespace (P6) that finds several and refuses to choose, so a grouped
+                    # process would fail on the first handler that returns an event_type.
+                    publisher = self.registry.get_component(EventPublishingService, namespace=namespace)
+```
+
+P6 already gives each namespace its own `EventPublishingService`. The old call passed no
+namespace, which on the application's registry means "search every namespace and raise if more
+than one matches" -- so the first handler in a grouped process to return a `HandlerResult` with an
+`event_type` would have raised `Multiple components of type EventPublishingService found`. With
+`namespace=""` the lookup is restricted to the root, which is where the only publishing service in
+a single-agent application lives.
+
+**The two call sites pass their own namespace**, which is what makes the parameter reach anything:
+
+- `CloudEventProcessorMixin._dispatch_cloud_event` passes `namespace=self.namespace` -- the
+  namespace of the transport endpoint that received the delivery. Its docstring's contract grew
+  from "a class that supplies a `registry` attribute" to `registry` and `namespace`.
+- `RestApiBase._process_resource` passes `namespace=self.namespace`, so a REST call into one agent
+  is not offered to another agent's handlers.
+
+Both are the root today, so both are today's behaviour today; they become per-agent the moment
+phase 5 and 6 give each namespace its own endpoints.
+
+**Not in this step.** The plan's third phase-4 bullet -- "wire previously unused `runtime_name`:
+after the chain picks a winner, resolve the agent via `get_runtime_name()`" -- depends on
+`EventHandlerBase.get_runtime_name`, which phase 7 adds. The spec's own compatibility table
+(sec. 10) records `runtime_name` as only logged today, so it stays logged; the namespace is now
+logged alongside it.
+
+Tests: `tests/unit/agents/services/eventing/test_event_processing_namespaces.py`, 18 cases against
+real `Config`, `Registry`, `HandlerChain` and handler subclasses rather than mocks -- an event
+reaching one agent's handler and not the other's; a namespace with no handler returning
+`NO_HANDLER_FOUND` rather than raising; the root chain not reaching into an agent; a root handler
+not running for an agent; a single-agent application dispatching as before over both `process_event`
+and `process_rest_request`; one chain per namespace with handlers, each carrying its own namespace
+and resolving its own agent's dedup policy from one settings tree; a chain created on first use for
+an unknown namespace and reused across deliveries; an illegal namespace refused; and four cases for
+`HandlerChain` itself, including that it is still not a registered component. The three
+mock-based lifecycle tests in `test_event_processing_service.py` were updated to the chain map and
+one added for the per-namespace startup.
+
 ---
 
 ## Compatibility
@@ -2702,6 +2833,17 @@ Everything else remains non-breaking. Specifically:
   Whether Dapr merges the two or delivers twice needs checking against a real sidecar; it belongs on
   the broker-test list.
 - New config keys all default to current behaviour.
+- **`HandlerChain.__init__` gained a leading optional `namespace`, and `process_event` /
+  `process_rest_request` a trailing keyword-only one.** All default to the root. `HandlerChain`
+  is constructed by the framework only -- it is `should_register=False` and nothing looks it up --
+  so the leading position is safe; the two service methods took keyword-only because their
+  positional tails are used by callers.
+- **`HandlerChain._dispatch` now asks for its own namespace's handlers instead of every
+  namespace's.** For a single-agent application these are the same set: every handler is at the
+  root. In a grouped process it is the difference between dispatching to one agent and to all of
+  them.
+- **`CloudEventProcessorMixin` requires a `namespace` attribute as well as `registry`.** Both come
+  from `Component`, which every class it is mixed into already subclasses.
 - **`AppBuilder.with_cache` gained a keyword-only `name`, and the three positional forms are
   unchanged.** `with_cache()`, `with_cache(False)` and `with_cache(True, False)` mean what they
   always meant, which is why `name` had to come last and be keyword-only (spec sec. 4.2). The

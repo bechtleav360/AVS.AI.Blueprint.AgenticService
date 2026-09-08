@@ -21,7 +21,7 @@ class CloudEventProcessorMixin:
     Provides unwrapping of nested CloudEvents, correlation-context management,
     OTel span attribute stamping, and dispatch to the EventProcessingService.
 
-    Must be combined with a class that supplies a ``registry`` attribute
+    Must be combined with a class that supplies ``registry`` and ``namespace`` attributes
     (i.e. any ``Component`` subclass).
     """
 
@@ -73,7 +73,14 @@ class CloudEventProcessorMixin:
                 span.set_attribute("event.unwrapped", True)
 
             processing_service = self.registry.get_service(EventProcessingService)  # type: ignore[attr-defined]
-            processing_result = await processing_service.process_event(cloud_event, context)
+            # The namespace of the transport endpoint that received this delivery, so the event
+            # is dispatched to that agent's handlers. One processing service serves the process;
+            # the namespace is what tells it which chain to use.
+            processing_result = await processing_service.process_event(
+                cloud_event,
+                context,
+                namespace=self.namespace,  # type: ignore[attr-defined]
+            )
 
             if not isinstance(processing_result, ProcessingResult):
                 logger.error(

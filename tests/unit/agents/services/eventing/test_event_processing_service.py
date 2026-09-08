@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from blueprint.agents.component.namespace import ROOT_NAMESPACE
 from blueprint.agents.models.events import GenericCloudEvent, HandlerResult
 from blueprint.agents.models.result import ProcessingStatus
 from blueprint.agents.services.eventing.event_processing_service import EventProcessingService
@@ -120,23 +121,34 @@ class TestUnwrapDaprEvent:
 
 
 class TestLifecycle:
-    async def test_on_startup_starts_the_handler_chain(self, event_processing_service: EventProcessingService) -> None:
+    async def test_on_startup_starts_the_root_chain(self, event_processing_service: EventProcessingService) -> None:
         chain = MagicMock()
         chain.on_startup = AsyncMock()
-        event_processing_service._handler_chain = chain
+        event_processing_service._handler_chains = {ROOT_NAMESPACE: chain}
 
         await event_processing_service.on_startup()
 
         chain.on_startup.assert_awaited_once()
 
-    async def test_on_shutdown_stops_the_handler_chain(self, event_processing_service: EventProcessingService) -> None:
-        chain = MagicMock()
-        chain.on_shutdown = AsyncMock()
-        event_processing_service._handler_chain = chain
+    async def test_on_startup_builds_a_chain_for_every_namespace_with_handlers(
+        self, event_processing_service: EventProcessingService, mock_registry: MagicMock
+    ) -> None:
+        """Built at startup, not on first delivery: a bad dedup window must fail the pod."""
+        mock_registry.get_event_handler.return_value = [MagicMock(namespace="orders"), MagicMock(namespace="billing")]
+
+        await event_processing_service.on_startup()
+
+        assert sorted(event_processing_service._handler_chains) == [ROOT_NAMESPACE, "billing", "orders"]
+
+    async def test_on_shutdown_stops_every_chain(self, event_processing_service: EventProcessingService) -> None:
+        root, orders = MagicMock(), MagicMock()
+        root.on_shutdown, orders.on_shutdown = AsyncMock(), AsyncMock()
+        event_processing_service._handler_chains = {ROOT_NAMESPACE: root, "orders": orders}
 
         await event_processing_service.on_shutdown()
 
-        chain.on_shutdown.assert_awaited_once()
+        root.on_shutdown.assert_awaited_once()
+        orders.on_shutdown.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

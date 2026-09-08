@@ -8,6 +8,7 @@ from typing import Any
 from opentelemetry import trace
 
 from ..component.component import Component, traced
+from ..component.namespace import ROOT_LABEL, ROOT_NAMESPACE
 from ..models.events import CloudEvent, HandlerResult
 from ..utils import parse_bool
 
@@ -71,18 +72,43 @@ class HandlerChain(Component):
     ``idempotency_enabled`` (bool, default ``False``): opt into dedup.
     ``idempotency_ttl`` (int, no default): seconds a seen-event marker is kept. Required
     when dedup is enabled, and deliberately without a default -- see ``_resolve_idempotency_policy``.
+
+    One chain per agent
+    ~~~~~~~~~~~~~~~~~~~
+    A chain belongs to a namespace, and everything it reaches is that agent's: the handlers it
+    dispatches to, the configuration the dedup policy is read from, and the cache partition the
+    markers are claimed in. None of that is threaded through this class -- it all follows from
+    ``Component.registry`` and ``Component.config`` handing a component its own namespace's view
+    -- so the namespace appears here exactly once, in the constructor.
+
+    That is also why a chain cannot be shared. Two agents in one process have their own handler
+    sets and may have different ``idempotency_ttl`` values, and a shared chain would resolve one
+    policy and dispatch to both agents' handlers.
     """
 
-    def __init__(self) -> None:
-        """Initialize the handler chain."""
-        super().__init__(should_register=False)
+    def __init__(self, namespace: str = ROOT_NAMESPACE) -> None:
+        """Initialize the handler chain for one agent.
+
+        Args:
+            namespace: The agent whose handlers this chain dispatches to, and whose
+                configuration and cache it reads. ``""`` is the root, which is the whole of a
+                single-agent application.
+
+        Raises:
+            ValueError: if ``namespace`` is not a legal namespace.
+        """
+        super().__init__(should_register=False, namespace=namespace)
         self._policy: IdempotencyPolicy | None = None
 
     async def on_startup(self) -> None:
         """Resolve the idempotency policy so a bad setting fails startup, not a delivery."""
         self._policy = self._resolve_idempotency_policy()
         if self._policy.enabled:
-            logger.info("Event deduplication is enabled with a %d second window", self._policy.ttl)
+            logger.info(
+                "Event deduplication is enabled for namespace '%s' with a %d second window",
+                self.namespace or ROOT_LABEL,
+                self._policy.ttl,
+            )
 
     async def on_shutdown(self) -> None:
         """No shutdown actions required."""
@@ -126,12 +152,24 @@ class HandlerChain(Component):
     # ------------------------------------------------------------------
 
     async def _dispatch(self, event: CloudEvent[Any], context: dict[str, Any]) -> Any | HandlerResult | list[HandlerResult] | None:
-        """Run the registered handlers in priority order until one returns a result."""
-        handlers = sorted(self.registry.get_event_handler())
+        """Run this agent's handlers in priority order until one returns a result.
+
+        The namespace is passed explicitly rather than left to the registry view's default,
+        and the difference only shows up in a grouped process. On the root registry an omitted
+        namespace means *every* namespace, so a root chain would dispatch one agent's event
+        through every other agent's handlers. Naming the namespace makes the root chain mean
+        strictly the root, which in a single-agent application is every handler there is.
+
+        There is no fallback to root handlers either. A handler registered at the root of a
+        grouped process would otherwise run for every agent in it, and nothing in a handler's
+        code could tell its author that is happening.
+        """
+        handlers = sorted(self.registry.get_event_handler(namespace=self.namespace))
         span = trace.get_current_span()
         span.set_attribute("handlers.count", len(handlers))
+        span.set_attribute("agent", self.namespace or ROOT_LABEL)
 
-        logger.debug("Processing event through %d handlers", len(handlers))
+        logger.debug("Processing event through %d handlers in namespace '%s'", len(handlers), self.namespace or ROOT_LABEL)
 
         for handler in handlers:
             try:
@@ -148,7 +186,7 @@ class HandlerChain(Component):
                 span.record_exception(e)
                 raise
 
-        logger.warning("No handler processed event '%s'", event.type)
+        logger.warning("No handler in namespace '%s' processed event '%s'", self.namespace or ROOT_LABEL, event.type)
         return None
 
     # ------------------------------------------------------------------
