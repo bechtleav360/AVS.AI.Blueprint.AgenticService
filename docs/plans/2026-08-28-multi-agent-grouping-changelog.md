@@ -1857,6 +1857,79 @@ the root scope as a no-op and validation on entry. `TestNamespaceComesFromTheAmb
 no namespace and calls bare `super().__init__()` comes out namespaced, the same class registers
 under two different qualified names in two scopes, and an explicit non-empty namespace still wins.
 
+### Phase 0, part 3 -- one declaration, applied alone or once per agent
+
+Completes phase 0. `AgentRegistration` collects component *classes* and builds none of them;
+`AppBuilder.with_registration(registration, namespace="")` is what builds them, inside
+`namespace_scope`. Together with part 2 that satisfies the constraint end to end: a project
+declares its components once, and the same object serves both deployment shapes.
+
+```python
+registration = AgentRegistration().with_service(OrderService).with_handler(OrderHandler)
+
+app = AppBuilder(config).with_registration(registration).with_cache().build()   # alone
+# a group applies the same object once per agent, under that agent's namespace
+```
+
+Verified rather than asserted: applying one registration under `orders` and again under
+`billing` produces `orders_order_service` and `billing_order_service`, each resolving its own
+`app_name` and `model_name` through its own scoped `Config` view -- with the word "namespace"
+appearing nowhere in `OrderService` or in the declaration.
+
+**`with_registration` is new public API that the spec does not list.** Spec sec. 4.2 has only
+`with_namespace(..., registration=...)`, which is phase 3. Added now because without a caller
+`AgentRegistration` would be a collector nothing could consume for three phases, which is worse
+than an extra method: it is a published API that does not work yet. It is also the exact call
+phase 8's entry point needs per agent, so phase 3 narrows the gap rather than replacing this.
+
+**An already-built component is refused, and this is the part that would otherwise bite.** Four
+of the five examples pass instances today -- `with_rest_api(MonitorApi())`,
+`with_agent(agent)` -- which an `AppBuilder` chain accepts. In a registration that object is
+constructed at import time, *before any namespace exists*, so it belongs to the root whichever
+agent declared it; two grouped agents each declaring one would collide on its registry name, and
+until they collided the misattribution would be silent. `_add` raises `TypeError` on any
+`Component` instance, and the message names the class, the method and the fix.
+
+**Factories are accepted for the case a class cannot express.** `examples/document_summarizer`
+builds its agent as `AgentBuilder(config, runtime_name=...).with_model_from_config()...build()`
+-- a fluent chain, not a class plus keyword arguments. A zero-argument callable is therefore a
+legal target, called *inside* the scope, so the model and prompt resolve in the agent's own
+namespace instead of at import time. `apply` distinguishes the two:
+
+```python
+target = entry.target if isinstance(entry.target, type) else entry.target()
+appliers[entry.kind](target, name=entry.name, **entry.kwargs)
+```
+
+A class is handed to the builder, which instantiates it -- still inside the scope. A factory has
+to be called here, because the builder would otherwise take the callable itself for a built
+component.
+
+**`apply` is public, departing from the plan's `_apply`.** It is called from another class, and
+this repo's convention is that a leading underscore means internal to the defining class.
+
+**There is no `with_cache`,** per spec sec. 4.1: a cache is process-wide and belongs to the
+`AppBuilder` hosting the group. An agent that declared its own would duplicate a neighbour's or
+quietly take it over. `AttributeError` plus the class docstring is the whole of that story -- a
+method existing only to raise seemed worse than one not existing.
+
+`RegisteredComponent` is a frozen dataclass (`kind`, `target`, `name`, `kwargs`) and
+`AgentRegistration.components` exposes the tuple in declaration order. Order is preserved
+because it is meaningful -- handler priority and scheduler wiring read it -- and the tuple is
+what phase 8 will validate against `agents.toml` and what spec sec. 9.2's startup log needs.
+
+**Tests.** 1498 unit tests pass (up from 1476), 22 new in
+`tests/unit/agents/app_builder/test_agent_registration.py`: nothing is constructed at
+declaration time (asserted through `Component.shared_registry` still being `None`), order and
+kwargs survive the round trip, the instance and non-callable refusals, root application keeping
+the bare registry name, one declaration becoming two independently configured agents, the scope
+being left behind afterwards, and a factory both deferred and called inside the namespace.
+
+**Not done, and the obvious next proof:** no example uses this yet. Migrating one project's
+`main.py` to a registration would demonstrate the "only `main.py` differs" claim in the tree
+rather than in a test -- and would have to convert its `with_rest_api(MonitorApi())` to the
+class form, which is precisely the change the refusal above forces.
+
 ### Not fixed, found while doing this: `app_environment` in `[default]` selects nothing
 
 The bootstrap pass runs with `environments=False`, so it sees only top-level keys -- `[default]`

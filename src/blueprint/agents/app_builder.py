@@ -1,8 +1,9 @@
 """Generic FastAPI application setup and configuration."""
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from fastapi import FastAPI
@@ -11,6 +12,7 @@ if TYPE_CHECKING:
     from .io.api.actuators.health import HealthCheckerBase
 
 from .component.component import Component
+from .component.namespace import ROOT_LABEL, ROOT_NAMESPACE, namespace_scope
 from .component.registry import Registry
 from .agent.agent_runtime import AgentRuntime
 from .handler.event_handler_base import EventHandlerBase
@@ -41,6 +43,156 @@ SchedulerT = TypeVar("SchedulerT", bound=SchedulerBase)
 RestApiT = TypeVar("RestApiT", bound=RestApiBase)
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class RegisteredComponent:
+    """One component an :class:`AgentRegistration` will build when it is applied.
+
+    Attributes:
+        kind: Which ``with_*`` on the builder this entry is applied through.
+        target: A component class, or a zero-argument callable returning a component.
+        name: Registry name override, or ``None`` to let the component derive its own.
+        kwargs: Constructor arguments, forwarded when ``target`` is a class.
+    """
+
+    kind: str
+    target: Any
+    name: str | None
+    kwargs: Mapping[str, Any]
+
+
+class AgentRegistration:
+    """What an agent is made of, declared without building any of it.
+
+    This is the shape a project's ``main.py`` takes so that the same agent can run alone or
+    inside a group. It collects component *classes*; whoever applies it decides the namespace
+    they are built in, which is why nothing here -- and nothing in the components themselves --
+    mentions a namespace::
+
+        registration = AgentRegistration().with_service(OrderService).with_handler(OrderHandler)
+
+        app = AppBuilder(config).with_registration(registration).build()   # alone
+        # a group applies the same object under the agent's own namespace instead
+
+    **Nothing is instantiated until :meth:`apply` runs**, and that is the point rather than an
+    optimisation: a component built here would be built before any namespace exists, and would
+    belong to the root whichever agent it was declared for. So an already-constructed component
+    is refused -- see :meth:`with_rest_api` for what to write instead.
+
+    **There is no ``with_cache``.** A cache is process-wide and is registered on the
+    ``AppBuilder`` that hosts the group; an agent that declared its own would either duplicate
+    another agent's or quietly take it over. Ask for a cache by name from the registry instead.
+    """
+
+    def __init__(self) -> None:
+        self._components: list[RegisteredComponent] = []
+
+    @property
+    def components(self) -> tuple[RegisteredComponent, ...]:
+        """What has been declared, in declaration order.
+
+        Order is preserved because it is meaningful: handler priority and scheduler wiring both
+        read it, so a registration applied twice must produce the same application twice.
+        """
+        return tuple(self._components)
+
+    def with_handler(self, handler: type[HandlerT], *, name: str | None = None, **kwargs: Any) -> "AgentRegistration":
+        """Declare an event handler class."""
+        return self._add("handler", handler, name, kwargs)
+
+    def with_service(self, service: type[ServiceT], *, name: str | None = None, **kwargs: Any) -> "AgentRegistration":
+        """Declare a business service class."""
+        return self._add("service", service, name, kwargs)
+
+    def with_agent(self, agent: type[AgentT] | Callable[[], AgentT], *, name: str | None = None, **kwargs: Any) -> "AgentRegistration":
+        """Declare an agent runtime, as a class or as a factory.
+
+        The factory form exists for the fluent builder: an ``AgentRuntime`` assembled by
+        ``AgentBuilder(...).with_model_from_config()...build()`` cannot be expressed as a class
+        plus keyword arguments. Wrapping that chain in a ``lambda`` defers it into
+        :meth:`apply`, so the model and prompt are resolved inside the agent's own namespace
+        rather than at import time::
+
+            AgentRegistration().with_agent(lambda: AgentBuilder(config, runtime_name="orders").build())
+        """
+        return self._add("agent", agent, name, kwargs)
+
+    def with_scheduler(
+        self, scheduler: type[SchedulerT] | Callable[[], SchedulerT], *, name: str | None = None, **kwargs: Any
+    ) -> "AgentRegistration":
+        """Declare a scheduler class, or a factory returning one."""
+        return self._add("scheduler", scheduler, name, kwargs)
+
+    def with_rest_api(self, api: type[RestApiT] | Callable[[], RestApiT], *, name: str | None = None, **kwargs: Any) -> "AgentRegistration":
+        """Declare a REST API class, or a factory returning one.
+
+        Pass the class, not an instance: ``with_rest_api(OrderApi)`` rather than
+        ``with_rest_api(OrderApi())``. The instance form is what an ``AppBuilder`` chain
+        accepts, and it is refused here because the object would already exist -- built at
+        import time, before any namespace, and therefore belonging to the root no matter which
+        agent declared it. Two grouped agents each declaring one would collide on its registry
+        name. Constructor arguments go here as keyword arguments; anything a plain call cannot
+        express goes in a ``lambda``.
+        """
+        return self._add("rest_api", api, name, kwargs)
+
+    def _add(self, kind: str, target: Any, name: str | None, kwargs: Mapping[str, Any]) -> "AgentRegistration":
+        """Store one declaration, rejecting anything already built."""
+        if isinstance(target, Component):
+            raise TypeError(
+                f"{type(target).__name__} was passed to AgentRegistration.with_{kind}() as an instance, but a "
+                "registration declares components rather than holding them: this object was built before any "
+                "namespace existed, so it belongs to the root namespace whichever agent declared it, and two "
+                f"grouped agents declaring one would collide on its registry name. Pass the class -- "
+                f"with_{kind}({type(target).__name__}, ...) with its constructor arguments as keyword arguments -- "
+                "or a callable returning it."
+            )
+        if not callable(target):
+            raise TypeError(f"AgentRegistration.with_{kind}() needs a component class or a callable returning one, got {target!r}.")
+        self._components.append(RegisteredComponent(kind=kind, target=target, name=name, kwargs=dict(kwargs)))
+        return self
+
+    def apply(self, builder: "AppBuilder", namespace: str = ROOT_NAMESPACE) -> None:
+        """Build everything declared here on ``builder``, inside ``namespace``.
+
+        Public rather than private because the caller is another class: ``AppBuilder`` for a
+        single agent today, the group entry point per agent later.
+
+        Every component is constructed inside :func:`namespace_scope`, which is the whole
+        mechanism -- ``Component.__init__`` reads the ambient namespace, so no component and no
+        constructor signature mentions one. A factory is called here for the same reason.
+
+        Args:
+            builder: The builder to register on.
+            namespace: The agent these components belong to. ``""`` is the root, which is what
+                a single-agent application uses.
+
+        Raises:
+            ValueError: if ``namespace`` is not a legal namespace.
+        """
+        appliers: dict[str, Callable[..., Any]] = {
+            "handler": builder.with_handler,
+            "service": builder.with_service,
+            "agent": builder.with_agent,
+            "scheduler": builder.with_scheduler,
+            "rest_api": builder.with_rest_api,
+        }
+
+        with namespace_scope(namespace):
+            for entry in self._components:
+                # A class goes to the builder, which instantiates it -- still inside this scope.
+                # A factory has to be called here, because the builder would take the callable
+                # itself for an already-built component.
+                target = entry.target if isinstance(entry.target, type) else entry.target()
+                appliers[entry.kind](target, name=entry.name, **entry.kwargs)
+
+        logger.debug(
+            "Applied %d component(s) to namespace '%s': %s",
+            len(self._components),
+            namespace or ROOT_LABEL,
+            ", ".join(f"{entry.kind}:{getattr(entry.target, '__name__', entry.target)}" for entry in self._components),
+        )
 
 
 class AppBuilder:
@@ -80,6 +232,28 @@ class AppBuilder:
     # ------------------------------------------------------------------
     # Fluent registration API
     # ------------------------------------------------------------------
+
+    def with_registration(self, registration: AgentRegistration, namespace: str = ROOT_NAMESPACE) -> "AppBuilder":
+        """Register everything an :class:`AgentRegistration` declares.
+
+        This is what lets one declaration serve both deployment shapes. A project keeps its
+        components in an ``AgentRegistration``, and a single-agent ``main.py`` builds it here::
+
+            app = AppBuilder(config).with_registration(registration).with_cache().build()
+
+        while a group applies the same object once per agent, under that agent's namespace.
+        Everything above that last line is the same file in both cases.
+
+        Equivalent to the individual ``with_*`` calls, in declaration order, so it composes with
+        them and with ``with_cache``.
+
+        Args:
+            registration: The declaration to build.
+            namespace: The agent these components belong to. Defaults to the root, which is the
+                whole of a single-agent application.
+        """
+        registration.apply(self, namespace)
+        return self
 
     def with_handler(self, handler: type[HandlerT] | HandlerT, *, name: str | None = None, **kwargs: Any) -> "AppBuilder":
         """Register an event handler class or instance."""
