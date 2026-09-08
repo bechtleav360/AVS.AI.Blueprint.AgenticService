@@ -1790,6 +1790,73 @@ the arguments uvicorn is handed, the two development differences, the level tran
 fallback, `reload=False`, and the worker refusal -- including that it happens before `uvicorn.run`
 is called at all.
 
+### Phase 0, part 2 -- the namespace becomes ambient, so a developer never writes one
+
+The constraint this serves, stated by the user while phase 0 was in progress and now the test the
+design is held to: **a developer using the blueprint should not have to care about namespaces at
+all**, and a project should read the same whether it runs as a single agent or inside a group --
+with `main.py` the only file that may differ.
+
+Threading a namespace through constructors fails that immediately: every handler, service and
+client would carry a parameter that exists only because of how it is deployed. So the namespace is
+**ambient during construction** instead.
+
+`component/namespace.py` gains three things -- placed there rather than in `component.py` as the
+plan said, because that module already declares itself the single definition of what a namespace
+is, and the scope validates through `validate_namespace` two functions above it:
+
+- `_CURRENT_NAMESPACE`, a `ContextVar[str]` defaulting to `ROOT_NAMESPACE`.
+- `current_namespace()`, read by `Component.__init__`.
+- `namespace_scope(namespace)`, a context manager: validate, set, and reset in `finally`. A
+  leaked namespace would attach the next agent -- or the framework's own root components -- to the
+  wrong one, and the registry key, the queue group and the durable name would all be wrong
+  together, so the reset is not left to a caller to remember. Nested scopes restore the enclosing
+  namespace rather than the root, and the namespace is validated **on entry**, so an illegal name
+  is reported against the registration that declared it instead of against whichever component
+  happened to be built first.
+
+**`Component.__init__` now resolves `namespace or current_namespace()`**, and the direction of that
+`or` is the whole change:
+
+```python
+self._namespace = validate_namespace(namespace or current_namespace())
+```
+
+The obvious reading -- an explicit argument wins over the ambient scope -- is wrong here, and
+quietly so. `ServiceBase`, `ClientBase`, `IOClientBase` and `EventPublishingService` all declare
+`namespace: str = ROOT_NAMESPACE` and forward it **unconditionally**, so a developer writing
+
+```python
+class OrderService(ServiceBase):
+    def __init__(self) -> None:
+        super().__init__()
+```
+
+passes an explicit `""` down to `Component`. Treating that as a decision would pin every
+developer-written component to the root and leave the ambient scope applying to nothing that
+matters -- the exact components the constraint is about. A *non-empty* argument still wins, which
+is what the framework's own namespace-owning components (the transport clients, the publishing
+service) rely on. The alternative -- a `None` sentinel threaded through four base classes -- was
+rejected: it changes four public signatures to express what one `or` expresses, and it would have
+to be repeated by every base class added later.
+
+**Nothing changes for a single-agent application.** Outside a scope `current_namespace()` is
+`ROOT_NAMESPACE`, so `namespace or current_namespace()` is `""` exactly as before, and
+`qualified_component_name` keeps the bare registry name. The 1462 tests that passed before this
+change still pass unmodified.
+
+**One limit worth stating.** A `ContextVar` is not inherited by another thread or task, so a
+component constructed off the builder's thread does not see the scope. That is the correct shape
+rather than a gap: construction happens synchronously inside the builder, and anything built
+lazily at request time is a root component by construction, which is what the fallback gives it.
+
+**Tests.** 1476 unit tests pass (up from 1462), 14 new. `TestAmbientNamespace` in
+`test_namespace.py` covers the default, setting, exit, exit **on exception**, nesting,
+the root scope as a no-op and validation on entry. `TestNamespaceComesFromTheAmbientScope` in
+`test_component.py` covers the part that matters: a `ServiceBase` subclass whose `__init__` takes
+no namespace and calls bare `super().__init__()` comes out namespaced, the same class registers
+under two different qualified names in two scopes, and an explicit non-empty namespace still wins.
+
 ### Not fixed, found while doing this: `app_environment` in `[default]` selects nothing
 
 The bootstrap pass runs with `environments=False`, so it sees only top-level keys -- `[default]`

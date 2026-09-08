@@ -9,9 +9,10 @@ Test coverage for `src/blueprint/agents/component/component.py` and
 
 | File | Class under test | What is covered |
 |---|---|---|
-| `test_component.py` | `Component`, `_ComponentMeta` | `configure`, `init_registry`, `__init__`, properties, `name` setter |
+| `test_component.py` | `Component`, `_ComponentMeta` | `configure`, `init_registry`, `__init__`, properties, `name` setter, namespace taken from the ambient scope (bare `super().__init__()` in a `ServiceBase` subclass, two scopes yielding two qualified names, explicit non-empty namespace still winning) |
 | `test_component.py` | `_is_cloud_event`, `_stamp_span` | Helper function correctness |
 | `test_component.py` | `traced` decorator | Async/sync span creation, error status, CloudEvent/plain-value stamping |
+| `test_namespace.py` | `namespace.py` helpers | `validate_namespace`, `qualified_component_name`, `namespace_of`, `display_segment`, `resolve_for_namespace`, and `namespace_scope`/`current_namespace` (default root, set/exit, exit on exception, nesting, validation on entry) |
 | `test_registry.py` | `Registry` | Construction, add/get/has/rename/clear, type-based lookups, `cache_service` |
 
 ---

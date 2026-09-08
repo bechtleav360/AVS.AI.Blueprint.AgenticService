@@ -16,7 +16,9 @@ from blueprint.agents.component.component import (
     _stamp_span,
     traced,
 )
+from blueprint.agents.component.namespace import ROOT_NAMESPACE, namespace_scope
 from blueprint.agents.config import Config
+from blueprint.agents.services.service_base import ServiceBase
 
 from .conftest import ConcreteComponent
 
@@ -402,3 +404,54 @@ class TestTheConfigLoaderIsNotReachable:
         Component.reset_shared_state()
         assert Component.has_config() is False
         assert Component.shared_registry is None
+
+
+class TestNamespaceComesFromTheAmbientScope:
+    """A developer-written component must be namespaced without naming a namespace.
+
+    These use the same shapes a project writes: a service that takes no namespace parameter at
+    all, and one that calls ``super().__init__()`` with nothing.
+    """
+
+    def test_a_component_built_outside_a_scope_is_root(self) -> None:
+        assert ConcreteComponent().namespace == ROOT_NAMESPACE
+
+    def test_a_component_built_inside_a_scope_takes_that_namespace(self) -> None:
+        with namespace_scope("orders"):
+            assert ConcreteComponent().namespace == "orders"
+
+    def test_a_developer_service_needs_no_namespace_parameter(self) -> None:
+        """ServiceBase defaults namespace to "" and forwards it, so "" must defer to the scope."""
+
+        class OrderService(ServiceBase):
+            def __init__(self) -> None:
+                super().__init__()
+
+            async def on_startup(self) -> None:
+                pass
+
+            async def on_shutdown(self) -> None:
+                pass
+
+        with namespace_scope("orders"):
+            service = OrderService()
+
+        assert service.namespace == "orders"
+
+    def test_the_registry_name_is_qualified_by_the_ambient_namespace(self) -> None:
+        """The point of the namespace: two agents can register the same class in one process."""
+        with namespace_scope("orders"):
+            first = ConcreteComponent()
+        with namespace_scope("billing"):
+            second = ConcreteComponent()
+
+        assert (first.name, second.name) == ("orders_concrete_component", "billing_concrete_component")
+
+    def test_an_explicit_namespace_still_wins(self) -> None:
+        """Framework components that own their namespace pass it; nothing ambient may override that."""
+        with namespace_scope("orders"):
+            assert ConcreteComponent(namespace="billing").namespace == "billing"
+
+    def test_the_namespace_is_validated_whichever_way_it_arrives(self) -> None:
+        with pytest.raises(ValueError, match="legal namespace"):
+            ConcreteComponent(namespace="Orders")

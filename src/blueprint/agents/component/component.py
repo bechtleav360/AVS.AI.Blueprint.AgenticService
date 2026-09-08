@@ -20,7 +20,7 @@ from opentelemetry import trace
 
 from ..config import Config
 from ..utils import camel_to_snake
-from .namespace import ROOT_NAMESPACE, qualified_component_name, validate_namespace
+from .namespace import ROOT_NAMESPACE, current_namespace, qualified_component_name, validate_namespace
 
 if TYPE_CHECKING:
     from .registry import Registry
@@ -113,8 +113,12 @@ class Component(ABC, metaclass=_ComponentMeta):
                 owns its uniqueness. It must be supplied here rather than assigned
                 afterwards: registration happens in this constructor, so a second instance
                 of the same class would collide before a rename could run.
-            namespace: The agent this component belongs to; ``""`` (the default) is the root
-                namespace and the whole of a single-agent application.
+            namespace: The agent this component belongs to. Left unset -- which is what every
+                developer-written component does -- it is taken from the ambient
+                ``namespace_scope`` in force during construction, so a handler or service
+                carries no namespace in its own code and reads the same whether it runs alone
+                or beside five other agents. ``""`` is the root namespace and the whole of a
+                single-agent application.
 
         Raises:
             ValueError: if the namespace is not a legal namespace. This is the framework's
@@ -132,7 +136,13 @@ class Component(ABC, metaclass=_ComponentMeta):
 
             Component.init_registry(Registry(Component))
 
-        self._namespace = validate_namespace(namespace or ROOT_NAMESPACE)
+        # A *non-empty* argument wins; anything else defers to the ambient scope. It cannot be
+        # the other way round: ServiceBase, ClientBase, IOClientBase and EventPublishingService
+        # all default this parameter to ROOT_NAMESPACE and forward it unconditionally, so a
+        # developer writing `super().__init__()` in their own service passes an explicit "" --
+        # and treating that as a decision would pin every developer-written component to the
+        # root and make the ambient scope apply to nothing that matters.
+        self._namespace = validate_namespace(namespace or current_namespace())
         self._name = name or qualified_component_name(self._namespace, camel_to_snake(self.__class__.__name__))
         if should_register:
             self.registry.add_component(self.name, self)
