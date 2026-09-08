@@ -466,3 +466,69 @@ class TestBuildAppMetadata:
         _, kwargs = all_build_mocks.fastapi.call_args
         assert kwargs["version"] == "0.0.0"
         assert kwargs["description"] == ""
+
+
+# ---------------------------------------------------------------------------
+# build() — docs_url/redoc_url/openapi_url sourced from config (#191)
+#
+# Lets a consumer disable a route (e.g. docs_url = "@none" in settings.toml)
+# before FastAPI.__init__ ever registers it, instead of a downstream consumer
+# mutating app.router.routes after construction (bechtleav360/avs.ai.idac.
+# service-sessions#191).
+# ---------------------------------------------------------------------------
+
+
+class TestBuildDocsUrls:
+    def test_defaults_preserve_current_docs_paths(
+        self,
+        builder_for_build: AppBuilder,
+        mock_registry: MagicMock,
+        all_build_mocks: types.SimpleNamespace,
+        build_config: MagicMock,
+    ) -> None:
+        wire_empty_registry(mock_registry)
+        # Honour the default arg, like a real unset Config.get() would.
+        build_config.get.side_effect = lambda key, default=None: default
+
+        builder_for_build.build()
+
+        _, kwargs = all_build_mocks.fastapi.call_args
+        assert kwargs["docs_url"] == "/docs"
+        assert kwargs["redoc_url"] == "/redoc"
+        assert kwargs["openapi_url"] == "/openapi.json"
+
+    def test_reads_docs_urls_from_config(
+        self,
+        builder_for_build: AppBuilder,
+        mock_registry: MagicMock,
+        all_build_mocks: types.SimpleNamespace,
+        build_config: MagicMock,
+    ) -> None:
+        wire_empty_registry(mock_registry)
+        values = {"docs_url": "/api-docs", "redoc_url": "/api-redoc", "openapi_url": "/api-schema.json"}
+        build_config.get.side_effect = lambda key, default=None: values.get(key, default)
+
+        builder_for_build.build()
+
+        _, kwargs = all_build_mocks.fastapi.call_args
+        assert kwargs["docs_url"] == "/api-docs"
+        assert kwargs["redoc_url"] == "/api-redoc"
+        assert kwargs["openapi_url"] == "/api-schema.json"
+
+    def test_each_url_can_be_individually_disabled(
+        self,
+        builder_for_build: AppBuilder,
+        mock_registry: MagicMock,
+        all_build_mocks: types.SimpleNamespace,
+        build_config: MagicMock,
+    ) -> None:
+        wire_empty_registry(mock_registry)
+        values = {"docs_url": None, "redoc_url": None, "openapi_url": None}
+        build_config.get.side_effect = lambda key, default=None: values.get(key, default)
+
+        builder_for_build.build()
+
+        _, kwargs = all_build_mocks.fastapi.call_args
+        assert kwargs["docs_url"] is None
+        assert kwargs["redoc_url"] is None
+        assert kwargs["openapi_url"] is None
