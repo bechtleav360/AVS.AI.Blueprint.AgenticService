@@ -2314,6 +2314,160 @@ mechanism whenever real implementation lands, with lint, typing, tests and docs 
 **Motivation.** The feature is delivered across many sessions and unreviewed batches are expensive
 to unpick.
 
+### Phase 3, part 1 -- a namespace can be named at the call site, and a group can be written by hand
+
+Phase 0 part 3 made the namespace ambient, and phase 1 and 2 made the registry answer per
+namespace. What was still missing is the *entry point*: nothing outside `AgentRegistration.apply`
+could put a component in a namespace, and there was no way to assemble a group at all. This step
+adds the three builder-side pieces of phase 3; `with_cache(name=...)` follows as part 2.
+
+**The five `with_*` methods take a keyword-only `namespace`, and it never reaches the component.**
+Their bodies were five copies of "build it if it is a class, adopt it if it is not, rename it if
+asked", so they now share one helper and differ only in the type check `with_handler` performs:
+
+```python
+    def with_handler(
+        self, handler: type[HandlerT] | HandlerT, *, name: str | None = None, namespace: str = ROOT_NAMESPACE, **kwargs: Any
+    ) -> "AppBuilder":
+        if isinstance(handler, type) and not issubclass(handler, EventHandlerBase):
+            raise TypeError(f"Expected EventHandlerBase subclass, got {handler.__name__}")
+        self._register(handler, namespace, kwargs, name=name, method="with_handler")
+        return self
+```
+
+`AppBuilder._register` is where the namespace is turned into a scope rather than an argument:
+
+```python
+        if isinstance(target, type):
+            with _construction_scope(namespace):
+                instance = target(**kwargs)
+```
+
+This is the point of the whole ambient mechanism, and it is why the parameter cannot simply be
+forwarded. The builder passes `**kwargs` straight to the constructor, and a project's component
+takes the arguments its author wrote -- `StrictService(retries=3)`, no namespace anywhere -- so
+`with_service(StrictService, namespace="orders", retries=3)` must construct
+`StrictService(retries=3)` *inside* namespace `orders` and let `Component.__init__` read the
+namespace from the context variable. Forwarding it would be a `TypeError` on every component a
+developer has ever written.
+
+**`_construction_scope` exists because `namespace_scope("")` is not a no-op** -- it *sets* the
+current namespace to the root:
+
+```python
+@contextmanager
+def _construction_scope(namespace: str) -> Iterator[None]:
+    if not namespace:
+        yield
+        return
+    with namespace_scope(namespace):
+        yield
+```
+
+Without that branch this step would have broken the mechanism it is extending.
+`AgentRegistration.apply` opens one `namespace_scope("orders")` and then calls
+`builder.with_service(target, name=...)` with no namespace argument -- so an unconditional
+`namespace_scope(namespace)` would reset every component of every agent back to the root, with no
+error, and every registration applied per agent would have produced a root component. There is a
+test for exactly this (`test_the_default_does_not_reset_an_ambient_namespace`), because the failure
+is invisible: the app builds, and the registry keys are simply wrong.
+
+**An explicit `name=` is now qualified with the namespace the component ended up in:**
+
+```python
+        if name is not None:
+            instance.name = qualified_component_name(namespace_of(instance), name)
+```
+
+A defect, not a refinement. `Component.__init__` qualifies a *derived* name but uses an explicit
+one verbatim, so `AgentRegistration().with_service(OrderService, name="db")` applied to two agents
+registered both as `db` and the second failed with "Component with name db already exists" -- the
+one-declaration-per-group case, which is the primary API. Qualifying costs the caller nothing:
+`Registry._lookup` tries `<namespace>_<name>` before `<name>`, so `get_component("db")` from
+inside the agent still finds it. `namespace_of(instance)` rather than the `namespace` argument,
+because the instance may have come from the ambient scope instead.
+
+**An already-built instance offered to a namespace is refused rather than silently rerouted.**
+A component's namespace and its registry key are fixed by the scope it was constructed in, so
+`with_service(instance, namespace="orders")` cannot do what it says:
+
+```python
+            built_in = namespace_of(target)
+            if namespace and built_in != namespace:
+                raise ValueError(
+                    f"{type(target).__name__} was passed to {method}() as an instance for namespace '{namespace}', "
+                    f"but it was already built in namespace '{built_in or ROOT_LABEL}', and a component cannot change "
+                    ...
+                )
+```
+
+Ignoring the argument would register the component at the root while the caller believed it
+belonged to an agent -- the same trap `AgentRegistration._add` already refuses instances for, and
+the message points the same way: pass the class. An instance built inside the matching scope is
+accepted, since nothing is being changed.
+
+**`NamespaceBuilder` is one agent's view of the builder**, and it holds no build state: five
+`with_*` that delegate with `namespace=` filled in, `with_registration`, and `end()` returning the
+parent. Registering a component therefore still has exactly one implementation, and this class only
+decides which namespace it goes to. It has no `with_cache` -- a cache is process-wide (spec sec. 8),
+and an agent registering its own would duplicate or quietly take over a neighbour's.
+
+**`AppBuilder.with_namespace(name, *, registration=None)`** is the entry point:
+
+```python
+        namespace = validate_namespace(name)
+        if not namespace:
+            raise ValueError("with_namespace('') names no agent: ...")
+        if namespace not in self._namespaces:
+            self._namespaces.append(namespace)
+            logger.info("Hosting agent namespace '%s'", namespace)
+        if registration is None:
+            return NamespaceBuilder(self, namespace)
+        return self.with_registration(registration, namespace)
+```
+
+`with_namespace("")` is refused: the root is the absence of an agent, and returning a block that
+registers into it would be a silent no-op dressed as a declaration. The namespace is recorded
+*before* anything is built, so a registration that fails half way through still leaves the agent
+declared -- the startup log (spec sec. 9.2) and the readiness policy have to be able to say an
+agent was meant to be here.
+
+**Two spec departures, both argued rather than assumed.**
+
+- **The `AppBuilder | NamespaceBuilder` union is kept, but no caller sees it.** Spec sec. 4.2
+  types `with_namespace` as returning the union, which would make every call site narrow a type
+  it already knows statically. Two `@overload`s resolve it instead: `registration=<a
+  registration>` is an `AppBuilder`, `registration` omitted is a `NamespaceBuilder`. The runtime
+  behaviour is exactly what the spec asks for; the union survives only as the implementation
+  signature.
+- **The `config: Config | None` parameter is not accepted.** Spec sec. 4.2 and the plan both list
+  it, and the plan says `with_namespace` should build a `Config` with `agent_scope=name` from the
+  root config's settings files. Config rework step 2 made that obsolete: `Config.for_namespace`
+  returns a view sharing the one loaded tree, and `Component.config` already hands each component
+  the view for its own namespace, which tries `<agent>.<key>` before `<key>` (C5). A `Config`
+  passed here would have no reader -- components do not consult the builder -- so it would be
+  either ignored outright or re-parse the same files once per agent and then be ignored. Accepting
+  a parameter that does nothing is worse than not having it: it reads as per-agent configuration
+  support that is not there. **Needs a spec amendment**; listed under *Open points*.
+
+**`AppBuilder.namespaces`** exposes the declared agents in declaration order, root excluded, so
+phase 6 can iterate them. It lives on the builder because it may not live on the registry:
+`Registry` is reachable from every component (C6), so a `get_known_namespaces()` there would let
+an agent enumerate its neighbours, and grouping is supposed to be invisible from inside. The
+builder is the object that was *told* which agents to host and is not reachable from a component.
+A tagged `with_service(X, namespace="orders")` deliberately does *not* record a namespace: the
+list is what the builder was told to host, not every namespace a component was tagged with.
+
+`NamespaceBuilder` is exported from `blueprint.agents`, since it is a return type callers can hold.
+
+Tests: `tests/unit/agents/app_builder/test_namespace_builder.py`, 36 cases -- the namespace
+qualifying the registry key and reaching the component; the constructor *not* receiving it; the
+ambient namespace surviving the default and being overridden by an explicit one; an explicit name
+qualified, unchanged at the root, and one declaration with an explicit name serving two agents; an
+instance refused for another namespace and accepted for its own; both `with_namespace` forms; the
+root and an illegal namespace refused; `namespaces` order, dedup and its indifference to tagged
+calls; and the block delegating, chaining, closing and carrying constructor arguments.
+
 ---
 
 ## Compatibility
@@ -2387,6 +2541,10 @@ Everything else remains non-breaking. Specifically:
   Whether Dapr merges the two or delivers twice needs checking against a real sidecar; it belongs on
   the broker-test list.
 - New config keys all default to current behaviour.
+- **`AppBuilder.with_*` gained a keyword-only `namespace`, and an explicit `name=` is now qualified
+  with the namespace the component was built in.** At the root -- every single-agent application --
+  `qualified_component_name("", name)` is `name`, so nothing changes. In a namespace the key becomes
+  `<namespace>_<name>`, which is what makes one registration applicable to two agents at all.
 - **`EventHandlingBase._process_cloud_event` takes a third argument, `topic`.** A protected method,
   so this affects only a third-party transport implementation that called it -- of which the repo
   contains two, both updated.
@@ -2511,6 +2669,14 @@ stay keyword-only and last, or an existing `with_cache(False)` would silently be
 ---
 
 ## Open points
+
+- **Two spec amendments are outstanding for `with_namespace` (phase 3 part 1).** Spec sec. 4.2
+  types the return as `AppBuilder | NamespaceBuilder` and lists a `config: Config | None`
+  parameter. The union is honoured at runtime but resolved by `@overload` so no caller narrows it;
+  the `config` parameter is **not** accepted, because config rework step 2 left it with no reader
+  -- `Component.config` derives each component's view from the one loaded tree. The spec should
+  say so rather than describing a parameter the implementation refuses. Reasoning in the phase 3
+  part 1 entry above.
 
 - **P0-P5 have landed. P6 is next**, and two requirements for it were settled during P5 (see the
   namespace bullet below). What remains open from P5 is deferred work rather than unfinished work:
