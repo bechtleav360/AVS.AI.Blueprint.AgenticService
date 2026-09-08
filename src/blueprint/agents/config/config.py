@@ -2,6 +2,8 @@
 
 import json
 import logging
+import os
+import re
 from copy import copy
 from pathlib import Path
 from typing import Any
@@ -34,6 +36,53 @@ keeps them out of reach.
 """
 
 
+DEFAULT_ENVVAR_PREFIX = "DYNACONF"
+"""The prefix an environment override carries unless the project declares another one.
+
+Kept as Dynaconf's own default so no existing deployment changes: every ``DYNACONF_<KEY>`` in a
+Helm chart or ``docker run`` keeps resolving. It is also the one spelling that is *always*
+available -- Dynaconf loads ``DYNACONF_*`` in addition to any custom prefix and cannot be told
+not to (``loaders/env_loader.py``), so declaring a prefix **adds** a spelling rather than
+replacing this one. A custom prefix is loaded second and therefore wins for the same key.
+"""
+
+ENVVAR_PREFIX_OVERRIDE = "BLUEPRINT_ENVVAR_PREFIX"
+"""Environment variable that overrides the declared ``envvar_prefix``.
+
+The prefix cannot be overridden through Dynaconf, because it decides what Dynaconf reads: an
+operator who wants to change it has to be able to say so before the tree exists. Hence a
+framework-owned ``BLUEPRINT_`` variable read straight from the process environment, the same
+bootstrap channel the deployment group uses.
+"""
+
+_ENVVAR_PREFIX_ALPHABET = re.compile(r"^[A-Z][A-Z0-9_]*$")
+"""Uppercase only, and validated rather than repaired.
+
+Dynaconf upper-cases the prefix before matching the environment, so a declared ``myapp`` looks
+for ``MYAPP_<KEY>``: on Linux the ``myapp_<KEY>`` the author actually exported is ignored, with
+nothing to debug. The prefix crosses the process boundary -- a chart, a compose file and a
+``docker run`` all encode it -- so it is checked, never rewritten.
+
+Commas are excluded too: Dynaconf reads a comma-separated prefix as a *list* of prefixes, which
+is a second way to spell the same override and not something this framework needs.
+"""
+
+_ENVVAR_PREFIX_DISABLED = frozenset({"", "false", "0", "no"})
+"""Spellings that mean "no prefix at all", matching :func:`blueprint.agents.utils.parse_bool`.
+
+An environment variable carries text, so ``false`` has to mean what TOML's ``false`` means.
+"""
+
+_ENVVAR_PREFIX_IDENTITY_COLLISIONS = frozenset(key.split("_", 1)[0].upper() for key in DEPLOYMENT_IDENTITY_KEYS if "_" in key)
+"""Prefixes that would smuggle a deployment-identity variable past :data:`DEPLOYMENT_IDENTITY_KEYS`.
+
+Dynaconf strips the prefix to form the key, so ``envvar_prefix = "BLUEPRINT"`` turns
+``BLUEPRINT_GROUP`` into the readable key ``group`` -- and the C6 blocklist names
+``blueprint_group``, not ``group``. Derived from the blocklist rather than written out, so a new
+identity variable closes its own hole.
+"""
+
+
 class Config:
     """A class to manage the application's configuration using dynaconf."""
 
@@ -52,6 +101,10 @@ class Config:
         TOML files.
 
         Raw access via ``self.settings`` remains unscoped.
+
+        Which environment variables count as overrides is decided here too, before the tree is
+        built: see :meth:`_resolve_envvar_prefix`. The prefix is a property of the process, not
+        of a namespace, so a view built by :meth:`for_namespace` shares it.
         """
 
         self._validation_errors: list[str] = []
@@ -60,12 +113,34 @@ class Config:
         self._is_view = False
         self._views: dict[str, Config] = {}
 
-        # First pass: load config to get app_environment
+        # First pass: load config to get envvar_prefix and app_environment.
+        #
+        # The prefix has to be known before the tree that uses it can be built, and it is declared
+        # in the same files -- so this pass reads them through Dynaconf's default prefix, the one
+        # spelling that is always available (see DEFAULT_ENVVAR_PREFIX).
         temp_settings = Dynaconf(
             settings_files=settings_files, environments=False, load_dotenv=False, merge_enabled=True, root_path=root_path
         )
+        self._envvar_prefix = self._resolve_envvar_prefix(temp_settings)
+        if self._envvar_prefix != DEFAULT_ENVVAR_PREFIX:
+            # Repeat the pass through the resolved prefix. Without this, `<PREFIX>_APP_ENVIRONMENT`
+            # is invisible to the only read that consumes it: the second pass would load the
+            # default environment's section while every other key honoured the override, and
+            # nothing would report the mismatch.
+            temp_settings = Dynaconf(
+                settings_files=settings_files,
+                environments=False,
+                load_dotenv=False,
+                merge_enabled=True,
+                root_path=root_path,
+                envvar_prefix=self._envvar_prefix,
+            )
         app_env = temp_settings.get("app_environment", "development")
-        logger.info("Loading configuration properties for environment: %s", app_env)
+        logger.info(
+            "Loading configuration properties for environment: %s (environment overrides read from %s)",
+            app_env,
+            f"{self._envvar_prefix}_*" if self._envvar_prefix else "the whole process environment, unprefixed",
+        )
 
         # Validators differ when scoped: app_name is per agent, app_port is not.
         #
@@ -94,6 +169,7 @@ class Config:
             load_dotenv=False,
             merge_enabled=True,
             root_path=root_path,
+            envvar_prefix=self._envvar_prefix,
             validators=validators,
         )
 
@@ -111,6 +187,112 @@ class Config:
             # Update settings with processed values
             for key, value in processed.items():
                 self._settings[key] = value
+
+    @staticmethod
+    def _resolve_envvar_prefix(bootstrap_settings: Any) -> str | bool:
+        """Decide which prefix environment overrides must carry, before the real tree is loaded.
+
+        Precedence, highest first: the :data:`ENVVAR_PREFIX_OVERRIDE` environment variable, the
+        ``envvar_prefix`` key in the settings files, then :data:`DEFAULT_ENVVAR_PREFIX`. An
+        unset prefix therefore behaves exactly as before this existed.
+
+        Args:
+            bootstrap_settings: The first-pass Dynaconf object, read through the default prefix.
+
+        Returns:
+            The prefix to hand Dynaconf, or ``False`` to read the environment unprefixed.
+
+        Raises:
+            ConfigError: if the declared value is not a usable prefix. Every rejection is a
+                mistake that would otherwise be silent -- an ignored override, or an identity
+                variable turned into a readable key.
+        """
+        raw: Any = os.environ.get(ENVVAR_PREFIX_OVERRIDE)
+        source = f"environment variable {ENVVAR_PREFIX_OVERRIDE}"
+        if raw is None:
+            raw = bootstrap_settings.get("envvar_prefix")
+            source = "key 'envvar_prefix' in the settings files"
+        if raw is None:
+            Config._reject_sectioned_envvar_prefix(bootstrap_settings)
+            return DEFAULT_ENVVAR_PREFIX
+
+        if isinstance(raw, bool):
+            if raw:
+                raise ConfigError(
+                    f"envvar_prefix ({source}) is true, which names no prefix. Use a string such as "
+                    f"'{DEFAULT_ENVVAR_PREFIX}', or false to read the environment with no prefix."
+                )
+            return False
+        if not isinstance(raw, str):
+            raise ConfigError(f"envvar_prefix ({source}) must be a string or false, got {raw!r}.")
+
+        candidate = raw.strip()
+        if candidate.lower() in _ENVVAR_PREFIX_DISABLED:
+            return False
+        if not _ENVVAR_PREFIX_ALPHABET.match(candidate):
+            raise ConfigError(
+                f"envvar_prefix ({source}) is {candidate!r}, which cannot be used as a prefix: it must match "
+                "[A-Z][A-Z0-9_]*. Dynaconf upper-cases the prefix before matching the environment, so a "
+                "lowercase prefix silently looks for the upper-cased spelling and the variable that was "
+                "actually exported is never read. Declare the prefix in the case it will be exported in, or "
+                "use false to read the environment with no prefix."
+            )
+        if candidate in _ENVVAR_PREFIX_IDENTITY_COLLISIONS:
+            raise ConfigError(
+                f"envvar_prefix ({source}) is {candidate!r}, which collides with deployment identity: Dynaconf "
+                f"strips the prefix to form the key, so {candidate}_<NAME> would become the readable key '<name>' "
+                "and bypass the C6 blocklist that keeps the deployment group and the pod out of reach of agent "
+                "code. Choose another prefix."
+            )
+        return candidate
+
+    @staticmethod
+    def _reject_sectioned_envvar_prefix(bootstrap_settings: Any) -> None:
+        """Fail if ``envvar_prefix`` was declared inside a section, where nothing can read it.
+
+        The prefix must be a **top-level** key. The pass that resolves it runs with
+        ``environments=False``, so a section such as ``[default]`` is still one opaque value to it
+        and the key inside is invisible -- and it has to run that way, because the prefix is what
+        decides how ``app_environment`` is read in the first place. A prefix cannot live in the
+        section that its own resolution selects.
+
+        The natural mistake is therefore to put it next to ``app_name`` under ``[default]``, where
+        it would do nothing at all. That is the failure this raises for: an ignored prefix means
+        every environment override is silently ignored with it.
+
+        Raises:
+            ConfigError: naming each section the key was found in.
+        """
+
+        def find(node: Any, path: str) -> list[str]:
+            if not hasattr(node, "items"):
+                return []
+            found = []
+            for key, value in node.items():
+                where = f"{path}.{key}".lstrip(".").lower()
+                if str(key).lower() == "envvar_prefix":
+                    found.append(where)
+                else:
+                    found.extend(find(value, where))
+            return found
+
+        sectioned = find(bootstrap_settings.as_dict(), "")
+        if sectioned:
+            raise ConfigError(
+                f"'envvar_prefix' is declared as {', '.join(sorted(sectioned))}, inside a section, where nothing "
+                "reads it: the prefix is resolved before any environment section is selected, so it must be a "
+                f"top-level key in the settings file (or set as {ENVVAR_PREFIX_OVERRIDE} in the environment). "
+                "Left where it is, it names no prefix and every environment override that relies on it is ignored."
+            )
+
+    @property
+    def envvar_prefix(self) -> str | bool:
+        """The prefix an environment override must carry, or ``False`` when none is required.
+
+        Read by the actuator environment endpoint and worth logging at startup: "my variable is
+        ignored" is otherwise indistinguishable from "my variable is misspelled".
+        """
+        return self._envvar_prefix
 
     @property
     def settings(self) -> Any:

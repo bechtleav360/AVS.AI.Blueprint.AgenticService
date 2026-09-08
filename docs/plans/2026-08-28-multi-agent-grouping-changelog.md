@@ -1581,6 +1581,104 @@ them resolve to the property object rather than the registry.
 wants to rewrite one assertion there and `ruff-format` rejects the result, so the file stays on the
 known-debt list rather than having a winner picked inside an unrelated change.
 
+### Config rework, step 3a -- the environment-variable prefix becomes the project's to choose
+
+Until now the only spelling an environment override could have was Dynaconf's own `DYNACONF_<KEY>`.
+That is a library's name in a deployment's interface: a chart for a platform hosting several
+Blueprint groups has no way to say which of them a variable is meant for, and an operator reading
+`DYNACONF_MODEL_NAME` cannot tell it belongs to this framework at all.
+
+**`envvar_prefix` is now a top-level key in the settings file, overridable in the environment by
+`BLUEPRINT_ENVVAR_PREFIX`.** Precedence is environment, then file, then `DYNACONF` -- so a project
+that declares nothing behaves exactly as before, which is the point: every existing chart keeps
+working untouched.
+
+**It is resolved in the first Dynaconf pass, not the second.** `Config.__init__` already had a
+bootstrap pass whose only job was to read `app_environment` before the real load. The prefix has to
+be known before the tree that uses it exists, so it is resolved there, from the files read through
+the default prefix -- the one spelling that is always available.
+
+**That pass then runs a second time whenever the resolved prefix is not the default.** Without it,
+`<PREFIX>_APP_ENVIRONMENT` would be invisible to the only read that consumes it: the main pass
+would load the `[development]` section while every other key honoured the override, and nothing
+would report the mismatch. The repeat is skipped entirely for the default prefix, so the common
+case still parses the files twice, not three times.
+
+**Four declarations are rejected rather than repaired**, each because the alternative is silent:
+
+- **A lowercase prefix.** Dynaconf does `prefix = prefix.upper()` before matching the environment
+  (`loaders/env_loader.py`), so a declared `myapp` looks for `MYAPP_<KEY>`. On Linux the
+  `myapp_<KEY>` that was actually exported is then never read, and nothing says so. Windows hides
+  the bug -- its environment is case-insensitive -- so this is exactly the defect that ships. The
+  alphabet is `[A-Z][A-Z0-9_]*`; commas are excluded too, because Dynaconf reads a comma-separated
+  prefix as a *list* of prefixes and one override spelling is enough.
+- **`BLUEPRINT` and `POD`.** Dynaconf strips the prefix to form the key, so `envvar_prefix =
+  "BLUEPRINT"` turns `BLUEPRINT_GROUP` into the readable key `group` -- and the C6 blocklist names
+  `blueprint_group`, not `group`. A prefix could therefore have quietly reopened the hole
+  `DEPLOYMENT_IDENTITY_KEYS` exists to close. The rejected set is *derived* from that blocklist
+  (`_ENVVAR_PREFIX_IDENTITY_COLLISIONS` takes the segment before the first underscore), so a new
+  identity variable closes its own hole without anyone remembering to.
+- **`envvar_prefix = true`**, which names no prefix, and any non-string.
+- **A prefix declared inside a section.** This is the mistake a developer will actually make:
+  putting it under `[default]` next to `app_name`. The resolving pass runs with
+  `environments=False`, so a section is one opaque value to it and the key inside is invisible --
+  and it has to run that way, because the prefix is what decides how `app_environment` is read.
+  Left there it would name no prefix, so *every* override relying on it would be ignored at once.
+  `_reject_sectioned_envvar_prefix` walks the bootstrap tree and raises naming the path it found
+  (`development.envvar_prefix`).
+
+**`envvar_prefix = false` disables the prefix**, and this is a footgun that ships documented rather
+than hidden. Dynaconf then absorbs the entire process environment: probed on this machine, 88 keys
+against a 5-key settings file, `PATH`, `BLUEPRINT_GROUP`, `POD_NAME` and every `*_API_KEY` in the
+shell among them. It is *safe* only because step 2 put `DEPLOYMENT_IDENTITY_KEYS` in front of
+`get()` -- with the prefix off, `BLUEPRINT_GROUP` lands in the tree as `blueprint_group`, which is
+the exact spelling the C6 blocklist refuses, and a test asserts that for all three identity keys.
+The environment spellings that mean off are `false`, `0`, `no` and the empty string, matching
+`parse_bool` rather than inventing a second boolean vocabulary. The guide recommends a short
+project prefix and describes what disabling it exposes.
+
+**One Dynaconf behaviour is worth stating because it is not optional.** `DYNACONF_*` is loaded
+whatever the prefix is, and cannot be turned off:
+
+```python
+if global_prefix is False or global_prefix.upper() != "DYNACONF":
+    load_from_env(obj, "DYNACONF", ...)
+```
+
+So declaring a prefix **adds** a spelling rather than replacing one, and because the custom prefix
+is loaded second it wins for the same key. Verified both ways. This is good for migration -- an old
+chart keeps working while a new one moves -- and bad for anyone who declares a prefix believing
+they have closed the `DYNACONF_` door. Both directions are tested and both are in the docstring.
+
+`Config.envvar_prefix` is a public read-only property, because "my variable is ignored" and "my
+variable is misspelled" are otherwise indistinguishable; the startup log now names the resolved
+prefix (or says the environment is read unprefixed). A namespace view shares it: the prefix is a
+property of the process, and `for_namespace` copies it with the rest of the loader.
+
+**Tests.** 1421 unit tests pass (up from 1391), 30 of them new in
+`tests/unit/agents/config/test_envvar_prefix.py`: resolution and precedence, the environment
+selected through the resolved prefix, `DYNACONF_` surviving alongside a custom prefix and losing to
+it, every rejection above, the four falsy spellings, and C6 still holding with the prefix disabled.
+An autouse fixture strips ambient `DYNACONF_*` from the environment, since the developer's own shell
+can otherwise satisfy or defeat the very lookup under test.
+
+`src/blueprint/agents/config/config.py` keeps its pre-existing `black` disagreement in
+`_process_dynabox`, which this change does not touch: it is on the known-debt list because
+`ruff-format` reverts what `black` wants there.
+
+### Not fixed, found while doing this: `app_environment` in `[default]` selects nothing
+
+The bootstrap pass runs with `environments=False`, so it sees only top-level keys -- `[default]`
+arrives as one opaque value. All five examples declare `app_environment` *inside* `[default]`, where
+that pass cannot read it, so it never selects an environment: it only lands in the loaded tree as a
+value that `config.get("app_environment")` returns. A project that adds a `[production]` section and
+sets `app_environment = "production"` under `[default]` gets `[development]` loaded and no warning.
+Only a top-level `app_environment`, or `DYNACONF_APP_ENVIRONMENT`, actually switches sections.
+
+Pre-existing and out of this step, and the fix is not obviously safe -- honouring the sectioned key
+would change which section an existing project loads. Left as a decision to take, not a defect to
+patch inside a config change.
+
 ### Deployment guide corrected (`2d80b63`)
 
 The guide recommended `replicaCount: 2`, an HPA, and `--set replicaCount=3` as ordinary scaling. It
