@@ -36,8 +36,12 @@ class RedisCacheService(_CacheKeyMixin, CacheService):
         key_prefix: str = "",
         default_ttl: int | None = None,
         fallback_to_local: bool = False,
+        component_name: str | None = None,
     ) -> None:
-        super().__init__()
+        # component_name: registry name to use instead of the derived 'redis_cache_service'.
+        # A process may hold several named caches (spec sec. 8), and two instances of this
+        # class would otherwise collide on the one derived name. None keeps the existing key.
+        super().__init__(name=component_name)
         self._redis_url = redis_url
         # Cached credential-free variant for logs, /readiness payloads, and stats.
         self._safe_redis_url = _sanitize_redis_url(redis_url)

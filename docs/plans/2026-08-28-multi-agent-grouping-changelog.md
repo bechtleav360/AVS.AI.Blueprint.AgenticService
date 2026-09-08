@@ -2468,6 +2468,167 @@ instance refused for another namespace and accepted for its own; both `with_name
 root and an illegal namespace refused; `namespaces` order, dedup and its indifference to tagged
 calls; and the block delegating, chaining, closing and carrying constructor arguments.
 
+### Phase 3, part 2 -- a cache has a name, and a name buys it its own store
+
+Phase 1 part 2 gave the registry `add_cache(name, cache)` / `get_cache(name)` and no fallback
+between names. The builder never used any of it: `with_cache()` still went through the
+`cache_service` setter, so a process could hold exactly one cache. This step is the builder side,
+and three defects had to be fixed for it to work at all.
+
+**The signature change, and why the parameter order is the whole point:**
+
+```python
+    def with_cache(self, enabled: bool = True, enable_locking: bool = True, *, name: str = DEFAULT_CACHE_NAME) -> "AppBuilder":
+        if not enabled:
+            logger.info("Caching disabled; cache '%s' is not registered", name)
+            return self
+
+        cache_config = _cache_config_for(self._config.get_cache_config(), name)
+```
+
+`name` is keyword-only and follows the two existing positional parameters, as spec sec. 4.2
+requires. Had it come first, `with_cache(False)` -- which *disables* caching in projects that
+exist today -- would have become a cache named `False` with caching silently switched on, no
+`TypeError` and no warning. `with_cache()`, `with_cache(False)` and `with_cache(True, False)` all
+still mean exactly what they meant, and there are tests for the three of them.
+
+**Turning a name into isolated storage lives in `CacheBackendFactory`, not in the builder.**
+It was written in `app_builder.py` first and moved on review, and the review was right: the
+builder would have been the one place that knew disk caches isolate by directory and Redis caches
+by key prefix. Anyone adding a third backend edits the factory and has no reason to open the
+builder, so their backend would have inherited one store shared across every name -- the exact
+failure the scoping exists to prevent, arrived at by writing new code in the obvious place. So
+`create` takes the cache name and each `_create_*` scopes what its own backend needs:
+
+```python
+    @staticmethod
+    def create(config: CacheConfig, enable_locking: bool = True, name: str = DEFAULT_CACHE_NAME) -> CacheService:
+        CacheBackendFactory._validate_name(name)
+        if config.backend == "redis":
+            return CacheBackendFactory._create_redis(config, enable_locking, name)
+        return CacheBackendFactory._create_disk(config, enable_locking, name)
+```
+
+`create` is the single door through which a cache is built, so the name cannot arrive
+unvalidated and a backend cannot be reached without having answered how it separates one name
+from another. The builder is left with one line and no cache knowledge:
+
+```python
+        cache_service = CacheBackendFactory.create(self._config.get_cache_config(), enable_locking=enable_locking, name=name)
+```
+
+`config` reaches the factory **unscoped**. That matters for the fallback: `_create_redis` scopes
+a key prefix, and when Redis is unreachable it hands `_create_disk` the original config plus the
+name, so the fallback isolates by directory rather than carrying a prefix that means nothing to
+it. Pre-scoping both fields before the branch -- what the first version did -- only worked because
+it scoped fields no chosen backend would read.
+
+The two derivations, each on the backend that needs it. The default name returns the configured
+value untouched, so an existing application's cache directory and Redis keyspace do not move:
+
+```python
+    def _scoped_cache_dir(config: CacheConfig, name: str) -> str:
+        if name == DEFAULT_CACHE_NAME:
+            return config.cache_dir
+        return str(PurePosixPath(config.cache_dir.replace("\\", "/")) / name)
+
+    def _scoped_key_prefix(config: CacheConfig, name: str) -> str:
+        if name == DEFAULT_CACHE_NAME:
+            return config.key_prefix
+        return f"{config.key_prefix}:{name}" if config.key_prefix else name
+```
+
+- **Disk: `<cache_dir>/<name>`, a subdirectory and not a sibling.** The plan says
+  `{base_dir}/{name}` without saying which directory `base_dir` is, and only one reading is always
+  writable: a deployment may mount its volume *at* `cache.cache_dir`, and under
+  `readOnlyRootFilesystem` a sibling of the mount cannot be created -- see "Writable Cache
+  Directory" in `docs/guides/deployment.md`. The cost is that a named cache's directory sits
+  inside the default cache's own store. diskcache ignores directories it did not create, and the
+  alternative fails in production only.
+- **Redis: the name is appended to `cache.key_prefix`.** *Not in the plan, and without it naming a
+  cache would have isolated nothing on Redis.* The disk backend separates caches by directory and
+  Redis has no analogue -- `RedisCacheService` scopes every key by `key_prefix` alone -- so two
+  caches registered as `sessions` and `prompts` against one Redis with one configured prefix would
+  have written the same keys. That is precisely the silent cross-cache sharing spec sec. 8 exists
+  to prevent, and here the name is the only thing meant to tell them apart.
+
+**The cache name is validated, because it is now a filesystem path segment:**
+
+```python
+_ALLOWED_CACHE_NAME = re.compile(r"\A[a-z0-9][a-z0-9_.-]*\Z")
+```
+
+`with_cache(name="../evil")` would otherwise write outside the cache directory entirely. Lower
+case only, and that is not tidiness: a directory whose name differs only by case is one directory
+on a developer's macOS or Windows machine and two on the Linux node, so `Sessions` and `sessions`
+would be one cache locally and two in production. Validation runs before anything is constructed,
+so a refused name never creates a directory.
+
+**Three defects fixed to get here.**
+
+1. **Two caches collided on one registry name.** A `CacheService` is a `ServiceBase` and therefore
+   a `Component`, so it registers itself under a derived name -- and a second `DiskCacheService`
+   raised `Component with name disk_cache_service already exists`. Registering a named cache
+   without a component entry was not an option: the lifespan closes caches by iterating
+   `registry.get_services()`, so an unregistered one would leak its file handle or Redis
+   connection for the life of the process. `DiskCacheService.__init__` and
+   `RedisCacheService.__init__` therefore take `component_name`, forwarded to
+   `super().__init__(name=...)`, and `CacheBackendFactory.create` passes it through:
+
+   ```python
+    @staticmethod
+    def _component_name(name: str) -> str | None:
+        return None if name == DEFAULT_CACHE_NAME else f"cache_{name}"
+   ```
+
+   `None` for the default, so `disk_cache_service` stays the key existing lookups and health
+   entries already use. `cache_<name>` rather than `<class>_<name>` because `fallback_to_local`
+   swaps `RedisCacheService` for `DiskCacheService` at construction -- a registry key that depends
+   on whether Redis answered the startup ping is worse than one that does not name the backend.
+   Both fallback paths therefore produce the same registry name as the Redis service would have.
+
+2. **`with_cache()` as an application's first builder call crashed.** `Component.shared_registry`
+   is `None` until the first `Component.__init__` creates it, and a cache service is what creates
+   it here. Reading the registry before building the service is an `AttributeError` on `None`; the
+   old code happened to read it afterwards. The order is now explicit and commented, because
+   nothing about the line says it matters:
+
+   ```python
+        cache_service = CacheBackendFactory.create(cache_config, enable_locking=enable_locking, component_name=component_name)
+        registry: Registry = Component.shared_registry  # type: ignore[assignment]
+        registry.add_cache(name, cache_service)
+   ```
+
+3. **`registry.add_cache` replaced the `cache_service` setter.** The setter still exists as the
+   spec sec. 8 alias and still reads and writes the `"default"` cache, so `registry.cache_service`
+   keeps working; the builder simply no longer goes through it.
+
+`CacheBackendFactory.create`'s third parameter is `name`, not `component_name`: the registry name
+is derived from the cache name, so there is one name to pass rather than two that must agree.
+
+**Not done here, and deliberately.** Readiness and the management endpoints still see only the
+default cache -- `if registry.has_cache(): health_providers["cache"] = ...` and the `CacheManagementApi`
+mount are both keyed on the default name. Plan phase 6 owns both ("`CacheManagementApi`: one router,
+endpoints accept optional `?name=`" and "`ActuatorApi` cache health: iterates all entries"), so a
+project that registers only a named cache gets no cache health check until then. Nothing regresses:
+those call sites are guarded by `has_cache()` and simply do not fire.
+
+Also noted rather than fixed: `add_cache`'s documented replace-and-warn path is unreachable from
+the builder, because two `with_cache()` calls with one name now collide on the *component* name
+first. That was already true before this change, and the resulting error names the colliding key.
+
+Tests, split the way the code is. `tests/unit/agents/app_builder/test_named_caches.py`, 33 cases,
+covers what is visible through `with_cache`: the default cache keeping its name, directory,
+registry key and `cache_service` alias; `with_cache()` working as an application's first builder
+call; the three positional forms; a named cache getting its own directory (asserted on disk), its
+own registry name, coexisting with the default, and appearing in `get_services()` so the lifespan
+closes it; an unregistered name raising instead of yielding the default; and eleven rejected names.
+`tests/unit/agents/services/infrastructure/test_cache_backend_factory.py` gains 34 cases for the
+isolation itself: the derived registry name and its independence from the backend; the disk
+subdirectory including a Windows separator in the configured path; the Redis prefix, asserted both
+on the derivation and on the kwargs the service is constructed with; both fallback paths isolating
+as disk rather than as Redis; and the name being validated before any directory is created.
+
 ---
 
 ## Compatibility
@@ -2541,6 +2702,15 @@ Everything else remains non-breaking. Specifically:
   Whether Dapr merges the two or delivers twice needs checking against a real sidecar; it belongs on
   the broker-test list.
 - New config keys all default to current behaviour.
+- **`AppBuilder.with_cache` gained a keyword-only `name`, and the three positional forms are
+  unchanged.** `with_cache()`, `with_cache(False)` and `with_cache(True, False)` mean what they
+  always meant, which is why `name` had to come last and be keyword-only (spec sec. 4.2). The
+  default cache keeps its registry key `disk_cache_service`, its configured `cache.cache_dir` and
+  its Redis key prefix, so no existing cache data moves.
+- **`DiskCacheService.__init__` and `RedisCacheService.__init__` gained a trailing optional
+  `component_name`, and `CacheBackendFactory.create` a trailing optional `name`.** Additive and
+  defaulted; existing positional calls are unaffected. `create` derives the component name from
+  the cache name, so callers pass one name rather than two that have to agree.
 - **`AppBuilder.with_*` gained a keyword-only `namespace`, and an explicit `name=` is now qualified
   with the namespace the component was built in.** At the root -- every single-agent application --
   `qualified_component_name("", name)` is `name`, so nothing changes. In a namespace the key becomes

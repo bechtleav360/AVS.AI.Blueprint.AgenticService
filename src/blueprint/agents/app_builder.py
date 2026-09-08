@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 from .component.component import Component
 from .component.namespace import ROOT_LABEL, ROOT_NAMESPACE, namespace_of, namespace_scope, qualified_component_name, validate_namespace
-from .component.registry import Registry
+from .component.registry import DEFAULT_CACHE_NAME, Registry
 from .agent.agent_runtime import AgentRuntime
 from .handler.event_handler_base import EventHandlerBase
 from .io.api.rest_api_base import RestApiBase
@@ -554,25 +554,47 @@ class AppBuilder:
             instance.name = qualified_component_name(namespace_of(instance), name)
         return instance
 
-    def with_cache(self, enabled: bool = True, enable_locking: bool = True) -> "AppBuilder":
-        """Enable persistent caching using DiskCache.
+    def with_cache(self, enabled: bool = True, enable_locking: bool = True, *, name: str = DEFAULT_CACHE_NAME) -> "AppBuilder":
+        """Register a cache, by default the one every existing application already has.
+
+        Call it more than once to register several::
+
+            AppBuilder(config).with_cache().with_cache(name="sessions").build()
+
+        Each name gets its own storage, isolated per backend by ``CacheBackendFactory``, and
+        any component reads one back with ``self.registry.get_cache("sessions")``. There is
+        deliberately no fallback from an unknown name to the default (spec sec. 8).
+
+        ``name`` is **keyword-only and comes last**, which is a constraint rather than a style
+        choice. ``with_cache(False)`` disables caching today; had ``name`` been the first
+        parameter that call would have become a cache named ``False`` with caching silently
+        switched *on*, with no ``TypeError`` to notice. So ``with_cache()``,
+        ``with_cache(False)`` and ``with_cache(True, False)`` all still mean what they meant.
 
         Args:
-            enabled: Whether to enable caching (default: True)
-            enable_locking: Enable file-based locking for multi-deployment safety (default: True).
+            enabled: Whether to create the cache at all. ``False`` registers nothing.
+            enable_locking: File-based locking for multi-process safety, for the disk backend.
+            name: Which cache this is. The default keeps the registry key, the cache directory
+                and the Redis keyspace an existing application already uses.
+
+        Raises:
+            ValueError: if ``name`` cannot serve as a cache name.
         """
-        if enabled:
-            cache_config = self._config.get_cache_config()
-            cache_service = CacheBackendFactory.create(cache_config, enable_locking=enable_locking)
-            Component.shared_registry.cache_service = cache_service  # type: ignore[union-attr]
-            logger.info(
-                "Registered %s with cache_dir=%s (locking=%s)",
-                type(cache_service).__name__,
-                cache_config.cache_dir,
-                enable_locking,
-            )
-        else:
-            logger.info("Caching disabled")
+        if not enabled:
+            logger.info("Caching disabled; cache '%s' is not registered", name)
+            return self
+
+        # The name goes to the factory rather than being resolved here: which store a name
+        # maps to is backend knowledge, and the factory is where a backend is chosen and where
+        # a new one would be added.
+        cache_service = CacheBackendFactory.create(self._config.get_cache_config(), enable_locking=enable_locking, name=name)
+        # Read after the service is built, never before: a cache service is itself a Component,
+        # and Component.__init__ is what creates the shared registry on first use. Capturing it
+        # first is an AttributeError on None for an application whose first builder call is
+        # with_cache().
+        registry: Registry = Component.shared_registry  # type: ignore[assignment]
+        registry.add_cache(name, cache_service)
+        logger.info("Registered cache '%s' as %s (locking=%s)", name, type(cache_service).__name__, enable_locking)
         return self
 
     def with_health_checker(self, name: str, checker: "HealthCheckerBase") -> "AppBuilder":

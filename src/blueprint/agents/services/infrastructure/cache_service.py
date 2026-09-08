@@ -183,6 +183,7 @@ class DiskCacheService(_CacheKeyMixin, CacheService):
         eviction_policy: str = "least-recently-used",
         enable_locking: bool = True,
         default_ttl: int | None = None,
+        component_name: str | None = None,
     ):
         """Initialize DiskCacheService.
 
@@ -195,8 +196,12 @@ class DiskCacheService(_CacheKeyMixin, CacheService):
                 called without an explicit ``ttl``. ``None`` means no expiration.
                 Mirrors ``RedisCacheService`` so the choice of backend does not
                 silently change TTL behaviour.
+            component_name: Registry name to use instead of the derived ``disk_cache_service``.
+                Needed because a process may hold several named caches (spec sec. 8) and two
+                instances of this class would otherwise collide on the one derived name. The
+                default keeps an existing single-cache application's registry key unchanged.
         """
-        super().__init__()
+        super().__init__(name=component_name)
         self.cache_dir = Path(cache_dir)
         try:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
