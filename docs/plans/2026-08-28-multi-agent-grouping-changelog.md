@@ -1737,6 +1737,59 @@ disagreement in `llm_status`, untouched by this change, and `config.py` keeps it
 rather than a nested `write_text(textwrap.dedent(...))` call, because the two formatters disagree
 about that construct and neither has to win.
 
+### Phase 0, part 1 -- `run_app`, and the worker count it refuses
+
+First piece of phase 0. `run_app(app, config)` in `utils/utils.py`, exported from
+`blueprint.agents`, is the one line a project needs to become runnable by
+`python src/main.py`: host, port and log level come from the same settings tree as everything
+else instead of a uvicorn invocation duplicated in a Dockerfile, a compose file and a README.
+
+Development (`app_environment = "development"`) differs in exactly two ways -- the server logs at
+`debug`, and it runs one worker whatever the configuration says.
+
+**`reload` is never enabled, and that is not an omission.** Auto-reload requires uvicorn to import
+the application itself, so it needs an import string; it cannot restart an object that has already
+been built. The plan said this; the docstring now says it too, because "why does reload not work"
+is otherwise a question that gets answered by adding a broken parameter.
+
+**`app_workers > 1` raises instead of being passed through**, which is a departure from the plan's
+"workers from `app_workers` config (default 1)". Two independent reasons, and either alone settles
+it:
+
+- **uvicorn cannot honour it here.** With an application *object* rather than an import string,
+  `workers > 1` makes uvicorn log `You must pass the application as an import string to enable
+  'reload' or 'workers'` against its own logger and call `sys.exit` (`uvicorn/main.py:603-607`,
+  verified against uvicorn 0.52.4). So the plan's version produces a process that dies before
+  binding a port, with a message naming a setting the operator did not touch.
+- **It is the wrong shape for this framework even where it works.** Every uvicorn worker is a
+  separate process that builds the application again: N workers open N transport connections, join
+  the queue group N times, and start N in-process scheduler timers. Scaling is what replicas are
+  for, and the queue group (P1) and the per-tick claim (P5) are what make replicas correct. The
+  error message says this and names the alternative for anyone who wants it anyway.
+
+**The log level is translated, not validated.** The framework spells levels as `logging` does
+(`"INFO"`), uvicorn wants them lower-case and has one level `logging` does not (`"trace"`). An
+unrecognised value logs a warning and falls back to `"info"` rather than raising: this level
+decides only how uvicorn narrates itself, nothing outside the process can depend on it, and the
+application's own logging was already configured from the same key by `Config.configure_logging`.
+That is the other side of the P6 rule -- names that cross the process boundary are validated, and
+this one does not cross it.
+
+`DEFAULT_APP_HOST = "0.0.0.0"` carries a `# nosec B104`: bind-all is the only useful default
+inside a container, which cannot know the address of the interface its traffic arrives on. **Not
+verified locally** -- bandit is not installed in this working copy (see `CLAUDE.local.md`), so
+whether the marker satisfies the hook is unconfirmed.
+
+**No caller in this repository yet, deliberately.** The examples end at `app = builder.build()` and
+are served by the Dockerfile's `uvicorn src.main:app`, and phase 8 is what turns `main.py` into a
+declaration served by `python -m blueprint.agents.entrypoint` -- which is the caller this exists
+for. It is public API from today regardless, so it is usable rather than dormant.
+
+**Tests.** 1462 unit tests pass (up from 1443), 19 new in `tests/unit/agents/utils/test_run_app.py`:
+the arguments uvicorn is handed, the two development differences, the level translation and its
+fallback, `reload=False`, and the worker refusal -- including that it happens before `uvicorn.run`
+is called at all.
+
 ### Not fixed, found while doing this: `app_environment` in `[default]` selects nothing
 
 The bootstrap pass runs with `environments=False`, so it sees only top-level keys -- `[default]`
