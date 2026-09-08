@@ -198,7 +198,19 @@ class DiskCacheService(_CacheKeyMixin, CacheService):
         """
         super().__init__()
         self.cache_dir = Path(cache_dir)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            # The common production failure, and the least self-explanatory: a container image
+            # whose working directory is root-owned, or a pod with `readOnlyRootFilesystem: true`
+            # and nothing mounted here. Both surface as an errno from deep inside a constructor,
+            # so the cause and the fix are named here instead.
+            raise RuntimeError(
+                f"Cache directory '{self.cache_dir}' could not be created ({error.strerror}). A container cannot "
+                "create it at runtime unless the path is writable by the user the process runs as: create it in the "
+                "image and chown it, mount a volume there if the root filesystem is read-only, point "
+                "'cache.cache_dir' somewhere writable, or use the redis cache backend, which needs no filesystem."
+            ) from error
 
         self._size_limit = size_limit
         self._eviction_policy = eviction_policy

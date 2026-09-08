@@ -344,6 +344,62 @@ helm uninstall my-ai-service --namespace ai-services
 
 ---
 
+### Writable Cache Directory
+
+The disk cache backend (`cache.backend = "disk"`, the default) writes to `cache.cache_dir`, which
+defaults to the **relative** path `.cache/blueprint` -- resolved against the working directory,
+so `/app/.cache/blueprint` in the generated image. It is created at startup, and a container can
+only create it where the process user may write.
+
+Two things have to be true, and neither is automatic:
+
+1. **The directory belongs to the user the process runs as.** `WORKDIR /app` creates `/app` owned
+   by root, and the image runs as `appuser`, so `mkdir /app/.cache` fails with EACCES. The
+   generated Dockerfile therefore creates and hands it over at build time:
+
+   ```dockerfile
+   RUN mkdir -p /app/.cache && chown -R appuser:appuser /app/.cache
+   ```
+
+   A project scaffolded before this was added needs the same two lines.
+
+2. **A read-only root filesystem needs a volume mounted there.** With
+   `readOnlyRootFilesystem: true` the ownership above is irrelevant -- nothing may be written
+   anywhere except a mounted volume, and the mount is declared in the pod spec rather than
+   discovered at runtime:
+
+   ```yaml
+   spec:
+     containers:
+       - name: agent
+         securityContext:
+           readOnlyRootFilesystem: true
+           runAsNonRoot: true
+         volumeMounts:
+           - name: cache
+             mountPath: /app/.cache
+     volumes:
+       - name: cache
+         emptyDir:
+           sizeLimit: 1Gi
+   ```
+
+   Keep `sizeLimit` at or above `cache.size_limit` (default 1 GB): an `emptyDir` is backed by
+   node disk, and a pod that exceeds its limit is evicted.
+
+If the directory cannot be created the service fails at startup with a message naming the path
+and these options, rather than an errno from inside a constructor.
+
+**Grouped agents need no additional paths.** Agents hosted in one process share one cache backend
+and are isolated by key prefix, not by directory, so a group of five agents mounts the same single
+volume a single agent does and keeps one `size_limit` budget over it.
+
+**Or avoid the filesystem entirely.** `cache.backend = "redis"` needs no writable path, which
+makes it the simpler choice for a hardened pod, and the only choice if the cache has to survive a
+restart or be shared across replicas -- an `emptyDir` is per pod and is deleted with it.
+
+---
+
 ## Health Probes
 
 Blueprint Agents provides three built-in health endpoints:

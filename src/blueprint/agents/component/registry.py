@@ -87,6 +87,7 @@ class Registry:
         self._executors: dict[str, ThreadPoolExecutor] = {}
         self._default_namespace: str | None = None
         self._views: dict[str, Registry] = {}
+        self._scoped_caches: dict[str, CacheService] = {}
 
         logger.info("ComponentRegistry initialized")
 
@@ -156,6 +157,9 @@ class Registry:
         view = copy(self)
         view._default_namespace = namespace
         view._views = {}
+        # Its own, because the entries are per agent: the shallow copy would otherwise have
+        # every view handing out the first agent's lens.
+        view._scoped_caches = {}
         self._views[namespace] = view
         return view
 
@@ -310,7 +314,28 @@ class Registry:
         if cache is None:
             registered = ", ".join(sorted(self._caches)) or "none"
             raise ValueError(f"No cache registered as '{name}' (registered: {registered})")
+        if self._default_namespace:
+            return self._scoped_cache(name, cache)
         return cache
+
+    def _scoped_cache(self, name: str, cache: CacheService) -> CacheService:
+        """Return this view's agent-scoped lens on ``cache`` (spec sec. 8).
+
+        Built here rather than at registration because the same backend serves every agent: one
+        cache, N views of it, each prefixing its own partitions. Cached per name so an agent
+        asking twice gets one object, which keeps the lens as cheap as the raw cache.
+        """
+        # Imported here: agent_scoped_cache imports CacheService, which is a ServiceBase, which
+        # is a Component -- and component.py imports this module.
+        from ..services.infrastructure.agent_scoped_cache import AgentScopedCache
+
+        agent = self._default_namespace
+        assert agent is not None  # nosec B101 -- guarded by the caller; a view always has one
+        scoped = self._scoped_caches.get(name)
+        if scoped is None:
+            scoped = AgentScopedCache(cache, agent)
+            self._scoped_caches[name] = scoped
+        return scoped
 
     def get_all_caches(self) -> dict[str, CacheService]:
         """Return every registered cache by name, as a copy.

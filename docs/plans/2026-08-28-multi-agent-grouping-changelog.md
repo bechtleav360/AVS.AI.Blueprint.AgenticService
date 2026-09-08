@@ -2192,6 +2192,94 @@ storage and multiplies backends; the second keeps one backend and has to compose
 developer's own partition argument without either silently winning. That is a decision, not an
 implementation detail.
 
+### Cache names become namespace-scoped (spec sec. 8), and the pod filesystem decides how
+
+Sec. 8's requirement -- two independently written agents both asking for `"sessions"` must not
+silently share a store once grouped -- had two plausible implementations, and the deployment
+constraint settled it rather than taste.
+
+**The constraint.** A pod may write only where its process user is allowed to, and under
+`readOnlyRootFilesystem: true` only where a volume is mounted -- a mount declared in the pod spec,
+not discovered at runtime. `DiskCacheService` is a directory; `RedisCacheService` is a connection.
+So the design that registers **one cache backend per agent per name** multiplies the writable
+paths a group needs, gives each agent its own `size_limit` over one node-backed `emptyDir` (five
+agents at the 1 GB default is 5 GB against one volume, and an `emptyDir` over its limit evicts the
+pod), and turns "add an agent to this group" into a change to the pod spec. The design that
+**prefixes the partition** needs no new path at all.
+
+**So the partition carries the agent.** New `services/infrastructure/agent_scoped_cache.py`:
+`AgentScopedCache` wraps one shared backend and prefixes every call's `namespace` argument with
+the agent, so `orders` writing `"prices"` lands in `orders.prices` and `billing` writing the same
+name lands in `billing.prices`. One directory, one connection, one budget, whatever the group
+size.
+
+`Registry.get_cache` (and the `cache_service` alias) returns that lens **when asked through a
+namespace view**, and the raw backend at the root -- which is unchanged behaviour for every
+single-agent application, and is also sec. 8's "explicit opt-in for genuinely shared caches":
+framework code holding `Component.shared_registry` gets the shared store. The lens is cached per
+name per view. Nothing at a call site changes: a service writing
+`self.registry.cache_service.set(key, value, namespace="prices")` is isolated without naming a
+namespace, because phase 2 already gave it a namespace-aware registry.
+
+The separator is `.`, not `:`: `:` already separates the partition from the hashed key
+(`cache_key_mixin._make_key`) and `list_namespaces` splits on the first one, so `orders:prices`
+would read back as the partition `orders`. A namespace cannot contain `.`, so stripping
+`<agent>.` back off is unambiguous whatever the agent called its own partition.
+
+Three methods needed more than a prefix:
+
+- **`clear(None)` means this agent's partitions, never the whole cache.** The backend's own
+  `clear(None)` would take the neighbours' data with it -- the exact accident this class exists to
+  prevent -- so the lens enumerates the partitions it owns and clears those.
+- **`list_namespaces()`** returns this agent's partitions with the prefix stripped, so an agent
+  sees the names it used.
+- **`close()` raises.** The backend belongs to the process; closing it from one agent's lens would
+  take every other agent's cache down with it, silently.
+
+`get_stats()` forwards the backend's numbers and adds the agent's name: size, hits and eviction
+are properties of the one shared store, and there is nothing per-agent to report.
+
+`ServiceBase.__init__` gained a keyword-only `should_register: bool = True`. `CacheService` is a
+`ServiceBase`, so the lens is a component by inheritance, and one per agent per cache would
+otherwise add a registry entry each. `RestApiBase` has taken the same parameter since before
+namespaces, so this is the existing pattern rather than a new one.
+
+### The same constraint exposed a pre-existing defect: the disk cache cannot create its directory
+
+Read from the generated Dockerfile rather than observed in a cluster, and independent of grouping:
+
+- `cache.cache_dir` defaults to the **relative** `.cache/blueprint`, resolved against the working
+  directory, so `/app/.cache/blueprint` in the image.
+- `DiskCacheService.__init__` creates it at **runtime** (`mkdir(parents=True, exist_ok=True)`).
+- The image does `WORKDIR /app` **before** `USER appuser`, so `/app` is root-owned, and only
+  `src/` and `settings.toml` are `--chown`ed. Creating `/app/.cache` as `appuser` therefore fails
+  with EACCES.
+
+So a container built from the generated Dockerfile, running as the user it declares, with the
+default cache backend, cannot start. It has not been noticed because tests and local runs have a
+writable working directory. Three changes:
+
+- **The image creates the directory and hands it over**:
+  `RUN mkdir -p /app/.cache && chown -R appuser:appuser /app/.cache`. A project scaffolded before
+  this needs the same two lines.
+- **The failure explains itself.** The `mkdir` is wrapped, and an `OSError` becomes a
+  `RuntimeError` naming the path and the four ways out -- create and chown it in the image, mount
+  a volume if the root filesystem is read-only, point `cache.cache_dir` somewhere writable, or use
+  the redis backend, which needs no filesystem. The original error is kept as `__cause__`.
+- **`docs/guides/deployment.md` gained "Writable Cache Directory"**: the ownership requirement,
+  the `readOnlyRootFilesystem` + `emptyDir` manifest with `sizeLimit` matched to
+  `cache.size_limit`, the note that a grouped process needs no additional paths, and redis as the
+  filesystem-free alternative.
+
+**Tests.** 1577 unit tests pass (up from 1554). 21 new in `test_agent_scoped_cache.py`, against a
+**real** `DiskCacheService` rather than a mock, since what is under test is which keys end up
+where: isolation of values, absence rather than a neighbour's value, one backend, the partition
+carrying the agent, per-agent `list_namespaces`, the scoped default partition, per-agent `delete`
+and `claim` (two schedulers must not steal each other's tick slots), both `clear` shapes, the
+`close` refusal, the root-namespace refusal, not registering itself, and the six paths through the
+registry. Two more in `test_disk_cache_service.py` cover the unwritable directory: the message
+names the path and the options, and the original `PermissionError` survives as the cause.
+
 ### Not fixed, found while doing this: `app_environment` in `[default]` selects nothing
 
 The bootstrap pass runs with `environments=False`, so it sees only top-level keys -- `[default]`
@@ -2546,14 +2634,15 @@ stay keyword-only and last, or an existing `with_cache(False)` would silently be
 - **Nothing observes dead-lettering.** It is logged, but there is no counter, so "how many messages
   did we give up on today" cannot be answered from metrics. It belongs with the telemetry work in
   phase 9, next to `blueprint.events.unhandled`.
-- **Cache names are still not namespace-scoped (spec sec. 8).** The registry has the name
-  dimension and every component has a namespace-aware view, but `get_cache` resolves the bare
-  name, so two agents asking for `"sessions"` share one store -- exactly what sec. 8 forbids. Not
-  guessed at, because two designs are plausible and different: qualify the cache *name*
-  (`orders_sessions`, a backend per agent per name) or prefix the *partition* an agent's calls
-  land in (one backend, agent-scoped keys, composing with the `namespace=` argument
-  `CacheService.get/set` already take and two examples already use). The first isolates storage
-  and multiplies backends; the second has to define which prefix wins. Needs a decision.
+- ~~**Cache names are not namespace-scoped**~~ -- **done**, by prefixing the partition
+  (`AgentScopedCache`). The deployment constraint decided it: a backend per agent per name would
+  multiply the writable paths a group needs and split one `emptyDir`'s budget N ways. Two things
+  it leaves open. The lens is per *registry view*, so framework code that reaches
+  `Component.shared_registry` directly still gets the shared store -- correct today, and worth
+  re-checking whenever a framework component starts caching on an agent's behalf. And nothing
+  migrates keys written before the prefix existed: an application upgrading with a persistent
+  redis cache sees its old entries as absent, which is a cold cache rather than an error, but
+  should be said in the migration guide (phase 10).
 - **The examples are not migrated to `AgentRegistration`, by decision (2026-09-08).** Asked
   whether to convert one project's `main.py` as proof, the user chose not to touch the examples
   part-way through the changes, and to revisit them when the integration tests are written --
