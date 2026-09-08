@@ -1,5 +1,7 @@
 """Unit tests for the component Registry."""
 
+import logging
+
 import pytest
 from unittest.mock import MagicMock
 
@@ -165,10 +167,19 @@ class TestCacheService:
         registry.cache_service = mock_cache
         assert registry.cache_service is mock_cache
 
-    def test_setter_raises_on_second_set(self, registry: Registry) -> None:
-        registry.cache_service = MagicMock()
-        with pytest.raises(ValueError):
-            registry.cache_service = MagicMock()
+    def test_setter_replaces_and_warns_on_a_second_set(self, registry: Registry, caplog: pytest.LogCaptureFixture) -> None:
+        """Named caches made this an upsert: a cache can legitimately be swapped after startup.
+
+        It warns because the usual way to get here is two calls to ``with_cache()``, and the
+        second would otherwise take over the first with nothing said.
+        """
+        first, second = MagicMock(), MagicMock()
+        registry.cache_service = first
+        with caplog.at_level(logging.WARNING):
+            registry.cache_service = second
+
+        assert registry.cache_service is second
+        assert "is being replaced by" in caplog.text
 
     def test_has_cache_false_when_unset(self, registry: Registry) -> None:
         assert registry.has_cache() is False
@@ -294,3 +305,108 @@ class TestC6:
     def test_the_registry_cannot_be_asked_which_namespaces_exist(self, grouped_registry: Registry) -> None:
         """C6: Component.registry is reachable from agent code, so this must not be answerable."""
         assert not hasattr(grouped_registry, "get_known_namespaces")
+
+
+class TestNamedCaches:
+    """Caches are looked up by name, and never substituted for one another (spec sec. 8)."""
+
+    def test_a_cache_is_retrieved_under_the_name_it_was_added_with(self, registry: Registry) -> None:
+        sessions = MagicMock()
+        registry.add_cache("sessions", sessions)
+        assert registry.get_cache("sessions") is sessions
+
+    def test_an_unregistered_name_does_not_fall_back_to_the_default(self, registry: Registry) -> None:
+        """Two agents asking for "sessions" must not silently be handed one store."""
+        registry.add_cache("default", MagicMock())
+        with pytest.raises(ValueError, match="No cache registered as 'sessions'"):
+            registry.get_cache("sessions")
+
+    def test_the_error_lists_what_is_registered(self, registry: Registry) -> None:
+        registry.add_cache("sessions", MagicMock())
+        with pytest.raises(ValueError, match=r"registered: sessions"):
+            registry.get_cache("prompts")
+
+    def test_the_error_says_none_when_nothing_is_registered(self, registry: Registry) -> None:
+        with pytest.raises(ValueError, match=r"registered: none"):
+            registry.get_cache("sessions")
+
+    def test_caches_do_not_collide(self, registry: Registry) -> None:
+        first, second = MagicMock(), MagicMock()
+        registry.add_cache("sessions", first)
+        registry.add_cache("prompts", second)
+        assert (registry.get_cache("sessions"), registry.get_cache("prompts")) == (first, second)
+
+    def test_has_cache_asks_about_one_name(self, registry: Registry) -> None:
+        registry.add_cache("sessions", MagicMock())
+        assert (registry.has_cache("sessions"), registry.has_cache("prompts"), registry.has_cache()) == (True, False, False)
+
+    def test_the_default_name_is_what_the_alias_reads(self, registry: Registry) -> None:
+        cache = MagicMock()
+        registry.add_cache("default", cache)
+        assert (registry.cache_service is cache, registry.has_cache()) == (True, True)
+
+    def test_the_alias_writes_the_default_name(self, registry: Registry) -> None:
+        cache = MagicMock()
+        registry.cache_service = cache
+        assert registry.get_cache("default") is cache
+
+    def test_get_all_caches_returns_a_copy(self, registry: Registry) -> None:
+        """The health checks and the management endpoints iterate this; they must not mutate it."""
+        registry.add_cache("sessions", MagicMock())
+        caches = registry.get_all_caches()
+        caches["injected"] = MagicMock()
+        assert registry.has_cache("injected") is False
+
+    def test_clear_empties_and_clears_every_cache(self, registry: Registry) -> None:
+        first, second = MagicMock(), MagicMock()
+        registry.add_cache("default", first)
+        registry.add_cache("sessions", second)
+
+        registry.clear()
+
+        first.clear.assert_called_once()
+        second.clear.assert_called_once()
+        assert registry.get_all_caches() == {}
+
+
+class TestExecutors:
+    """One thread pool per namespace, created only when something actually needs one."""
+
+    def test_no_pool_exists_until_one_is_asked_for(self, registry: Registry) -> None:
+        """An application with no blocking work must run with no extra threads (spec sec. 4.3)."""
+        assert registry._executors == {}
+
+    def test_the_first_call_creates_and_the_second_reuses(self, registry: Registry) -> None:
+        first = registry.get_or_create_executor("orders")
+        assert registry.get_or_create_executor("orders") is first
+
+    def test_each_namespace_gets_its_own(self, registry: Registry) -> None:
+        """One agent exhausting its pool must not stall another's blocking work."""
+        assert registry.get_or_create_executor("orders") is not registry.get_or_create_executor("billing")
+
+    def test_the_root_is_a_namespace_like_any_other(self, registry: Registry) -> None:
+        assert registry.get_or_create_executor() is registry.get_or_create_executor("")
+
+    def test_the_creating_call_sizes_the_pool(self, registry: Registry) -> None:
+        assert registry.get_or_create_executor("orders", 3)._max_workers == 3
+
+    def test_a_later_size_is_ignored_because_a_live_pool_cannot_be_resized(self, registry: Registry) -> None:
+        registry.get_or_create_executor("orders", 3)
+        assert registry.get_or_create_executor("orders", 9)._max_workers == 3
+
+    def test_threads_are_named_after_their_namespace(self, registry: Registry) -> None:
+        """So a stack dump or a profiler says which agent a blocked thread belongs to."""
+        assert registry.get_or_create_executor("orders")._thread_name_prefix == "blueprint-orders"
+
+    def test_shutdown_closes_and_forgets_every_pool(self, registry: Registry) -> None:
+        executor = registry.get_or_create_executor("orders")
+        registry.shutdown_executors()
+        assert registry._executors == {}
+        assert executor._shutdown is True
+
+    def test_clear_shuts_the_pools_down_too(self, registry: Registry) -> None:
+        """Otherwise a test suite building many applications accumulates thread pools."""
+        executor = registry.get_or_create_executor("orders")
+        registry.clear()
+        assert registry._executors == {}
+        assert executor._shutdown is True

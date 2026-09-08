@@ -12,6 +12,7 @@ from __future__ import annotations
 import functools
 import inspect
 from abc import ABC, ABCMeta, abstractmethod
+from concurrent.futures import ThreadPoolExecutor
 from functools import cached_property
 from typing import Any, TYPE_CHECKING
 from collections.abc import Callable
@@ -190,6 +191,26 @@ class Component(ABC, metaclass=_ComponentMeta):
         if not self._namespace:
             return Component._shared_config
         return Component._shared_config.for_namespace(self._namespace)
+
+    @cached_property
+    def executor(self) -> ThreadPoolExecutor:
+        """This component's namespace thread pool, for running blocking work off the event loop.
+
+        Use it through ``asyncio.get_running_loop().run_in_executor(self.executor, ...)``. The
+        pool belongs to the namespace, not to the component, so every component of one agent
+        shares one and no agent can exhaust another's.
+
+        Created on first access. A component that never touches this property costs nothing, so
+        an application with no blocking work runs with no extra threads at all -- which is why
+        this is a property rather than something ``build()`` provisions.
+
+        Its size comes from ``executor_workers`` in this component's own configuration, which is
+        namespace-scoped (C5), so one agent can be sized differently from its neighbour. The
+        first component of a namespace to ask is the one that sizes it: a live pool cannot be
+        resized, and the alternative -- rejecting a later disagreeing value -- would fail an
+        application over a number nobody chose deliberately.
+        """
+        return self.registry.get_or_create_executor(self._namespace, self.config.get("executor_workers"))
 
     @cached_property
     def tracer(self) -> trace.Tracer:

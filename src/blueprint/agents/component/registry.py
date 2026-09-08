@@ -26,6 +26,7 @@ group composition because it was told; it passes each namespace to the wiring th
 """
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, TypeVar
 
 from ..agent.agent_runtime import AgentRuntime
@@ -39,7 +40,7 @@ from ..io.api.scheduling.scheduler import SchedulerBase
 from ..services.infrastructure.cache_service import CacheService
 from ..services.service_base import ServiceBase
 from ..utils import camel_to_snake
-from .namespace import ROOT_LABEL, namespace_of, qualified_component_name, resolve_for_namespace
+from .namespace import ROOT_LABEL, ROOT_NAMESPACE, namespace_of, qualified_component_name, resolve_for_namespace
 
 ServiceT = TypeVar("ServiceT", bound="ServiceBase")
 
@@ -47,6 +48,13 @@ ServiceT = TypeVar("ServiceT", bound="ServiceBase")
 T = TypeVar("T")
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_CACHE_NAME = "default"
+"""The cache an application gets when it asks for one without saying which.
+
+``AppBuilder.with_cache()`` registers under this name and ``registry.cache_service`` reads it, so
+every application that predates named caches has exactly one cache called ``default``.
+"""
 
 
 class Registry:
@@ -73,8 +81,9 @@ class Registry:
         Registry._component_class = component_class
         self._correlation_context = CorrelationContextProvider.get_correlation_context()
 
-        self._cache_service: CacheService | None = None
+        self._caches: dict[str, CacheService] = {}
         self._components: dict[str, Any] = {}
+        self._executors: dict[str, ThreadPoolExecutor] = {}
 
         logger.info("ComponentRegistry initialized")
 
@@ -127,34 +136,142 @@ class Registry:
 
         return self._correlation_context
 
-    @property
-    def cache_service(self) -> CacheService:
-        """Get the registered cache service.
+    def get_or_create_executor(self, namespace: str = ROOT_NAMESPACE, max_workers: int | None = None) -> ThreadPoolExecutor:
+        """Return this namespace's thread pool, creating it on first use.
+
+        One pool **per namespace**, so that an agent doing blocking work -- DiskCache, SQLite, a
+        synchronous SDK -- cannot exhaust the pool another agent is waiting on.
+
+        **Created on first access, never in advance** (spec sec. 4.3). Provisioning one per
+        namespace during ``build()`` would add ``cpu_count() + 4`` idle threads to every
+        application that has no blocking work at all, including every single-agent application
+        that exists today, and work against the thread budget in #36. That is also why there is
+        no separate ``add_executor``: with creation on demand, a namespace can never be missing
+        one, so the root-fallback the plan describes has nothing left to fall back for -- it
+        would be a branch that cannot be taken.
+
+        Args:
+            namespace: The agent asking. The root namespace is a namespace like any other here.
+            max_workers: Size to create it with, on the call that creates it; ``None`` leaves
+                the interpreter default (``min(32, cpu_count() + 4)``). Ignored once the pool
+                exists, because a live pool cannot be resized -- the first caller sizes it, and
+                that caller is the component reading ``executor_workers`` from its own config.
 
         Returns:
-            The cache service instance
+            The pool for that namespace.
+        """
+
+        executor = self._executors.get(namespace)
+        if executor is None:
+            executor = ThreadPoolExecutor(
+                max_workers=max_workers,
+                thread_name_prefix=f"blueprint-{namespace or 'root'}",
+            )
+            self._executors[namespace] = executor
+            logger.info(
+                "Created thread pool for namespace '%s' with max_workers=%s",
+                namespace or ROOT_LABEL,
+                max_workers if max_workers is not None else "default",
+            )
+        return executor
+
+    def shutdown_executors(self) -> None:
+        """Shut down every thread pool this registry created, waiting for running work.
+
+        Called from the application's shutdown and from :meth:`clear`. Without it the pools
+        outlive the application: a ``ThreadPoolExecutor``'s workers are non-daemon threads, so
+        the interpreter waits for them at exit and a container that should stop in a second
+        hangs until the last blocking call returns on its own.
+        """
+
+        for namespace, executor in self._executors.items():
+            logger.info("Shutting down thread pool for namespace '%s'", namespace or ROOT_LABEL)
+            executor.shutdown(wait=True)
+        self._executors.clear()
+
+    def add_cache(self, name: str, cache: CacheService) -> None:
+        """Register a cache under ``name``, replacing any cache already registered under it.
+
+        Replacing is allowed rather than refused, because a cache is not tied to the build the
+        way a component is: one can legitimately be swapped or added after startup. It is logged
+        at WARNING, because the common way to arrive here twice with the same name is by
+        mistake -- two calls to ``with_cache()`` -- and the second would otherwise take over the
+        first silently.
+
+        Args:
+            name: What to register it as. See :data:`DEFAULT_CACHE_NAME`.
+            cache: The cache to register.
+        """
+
+        if name in self._caches:
+            logger.warning(
+                "Cache '%s' is already registered as %s and is being replaced by %s",
+                name,
+                type(self._caches[name]).__name__,
+                type(cache).__name__,
+            )
+        else:
+            logger.info("Registering cache '%s': %s", name, type(cache).__name__)
+        self._caches[name] = cache
+
+    def get_cache(self, name: str = DEFAULT_CACHE_NAME) -> CacheService:
+        """Get the cache registered under ``name``.
+
+        There is deliberately **no fallback to the default cache**. Caches are the one thing
+        agents must not share by accident (spec sec. 8): two independently written agents both
+        asking for ``"sessions"`` would silently share one store the moment they were grouped,
+        and only in production. A name that is not registered is therefore an error, not an
+        invitation to hand over some other cache.
+
+        Args:
+            name: Which cache. Defaults to :data:`DEFAULT_CACHE_NAME`.
+
+        Returns:
+            The cache registered under that name.
+
+        Raises:
+            ValueError: If no cache is registered under ``name``.
+        """
+
+        cache = self._caches.get(name)
+        if cache is None:
+            registered = ", ".join(sorted(self._caches)) or "none"
+            raise ValueError(f"No cache registered as '{name}' (registered: {registered})")
+        return cache
+
+    def get_all_caches(self) -> dict[str, CacheService]:
+        """Return every registered cache by name, as a copy.
+
+        A copy so that a caller iterating the caches -- the health checks and the cache
+        management endpoints do -- cannot mutate the registry by accident.
+        """
+
+        return dict(self._caches)
+
+    @property
+    def cache_service(self) -> CacheService:
+        """The default cache. Retained as an alias for ``get_cache()`` (spec sec. 8).
+
+        Returns:
+            The cache registered as :data:`DEFAULT_CACHE_NAME`
 
         Raises:
             ValueError: If no cache service is registered
         """
 
-        if self._cache_service is None:
+        if not self._caches:
             raise ValueError("No cache service registered")
-        return self._cache_service
+        return self.get_cache()
 
     @cache_service.setter
     def cache_service(self, cache_service: CacheService) -> None:
-        """Register a cache service.
+        """Register the default cache. Retained as an alias for ``add_cache()`` (spec sec. 8).
 
         Args:
             cache_service: The cache service instance to register
         """
 
-        if self._cache_service is not None:
-            raise ValueError("Cache service already registered")
-
-        logger.info("Registering cache service: %s", type(cache_service).__name__)
-        self._cache_service = cache_service
+        self.add_cache(DEFAULT_CACHE_NAME, cache_service)
 
     def add_component(self, name: str, component: Any) -> None:
         """Add a component to the registry.
@@ -311,18 +428,24 @@ class Registry:
 
         logger.info("Clearing all components from registry")
         self.clear_components()
-        if self._cache_service is not None:
-            self._cache_service.clear()
-            self._cache_service = None
+        self.shutdown_executors()
+        for name, cache in self._caches.items():
+            logger.info("Clearing cache '%s'", name)
+            cache.clear()
+        self._caches.clear()
 
-    def has_cache(self) -> bool:
-        """Check if a cache service is registered.
+    def has_cache(self, name: str = DEFAULT_CACHE_NAME) -> bool:
+        """Check whether a cache is registered under ``name``.
+
+        Args:
+            name: Which cache. Defaults to :data:`DEFAULT_CACHE_NAME`, so an existing caller
+                asking whether "the" cache exists keeps its meaning.
 
         Returns:
-            True if cache service is registered, False otherwise
+            True if a cache is registered under that name, False otherwise
         """
 
-        return self._cache_service is not None
+        return name in self._caches
 
     def has_event_handler(self, name: str | None = None, namespace: str | None = None) -> bool:
         """Check if a handler is registered.

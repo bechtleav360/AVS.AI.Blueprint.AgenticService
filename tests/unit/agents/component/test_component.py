@@ -455,3 +455,43 @@ class TestNamespaceComesFromTheAmbientScope:
     def test_the_namespace_is_validated_whichever_way_it_arrives(self) -> None:
         with pytest.raises(ValueError, match="legal namespace"):
             ConcreteComponent(namespace="Orders")
+
+
+class TestExecutorBelongsToTheNamespace:
+    @pytest.fixture(autouse=True)
+    def injected_config(self) -> MagicMock:
+        """A Config stand-in, since `executor` is the first property to read configuration."""
+        config = MagicMock(spec=Config)
+        config.get.side_effect = lambda key, default=None: default
+        config.for_namespace.return_value = config
+        Component.configure(config)
+        return config
+
+    def test_a_component_gets_its_namespace_pool(self) -> None:
+        with namespace_scope("orders"):
+            component = ConcreteComponent()
+        assert component.executor is component.registry.get_or_create_executor("orders")
+
+    def test_two_agents_do_not_share_a_pool(self) -> None:
+        with namespace_scope("orders"):
+            orders = ConcreteComponent()
+        with namespace_scope("billing"):
+            billing = ConcreteComponent()
+        assert orders.executor is not billing.executor
+
+    def test_two_components_of_one_agent_share_its_pool(self) -> None:
+        """The pool belongs to the agent, not to the component."""
+        with namespace_scope("orders"):
+            first, second = ConcreteComponent(), ConcreteComponent(name="second")
+        assert first.executor is second.executor
+
+    def test_the_pool_is_sized_from_the_scoped_configuration(self, injected_config: MagicMock) -> None:
+        """executor_workers is namespace-scoped (C5), so one agent can be sized differently."""
+        injected_config.get.side_effect = lambda key, default=None: 3 if key == "executor_workers" else default
+        with namespace_scope("orders"):
+            component = ConcreteComponent()
+        assert component.executor._max_workers == 3
+
+    def test_asking_twice_returns_the_same_pool(self) -> None:
+        component = ConcreteComponent()
+        assert component.executor is component.executor

@@ -676,6 +676,12 @@ class AppBuilder:
 
             if self._actuator_api is not None:
                 await self._actuator_api.on_shutdown()
+
+            # Last, and after every on_shutdown: a component may well run its final blocking
+            # work there. The pools hold non-daemon threads, so leaving them running keeps the
+            # interpreter alive past the point the container was asked to stop.
+            registry.shutdown_executors()
+
             logger.info("Application shutdown completed")
 
         return lifespan

@@ -1997,6 +1997,99 @@ executor has its own plan-versus-spec conflict to settle -- the plan provisions 
 eagerly in `build()`, while spec sec. 4.3 requires it to be created **lazily on first access**, so
 that an application which never performs blocking work spawns no threads.
 
+### Phase 1, part 2 -- caches are looked up by name, and never substituted for one another
+
+`_cache_service: CacheService | None` became `_caches: dict[str, CacheService]`, with
+`add_cache(name, cache)`, `get_cache(name="default")`, `has_cache(name="default")` and
+`get_all_caches()`. `DEFAULT_CACHE_NAME = "default"` names the one every existing application
+has, and `registry.cache_service` -- getter and setter -- is retained as an alias for it, which
+spec sec. 8 requires. Every existing caller (`with_cache`, `HandlerChain`, the scheduler tick
+claim, the cache management endpoints, the health check) reads the alias and is untouched.
+
+**`get_cache` has no fallback to the default cache, deliberately.** Spec sec. 8: two
+independently written agents both asking for `"sessions"` must not silently share one store the
+moment they are grouped. A missing name is therefore an error naming what *is* registered, not
+an invitation to hand over some other cache. This is the opposite of how components resolve --
+where namespace-then-root is right, because infrastructure is shared on purpose -- and the two
+sit next to each other in the same class, so the module docstring and both docstrings say which
+is which and why.
+
+**One behaviour change: registering a second cache under one name now replaces it and warns,
+where the setter used to raise.** The plan asks for an upsert so a cache can be added after
+startup, and an alias for `add_cache` cannot be stricter than the method it aliases. Replacing
+silently would be worse than either, because the usual way to arrive twice at `"default"` is two
+calls to `with_cache()` -- so it logs at WARNING with both backend types named. Two tests
+asserted the old raise and were rewritten to assert the new behaviour;
+`test_cache_sharing_via_registry.py` now protects the invariant that actually matters -- both
+services still resolve one object, and `get_all_caches()` still has exactly one entry.
+
+`clear()` clears and drops every cache rather than the single one.
+
+`get_or_create_cache` from the plan was **not** written. It is specified as "atomic get-or-create
+protected by an `asyncio.Lock`", but every registry method here is synchronous and every cache is
+registered during `build()`, before a loop exists -- a lock that cannot be awaited protects
+nothing, and nothing in the framework creates a cache lazily for it to protect. When something
+does, it can be added with a mechanism that matches how it is actually called.
+
+### Phase 1, part 3 -- one thread pool per agent, and only if something needs one
+
+`Registry.get_or_create_executor(namespace, max_workers)` returns a namespace's
+`ThreadPoolExecutor`, creating it on first use; `Component.executor` is the property a component
+reaches it through:
+
+```python
+    @cached_property
+    def executor(self) -> ThreadPoolExecutor:
+        return self.registry.get_or_create_executor(self._namespace, self.config.get("executor_workers"))
+```
+
+One pool per namespace, so an agent doing blocking work -- DiskCache, SQLite, a synchronous SDK
+-- cannot exhaust the pool another agent is waiting on. Threads are named
+`blueprint-<namespace>_N`, so a stack dump says which agent a blocked thread belongs to.
+
+**Created on first access, not provisioned in `build()`, which is a departure from the plan and
+required by spec sec. 4.3.** The plan says "the root executor is provisioned in
+`AppBuilder.build()` (not in `with_namespace`) so standalone apps always have one". That would
+add `cpu_count() + 4` idle threads to every application that has no blocking work at all --
+including every single-agent application that exists today -- and works directly against the
+thread budget in #36. Verified: with nothing asking, the process has one thread and
+`_executors` is empty.
+
+**The plan's root fallback is subsumed rather than implemented.** `get_executor` was to fall back
+to the root when a namespace had no pool; with creation on demand a namespace can never be
+missing one, so that branch could never be taken. For the same reason there is no `add_executor`:
+nothing needs to hand a pool in.
+
+**Sizing is per namespace, and the first asker wins.** `executor_workers` is read through
+`Component.config`, which is the namespace's scoped view (C5), so one agent can be sized
+differently from its neighbour. A live pool cannot be resized, so a later component of the same
+namespace passing a different value is ignored rather than raising -- failing an application over
+a number nobody chose deliberately would be worse than using the first one.
+
+**The pools are shut down with the application.** `Registry.shutdown_executors()` waits for
+running work and clears the map, and it is called at the very end of the lifespan shutdown --
+after every `on_shutdown`, because a component may well run its last blocking call there -- and
+from `Registry.clear()`, so a test suite building many applications does not accumulate pools.
+This is not optional tidiness: a `ThreadPoolExecutor`'s workers are non-daemon threads, so
+leaving them running keeps the interpreter alive past the point the container was asked to stop.
+
+No public read accessor for the executors was added; nothing in `src/` needs one, and the two
+tests that check the map is empty read the private attribute rather than growing the API for
+their own convenience.
+
+**Tests.** 1538 unit tests pass (up from 1514), 24 new. `TestNamedCaches` (11) covers lookup by
+name, the absence of a fallback, the error listing what is registered, the alias in both
+directions, `get_all_caches` returning a copy, and `clear` clearing every cache.
+`TestExecutors` (9) covers nothing existing until asked, creation then reuse, isolation between
+namespaces, sizing on the creating call and being ignored afterwards, thread naming, and
+shutdown from both entry points. `TestExecutorBelongsToTheNamespace` (5) covers the component
+side: its own namespace's pool, two agents not sharing, two components of one agent sharing, and
+sizing from the scoped configuration.
+
+**Phase 1 is complete.** `Component.executor` belongs to spec sec. 4.3 rather than to phase 1
+strictly, and was written here because the registry half is unreachable without it -- an
+executor store with no way to reach it is the unused surface this repo keeps out.
+
 ### Not fixed, found while doing this: `app_environment` in `[default]` selects nothing
 
 The bootstrap pass runs with `environments=False`, so it sees only top-level keys -- `[default]`
