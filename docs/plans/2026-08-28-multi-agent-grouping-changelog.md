@@ -3113,6 +3113,14 @@ Everything else remains non-breaking. Specifically:
   Whether Dapr merges the two or delivers twice needs checking against a real sidecar; it belongs on
   the broker-test list.
 - New config keys all default to current behaviour.
+- **Phase 5 is not a consumer migration, and expects neither a replay nor a gap.** The plan
+  requires this to be stated, because renaming a durable or changing a filter set is broker-side
+  state and a recreated consumer resumes by its delivery policy. Neither happens here: the
+  namespace-qualified durable landed with P6 and is dormant until a namespace exists (the root
+  keeps `<topic>-durable`), and phase 5 changes no filter set -- one durable per
+  `(namespace, topic)` filtering one subject was already the shape, so declaring a topic adds a
+  consumer instead of reconfiguring one. The first deployment that *is* a migration is the first
+  one that declares a namespace, and it creates new consumers rather than renaming existing ones.
 - **`RestApiBase.__init__` gained a keyword-only `namespace`**, forwarded to `Component`.
   Defaults to the root, and every subclass in the repo already passes `should_register` by
   keyword, so no existing call changes.
