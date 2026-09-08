@@ -199,3 +199,98 @@ class TestClear:
         registry.add_component("a", StubA())
         registry.clear()
         assert not registry.has_component("a")
+
+
+class _Namespaced(StubBase):
+    """A stub carrying the ``namespace`` attribute every real component has."""
+
+    def __init__(self, namespace: str = "") -> None:
+        self.namespace = namespace
+
+
+@pytest.fixture
+def grouped_registry() -> Registry:
+    """Two agents owning the same component type, plus one shared at the root.
+
+    Registered under the qualified names ``Component.__init__`` derives, because that is what
+    the namespace-then-root fallback resolves through.
+    """
+    registry = Registry(StubBase)
+    registry.add_component("orders_order_service", _Namespaced("orders"))
+    registry.add_component("billing_order_service", _Namespaced("billing"))
+    registry.add_component("shared_audit", _Namespaced(""))
+    return registry
+
+
+class TestNamespacedNameLookup:
+    def test_a_bare_name_resolves_to_the_asking_namespace(self, grouped_registry: Registry) -> None:
+        assert grouped_registry.get_component("order_service", "orders").namespace == "orders"
+
+    def test_two_agents_get_their_own(self, grouped_registry: Registry) -> None:
+        orders = grouped_registry.get_component("order_service", "orders")
+        billing = grouped_registry.get_component("order_service", "billing")
+        assert (orders.namespace, billing.namespace) == ("orders", "billing")
+
+    def test_a_namespace_falls_back_to_the_root(self, grouped_registry: Registry) -> None:
+        """Infrastructure stays shared: only what an agent owns is per-agent."""
+        assert grouped_registry.get_component("shared_audit", "orders").namespace == ""
+
+    def test_an_already_qualified_name_still_resolves(self, grouped_registry: Registry) -> None:
+        """Qualifying it twice simply misses, and the bare lookup then finds it."""
+        assert grouped_registry.get_component("orders_order_service", "orders").namespace == "orders"
+
+    def test_a_bare_name_without_a_namespace_does_not_resolve(self, grouped_registry: Registry) -> None:
+        with pytest.raises(ValueError, match="does not exist"):
+            grouped_registry.get_component("order_service")
+
+    def test_the_error_names_where_it_looked(self, grouped_registry: Registry) -> None:
+        with pytest.raises(ValueError, match="namespace 'orders' or at the root"):
+            grouped_registry.get_component("missing", "orders")
+
+    def test_has_component_follows_the_same_fallback(self, grouped_registry: Registry) -> None:
+        assert grouped_registry.has_component("order_service", "orders") is True
+        assert grouped_registry.has_component("order_service", "") is False
+        assert grouped_registry.has_component("shared_audit", "orders") is True
+
+
+class TestNamespacedTypeLookup:
+    def test_no_namespace_returns_every_namespace(self, grouped_registry: Registry) -> None:
+        """The default has to stay "everything" -- build() iterating handlers needs all of them."""
+        assert len(grouped_registry.get_components_by_type(_Namespaced)) == 3
+
+    def test_a_namespace_returns_only_that_agent(self, grouped_registry: Registry) -> None:
+        found = grouped_registry.get_components_by_type(_Namespaced, "orders")
+        assert [component.namespace for component in found] == ["orders"]
+
+    def test_the_root_is_a_namespace_like_any_other(self, grouped_registry: Registry) -> None:
+        found = grouped_registry.get_component_names_by_type(_Namespaced, "")
+        assert found == ["shared_audit"]
+
+    def test_filtering_is_by_attribute_not_by_name(self, grouped_registry: Registry) -> None:
+        """A component registered under an explicit name is still attributed correctly."""
+        grouped_registry.add_component("legacy_name", _Namespaced("orders"))
+        found = grouped_registry.get_component_names_by_type(_Namespaced, "orders")
+        assert sorted(found) == ["legacy_name", "orders_order_service"]
+
+    def test_a_class_lookup_prefers_the_asking_namespace(self, grouped_registry: Registry) -> None:
+        assert grouped_registry.get_component(_Namespaced, "billing").namespace == "billing"
+
+    def test_a_class_lookup_without_a_namespace_refuses_to_guess(self, grouped_registry: Registry) -> None:
+        """Handing an agent a neighbour's collaborator is the failure the namespace prevents."""
+        with pytest.raises(ValueError, match="Multiple components"):
+            grouped_registry.get_component(_Namespaced)
+
+    def test_a_class_lookup_is_ambiguous_within_one_namespace_too(self, grouped_registry: Registry) -> None:
+        grouped_registry.add_component("orders_second", _Namespaced("orders"))
+        with pytest.raises(ValueError, match="ambiguous"):
+            grouped_registry.get_component(_Namespaced, "orders")
+
+    def test_has_component_of_type_can_be_asked_per_namespace(self, grouped_registry: Registry) -> None:
+        assert grouped_registry.has_component_of_type(_Namespaced, None, "orders") is True
+        assert grouped_registry.has_component_of_type(_Namespaced, None, "shipping") is False
+
+
+class TestC6:
+    def test_the_registry_cannot_be_asked_which_namespaces_exist(self, grouped_registry: Registry) -> None:
+        """C6: Component.registry is reachable from agent code, so this must not be answerable."""
+        assert not hasattr(grouped_registry, "get_known_namespaces")

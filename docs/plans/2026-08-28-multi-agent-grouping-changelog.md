@@ -1930,6 +1930,73 @@ being left behind afterwards, and a factory both deferred and called inside the 
 rather than in a test -- and would have to convert its `with_rest_api(MonitorApi())` to the
 class form, which is precisely the change the refusal above forces.
 
+### Phase 1, part 1 -- the registry resolves per namespace, without a namespace dimension
+
+Every lookup on `Registry` now takes an optional `namespace`, so two agents can own the same
+component class in one process and each find its own. Verified: `orders` and `billing` both
+declaring `OrderService` produce `orders_order_service` and `billing_order_service`, each
+resolvable as the bare `order_service` from its own namespace, with a root-registered
+`shared_audit` inherited by both.
+
+**The storage was not changed, and the plan's `dict[str, dict[str, Any]]` is not what this
+needs.** The plan predates P6, which made every registry name namespace-qualified
+(`qualified_component_name`). With qualified names, a namespace → name → component nesting
+duplicates the namespace in the outer key and the inner name at once, and either the inner key is
+the qualified name -- in which case the outer level carries no information -- or it is the bare
+name, in which case `get_component("orders_order_service")` stops resolving and every existing
+lookup, health-check entry and log line that uses `Component.name` breaks. So the namespace
+dimension the plan asked for is already present in the key space, and what was missing was only
+the ability to *ask* through it.
+
+Two kinds of question, and they resolve differently on purpose:
+
+- **"Find me the one X"** -- `get_component`, `get_service`, `get_scheduler`, `get_client`,
+  `get_agent` -- resolves **namespace first, then root**, because infrastructure stays shared
+  while an agent overrides what it owns. For a name that is `_lookup`, a new private helper that
+  tries `<namespace>_<name>` before `<name>`; for a class it is `resolve_for_namespace`, which
+  P6 already wrote for this and whose docstring said it would become the registry's
+  implementation when the registry grew a namespace. It now is.
+- **"Give me all the Xs"** -- `get_components_by_type`, `get_services`, `get_schedulers`,
+  `get_rest_apis`, `get_clients`, `get_event_handler` -- filters to **that namespace exactly**,
+  since iterating one agent's components must not sweep in a neighbour's.
+
+**`namespace=None` is the default and means every namespace, not the root** -- a departure from
+the plan's `namespace: str = ""`. With `""` as the default, `build()` calling
+`get_event_handler()` would have quietly seen only root handlers: correct on a single-agent
+application, and silently short-staffed on a grouped one, which is the worst possible shape for
+a default. `None` keeps today's behaviour exactly, so every existing caller is unaffected.
+
+Filtering is on the component's own `namespace` attribute, not on its registry name. An explicit
+`name=` overrides the qualified name (documented on `Component.__init__`, used by
+`AIClientBase`), so a name-based filter would lose exactly those components.
+
+**Ambiguity raises rather than picking a first match.** A class lookup with a namespace goes
+through `resolve_for_namespace`, which refuses two candidates at the same level; without a
+namespace the pre-existing "Multiple components of type X found" applies. Silently handing an
+agent a neighbour's collaborator is the attribution the whole topology exists to provide.
+
+**`get_known_namespaces()` was NOT added, because C6 forbids it.** The plan asks for it so
+`NatsEventing` and `build()` can iterate namespaces. But C6 says no API reachable from agent code
+may expose the group's membership or size, and `Component.registry` is a public property on every
+component -- so a `get_known_namespaces()` here is precisely the API C6 rules out, reachable by
+`self.registry.get_known_namespaces()` from any handler. The builder already knows the group
+composition, because it was told: it passes each namespace to the wiring that needs one, which is
+also the layering the plan argues for elsewhere ("`AppBuilder` must remain a pure function of its
+call sequence"). A test asserts the method does not exist, so it cannot be added back without the
+reason being read.
+
+**Tests.** 1514 unit tests pass (up from 1498), 16 new in `test_registry.py`
+(`TestNamespacedNameLookup`, `TestNamespacedTypeLookup`, `TestC6`): the fallback in both
+directions, an already-qualified name still resolving, a bare name *not* resolving without a
+namespace, the error naming where it looked, `None` returning every namespace, filtering by
+attribute rather than name, ambiguity refused both across and within a namespace, and the absence
+of `get_known_namespaces`.
+
+Still to do in phase 1: named caches (spec sec. 8) and the per-namespace executor. Note that the
+executor has its own plan-versus-spec conflict to settle -- the plan provisions the root executor
+eagerly in `build()`, while spec sec. 4.3 requires it to be created **lazily on first access**, so
+that an application which never performs blocking work spawns no threads.
+
 ### Not fixed, found while doing this: `app_environment` in `[default]` selects nothing
 
 The bootstrap pass runs with `environments=False`, so it sees only top-level keys -- `[default]`
@@ -2284,6 +2351,14 @@ stay keyword-only and last, or an existing `with_cache(False)` would silently be
 - **Nothing observes dead-lettering.** It is logged, but there is no counter, so "how many messages
   did we give up on today" cannot be answered from metrics. It belongs with the telemetry work in
   phase 9, next to `blueprint.events.unhandled`.
+- **The examples are not migrated to `AgentRegistration`, by decision (2026-09-08).** Asked
+  whether to convert one project's `main.py` as proof, the user chose not to touch the examples
+  part-way through the changes, and to revisit them when the integration tests are written --
+  where two real example projects grouped into one process would be a better test of C1 and C5
+  than a fixture written for the purpose. So the "only `main.py` differs" claim currently lives
+  in `test_agent_registration.py` rather than in the tree, and the examples keep passing
+  instances (`with_rest_api(MonitorApi())`), which `AgentRegistration` refuses -- converting them
+  is part of that later work, not a prerequisite for it.
 - **Local NATS and Dapr integration environment.** Everything above is covered by unit tests with
   mocked transports. Once the feature is implemented, stand both brokers up locally (compose file
   plus a CI job) and cover the behaviour that only a real broker exhibits: queue-group distribution

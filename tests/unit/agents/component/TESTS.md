@@ -13,7 +13,7 @@ Test coverage for `src/blueprint/agents/component/component.py` and
 | `test_component.py` | `_is_cloud_event`, `_stamp_span` | Helper function correctness |
 | `test_component.py` | `traced` decorator | Async/sync span creation, error status, CloudEvent/plain-value stamping |
 | `test_namespace.py` | `namespace.py` helpers | `validate_namespace`, `qualified_component_name`, `namespace_of`, `display_segment`, `resolve_for_namespace`, and `namespace_scope`/`current_namespace` (default root, set/exit, exit on exception, nesting, validation on entry) |
-| `test_registry.py` | `Registry` | Construction, add/get/has/rename/clear, type-based lookups, `cache_service` |
+| `test_registry.py` | `Registry` | Construction, add/get/has/rename/clear, type-based lookups, `cache_service`; namespaced lookup (bare name resolving to the asking namespace, root fallback, already-qualified names, the error naming where it looked), type queries (`None` = every namespace, a namespace = that agent exactly, filtering by attribute not name, ambiguity refused across and within a namespace), and that `get_known_namespaces` does not exist (C6) |
 
 ---
 
