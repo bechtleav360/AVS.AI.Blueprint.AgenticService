@@ -2760,6 +2760,129 @@ an unknown namespace and reused across deliveries; an illegal namespace refused;
 mock-based lifecycle tests in `test_event_processing_service.py` were updated to the chain map and
 one added for the per-namespace startup.
 
+### Phase 4, part 2 -- a handler can say what it wants, and stops being asked about the rest
+
+`_dispatch` asked every registered handler's `can_handle` in turn until one said yes, so a
+process hosting fifty handlers awaited fifty coroutines to find the one that wanted the event.
+Grouping multiplies exactly that, because a group's handlers all live in one process. Spec
+sec. 7.7 asks for an in-process dispatch index; this is it.
+
+**The declaration: `EventHandlerBase.get_handled_event_types()`**, defaulting to `[]`. It joins
+the two declaration methods already on the class (`get_published_event_types`,
+`get_subscribed_topics`) and is a *selection hint, not a selector* -- `can_handle_event` still
+decides, and a declared handler is still asked and may still say no.
+
+**The default means "offer me everything", and getting that backwards is the whole risk.** No
+handler in this framework or in any scaffolded project declares an event type today, so an index
+that read an empty declaration as an empty set would silence every handler that exists -- and
+because an unhandled event acknowledges (spec sec. 7.2), the deliveries would be consumed and
+discarded rather than piling up anywhere visible. Spec sec. 7.7 calls this "the most destructive
+failure mode available in this design".
+
+**`DispatchIndex`** is a frozen dataclass with two fields and one question:
+
+```python
+    by_type: dict[str, tuple[EventHandlerBase, ...]]
+    wildcard: tuple[EventHandlerBase, ...]
+
+    def candidates(self, event_type: str) -> tuple[EventHandlerBase, ...]:
+        return self.by_type.get(event_type, self.wildcard)
+```
+
+`by_type[t]` already holds the *merged* candidate list -- the handlers that declared `t` plus
+every wildcard handler -- so dispatch is one dictionary lookup and no per-event merging or
+sorting. An event type nobody declared falls back to `wildcard`, because a type no handler named
+is not a type no handler wants.
+
+**The candidate lists are built by filtering the priority-sorted order, not by concatenating
+buckets:**
+
+```python
+        wildcard = tuple(handler for handler, declared in declarations if not declared)
+        by_type = {
+            event_type: tuple(handler for handler, declared in declarations if not declared or event_type in declared)
+            for event_type in {event_type for _, declared in declarations for event_type in declared}
+        }
+```
+
+Concatenating `typed + wildcard` and sorting would have put declared handlers ahead of undeclared
+ones *of equal priority*, and priority ties are currently resolved by registration order --
+something a project may be relying on without having said so. Filtering the already-sorted list
+means the sequence a handler is tried in is exactly the sequence it would have been tried in
+without an index. There is a test comparing the two orders.
+
+**A declaration that looks like a pattern is refused, at startup:**
+
+```python
+        if _WILDCARD_IN_DECLARATION.search(event_type):
+            raise ValueError(
+                f"Handler '{handler.name}' declares the event type '{event_type}', which looks like a pattern. "
+                "Declarations are matched by equality, so this handler would never be asked about any event. ..."
+            )
+```
+
+This is not defensive tidiness, it closes a hole the new API opens. Declarations are matched by
+equality, so `get_handled_event_types() -> ["order.*"]` is a type no event ever has: the handler
+would go in the typed bucket for the literal string and never be asked about anything -- the same
+silent silencing, reintroduced by the very method meant to avoid it. Blank declarations are
+refused for the same reason. Both fail while the pod is starting, naming the handler.
+
+**The index is built once at startup, and checked on every dispatch.** `on_startup` builds it (so
+a malformed declaration fails the pod) and logs how many handlers are offered every event against
+how many event types are declared -- the observable evidence that nothing was silenced. But
+`_candidates` re-reads the handlers:
+
+```python
+        handlers = self._handlers()
+        if self._index is None or handlers != self._indexed:
+            self._indexed = handlers
+            self._index = DispatchIndex.build(handlers)
+        return self._index.candidates(event_type)
+```
+
+Before the index, the chain queried the registry per event, so a handler registered after startup
+was picked up automatically. A purely startup-built index would drop it silently, which is the
+class of failure this design is most careful about. The check costs exactly what the old code
+already paid -- one registry query and now a tuple comparison instead of a sort -- while the index
+still removes the `can_handle` await per handler, which is the expensive part. `HandlerChain`
+being unregistered means nothing calls its `on_startup` when it is used outside `AppBuilder`, and
+the same branch covers that.
+
+**`SessionsJobHandler` opts in without its subclasses writing anything.** Its `can_handle_event`
+was `event.type == f"sessions.job.created.{self.JOB_TYPE}"`; that string now has one definition:
+
+```python
+    @property
+    def job_created_event_type(self) -> str:
+        return f"sessions.job.created.{self.JOB_TYPE}"
+
+    def get_handled_event_types(self) -> list[str]:
+        return [self.job_created_event_type]
+```
+
+`can_handle_event` reads the same property. Written out twice the two could drift, and a
+declaration that no longer matches the check is a handler the index never offers an event to --
+which is why the property exists rather than a second f-string. A subclass opts in by setting the
+`JOB_TYPE` class variable it already had to set.
+
+`_dispatch` was also split: `_handlers()` now owns the namespace-scoped registry query (with the
+explanation of why the namespace is named explicitly, from part 1), and `_dispatch` itself asks
+`_candidates(event.type)`. The `handlers.count` span attribute keeps its meaning -- how many
+handlers this dispatch will walk -- and the debug line now reports candidates against the total.
+
+Tests: `tests/unit/agents/handler/test_dispatch_index.py`, 24 cases -- an undeclared handler being
+a candidate for every event type, including alongside a declared one, and an undeclared-only
+application indexing to nothing at all; declarations narrowing who is asked, every declared type
+keyed, and an unknown type falling back to the wildcard handlers or to nobody; candidate order
+identical to the unindexed order and priority still deciding; dispatch asking only the candidates,
+the chain-of-responsibility fallthrough surviving, and an event no candidate wants returning
+`None`; a pattern and a blank declaration refused with the handler named, and the refusal landing
+on `on_startup`; the index built at startup, not rebuilt when nothing changed, rebuilt for a
+handler registered afterwards, and built on demand for a chain nobody started; and two agents in
+one process indexing only their own handlers. One mock-based test in
+`test_event_processing_service.py` grew a small stub handler, because a bare `MagicMock` is no
+longer sortable now that startup indexes.
+
 ---
 
 ## Compatibility
@@ -2833,6 +2956,14 @@ Everything else remains non-breaking. Specifically:
   Whether Dapr merges the two or delivers twice needs checking against a real sidecar; it belongs on
   the broker-test list.
 - New config keys all default to current behaviour.
+- **`EventHandlerBase.get_handled_event_types()` is new and defaults to `[]`**, which means
+  "offer me every event" -- the behaviour every handler has today. Overriding it narrows only
+  which events that handler is *asked* about; `can_handle_event` still decides. Declarations are
+  matched by equality: a pattern such as `order.*` is refused at startup rather than silently
+  matching nothing.
+- **`SessionsJobHandler` now declares its event type**, derived from the `JOB_TYPE` its
+  subclasses already set. Selection is unchanged -- the declaration and `can_handle_event` read
+  one property -- so a subclass sees no difference beyond not being asked about other job types.
 - **`HandlerChain.__init__` gained a leading optional `namespace`, and `process_event` /
   `process_rest_request` a trailing keyword-only one.** All default to the root. `HandlerChain`
   is constructed by the framework only -- it is `should_register=False` and nothing looks it up --

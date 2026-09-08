@@ -100,9 +100,28 @@ class SessionsJobHandler(EventHandlerBase, ABC):
     async def on_shutdown(self) -> None:
         return None
 
+    @property
+    def job_created_event_type(self) -> str:
+        """The event type a job of this handler's :attr:`JOB_TYPE` arrives as.
+
+        One definition, read by both selectors: :meth:`can_handle_event` decides with it and
+        :meth:`get_handled_event_types` declares it. Written out twice they could drift, and a
+        declaration that no longer matches the check is a handler the index never offers an
+        event to.
+        """
+        return f"sessions.job.created.{self.JOB_TYPE}"
+
+    def get_handled_event_types(self) -> list[str]:
+        """Declare the one event type this subclass's jobs arrive as.
+
+        Derived from :attr:`JOB_TYPE`, so a subclass opts into the dispatch index by setting
+        the class variable it already had to set -- it declares nothing of its own.
+        """
+        return [self.job_created_event_type]
+
     async def can_handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> bool:
         """Handle only this subclass's job type; unknown types are ignored."""
-        return event.type == f"sessions.job.created.{self.JOB_TYPE}"
+        return event.type == self.job_created_event_type
 
     @abstractmethod
     async def process(self, payload: BaseModel, context: dict[str, Any]) -> BaseModel:

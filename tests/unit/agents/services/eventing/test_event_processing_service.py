@@ -120,6 +120,24 @@ class TestUnwrapDaprEvent:
 # ---------------------------------------------------------------------------
 
 
+class StubbedHandler:
+    """Just enough handler for the chain map: a namespace, an ordering, and no declarations.
+
+    A bare ``MagicMock`` will not do any more: a chain builds its dispatch index at startup,
+    which sorts the handlers and reads their declarations.
+    """
+
+    def __init__(self, namespace: str) -> None:
+        self.namespace = namespace
+        self.name = f"{namespace}_handler"
+
+    def __lt__(self, other: "StubbedHandler") -> bool:
+        return False
+
+    def get_handled_event_types(self) -> list[str]:
+        return []
+
+
 class TestLifecycle:
     async def test_on_startup_starts_the_root_chain(self, event_processing_service: EventProcessingService) -> None:
         chain = MagicMock()
@@ -134,7 +152,7 @@ class TestLifecycle:
         self, event_processing_service: EventProcessingService, mock_registry: MagicMock
     ) -> None:
         """Built at startup, not on first delivery: a bad dedup window must fail the pod."""
-        mock_registry.get_event_handler.return_value = [MagicMock(namespace="orders"), MagicMock(namespace="billing")]
+        mock_registry.get_event_handler.return_value = [StubbedHandler("orders"), StubbedHandler("billing")]
 
         await event_processing_service.on_startup()
 

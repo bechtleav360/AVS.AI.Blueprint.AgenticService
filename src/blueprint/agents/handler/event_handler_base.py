@@ -10,6 +10,8 @@ Custom implementations MUST override the abstract methods:
 Handlers can also declare published event types by overriding:
 - `get_published_event_types()` - Return (success_event_type, error_event_type)
 - `get_subscribed_topics()` - Return list of NATS topics to auto-subscribe on startup
+- `get_handled_event_types()` - Return the event types this handler accepts, so the
+  dispatch index can skip it for everything else
 
 The framework provides automatic OpenTelemetry tracing for all handlers.
 """
@@ -160,6 +162,40 @@ class EventHandlerBase(Component, ABC):
         """
 
         return None
+
+    def get_handled_event_types(self) -> list[str]:
+        """Declare the event types this handler accepts, or nothing to be offered every event.
+
+        This is a **selection hint, not a selector**. :meth:`can_handle_event` remains the
+        decision: a declared handler is still asked, and may still say no. What the declaration
+        buys is that handlers which cannot possibly want an event are not asked at all, so a
+        process hosting many handlers does not run every one of them against every delivery.
+
+        **The default is an empty list, and that means "offer me everything".** It is not
+        "offer me nothing", and the difference is the most destructive mistake available here:
+        no handler in this framework or in any scaffolded project declares anything today, so a
+        dispatch index that read an empty declaration as an empty set would silence every
+        handler that exists -- and because an unhandled event is acknowledged rather than
+        retried (spec sec. 7.2), the events would be consumed and discarded rather than piling
+        up somewhere visible.
+
+        **Exact event types only -- no wildcards.** A declaration is matched by equality, so
+        ``"orders.*"`` would be a type no event ever has and the handler would never run.
+        Declarations are checked when the index is built and a wildcard is rejected there, at
+        startup, rather than being silently ignored. A handler that selects a *family* of event
+        types should declare nothing and keep deciding in ``can_handle_event``.
+
+        Returns:
+            The event types this handler accepts, exactly as they appear in ``event.type``.
+            Empty (the default) means every event is offered to it.
+
+        Example::
+
+            def get_handled_event_types(self) -> list[str]:
+                return ["order.created", "order.cancelled"]
+        """
+
+        return []
 
     def get_subscribed_topics(self) -> list[str]:
         """Declare the NATS topics this handler subscribes to.
