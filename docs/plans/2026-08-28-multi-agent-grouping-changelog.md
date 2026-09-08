@@ -3145,6 +3145,91 @@ call, now explicit -- `_eventing_component is None` became `_eventing_components
 `get_event_handler` stub lambda took the namespace argument it is now passed. None of these is a
 behaviour change; each is an assertion on a call shape.
 
+### Phase 6, part 2 -- an agent's HTTP surface lives under its own prefix, and grouped Dapr is refused
+
+A group applies the same registration once per agent, so two agents declare the *same* paths.
+FastAPI serves the first match, so without a prefix one agent's requests are answered by another
+agent's code -- and its Dapr deliveries by another agent's handlers. Nothing about that is visible
+from a response.
+
+**`RestApiBase.route_prefix`** is the single definition of where a component's routes go:
+
+```python
+    @property
+    def route_prefix(self) -> str:
+        return f"/api/{self.namespace}" if self.namespace else ""
+```
+
+It is a property on the component rather than a rule inside `AppBuilder` because **two places
+have to agree on it**: the builder, which mounts the router, and `DaprEventing.subscribe`, which
+tells the sidecar where to post. If those disagreed the sidecar would post to a path FastAPI does
+not serve and every delivery would 404, with the application otherwise healthy.
+
+**`AppBuilder._mount` applies it, and rewrites the tags:**
+
+```python
+        prefix = component.route_prefix or root_prefix
+        if component.namespace:
+            for route in component.router.routes:
+                if isinstance(route, APIRoute) and route.tags:
+                    route.tags = [f"{component.namespace}.{tag}" for tag in route.tags]
+        app.include_router(component.router, prefix=prefix)
+```
+
+`root_prefix` is what a *root* component keeps, and it is not the same for every kind: a REST API
+has always been mounted under `/api`, a transport endpoint at the top level because its paths are
+a contract with a sidecar. A namespaced component ignores it and takes `route_prefix`, so both
+kinds end up under one prefix per agent -- `/api/orders/orders` for the REST API and
+`/api/orders/events/{topic}` for deliveries, which matches the `/api/order/orders/{id}` shape
+spec sec. 11 uses.
+
+The tags are **rewritten, not appended to**. `include_router(tags=...)` appends, which would put
+each operation in two Swagger groups -- once under the agent and once under the bare resource
+name -- so the rewrite happens on the routes. `isinstance(route, APIRoute)` rather than a
+`getattr`: a Starlette `BaseRoute` has no tags, and only the decorator-produced routes do.
+Mutating them is safe because a router belongs to exactly one component and `build()` runs once
+per process (`Component.configure` refuses a second call).
+
+**Grouped Dapr is refused at build time, and this is the part worth arguing.** Prefixing fixed
+delivery, but discovery cannot be prefixed: the sidecar fetches `GET /dapr/subscribe` from one
+path, fixed by Dapr's protocol. With each agent's document behind its own prefix the sidecar finds
+*no* document, subscribes to nothing, and the pod reports itself healthy while consuming nothing
+-- the exact silent failure this feature exists to prevent. So:
+
+```python
+        if event_bus_type != "dapr" or len(self._eventing_components) <= 1:
+            return
+        ...
+        raise ValueError(
+            f"{len(self._eventing_components)} agents ({agents}) consume events and 'event_bus' is 'dapr', ..."
+        )
+```
+
+The check is on the resolved `event_bus_type` rather than on the endpoint types, because one
+transport serves the whole process and the type is what is already known here -- `isinstance`
+against a module-level name would also break under the test patching that mocks these classes.
+
+NATS is unaffected: it has no discovery endpoint, because the client subscribes directly, per
+agent. **A single-agent Dapr application is unaffected** -- one endpoint, no prefix, byte-identical
+document.
+
+Fixing grouped Dapr properly means one process-wide discovery endpoint returning the union of
+every agent's subscriptions, each entry naming that agent's own delivery route. That is a change
+to the sidecar-facing contract rather than an internal detail, so it is **not** done here and is
+listed under *Open points*. Refusing loudly is the interim, because the alternative is a pod that
+looks healthy and consumes nothing.
+
+Tests: `tests/unit/agents/app_builder/test_route_namespacing.py`, 17 cases, asserting through
+`app.openapi()["paths"]` rather than `app.routes` -- FastAPI stores an included router as one
+opaque entry rather than flattening its routes, so `app.routes` does not contain the paths under
+test while the OpenAPI document is exactly what is served. Covered: the prefix for a root and a
+namespaced component; a single-agent application's paths not moving; an agent's route carrying its
+namespace; two agents declaring one route not colliding; tags prefixed, the bare tag replaced
+rather than added to, two agents' tags not merging, and a root component's tags untouched; grouped
+Dapr refused with both agents named, one agent on Dapr fine, two on NATS fine; the root delivery
+path unchanged; an agent's delivery path moved; two agents on NATS getting their own; and the
+subscription document naming the mounted path for an agent and the unchanged path for the root.
+
 ---
 
 ## Compatibility
@@ -3218,6 +3303,16 @@ Everything else remains non-breaking. Specifically:
   Whether Dapr merges the two or delivers twice needs checking against a real sidecar; it belongs on
   the broker-test list.
 - New config keys all default to current behaviour.
+- **A namespaced component's routes move to `/api/<agent>/...`, and its tags gain an
+  `<agent>.` prefix.** Nothing moves for an application that declares no namespace: a root REST
+  API stays under `/api`, and a root transport endpoint stays at `/events/{topic}` and
+  `/dapr/subscribe`.
+- **`RestApiBase.route_prefix` is new**, and public, because `DaprEventing.subscribe` has to
+  render the same prefix the builder mounts.
+- **A group of two or more consuming agents on `event_bus = "dapr"` now fails at `build()`.**
+  The sidecar fetches the subscription document from one fixed path, so per-agent documents
+  would leave it subscribed to nothing. Single-agent Dapr is unchanged; NATS hosts groups
+  normally. Listed under *Open points*.
 - **`AppBuilder._eventing_component` is now `_eventing_components`, a list.** Underscore-private,
   but anything introspecting it breaks. It holds exactly one element for every application that
   declares no namespace.
@@ -3399,6 +3494,16 @@ stay keyword-only and last, or an existing `with_cache(False)` would silently be
 ---
 
 ## Open points
+
+- **Grouped Dapr needs one process-wide subscription document.** `build()` refuses two or more
+  consuming agents on `event_bus = "dapr"` (phase 6 part 2), because the sidecar fetches
+  `GET /dapr/subscribe` from one fixed path and per-agent documents leave it subscribed to
+  nothing. The fix is a single discovery endpoint returning the union of every agent's
+  subscriptions, each entry naming that agent's own `/api/<agent>/events/{topic}` route. That
+  changes the sidecar-facing contract, so it wants a decision rather than an implementation
+  chosen in passing: whether the union lives on a root component the builder creates, or whether
+  grouped Dapr stays unsupported and groups are NATS-only. Nothing in the spec addresses the
+  grouped Dapr case.
 
 - **Two spec amendments are outstanding for `with_namespace` (phase 3 part 1).** Spec sec. 4.2
   types the return as `AppBuilder | NamespaceBuilder` and lists a `config: Config | None`

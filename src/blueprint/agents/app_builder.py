@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeVar, overload
 
 from fastapi import FastAPI
+from fastapi.routing import APIRoute
 
 if TYPE_CHECKING:
     from .io.api.actuators.health import HealthCheckerBase
@@ -672,6 +673,7 @@ class AppBuilder:
         event_bus_type = str(self._config.get("event_bus", "") or "").strip().lower()
         for namespace in self.hosted_namespaces:
             self._wire_transport(registry, namespace, event_bus_type)
+        self._refuse_grouped_dapr(event_bus_type)
 
         # 4. Create internal services (auto-register)
         # EventProcessingService is only useful when there's a handler to route
@@ -838,16 +840,83 @@ class AppBuilder:
             # in Swagger UI. Routes carry their per-operation tags (set via the RestApiBase decorators)
             # and group correctly; untagged routes fall under FastAPI's "default", which is the nudge
             # for services to tag their routes rather than hide behind a catch-all.
-            app.include_router(rest_api.router, prefix="/api")
+            self._mount(app, rest_api, root_prefix="/api")
 
         for eventing_component in self._eventing_components:
-            app.include_router(eventing_component.router)
+            self._mount(app, eventing_component, root_prefix="")
 
         if registry.has_cache():
             app.include_router(CacheManagementApi().router, prefix="/api", tags=["cache"])
 
         if self._actuator_api is not None:
             app.include_router(self._actuator_api.router, tags=["actuators"])
+
+    def _refuse_grouped_dapr(self, event_bus_type: str) -> None:
+        """Refuse to build a group of consuming agents on the Dapr transport.
+
+        The delivery path is per agent, and that part works: each endpoint is mounted under
+        ``/api/<agent>``, so no two agents answer each other's deliveries. **Discovery is not
+        per agent, and cannot be.** The sidecar fetches ``GET /dapr/subscribe`` from exactly one
+        path, fixed by Dapr's protocol -- so with each agent's document behind its own prefix
+        the sidecar finds no document at all, subscribes to nothing, and the pod reports itself
+        healthy while consuming nothing. That is the failure mode this whole feature is built to
+        make impossible, so it fails at build time instead.
+
+        Fixing it properly means one process-wide discovery endpoint returning the union of
+        every agent's subscriptions, each entry naming that agent's own delivery route. That is
+        a change to the sidecar-facing contract rather than an internal detail, and it is not in
+        this phase; the changelog carries it as an open point. NATS is unaffected -- it has no
+        discovery endpoint, because the client subscribes directly.
+
+        Args:
+            event_bus_type: The resolved ``event_bus``. Checked rather than the endpoint types,
+                because one transport type serves the whole process -- and because the type is
+                the thing that is known here without asking each endpoint what it is.
+
+        Raises:
+            ValueError: if more than one namespace would consume events over Dapr.
+        """
+        if event_bus_type != "dapr" or len(self._eventing_components) <= 1:
+            return
+
+        agents = ", ".join(f"'{component.namespace or ROOT_LABEL}'" for component in self._eventing_components)
+        raise ValueError(
+            f"{len(self._eventing_components)} agents ({agents}) consume events and 'event_bus' is 'dapr', which cannot yet host "
+            "a group. The Dapr sidecar fetches the subscription document from one fixed path, so each agent's document "
+            "behind its own prefix would leave the sidecar subscribed to nothing -- with the pod reporting itself "
+            "healthy. Run these agents in separate groups, or set 'event_bus' to 'nats', which subscribes per agent "
+            "directly and needs no discovery endpoint."
+        )
+
+    @staticmethod
+    def _mount(app: FastAPI, component: RestApiBase, *, root_prefix: str) -> None:
+        """Include one component's router, under its agent's prefix if it has one.
+
+        ``root_prefix`` is what a *root* component keeps, and it is not the same for every
+        kind: a REST API has always been mounted under ``/api``, while a transport endpoint has
+        always been mounted at the top level because its paths are a contract with a sidecar.
+        A namespaced component ignores it and takes ``route_prefix`` instead, so both kinds end
+        up under one prefix per agent.
+
+        The tags are rewritten rather than added to, so an agent's operations form their own
+        group in Swagger UI instead of appearing twice -- once under the agent and once under
+        the bare resource name. ``include_router(tags=...)`` appends, which is why this is done
+        on the routes. Mutating them is safe because a router belongs to exactly one component
+        and ``build()`` runs once per process (``Component.configure`` refuses a second call).
+
+        Args:
+            app: The application to mount on.
+            component: The component whose router is being mounted.
+            root_prefix: The prefix to use when the component belongs to the root namespace.
+        """
+        prefix = component.route_prefix or root_prefix
+        if component.namespace:
+            for route in component.router.routes:
+                # A Starlette BaseRoute has no tags; an APIRoute does, and those are the
+                # ones the decorators produce. Anything else is left alone.
+                if isinstance(route, APIRoute) and route.tags:
+                    route.tags = [f"{component.namespace}.{tag}" for tag in route.tags]
+        app.include_router(component.router, prefix=prefix)
 
     # ------------------------------------------------------------------
     # Lifespan

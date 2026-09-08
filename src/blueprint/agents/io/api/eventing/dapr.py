@@ -53,7 +53,9 @@ class DaprEventing(EventHandlingBase):
 
     The application holds no broker connection -- the sidecar does. The sidecar discovers
     what to deliver by calling ``GET /dapr/subscribe``, then pushes each message to
-    ``POST /events/{topic}``, whose response body is the acknowledgement.
+    ``POST /events/{topic}``, whose response body is the acknowledgement. Under a namespace
+    both paths move beneath ``route_prefix``, and the subscription document names the moved
+    path -- otherwise two agents in one group would answer each other's deliveries.
 
     Both halves are driven by the same ``get_subscribed_topics()`` declarations the NATS
     transport uses:
@@ -146,7 +148,12 @@ class DaprEventing(EventHandlingBase):
             return []
 
         pubsub_name = self.config.get("dapr_pubsub_name", "pubsub")
-        return [{"pubsubname": pubsub_name, "topic": topic, "route": f"/events/{topic}"} for topic in self._declared_topics()]
+        # route_prefix, not a bare '/events/...': this document is what makes the sidecar post
+        # anywhere at all, so it has to name the path the router is actually mounted at. For the
+        # root that prefix is empty and the document is byte-identical to what it always was.
+        return [
+            {"pubsubname": pubsub_name, "topic": topic, "route": f"{self.route_prefix}/events/{topic}"} for topic in self._declared_topics()
+        ]
 
     def _declared_topics(self) -> list[str]:
         """Return the topics this agent's handlers declare, in declaration order.

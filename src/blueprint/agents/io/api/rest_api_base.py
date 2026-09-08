@@ -76,6 +76,24 @@ class RestApiBase(IOBase, ABC):
         self._wire_routes()
 
     @property
+    def route_prefix(self) -> str:
+        """The path prefix this component's routes are mounted under.
+
+        ``""`` for the root, so every path an existing application serves is unchanged, and
+        ``/api/<agent>`` for a component that belongs to one. An agent's whole HTTP surface
+        therefore lives under one prefix, and two agents in a group cannot collide on a path --
+        which they otherwise would, since a group applies the same registration twice and both
+        copies declare the same routes.
+
+        It is a property on this class rather than a rule inside ``AppBuilder`` because two
+        places have to agree on it: the builder, which mounts the router, and
+        ``DaprEventing.subscribe``, which tells the sidecar where to post deliveries. If those
+        two disagreed the sidecar would post to a path FastAPI does not serve, and every
+        delivery would 404 -- with the application otherwise healthy.
+        """
+        return f"/api/{self.namespace}" if self.namespace else ""
+
+    @property
     def router(self) -> APIRouter:
         """Access the instance router. This property is read-only."""
 
