@@ -27,6 +27,7 @@ group composition because it was told; it passes each namespace to the wiring th
 
 import logging
 from concurrent.futures import ThreadPoolExecutor
+from copy import copy
 from typing import Any, TypeVar
 
 from ..agent.agent_runtime import AgentRuntime
@@ -84,6 +85,8 @@ class Registry:
         self._caches: dict[str, CacheService] = {}
         self._components: dict[str, Any] = {}
         self._executors: dict[str, ThreadPoolExecutor] = {}
+        self._default_namespace: str | None = None
+        self._views: dict[str, Registry] = {}
 
         logger.info("ComponentRegistry initialized")
 
@@ -112,6 +115,75 @@ class Registry:
             raise ValueError(f"Component '{name_or_class}' is not a {base_type.__name__}")
         return component
 
+    def for_namespace(self, namespace: str) -> "Registry":
+        """Return a view of this registry that answers as ``namespace`` unless told otherwise.
+
+        This is what lets a component find *its own* agent's collaborators while writing the
+        lookup it would write in a single-agent application. ``Component.registry`` hands each
+        component its namespace's view, so ``self.registry.get_service(OrderService)`` resolves
+        this agent's service and falls back to a root one -- with no namespace named at the call
+        site, which is the whole requirement.
+
+        The view shares this registry's components, caches and executors by reference: there is
+        one registry per process and a view is a lens on it, not a copy. It differs only in what
+        an omitted ``namespace`` argument means -- this agent, rather than every agent.
+
+        Views are cached, so a component asking twice gets the same object.
+
+        Args:
+            namespace: The agent to answer as. ``""`` returns this registry unchanged, because
+                the root namespace *is* the unscoped registry -- so a single-agent application
+                and every framework caller that holds ``Component.shared_registry`` behave
+                exactly as before.
+
+        Raises:
+            RuntimeError: if called on a view. A view is one agent's lens; letting it mint
+                another agent's would hand every component a route to its neighbours, which is
+                what C6 forbids.
+        """
+        if self._default_namespace is not None:
+            raise RuntimeError(
+                f"The registry view for namespace '{self._default_namespace}' was asked for a view of namespace "
+                f"'{namespace}'. Views are created from the application's registry, not from another agent's view."
+            )
+        if not namespace:
+            return self
+
+        cached = self._views.get(namespace)
+        if cached is not None:
+            return cached
+
+        view = copy(self)
+        view._default_namespace = namespace
+        view._views = {}
+        self._views[namespace] = view
+        return view
+
+    @property
+    def default_namespace(self) -> str | None:
+        """The namespace this object answers as; ``None`` on the application's own registry."""
+        return self._default_namespace
+
+    def _all_of_type(self, component_type: Any) -> list[Any]:
+        """Every component of a type, from every namespace, whatever this object answers as.
+
+        The namespace-blind counterpart of :meth:`get_components_by_type`, for the two callers
+        that must not have their argument reinterpreted: the class-resolution path, which needs
+        all the candidates in order to choose between the namespace and the root, and the
+        message that lists them when it cannot.
+        """
+        return [component for component in self._components.values() if isinstance(component, component_type)]
+
+    def _effective_namespace(self, namespace: str | None) -> str | None:
+        """Resolve an omitted ``namespace`` argument.
+
+        On the application's own registry an omitted namespace means *every* namespace, which is
+        what ``build()`` and the lifespan need when they iterate. On a view it means *that view's*
+        namespace, which is what a component needs when it looks up a collaborator. An explicit
+        argument always wins, on either.
+        """
+        return self._default_namespace if namespace is None else namespace
+
     def _lookup(self, name: str, namespace: str | None) -> Any | None:
         """Return the component registered under ``name`` for ``namespace``, or ``None``.
 
@@ -124,6 +196,7 @@ class Registry:
         A caller that already holds the qualified name is unaffected: qualifying it a second time
         simply misses, and the bare lookup then finds it.
         """
+        namespace = self._effective_namespace(namespace)
         if namespace:
             qualified = qualified_component_name(namespace, name)
             if qualified in self._components:
@@ -322,14 +395,23 @@ class Registry:
                 agent a neighbour's collaborator is the attribution the namespace exists to give.
         """
 
+        namespace = self._effective_namespace(namespace)
         if not isinstance(name_or_class, str):
-            candidates = self.get_components_by_type(name_or_class)
+            # Every candidate, unfiltered -- resolve_for_namespace is what picks between the
+            # levels, so it has to see them all. Not get_components_by_type(..., None): on a
+            # view "None" means *this* view's namespace, so that call would hand the resolver
+            # only this agent's components and its root fallback could never fire.
+            candidates = self._all_of_type(name_or_class)
             if namespace is not None:
-                return resolve_for_namespace(candidates, namespace, description=f"component of type {name_or_class}")
+                # The class name, not its repr: these messages name what an agent was looking
+                # for ("No IOClientBase is registered for namespace 'orders' or at the root"),
+                # and "<class '...IOClientBase'>" in the middle of that sentence reads worse.
+                described = getattr(name_or_class, "__name__", str(name_or_class))
+                return resolve_for_namespace(candidates, namespace, description=described)
             if len(candidates) == 0:
                 raise ValueError(f"No components of type {name_or_class} found")
             if len(candidates) > 1:
-                names = self.get_component_names_by_type(name_or_class)
+                names = [name for name, component in self._components.items() if isinstance(component, name_or_class)]
                 raise ValueError(f"Multiple components of type {name_or_class} found: {names}")
             return candidates[0]
 
@@ -353,6 +435,7 @@ class Registry:
             A list of components
         """
 
+        namespace = self._effective_namespace(namespace)
         return [
             component
             for component in self._components.values()
@@ -370,6 +453,7 @@ class Registry:
             A list of component names
         """
 
+        namespace = self._effective_namespace(namespace)
         return [
             name
             for name, component in self._components.items()

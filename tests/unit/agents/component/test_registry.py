@@ -410,3 +410,58 @@ class TestExecutors:
         registry.clear()
         assert registry._executors == {}
         assert executor._shutdown is True
+
+
+class TestNamespaceViews:
+    """A view answers as one agent, so a call site never has to name a namespace."""
+
+    def test_the_root_namespace_is_the_registry_itself(self, grouped_registry: Registry) -> None:
+        """Not an optimisation: the root namespace *is* the unscoped registry."""
+        assert grouped_registry.for_namespace("") is grouped_registry
+
+    def test_views_are_cached(self, grouped_registry: Registry) -> None:
+        assert grouped_registry.for_namespace("orders") is grouped_registry.for_namespace("orders")
+
+    def test_a_view_shares_the_one_component_store(self, grouped_registry: Registry) -> None:
+        """One registry per process; a view is a lens on it, not a copy of it."""
+        view = grouped_registry.for_namespace("orders")
+        assert view._components is grouped_registry._components
+        assert view._caches is grouped_registry._caches
+
+    def test_a_view_reports_the_namespace_it_answers_as(self, grouped_registry: Registry) -> None:
+        assert grouped_registry.for_namespace("orders").default_namespace == "orders"
+        assert grouped_registry.default_namespace is None
+
+    def test_a_view_cannot_mint_another_agents_view(self, grouped_registry: Registry) -> None:
+        """C6: it would hand every component a route to its neighbours."""
+        view = grouped_registry.for_namespace("orders")
+        with pytest.raises(RuntimeError, match="not from another agent"):
+            view.for_namespace("billing")
+
+    def test_an_omitted_namespace_means_this_agent(self, grouped_registry: Registry) -> None:
+        view = grouped_registry.for_namespace("orders")
+        assert view.get_component("order_service").namespace == "orders"
+
+    def test_an_omitted_namespace_still_falls_back_to_the_root(self, grouped_registry: Registry) -> None:
+        assert grouped_registry.for_namespace("orders").get_component("shared_audit").namespace == ""
+
+    def test_a_class_lookup_on_a_view_finds_this_agents_instance(self, grouped_registry: Registry) -> None:
+        assert grouped_registry.for_namespace("billing").get_component(_Namespaced).namespace == "billing"
+
+    def test_a_class_lookup_on_a_view_falls_back_to_the_root(self, grouped_registry: Registry) -> None:
+        """The candidates must be gathered unfiltered, or the fallback could never fire."""
+        registry = Registry(StubBase)
+        registry.add_component("shared_audit", _Namespaced(""))
+        assert registry.for_namespace("orders").get_component(_Namespaced).namespace == ""
+
+    def test_a_plural_lookup_on_a_view_returns_only_this_agent(self, grouped_registry: Registry) -> None:
+        found = grouped_registry.for_namespace("orders").get_components_by_type(_Namespaced)
+        assert [component.namespace for component in found] == ["orders"]
+
+    def test_an_explicit_namespace_overrides_the_view(self, grouped_registry: Registry) -> None:
+        view = grouped_registry.for_namespace("orders")
+        assert view.get_component("order_service", "billing").namespace == "billing"
+
+    def test_the_application_registry_still_sees_everything(self, grouped_registry: Registry) -> None:
+        """build() and the lifespan hold the unscoped registry and must keep iterating all of it."""
+        assert len(grouped_registry.get_components_by_type(_Namespaced)) == 3

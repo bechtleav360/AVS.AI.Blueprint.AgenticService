@@ -17,6 +17,7 @@ from blueprint.agents.component.component import (
     traced,
 )
 from blueprint.agents.component.namespace import ROOT_NAMESPACE, namespace_scope
+from blueprint.agents.component.registry import Registry
 from blueprint.agents.config import Config
 from blueprint.agents.services.service_base import ServiceBase
 
@@ -495,3 +496,41 @@ class TestExecutorBelongsToTheNamespace:
     def test_asking_twice_returns_the_same_pool(self) -> None:
         component = ConcreteComponent()
         assert component.executor is component.executor
+
+
+class TestRegistryIsScopedToTheComponent:
+    """The other half of "a developer never writes a namespace": collaborator lookups."""
+
+    @pytest.fixture(autouse=True)
+    def real_registry(self) -> Registry:
+        registry = Registry(Component)
+        Component.shared_registry = registry
+        Component.configure(MagicMock(spec=Config))
+        return registry
+
+    def test_a_root_component_gets_the_registry_itself(self, real_registry: Registry) -> None:
+        assert ConcreteComponent().registry is real_registry
+
+    def test_a_namespaced_component_gets_its_own_view(self, real_registry: Registry) -> None:
+        with namespace_scope("orders"):
+            component = ConcreteComponent()
+        assert component.registry is real_registry.for_namespace("orders")
+
+    def test_a_lookup_with_no_namespace_finds_this_agents_component(self, real_registry: Registry) -> None:
+        with namespace_scope("orders"):
+            asker = ConcreteComponent(name="orders_asker")
+        with namespace_scope("billing"):
+            ConcreteComponent(name="billing_asker")
+
+        found = asker.registry.get_components_by_type(ConcreteComponent)
+
+        assert [component.namespace for component in found] == ["orders"]
+
+    def test_two_agents_resolve_their_own_of_the_same_class(self, real_registry: Registry) -> None:
+        with namespace_scope("orders"):
+            orders = ConcreteComponent()
+        with namespace_scope("billing"):
+            billing = ConcreteComponent()
+
+        assert orders.registry.get_component(ConcreteComponent) is orders
+        assert billing.registry.get_component(ConcreteComponent) is billing

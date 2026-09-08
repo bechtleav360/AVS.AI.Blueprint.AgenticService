@@ -170,8 +170,24 @@ class Component(ABC, metaclass=_ComponentMeta):
 
     @property
     def registry(self) -> Registry:
-        """Get the component registry for accessing other components."""
-        return Component.shared_registry  # type: ignore[return-value]
+        """The component registry, as a view that answers for this component's namespace.
+
+        A namespaced component receives a *view*: an omitted ``namespace`` on any lookup means
+        this agent, resolving its own component first and a root one second. So
+        ``self.registry.get_service(OrderService)`` finds this agent's service while
+        ``self.registry.get_service(EventProcessingService)`` finds the shared root one, and
+        neither call site names a namespace -- which is the point. Two agents can then be built
+        from one declaration and each wire itself correctly.
+
+        A root-namespace component gets the registry itself, unchanged. As with
+        :attr:`config`, that is the definition rather than an optimisation: the root namespace
+        *is* the unscoped registry, so every existing single-agent application resolves exactly
+        what it resolved before.
+        """
+        registry: Registry = Component.shared_registry  # type: ignore[assignment]
+        if not self._namespace:
+            return registry
+        return registry.for_namespace(self._namespace)
 
     @property
     def config(self) -> Config:

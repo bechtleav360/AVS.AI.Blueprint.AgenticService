@@ -2090,6 +2090,108 @@ sizing from the scoped configuration.
 strictly, and was written here because the registry half is unreachable without it -- an
 executor store with no way to reach it is the unused surface this repo keeps out.
 
+### Phase 2 -- a component's registry answers for its own agent
+
+Phase 2 is titled "component namespace awareness", and three of its four bullets were already
+satisfied by earlier work: the `ContextVar` and `Component.__init__` reading it landed in phase 0
+part 2, `Component.executor` in phase 1 part 3, and `shared_registry` was never going to stop
+being a class-level singleton. Its fourth -- passing `namespace=` to `add_component` -- is
+obsolete: phase 1 kept the flat store precisely because P6 had already made the registry name
+namespace-qualified, so the namespace is in the key.
+
+What was actually missing is the half phase 1 enabled and nothing used. Every lookup on `Registry`
+took a `namespace`, and **no caller passed one**, so a grouped process would have resolved
+collaborators at random or refused to choose. Two examples from the framework's own code, both
+written long before namespaces:
+
+```python
+self._client = self.registry.get_component(NATSClient)          # io/api/eventing/nats.py:33
+handlers = sorted(self.registry.get_event_handler())             # handler/handler_chain.py:130
+```
+
+With one transport client per namespace (P6) the first raises "Multiple components of type
+NATSClient found" the moment a second agent joins the process, and the second dispatches one
+agent's event to another agent's handlers. Neither call site may grow a namespace argument,
+because the constraint is that no code names a namespace unless it is about namespaces.
+
+**`Registry.for_namespace(namespace)` returns a view, and `Component.registry` hands each
+component its own.** The mechanism is the one `Config.for_namespace` established in the config
+rework, deliberately: a shallow `copy` sharing `_components`, `_caches` and `_executors` by
+reference -- one registry per process, a view is a lens on it -- differing only in what an
+*omitted* `namespace` argument means.
+
+```python
+    def _effective_namespace(self, namespace: str | None) -> str | None:
+        return self._default_namespace if namespace is None else namespace
+```
+
+- On the application's registry, an omitted namespace still means **every namespace**, so
+  `build()` and the lifespan keep iterating everything. Nothing about a single-agent application
+  changes; `for_namespace("")` returns the registry itself, as `Config.for_namespace("")` does.
+- On a view it means **that agent**, so `self.registry.get_service(OrderService)` resolves this
+  agent's service, and `self.registry.get_service(EventProcessingService)` still finds the shared
+  root one through the namespace-then-root fallback.
+- An explicit argument wins on either.
+
+**Calling `for_namespace` on a view raises**, as on `Config`: a view is one agent's lens, and
+letting it mint another agent's would hand every component a route to its neighbours, which is
+what C6 forbids.
+
+Verified with a service written the way a project writes one -- no namespace anywhere in it:
+
+```
+  orders   self.registry.get_service(OrderService) -> orders_order_service   Audit -> audit
+  billing  self.registry.get_service(OrderService) -> billing_order_service  Audit -> audit
+```
+
+One declaration, two agents, each wiring itself correctly, plus a root-registered `Audit` shared
+by both.
+
+**A hand-rolled resolution was deleted.** `EventPublishingService.on_startup` called
+`resolve_for_namespace(self.registry.get_io_clients(), self.namespace, ...)` by hand, because P6
+needed namespace resolution before the registry could do it. It is now
+`self.registry.get_io_client(IOClientBase)` -- the view resolves it -- which is what P6's own
+changelog predicted would happen to that helper.
+
+**A bug the test rewrite caught, worth recording because the shape recurs.** `get_component`
+gathered its candidates with `self.get_components_by_type(name_or_class, None)`, passing `None`
+to mean "every namespace". On a *view* `None` means *this* namespace, so the resolver was handed
+only the asking agent's components and its root fallback could never fire: a namespaced service
+in a process with one shared root transport failed to find it. Fixed with `_all_of_type`, a
+namespace-blind helper used by the two callers that must not have their argument reinterpreted
+-- the class-resolution path and the message that lists candidates when it cannot choose. The
+six `EventPublishingService` ownership tests were rewritten from a `MagicMock` registry onto a
+**real** one for exactly this reason: the mock version asserted that a stub returned what it was
+told to, and would not have caught this.
+
+While there, the class-lookup failure message stopped printing a class repr:
+"No IOClientBase is registered for namespace 'orders' or at the root" rather than
+"No <class '...IOClientBase'> is registered ...".
+
+**Tests.** 1554 unit tests pass (up from 1538). `TestNamespaceViews` (12) covers the root
+identity, caching, the shared store, the C6 refusal, omitted-means-this-agent, the root fallback
+for both name and class lookups, plural lookups returning one agent, an explicit override, and
+the application registry still seeing everything. `TestRegistryIsScopedToTheComponent` (4) covers
+the component side. The six rewritten ownership tests now exercise the real resolution.
+
+### Still open after phase 2: cache names are not namespace-scoped yet
+
+Spec sec. 8 requires cache *names* to be namespace-scoped by default, with an explicit opt-in for
+genuinely shared caches, so that two agents both asking for `"sessions"` do not silently share a
+store. Phase 1 gave the registry the name dimension that policy needs, and phase 2 gave every
+component a namespace-aware view -- but `get_cache` on a view still resolves the bare name, so
+the policy is not enforced.
+
+It is left open rather than guessed at because the obvious implementation collides with something
+that already exists: `CacheService.get/set/delete` take their own `namespace=` argument, which is
+a *partition inside* a cache and is what a project already uses (`CACHE_NAMESPACE` in two
+examples). So there are two plausible designs and they are not equivalent -- qualify the cache
+*name* on the way in (`orders_sessions`, one backend per agent per name), or prefix the
+*partition* the agent's calls land in (one backend, agent-scoped keys). The first isolates
+storage and multiplies backends; the second keeps one backend and has to compose with the
+developer's own partition argument without either silently winning. That is a decision, not an
+implementation detail.
+
 ### Not fixed, found while doing this: `app_environment` in `[default]` selects nothing
 
 The bootstrap pass runs with `environments=False`, so it sees only top-level keys -- `[default]`
@@ -2444,6 +2546,14 @@ stay keyword-only and last, or an existing `with_cache(False)` would silently be
 - **Nothing observes dead-lettering.** It is logged, but there is no counter, so "how many messages
   did we give up on today" cannot be answered from metrics. It belongs with the telemetry work in
   phase 9, next to `blueprint.events.unhandled`.
+- **Cache names are still not namespace-scoped (spec sec. 8).** The registry has the name
+  dimension and every component has a namespace-aware view, but `get_cache` resolves the bare
+  name, so two agents asking for `"sessions"` share one store -- exactly what sec. 8 forbids. Not
+  guessed at, because two designs are plausible and different: qualify the cache *name*
+  (`orders_sessions`, a backend per agent per name) or prefix the *partition* an agent's calls
+  land in (one backend, agent-scoped keys, composing with the `namespace=` argument
+  `CacheService.get/set` already take and two examples already use). The first isolates storage
+  and multiplies backends; the second has to define which prefix wins. Needs a decision.
 - **The examples are not migrated to `AgentRegistration`, by decision (2026-09-08).** Asked
   whether to convert one project's `main.py` as proof, the user chose not to touch the examples
   part-way through the changes, and to revisit them when the integration tests are written --
