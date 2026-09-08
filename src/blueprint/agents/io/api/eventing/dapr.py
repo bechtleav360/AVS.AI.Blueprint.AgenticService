@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 
 from ....clients.io.dapr_client import DaprClient
+from ....component.namespace import ROOT_LABEL, ROOT_NAMESPACE
 from ....models.errors import DeliveryDisposition, HandlerError, disposition_for
 from ....models.events import CloudEvent
 from ..rest_api_base import RestApiBase
@@ -74,12 +75,18 @@ class DaprEventing(EventHandlingBase):
 
     route_class = DaprDeliveryRoute
 
-    def __init__(self) -> None:
-        super().__init__(should_register=False)
+    def __init__(self, namespace: str = ROOT_NAMESPACE) -> None:
+        """Initialize the Dapr endpoint for one agent.
+
+        Args:
+            namespace: The agent this endpoint declares subscriptions for. ``""`` is the root,
+                which is the whole of a single-agent application.
+        """
+        super().__init__(should_register=False, namespace=namespace)
         self._client: DaprClient | None = None
 
     async def on_startup(self) -> None:
-        self._client = self.registry.get_component(DaprClient)
+        self._client = self.registry.get_component(DaprClient, namespace=self.namespace)
 
         # Delivery is driven by the subscription document in subscribe(); this handing-over
         # exists so the client starts its sidecar-reachability retry and can report
@@ -89,9 +96,18 @@ class DaprEventing(EventHandlingBase):
         }
 
         if topic_callbacks:
+            logger.info(
+                "Namespace '%s' declares %d topic(s) to the sidecar: %s",
+                self.namespace or ROOT_LABEL,
+                len(topic_callbacks),
+                ", ".join(topic_callbacks),
+            )
             await self._client.subscribe(topic_callbacks)
         else:
-            logger.debug("DaprEventing: no handler declared a topic; nothing to report as ready")
+            logger.debug(
+                "DaprEventing: no handler in namespace '%s' declared a topic; nothing to report as ready",
+                self.namespace or ROOT_LABEL,
+            )
 
     async def on_shutdown(self) -> None:
         pass
@@ -133,9 +149,15 @@ class DaprEventing(EventHandlingBase):
         return [{"pubsubname": pubsub_name, "topic": topic, "route": f"/events/{topic}"} for topic in self._declared_topics()]
 
     def _declared_topics(self) -> list[str]:
-        """Return every topic declared by a registered handler, in declaration order."""
+        """Return the topics this agent's handlers declare, in declaration order.
+
+        Scoped to this agent's namespace for the reason ``HandlerChain._handlers`` names it
+        too: on the root registry an omitted namespace means *every* namespace, so the root
+        endpoint would publish every agent's topics into one subscription document and the
+        sidecar would deliver them all through the root chain.
+        """
         topics: dict[str, None] = {}
-        for handler in self.registry.get_event_handler():
+        for handler in self.registry.get_event_handler(namespace=self.namespace):
             for topic in handler.get_subscribed_topics():
                 if topic:
                     topics[topic] = None

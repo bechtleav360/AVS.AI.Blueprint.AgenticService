@@ -2883,6 +2883,127 @@ one process indexing only their own handlers. One mock-based test in
 `test_event_processing_service.py` grew a small stub handler, because a bare `MagicMock` is no
 longer sortable now that startup indexes.
 
+### Phase 5, part 1 -- a transport endpoint subscribes for one agent, and only for one agent
+
+P6 gave each namespace its own `NATSClient`, with the queue group and the durable derived from
+the namespace. What still ran once for the whole process was the thing that decides *what to
+subscribe to*: `NatsEventing` and `DaprEventing` each collected topics from
+`registry.get_event_handler()` with no namespace, which on the application's registry means every
+agent's handlers, and deduplicated the result globally.
+
+Both of those are wrong in a group, and the second is wrong in the way spec sec. 7.6 singles out.
+
+**The endpoints are namespace-owned.** `NatsEventing(namespace=...)` and
+`DaprEventing(namespace=...)`, so phase 6 can build one per agent:
+
+```python
+    def __init__(self, namespace: str = ROOT_NAMESPACE) -> None:
+        super().__init__(should_register=False, namespace=namespace)
+```
+
+That needed `RestApiBase.__init__` to accept a namespace, since `EventHandlingBase` is a
+`RestApiBase`:
+
+```python
+    def __init__(self, should_register: bool = True, *, namespace: str = ROOT_NAMESPACE) -> None:
+        super().__init__(should_register, namespace=namespace)
+```
+
+Keyword-only, defaulting to the root, and every existing subclass already calls
+`super().__init__()` or `super().__init__(should_register=False)` by keyword -- so nothing
+changes for a developer's API, which still gets its namespace from the ambient scope. The
+framework's own per-agent endpoints are constructed outside any scope, which is why they name it.
+
+**Each endpoint resolves its own agent's client:**
+
+```python
+        self._client = self.registry.get_component(NATSClient, namespace=self.namespace)
+```
+
+Unscoped, this raised `Multiple components of type NATSClient found` the moment a second agent
+joined the process -- P6 created the clients but nothing had been taught to pick between them.
+With `namespace=""` the lookup is restricted to the root, which is where a single-agent
+application's only client is.
+
+**`NatsEventing._declared_topics` is new and is where the per-agent scope lands:**
+
+```python
+        topics: dict[str, None] = {}
+        for handler in self.registry.get_event_handler(namespace=self.namespace):
+            for topic in handler.get_subscribed_topics():
+                if topic:
+                    topics[topic] = None
+        for topic in self.config.get_nats_subscription_config():
+            if topic:
+                topics[topic] = None
+        return list(topics)
+```
+
+Two sources, handler declarations first and the configured list second, both already scoped to
+this agent -- `self.registry` and `self.config` are this namespace's views, so
+`orders.nats_subscriptions` resolves before the shared list (C5) with nothing here saying so.
+`DaprEventing._declared_topics` took the same namespace argument, which scopes both halves of the
+Dapr path at once: the sidecar's subscription document and the readiness hand-off to `DaprClient`.
+
+**Deduplication is now per agent because it cannot be anything else.** The `dict` above lives
+inside one endpoint, and one endpoint serves one namespace, so a cross-agent "first declaration
+wins" is not something that has to be avoided -- it is unreachable. That is the point of spec
+sec. 7.6: two agents subscribing to one topic both want the event, and a global dedup would
+silently disable one of them, invisibly to an author who runs that agent alone.
+
+**The unhandled and duplicate counters were attributing every event to the root.** Both are
+documented as per-namespace and both were hardcoded:
+
+```python
+-            _DUPLICATE_EVENTS.add(1, {"namespace": ROOT_NAMESPACE, "topic": topic})
++            _DUPLICATE_EVENTS.add(1, {"namespace": self.namespace, "topic": topic})
+```
+
+In a group that would have reported one agent's over-broad subscription as everybody's, which is
+precisely the signal spec sec. 7.7 wants those counters to carry. The value is the namespace
+verbatim rather than `ROOT_LABEL`, so a single-agent application keeps emitting `""` and its
+existing dashboards do not suddenly see a new label value.
+
+**Two plan bullets are already satisfied, and one of them must not be implemented as written.**
+
+- **"`NATSClient` consumer identity (C1)"** -- the durable `f"{namespace}-{topic}-durable"` and
+  `queue=namespace` landed with P6. Part 2 of this phase adds the invariant test the plan asks
+  for.
+- **"Give each namespace's JetStream consumer a `filter_subjects` set"** -- already true, in a
+  better form, and building it as written would make things worse. The client creates **one
+  durable per `(namespace, topic)` pair** with `filter_subject=topic`
+  (`nats_client.py:_consumer_config`), so the filter set of a namespace *is* the union of its
+  declared topics and its `nats_subscriptions`, one consumer per element. The plan's own
+  objection to a multi-subject filter is the reason to keep it that way: "a filter that follows
+  handler churn turns adding one handler into a consumer reconfiguration -- and possibly a
+  redelivery storm on deploy". With one consumer per topic, declaring a new topic *adds* a
+  consumer and never rewrites one, so there is no reconfiguration to be had. Collapsing several
+  topics into one consumer with a `filter_subjects` set would reintroduce exactly that.
+
+  The fan-out the bullet worries about is not removable at this layer either: spec sec. 7.6
+  *requires* one consumer per `(namespace, topic)`, so a broad subject selected by three agents
+  is copied three times by definition. Sec. 7.7 asks for that to be *observable*, not absent, and
+  the plan puts the reporting in `asbs validate`.
+
+**Also not implemented as written: "iterate `registry.get_known_namespaces()`".** That method
+deliberately does not exist -- the registry is reachable from every component, so it would let an
+agent enumerate its neighbours (C6). It is not needed: with one endpoint per agent, each one
+knows only its own namespace, which is all the collection needs.
+
+**Still to come in phase 6.** The Dapr path mounts `POST /events/{topic}` and
+`GET /dapr/subscribe` on the endpoint's router, and two agents' routers would collide on both
+paths. Phase 6 owns the route namespacing and the `_eventing_component` list that creates these
+per agent; nothing in this step creates more than one, so nothing collides yet.
+
+Tests: `tests/unit/agents/io/api/eventing/test_eventing_namespaces.py`, 18 cases -- an endpoint
+subscribing its own handlers' topics and not another agent's; two agents on one topic both
+getting it, for both transports; a topic declared twice inside one agent subscribed once; the
+agent's own `nats_subscriptions` winning and falling back to the shared list; handler topics
+ordered before configured ones; each endpoint resolving its own namespace's client and a root
+endpoint resolving the root one; only this agent's topics reaching the client; the Dapr
+subscription document holding one agent's topics and a root document unchanged; and namespace
+ownership, including that an illegal namespace is refused and that endpoints stay unregistered.
+
 ---
 
 ## Compatibility
@@ -2956,6 +3077,14 @@ Everything else remains non-breaking. Specifically:
   Whether Dapr merges the two or delivers twice needs checking against a real sidecar; it belongs on
   the broker-test list.
 - New config keys all default to current behaviour.
+- **`RestApiBase.__init__` gained a keyword-only `namespace`**, forwarded to `Component`.
+  Defaults to the root, and every subclass in the repo already passes `should_register` by
+  keyword, so no existing call changes.
+- **`NatsEventing.__init__` and `DaprEventing.__init__` gained a leading optional `namespace`.**
+  Both are framework-constructed and unregistered, so the leading position affects nobody.
+- **The `blueprint.events.unhandled` and `blueprint.events.duplicate` counters now carry the
+  endpoint's real namespace** instead of a hardcoded root. A single-agent application still
+  reports `namespace=""`, so no existing dashboard sees a new label value.
 - **`EventHandlerBase.get_handled_event_types()` is new and defaults to `[]`**, which means
   "offer me every event" -- the behaviour every handler has today. Overriding it narrows only
   which events that handler is *asked* about; `can_handle_event` still decides. Declarations are

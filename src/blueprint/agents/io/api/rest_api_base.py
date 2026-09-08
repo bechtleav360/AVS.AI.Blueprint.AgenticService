@@ -35,6 +35,7 @@ from fastapi.responses import JSONResponse
 from opentelemetry import trace
 
 from ...component.component import traced
+from ...component.namespace import ROOT_NAMESPACE
 from ...models import ProcessResourceResponse, ProcessingStatus
 from ..io_base import IOBase
 
@@ -60,8 +61,17 @@ class RestApiBase(IOBase, ABC):
     which routes it is allowed to answer for.
     """
 
-    def __init__(self, should_register: bool = True) -> None:
-        super().__init__(should_register)
+    def __init__(self, should_register: bool = True, *, namespace: str = ROOT_NAMESPACE) -> None:
+        """Initialize the REST API and wire its declared routes.
+
+        Args:
+            should_register: Whether to add this instance to the shared registry.
+            namespace: The agent this API belongs to. Keyword-only and defaulting to the root,
+                so no existing subclass changes. A developer's API never passes it -- it is
+                read from the ambient scope by ``Component`` -- but the framework's own
+                per-agent endpoints are built outside any scope and name it.
+        """
+        super().__init__(should_register, namespace=namespace)
         self._router = APIRouter(route_class=type(self).route_class)
         self._wire_routes()
 

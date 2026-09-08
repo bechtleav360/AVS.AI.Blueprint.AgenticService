@@ -9,7 +9,6 @@ from typing import Any
 from opentelemetry import metrics
 
 from ....component.component import traced
-from ....component.namespace import ROOT_NAMESPACE
 from ....handler.handler_chain import DUPLICATE_CONTEXT_KEY
 from ....models import ProcessingResult, ProcessingStatus
 from ....models.errors import DeliveryDisposition
@@ -99,10 +98,15 @@ class EventHandlingBase(RestApiBase, CloudEventProcessorMixin, ABC):
         """
         logger.debug("Processing CloudEvent: %s", cloud_event.id)
         processing_result = await self._dispatch_cloud_event(cloud_event, context)
+        # The endpoint's own namespace, not a hardcoded root. Both counters are documented as
+        # per-namespace and were attributing every event in the process to the root, so a group
+        # would have reported one agent's broad subscription as everybody's. The value is the
+        # namespace verbatim, so a single-agent application keeps reporting '' and its existing
+        # dashboards do not see a new label value.
         if context.get(DUPLICATE_CONTEXT_KEY):
-            _DUPLICATE_EVENTS.add(1, {"namespace": ROOT_NAMESPACE, "topic": topic})
+            _DUPLICATE_EVENTS.add(1, {"namespace": self.namespace, "topic": topic})
             logger.debug("Event %s on topic '%s' was already processed", cloud_event.id, topic)
         elif processing_result.status is ProcessingStatus.NO_HANDLER_FOUND:
-            _UNHANDLED_EVENTS.add(1, {"namespace": ROOT_NAMESPACE, "topic": topic})
+            _UNHANDLED_EVENTS.add(1, {"namespace": self.namespace, "topic": topic})
             logger.debug("No handler had work for event %s on topic '%s'", cloud_event.id, topic)
         return processing_result
