@@ -11,6 +11,7 @@ Test coverage for `src/blueprint/agents/config/config.py` and
 |---|---|---|
 | `test_config_api_key_resolution.py` | `Config` | Global vs. runtime-specific API key loading (pre-existing, refactored) |
 | `test_config_init.py` | `Config` | `__init__`, `get`, `get_package_root`, `_process_dynabox` |
+| `test_namespace_views.py` | `Config` | `for_namespace` views (C5), the audited `settings` hatch, `resolved_settings` agreeing with `get()` key by key, `namespaces` and its C6 refusal on a view |
 | `test_envvar_prefix.py` | `Config` | `envvar_prefix` resolution and precedence, the environment selected through it, `DYNACONF_` coexisting with a custom prefix, the four rejections, prefix disabled and C6 still holding |
 | `test_config_validation.py` | `Config` | `validate`, `has_validation_errors`, `get_validation_errors` |
 | `test_config_get_ai_config.py` | `Config` | `get_ai_config` — global/runtime fallback chain, `UsageLimits` |

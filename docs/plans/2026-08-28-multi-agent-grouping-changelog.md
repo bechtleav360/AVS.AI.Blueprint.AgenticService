@@ -1666,6 +1666,77 @@ can otherwise satisfy or defeat the very lookup under test.
 `_process_dynabox`, which this change does not touch: it is on the known-debt list because
 `ruff-format` reverts what `black` wants there.
 
+### Config rework, step 3b -- the environment endpoint answers per agent, and reads the tree once
+
+`GET /status/env` flattened the whole settings tree into one dictionary. In a grouped process that
+is every co-hosted agent's configuration in one blob, with nothing saying which agent a key belongs
+to -- and worse, nothing saying what any agent actually *resolves*, because an agent reads its own
+subsection overlaid on the root keys and neither half alone is the answer.
+
+**`Config.resolved_settings(namespace)` builds the dictionary an agent reads.** Root keys, minus
+every other namespace's subsection, with this namespace's own subsection overlaid. `""` returns the
+whole tree, which is what the root namespace resolves -- so a single-agent application is
+unaffected. The overlay skips `None`, matching `_scoped_get`, where `None` at a scoped key means
+"not set" and falls back to the root while `""` and `[]` do not.
+
+Two bugs in the first version of that overlay, both caught by probing it against `get()` key by key
+rather than asserting it looked right:
+
+- **`as_dict()` upper-cases only the top level of the tree**, leaving a subsection's own keys as
+  written. So the overlay landed `app_name` *beside* `APP_NAME` instead of on it, and the resolved
+  dictionary reported the root value while `get()` answered the agent value. Fixed by upper-casing
+  the overlay key.
+- That also silently broke the `None`-versus-empty distinction: `billing`'s `model_name = ""`
+  resolved to the root `"root-model"` in the flattened dictionary and to `""` through `get()`. The
+  same fix covers it, and a test now asserts equality with `get()` for both agents key by key.
+
+**`Config.namespaces` lists the namespaces that have asked for a view**, sorted. That is group
+membership as configuration sees it, and it is the only reliable source: a namespace subsection and
+an ordinary nested table such as `[default.cache]` are indistinguishable in the tree, so the
+endpoint cannot discover agents by inspecting it.
+
+**Both are root-only, and raise on a view -- this is C6, not tidiness.** A view is what agent code
+holds (`Component.config` returns one for a namespaced component), so `namespaces` on a view is an
+agent asking who it is grouped with, and `resolved_settings("other")` on a view is an agent reading
+a neighbour's configuration. Both raise `RuntimeError` naming the namespace that asked, the same
+rule `for_namespace` already applies to itself. C6 is thereby enforced at the two new entry points
+rather than being left to the endpoint to respect.
+
+**`env_status` now returns three things instead of two.** `settings` is what the root resolves,
+`namespaces` carries one masked entry per agent, and `envvar_prefix` reports what step 3a resolved
+(`null` when the prefix is disabled -- unambiguous for a JSON consumer in a way `""` is not).
+`namespaces` is empty for every existing single-agent deployment, so the response is additive.
+
+**The per-namespace breakdown is masked exactly like the root tree.** It is a second copy of the
+same values, so `_sanitize_config` runs over each entry; a test asserts that no marker string from
+a secret in either the root or an agent section appears anywhere in the serialised response.
+
+**The raw tree is read once per request.** `env_status` read `config.settings` three times
+(`as_dict`, `current_env` for the log, `current_env` for the response) and `build_status` twice.
+`Config.settings` is the *audited* property added in step 2 -- every read logs -- so one operator
+request produced three records, and would produce a WARNING per read if the actuator ever holds a
+view. Both endpoints now take one reference and read fields off it, and a test asserts the property
+is touched exactly once per request. `build_status` also stopped reaching for `current_env` and
+`settings_files` as bare attributes, which is what made the endpoint depend on the shape of a
+Dynaconf object in two places instead of one.
+
+**An agent-scoped actuator reports only its own scope.** `ActuatorApi` is a root component by the
+plan's sharing table, so this is the branch that should never be taken -- but if it is, the
+endpoint must not call the two root-only methods and turn a status request into a 500. It falls back
+to the tree it holds and an empty breakdown.
+
+**Tests.** 1443 unit tests pass (up from 1421). 13 new in `test_namespace_views.py`
+(`TestResolvedSettings`, `TestNamespacesIsRootOnly`) and 9 in `test_actuator_api.py`
+(`TestEnvStatus`). The endpoint tests use a **real** `Config` rather than a `MagicMock`: what is
+under test is how the endpoint uses the real scoping and audit behaviour, and a mock would assert
+only which methods were called.
+
+`src/blueprint/agents/io/api/actuators/actuator_api.py` keeps a pre-existing `ruff-format`
+disagreement in `llm_status`, untouched by this change, and `config.py` keeps its pre-existing
+`black` one in `_process_dynabox`. The new fixture writes its settings text through a named local
+rather than a nested `write_text(textwrap.dedent(...))` call, because the two formatters disagree
+about that construct and neither has to win.
+
 ### Not fixed, found while doing this: `app_environment` in `[default]` selects nothing
 
 The bootstrap pass runs with `environments=False`, so it sees only top-level keys -- `[default]`
@@ -1940,6 +2011,26 @@ stay keyword-only and last, or an existing `with_cache(False)` would silently be
     generated `CronJob` is the remaining silent-failure case -- the missing `event_bus` and the
     missing mode both fail at startup now, but a mode and a transport with nothing publishing
     does not. Validate is where it should be caught.
+- **The settings-fragment merge has two unanswered questions, both raised by step 3a.** Spec
+  sec. 5.3 requires each agent to keep writing plain top-level keys in its own `settings.toml` and
+  the build to merge each fragment under that agent's scope, reporting collisions with a root key.
+  Confirmed by probe that nothing does this yet: handing two fragments to
+  `Config(settings_files=[...])` merges them *flat*, so the last file silently wins -- two
+  fragments each declaring `model_name` at root end with `for_namespace("orders")` returning
+  billing's value. What the merge must decide, and the spec does not say:
+  - **A fragment declaring `envvar_prefix` must be rejected, not merged.** The prefix is
+    process-wide -- one group, one prefix -- and it is now a *top-level* key, which is exactly the
+    shape a fragment consists of. `_reject_sectioned_envvar_prefix` does not catch this: it looks
+    for the key nested inside a section, and a fragment's is at the top level where it looks
+    legitimate. Merged and scoped it would be silently inert; merged at root, whichever agent
+    happens to load last would decide how the whole group reads its environment.
+  - **Whether a fragment may override a shared infrastructure key at all.** Sec. 5.3 says a
+    collision between a fragment and a root key MUST be *reported*; it does not say whether it is
+    then refused. The two readings differ in practice: an agent overriding `model_name` is the
+    point of scoping, while an agent overriding `nats_url` or `app_port` breaks the group it is
+    hosted in -- and `app_port` is already root-only (config rework step 1), so at least one key
+    has to be refused rather than reported. The likely answer is a small set of group-owned keys
+    that a fragment may not carry, with everything else scoped.
 - **Two requirements this raised for later phases, now written into the spec.**
   `scheduler_mode` **must** resolve per namespace through C5 rather than once per process, or a
   group cannot host a pure-scheduler agent on `"in_process"` next to an event-driven agent on

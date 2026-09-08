@@ -146,3 +146,67 @@ class TestPackageRootSurvivesTheView:
     def test_view_keeps_the_root_path(self, two_agent_config: Config) -> None:
         assert isinstance(two_agent_config.for_namespace("orders").get_package_root(), Path)
         assert two_agent_config.for_namespace("orders").get_package_root() == two_agent_config.get_package_root()
+
+
+class TestResolvedSettings:
+    """The flattened view of what one namespace reads, used by the environment endpoint."""
+
+    @pytest.mark.parametrize("key", ["app_name", "model_name", "nats_url"])
+    def test_it_agrees_with_get_key_by_key(self, two_agent_config: Config, key: str) -> None:
+        """The whole point: a dictionary that says what the agent resolves, not what it declares."""
+        view = two_agent_config.for_namespace("orders")
+        resolved = two_agent_config.resolved_settings("orders")
+        assert resolved[key.upper()] == view.get(key)
+
+    def test_an_inherited_root_key_is_present(self, two_agent_config: Config) -> None:
+        """Shared infrastructure is what the agent reads, so it belongs in the agent's view."""
+        assert two_agent_config.resolved_settings("orders")["NATS_URL"] == "nats://localhost:4222"
+
+    def test_the_agent_override_replaces_the_root_key(self, two_agent_config: Config) -> None:
+        resolved = two_agent_config.resolved_settings("orders")
+        assert resolved["MODEL_NAME"] == "orders-model"
+        assert [k for k in resolved if k.lower() == "model_name"] == ["MODEL_NAME"]
+
+    def test_another_namespace_section_is_removed(self, two_agent_config: Config) -> None:
+        """An operator asking what orders resolves must not be handed billing's configuration."""
+        two_agent_config.for_namespace("billing")
+        resolved = two_agent_config.resolved_settings("orders")
+        assert "BILLING" not in resolved
+        assert "ORDERS" not in resolved
+
+    def test_an_empty_string_override_is_kept(self, two_agent_config: Config) -> None:
+        """Only None means "not set" in _scoped_get, so an empty value must survive the overlay."""
+        settings = two_agent_config.settings
+        settings["billing"] = {**dict(settings["billing"]), "model_name": ""}
+        view = two_agent_config.for_namespace("billing")
+        assert two_agent_config.resolved_settings("billing")["MODEL_NAME"] == view.get("model_name") == ""
+
+    def test_the_root_resolves_the_whole_tree(self, two_agent_config: Config) -> None:
+        """Unchanged behaviour for a single-agent application: the root namespace sees everything."""
+        resolved = two_agent_config.resolved_settings()
+        assert resolved["MODEL_NAME"] == "root-model"
+        assert "ORDERS" in resolved
+
+    def test_a_namespace_nobody_declared_resolves_the_root(self, two_agent_config: Config) -> None:
+        assert two_agent_config.resolved_settings("unknown")["MODEL_NAME"] == "root-model"
+
+
+class TestNamespacesIsRootOnly:
+    def test_it_lists_the_namespaces_that_asked_for_a_view(self, two_agent_config: Config) -> None:
+        two_agent_config.for_namespace("orders")
+        two_agent_config.for_namespace("billing")
+        assert two_agent_config.namespaces == ("billing", "orders")
+
+    def test_it_is_empty_before_any_view_exists(self, two_agent_config: Config) -> None:
+        assert two_agent_config.namespaces == ()
+
+    def test_a_view_cannot_list_its_neighbours(self, two_agent_config: Config) -> None:
+        """C6: an agent that can see its grouping can be written to depend on it."""
+        view = two_agent_config.for_namespace("orders")
+        with pytest.raises(RuntimeError, match="C6"):
+            _ = view.namespaces
+
+    def test_a_view_cannot_resolve_another_namespace(self, two_agent_config: Config) -> None:
+        view = two_agent_config.for_namespace("orders")
+        with pytest.raises(RuntimeError, match="not a window on another"):
+            view.resolved_settings("billing")

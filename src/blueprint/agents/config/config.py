@@ -373,6 +373,83 @@ class Config:
         """Whether this is a per-namespace view rather than the application's own configuration."""
         return self._is_view
 
+    @property
+    def namespaces(self) -> tuple[str, ...]:
+        """The namespaces that have asked this configuration for their own view, sorted.
+
+        This is the group membership as *configuration* sees it -- a namespace appears once a
+        component in it has read :attr:`Component.config`. It exists for the operator-facing
+        environment endpoint, which otherwise has no way to say which agent a key belongs to.
+
+        Raises:
+            RuntimeError: if called on a view. C6 forbids agent code observing its grouping, and
+                a view is what agent code holds: an agent that can list its neighbours can be
+                written to depend on them, and regrouping then breaks it. The same rule that
+                makes :meth:`for_namespace` refuse to be called on a view.
+        """
+        if self._is_view:
+            raise RuntimeError(
+                f"Namespace '{self._agent_scope}' asked which other namespaces share its process. That is "
+                "deployment grouping, not configuration, and C6 keeps it out of reach of agent code: an agent "
+                "written against its neighbours breaks when the group is changed."
+            )
+        return tuple(sorted(self._views))
+
+    def resolved_settings(self, namespace: str = "") -> dict[str, Any]:
+        """Return the configuration one namespace resolves, flattened as it would read it.
+
+        The tree holds each agent's overrides in its own subsection, so no single dictionary in it
+        says what a given agent actually sees. This builds that dictionary the way :meth:`get`
+        would answer key by key: the root keys, minus every *other* namespace's subsection, with
+        this namespace's own subsection overlaid on top.
+
+        A key whose scoped value is ``None`` is left at its root value, matching
+        :meth:`_scoped_get` -- ``None`` there means "not set", not "set to nothing".
+
+        Args:
+            namespace: The agent to resolve for. ``""`` returns the whole tree, which is what the
+                root namespace resolves.
+
+        Returns:
+            A plain dictionary, keys as the settings tree spells them.
+
+        Raises:
+            RuntimeError: if called on a view, for the reason given on :attr:`namespaces` -- this
+                answers for an arbitrary namespace, so on a view it would be a route to a
+                neighbour's configuration.
+        """
+        if self._is_view:
+            raise RuntimeError(
+                f"Namespace '{self._agent_scope}' asked its own view to resolve configuration for namespace "
+                f"'{namespace}'. Views resolve their own keys through get(); they are not a window on another "
+                "agent's configuration."
+            )
+
+        tree: dict[str, Any] = dict(self._settings.as_dict())
+        if not namespace:
+            return tree
+
+        logger.debug("Resolving the flattened configuration of namespace '%s'", namespace)
+        others = {name.lower() for name in self._views} - {namespace.lower()}
+        own: Any = None
+        resolved: dict[str, Any] = {}
+        for key, value in tree.items():
+            lowered = str(key).lower()
+            if lowered == namespace.lower():
+                own = value
+            elif lowered not in others:
+                resolved[key] = value
+
+        if hasattr(own, "items"):
+            # as_dict() upper-cases the top level of the tree but leaves a subsection's own keys
+            # as written, so the overlay has to be upper-cased to land *on* the root key rather
+            # than beside it. Without this, a resolved dictionary reports the root value under
+            # APP_NAME and the agent value under app_name, and disagrees with what get() answers.
+            for key, value in own.items():
+                if value is not None:
+                    resolved[str(key).upper()] = value
+        return resolved
+
     def get_package_root(self) -> Path:
         """Return the root path where configuration files are located."""
 

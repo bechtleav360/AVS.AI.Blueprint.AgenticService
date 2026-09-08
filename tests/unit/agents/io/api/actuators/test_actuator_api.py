@@ -1,9 +1,14 @@
 """Unit tests for ActuatorApi."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+import textwrap
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 
+from blueprint.agents.component.component import Component
+from blueprint.agents.component.registry import Registry
+from blueprint.agents.config import Config
 from blueprint.agents.io.api.actuators.actuator_api import ActuatorApi
 
 
@@ -220,3 +225,116 @@ class TestReadinessProbe:
         # below would have overwritten it with "Readiness probe failed".
         assert exc_info.value.detail["status"] == "DOWN"
         assert exc_info.value.detail["errors"] == ["missing redis_url"]
+
+
+# ---------------------------------------------------------------------------
+# env_status
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def grouped_config(tmp_path: Path, mock_registry: MagicMock) -> Config:
+    """A real Config with two agents, injected as the shared component config.
+
+    A MagicMock cannot stand in here: the endpoint is being tested for how it uses the scoping
+    and audit behaviour of the real Config, not for which methods it happens to call.
+    """
+    settings = tmp_path / "settings.toml"
+    content = textwrap.dedent("""
+            [development]
+            app_name = "root-app"
+            app_port = 8000
+            health_check_interval_seconds = 30
+            model_name = "root-model"
+            nats_url = "nats://localhost:4222"
+            openai_api_key = "sk-must-not-appear"
+
+            [development.orders]
+            app_name = "orders"
+            model_name = "orders-model"
+            orders_api_token = "tok-must-not-appear"
+
+            [development.billing]
+            app_name = "billing"
+            """)
+    settings.write_text(content)
+    config = Config(settings_files=[str(settings)], root_path=str(tmp_path))
+    Component.configure(config)
+    return config
+
+
+class TestEnvStatus:
+    async def test_a_single_agent_service_reports_no_namespaces(self, grouped_config: Config) -> None:
+        """Nothing has asked for a view, so the response is shaped as it always was."""
+        result = await ActuatorApi().env_status()
+        assert result.namespaces == {}
+        assert result.settings["MODEL_NAME"] == "root-model"
+
+    async def test_each_namespace_that_asked_for_config_is_reported(self, grouped_config: Config) -> None:
+        grouped_config.for_namespace("orders")
+        grouped_config.for_namespace("billing")
+
+        result = await ActuatorApi().env_status()
+
+        assert sorted(result.namespaces) == ["billing", "orders"]
+
+    async def test_a_namespace_entry_is_what_that_agent_resolves(self, grouped_config: Config) -> None:
+        """Including keys it inherits: an operator debugging a value needs where it is read, not declared."""
+        view = grouped_config.for_namespace("orders")
+
+        result = await ActuatorApi().env_status()
+
+        orders = result.namespaces["orders"]
+        assert orders["MODEL_NAME"] == view.get("model_name") == "orders-model"
+        assert orders["NATS_URL"] == "nats://localhost:4222"
+
+    async def test_one_namespace_does_not_see_another(self, grouped_config: Config) -> None:
+        grouped_config.for_namespace("orders")
+        grouped_config.for_namespace("billing")
+
+        result = await ActuatorApi().env_status()
+
+        assert "BILLING" not in result.namespaces["orders"]
+        assert result.namespaces["billing"]["APP_NAME"] == "billing"
+
+    async def test_secrets_are_masked_in_every_namespace(self, grouped_config: Config) -> None:
+        """The per-namespace breakdown is a second copy of the tree, so it needs the same masking."""
+        grouped_config.for_namespace("orders")
+
+        result = await ActuatorApi().env_status()
+
+        assert result.settings["OPENAI_API_KEY"] == "***"
+        assert result.namespaces["orders"]["OPENAI_API_KEY"] == "***"
+        assert result.namespaces["orders"]["ORDERS_API_TOKEN"] == "***"
+        assert "must-not-appear" not in str(result.model_dump())
+
+    async def test_the_resolved_envvar_prefix_is_reported(self, grouped_config: Config) -> None:
+        assert (await ActuatorApi().env_status()).envvar_prefix == "DYNACONF"
+
+    async def test_a_disabled_prefix_is_reported_as_null(self, tmp_path: Path, mock_registry: MagicMock) -> None:
+        """Null is unambiguous for a JSON consumer; an empty string reads as a prefix of nothing."""
+        settings = tmp_path / "settings.toml"
+        settings.write_text('envvar_prefix = false\n\n[development]\napp_name = "root-app"\napp_port = 8000\n')
+        Component.configure(Config(settings_files=[str(settings)], root_path=str(tmp_path)))
+
+        assert (await ActuatorApi().env_status()).envvar_prefix is None
+
+    async def test_the_raw_tree_is_read_once_per_request(self, grouped_config: Config) -> None:
+        """Config.settings is audited, so re-reading it turns one operator request into three records."""
+        grouped_config.for_namespace("orders")
+        with patch.object(type(grouped_config), "settings", new_callable=PropertyMock) as raw:
+            raw.return_value = grouped_config._settings
+            await ActuatorApi().env_status()
+
+        assert raw.call_count == 1
+
+    async def test_an_agent_scoped_actuator_reports_only_its_own_scope(self, grouped_config: Config) -> None:
+        """C6 refuses both halves of the breakdown on a view, so the endpoint must not attempt it."""
+        Component.reset_shared_state()
+        Component.configure(grouped_config.for_namespace("orders"))
+        Component.shared_registry = MagicMock(spec=Registry)
+
+        result = await ActuatorApi().env_status()
+
+        assert result.namespaces == {}
+        assert result.settings["APP_NAME"] == "root-app"
