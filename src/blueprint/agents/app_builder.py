@@ -339,7 +339,10 @@ class AppBuilder:
         config.configure_logging()
         self._config = config
         self._telemetry_manager = TelemetryManager()
-        self._eventing_component: DaprEventing | NatsEventing | None = None
+        # One transport endpoint per agent that consumes. A list rather than a single slot
+        # because a group's agents each subscribe on their own behalf (spec sec. 7.6); it holds
+        # exactly one element for every application that declares no namespace.
+        self._eventing_components: list[DaprEventing | NatsEventing] = []
         # Components that need lifespan (on_startup / on_shutdown) but do not expose
         # a FastAPI router. SessionsBus lives here because it is SSE-driven, not
         # HTTP-driven; keeping it out of _eventing_component avoids the routerless
@@ -450,6 +453,22 @@ class AppBuilder:
         so an empty tuple means "root only" rather than "nothing registered".
         """
         return tuple(self._namespaces)
+
+    @property
+    def hosted_namespaces(self) -> tuple[str, ...]:
+        """Every namespace this process serves: the root first, then each declared agent.
+
+        The root is always present, and always first. It is where a single-agent application's
+        components live, and where the framework's own root components go, so it cannot be
+        conditional. In a grouped application the root usually holds nothing, and then the root
+        pass over this list simply creates nothing -- the per-agent gates decide that, not this
+        list.
+
+        Distinct from :attr:`namespaces`, which is only what ``with_namespace`` was told. That
+        one answers "which agents was this builder asked to host"; this one answers "which
+        namespaces does ``build()`` have to iterate", and those differ by exactly the root.
+        """
+        return (ROOT_NAMESPACE, *self._namespaces)
 
     def with_handler(
         self, handler: type[HandlerT] | HandlerT, *, name: str | None = None, namespace: str = ROOT_NAMESPACE, **kwargs: Any
@@ -646,65 +665,28 @@ class AppBuilder:
                     scheduler.crontab,
                 )
 
-        # 3. Create the IO transport client, and the eventing endpoint only if something
-        # consumes. Publishing and consuming are decided separately: an application that
-        # only emits events -- a scheduler that reports what it did, a REST API that hands
-        # work on -- needs a client but must not be subscribed to anything it never asked
-        # for. Consuming still implies publishing, because a handler returning a
-        # HandlerResult with an event_type has always published through the same client.
-        consumes = bool(registry.get_event_handler())
-        publishes = self._publishing_requested()
+        # 3. Create the IO transport, once per agent this process hosts. One transport type
+        # per process -- 'event_bus' is read from the root config, and mixing NATS with Dapr
+        # is out of scope for this plan -- but which agents get a client, and which of them
+        # get an endpoint, is decided per agent below.
         event_bus_type = str(self._config.get("event_bus", "") or "").strip().lower()
-
-        if publishes and event_bus_type not in TOPIC_TRANSPORTS:
-            # Strict where the handler branch below only warns: 'event_publishing_enabled' is
-            # a new key, and setting it is an explicit statement that this application emits
-            # events. Honouring that with no transport would mean the first publish fails at
-            # runtime, inside whatever business operation produced the event.
-            raise ValueError(
-                f"'event_publishing_enabled' is true but 'event_bus' is {event_bus_type or 'not set'!r}, so there is "
-                f"no client to publish through. Set 'event_bus' to one of {', '.join(TOPIC_TRANSPORTS)}, or remove "
-                "'event_publishing_enabled'."
-            )
-
-        if consumes or publishes:
-            if event_bus_type == "dapr":
-                DaprClient()  # auto-registers
-                if consumes:
-                    self._eventing_component = DaprEventing()
-            elif event_bus_type == "nats":
-                NATSClient()  # auto-registers
-                if consumes:
-                    self._eventing_component = NatsEventing()
-            elif event_bus_type == "sessions":
-                SessionsApiClient()  # ServiceBase → auto-registers
-                SessionKeyProvider()  # ServiceBase → auto-registers
-                # SessionsBus has no router (SSE-driven). Track it via the
-                # lifecycle list so the lifespan hook still drives on_startup /
-                # on_shutdown without polluting the router-mount path.
-                self._lifecycle_components.append(SessionsBus())
-            else:
-                logger.warning(
-                    "Event handlers are registered but no valid event_bus configured "
-                    "('dapr', 'nats', or 'sessions'). Event handling will be disabled."
-                )
-
-            if publishes and not consumes:
-                logger.info(
-                    "Event publishing is enabled without any handler: a '%s' client is created, and nothing is subscribed",
-                    event_bus_type,
-                )
+        for namespace in self.hosted_namespaces:
+            self._wire_transport(registry, namespace, event_bus_type)
 
         # 4. Create internal services (auto-register)
         # EventProcessingService is only useful when there's a handler to route
         # requests to -- whether via an eventing endpoint (see step 3) or a REST
-        # API calling RestApiBase._process_resource() directly.
-        if consumes:
+        # API calling RestApiBase._process_resource() directly. One per process, at the
+        # root: it keeps a handler chain per agent (phase 4) rather than being one per agent.
+        if registry.get_event_handler():
             EventProcessingService()
-        # Keyed on the client rather than on 'publishes', so a consuming application keeps
-        # the publishing service it has always had without opting in.
-        if registry.get_io_clients():
-            EventPublishingService()
+        # One publishing service per agent that has a client, so an agent's outbound events
+        # go out on its own connection (spec sec. 6) and are attributable to it. Keyed on the
+        # client rather than on 'publishes', so a consuming agent keeps the publishing service
+        # it has always had without opting in.
+        for namespace in self.hosted_namespaces:
+            if registry.get_io_clients(namespace=namespace):
+                EventPublishingService(namespace=namespace)
 
         # 5. Create ActuatorApi and wire health checkers from all registered clients
         self._actuator_api = ActuatorApi()
@@ -733,6 +715,79 @@ class AppBuilder:
         self._build_rest_endpoints(app, registry)
         return app
 
+    def _wire_transport(self, registry: Registry, namespace: str, event_bus_type: str) -> None:
+        """Give ``namespace`` a transport client, and an endpoint if it consumes.
+
+        Publishing and consuming are decided separately, per agent. An agent that only emits
+        events -- a scheduler reporting what it did, a REST API handing work on -- needs a
+        client but must not be subscribed to anything it never asked for. Consuming still
+        implies publishing, because a handler returning a ``HandlerResult`` with an
+        ``event_type`` has always published through the same client.
+
+        **An agent that neither consumes nor publishes gets no client** (spec sec. 6). A
+        pure-scheduler agent in ``in_process`` mode that has not opted into publishing is that
+        case, and a connection for it would be a socket, a readiness dependency and a
+        ``/connz`` entry for traffic that does not exist -- on a broker its own deployment may
+        have no access to. This is also what makes the root pass a no-op in a grouped
+        application, where every handler belongs to a namespace and the root has nothing.
+
+        Args:
+            registry: The application's registry, queried per namespace.
+            namespace: The agent to wire.
+            event_bus_type: The resolved ``event_bus`` value, shared by the whole process.
+
+        Raises:
+            ValueError: if this agent opted into publishing and there is no topic transport
+                to publish through.
+        """
+        consumes = bool(registry.get_event_handler(namespace=namespace))
+        publishes = self._publishing_requested(namespace)
+        agent = namespace or ROOT_LABEL
+
+        if publishes and event_bus_type not in TOPIC_TRANSPORTS:
+            # Strict where the handler branch below only warns: 'event_publishing_enabled' is
+            # an explicit statement that this agent emits events. Honouring that with no
+            # transport would mean the first publish fails at runtime, inside whatever
+            # business operation produced the event.
+            raise ValueError(
+                f"'event_publishing_enabled' is true for namespace '{agent}' but 'event_bus' is "
+                f"{event_bus_type or 'not set'!r}, so there is no client to publish through. Set 'event_bus' to one "
+                f"of {', '.join(TOPIC_TRANSPORTS)}, or remove 'event_publishing_enabled'."
+            )
+
+        if not (consumes or publishes):
+            logger.debug("Namespace '%s' neither consumes nor publishes events; it is given no transport client", agent)
+            return
+
+        if event_bus_type == "dapr":
+            DaprClient(namespace=namespace)  # auto-registers
+            if consumes:
+                self._eventing_components.append(DaprEventing(namespace=namespace))
+        elif event_bus_type == "nats":
+            NATSClient(namespace=namespace)  # auto-registers
+            if consumes:
+                self._eventing_components.append(NatsEventing(namespace=namespace))
+        elif event_bus_type == "sessions":
+            SessionsApiClient(namespace=namespace)  # ServiceBase -> auto-registers
+            SessionKeyProvider(namespace=namespace)  # ServiceBase -> auto-registers
+            # SessionsBus has no router (SSE-driven). Track it via the lifecycle list so the
+            # lifespan hook still drives on_startup / on_shutdown without polluting the
+            # router-mount path.
+            self._lifecycle_components.append(SessionsBus(namespace=namespace))
+        else:
+            logger.warning(
+                "Namespace '%s' has event handlers registered but no valid event_bus is configured "
+                "('dapr', 'nats', or 'sessions'). Event handling will be disabled for it.",
+                agent,
+            )
+
+        if publishes and not consumes:
+            logger.info(
+                "Event publishing is enabled for namespace '%s' without any handler: a '%s' client is created, and nothing is subscribed",
+                agent,
+                event_bus_type,
+            )
+
     @staticmethod
     def _lifecycle_rest_apis(registry: Registry) -> list[RestApiBase]:
         """Return the REST APIs the lifespan owns, which is every one that is not a scheduler.
@@ -744,8 +799,8 @@ class AppBuilder:
         """
         return [rest_api for rest_api in registry.get_rest_apis() if not isinstance(rest_api, SchedulerBase)]
 
-    def _publishing_requested(self) -> bool:
-        """Report whether this application has opted into publishing events.
+    def _publishing_requested(self, namespace: str = ROOT_NAMESPACE) -> bool:
+        """Report whether ``namespace`` has opted into publishing events.
 
         ``event_publishing_enabled`` (bool, default ``False``). Off by default because
         publishing needs broker access, and a project that only wants a scheduler or a REST
@@ -758,10 +813,17 @@ class AppBuilder:
         ``BLUEPRINT_EVENT_PUBLISHING_ENABLED=`` means the key is not set. Anything else that
         is not a boolean does raise.
 
+        Read through the agent's own configuration view, so one agent in a group can emit
+        events while its neighbours do not (C5). ``for_namespace("")`` returns the loader
+        itself, so a single-agent application reads exactly the key it always read.
+
+        Args:
+            namespace: The agent asking. ``""`` is the root.
+
         Raises:
             ValueError: if the key holds a non-empty value that is not a boolean.
         """
-        raw = self._config.get("event_publishing_enabled", False)
+        raw = self._config.for_namespace(namespace).get("event_publishing_enabled", False)
         if raw is None or (isinstance(raw, str) and not raw.strip()):
             return False
         return parse_bool(raw, "event_publishing_enabled")
@@ -778,8 +840,8 @@ class AppBuilder:
             # for services to tag their routes rather than hide behind a catch-all.
             app.include_router(rest_api.router, prefix="/api")
 
-        if self._eventing_component is not None:
-            app.include_router(self._eventing_component.router)
+        for eventing_component in self._eventing_components:
+            app.include_router(eventing_component.router)
 
         if registry.has_cache():
             app.include_router(CacheManagementApi().router, prefix="/api", tags=["cache"])
@@ -870,13 +932,18 @@ class AppBuilder:
                     logger.error("Scheduler %s startup failed: %s", scheduler.name, e, exc_info=True)
                     raise
 
-            # Eventing component (Dapr / NATS endpoint)
-            if self._eventing_component is not None:
+            # Eventing components (one Dapr / NATS endpoint per agent that consumes)
+            for eventing_component in self._eventing_components:
                 try:
-                    await self._eventing_component.on_startup()
-                    logger.info("Eventing component startup completed")
+                    await eventing_component.on_startup()
+                    logger.info("Eventing component for namespace '%s' startup completed", eventing_component.namespace or ROOT_LABEL)
                 except Exception as e:
-                    logger.error("Eventing component startup failed: %s", e, exc_info=True)
+                    logger.error(
+                        "Eventing component for namespace '%s' startup failed: %s",
+                        eventing_component.namespace or ROOT_LABEL,
+                        e,
+                        exc_info=True,
+                    )
                     raise
 
             # Routerless lifecycle components (e.g. SessionsBus).
@@ -912,11 +979,16 @@ class AppBuilder:
                         exc_info=True,
                     )
 
-            if self._eventing_component is not None:
+            for eventing_component in reversed(self._eventing_components):
                 try:
-                    await self._eventing_component.on_shutdown()
+                    await eventing_component.on_shutdown()
                 except Exception as e:
-                    logger.error("Eventing component shutdown failed: %s", e, exc_info=True)
+                    logger.error(
+                        "Eventing component for namespace '%s' shutdown failed: %s",
+                        eventing_component.namespace or ROOT_LABEL,
+                        e,
+                        exc_info=True,
+                    )
 
             for scheduler in registry.get_schedulers():
                 try:

@@ -3040,6 +3040,111 @@ The last case doubles as the record of why part 1 does not build a `filter_subje
 durable per `(namespace, topic)` filtering one subject means declaring a topic *adds* a consumer
 and never rewrites one, so there is no filter to churn and no reconfiguration to migrate.
 
+### Phase 6, part 1 -- build() wires a transport per agent, and none for an agent that needs one not
+
+Phase 5 made a transport endpoint able to subscribe for one agent. Nothing created more than one:
+`build()` still made a single client and a single endpoint for the whole process, so every agent
+in a group would have shared the root's connection and the root's subscription set -- which is
+neither what spec sec. 6 asks for nor what phase 5's endpoints were built to do.
+
+**`_eventing_component` became `_eventing_components: list[...]`**, and the decision moved into
+one method per agent:
+
+```python
+        event_bus_type = str(self._config.get("event_bus", "") or "").strip().lower()
+        for namespace in self.hosted_namespaces:
+            self._wire_transport(registry, namespace, event_bus_type)
+```
+
+`event_bus` is read once, from the root: one transport type per process is a stated boundary of
+this plan (mixing NATS and Dapr is out of scope). What is decided per agent is *whether* that
+agent gets a client, and whether it gets an endpoint.
+
+**`AppBuilder.hosted_namespaces`** is the list `build()` iterates -- the root first, then each
+declared agent. It is deliberately not `namespaces`, which is only what `with_namespace` was
+told: that property answers "which agents was this builder asked to host", this one answers
+"which namespaces does `build()` have to walk", and they differ by exactly the root. The root
+cannot be conditional, because it is where a single-agent application's components live and where
+the framework's own root components go.
+
+**`_wire_transport` is where the per-agent gates live:**
+
+```python
+        consumes = bool(registry.get_event_handler(namespace=namespace))
+        publishes = self._publishing_requested(namespace)
+        ...
+        if not (consumes or publishes):
+            logger.debug("Namespace '%s' neither consumes nor publishes events; it is given no transport client", agent)
+            return
+
+        if event_bus_type == "dapr":
+            DaprClient(namespace=namespace)  # auto-registers
+            if consumes:
+                self._eventing_components.append(DaprEventing(namespace=namespace))
+        elif event_bus_type == "nats":
+            NATSClient(namespace=namespace)  # auto-registers
+            if consumes:
+                self._eventing_components.append(NatsEventing(namespace=namespace))
+```
+
+The early return is a spec requirement, not an optimisation: **an agent that neither consumes nor
+publishes must not be given a client** (sec. 6). A pure-scheduler agent in `in_process` mode that
+has not opted into publishing is that case, and a connection for it would be a socket, a
+readiness dependency and a `/connz` entry for traffic that does not exist -- on a broker its own
+deployment may have no access to. The same gate is what makes the root pass a no-op in a grouped
+application, where every handler belongs to a namespace and the root holds nothing.
+
+**Publishing became a per-agent opt-in.** `_publishing_requested` now takes a namespace and reads
+through that agent's configuration view:
+
+```python
+        raw = self._config.for_namespace(namespace).get("event_publishing_enabled", False)
+```
+
+So one agent in a group can emit events while its neighbours do not (C5). `for_namespace("")`
+returns the loader itself, so a single-agent application reads exactly the key it always read.
+The error for "publishing enabled, no transport" now names the agent that asked, because in a
+group "somebody set this" is not a usable message.
+
+**One `EventPublishingService` per agent that has a client**, which is what spec sec. 6 requires
+for outbound attribution -- an agent's events go out on its own connection:
+
+```python
+        for namespace in self.hosted_namespaces:
+            if registry.get_io_clients(namespace=namespace):
+                EventPublishingService(namespace=namespace)
+```
+
+Keyed on the client rather than on `publishes`, so a consuming agent keeps the publishing service
+it has always had without opting in. `EventProcessingService` stays single and at the root, since
+phase 4 gave it a chain per agent instead.
+
+**The lifespan and the router mount iterate the list**, shutdown in reverse, and both log the
+namespace of the endpoint they are driving -- in a group "eventing component startup failed" with
+no agent named is not attributable, which is C7.
+
+**Three sessions components gained a namespace** (`SessionsApiClient`, `SessionKeyProvider`,
+`SessionsBus`), because the sessions branch of `_wire_transport` creates them per agent like the
+other two. `SessionsBus` is the one that matters beyond naming: it dispatches through
+`CloudEventProcessorMixin`, which passes `self.namespace` since phase 4, so a job notification is
+now offered to that agent's handlers and no other's.
+
+Tests: `tests/unit/agents/app_builder/test_build_namespaces.py`, 16 cases against real
+components -- one client per consuming agent, one at the root for a single-agent application, none
+for the root when it holds nothing, none for an agent that neither consumes nor publishes, and a
+client-without-endpoint for a publish-only agent; publishing opted into per agent; one endpoint
+per consuming agent, one at the root for a single-agent application, none without handlers, and
+each endpoint subscribing only its own topics; one publishing service per agent with a client and
+none for an agent without one; `hosted_namespaces` ordering; and the publish-opt-in error naming
+the agent.
+
+Four existing `build()` tests were updated: the mock config gained
+`for_namespace.return_value = config` (the pattern `mock_config` already used), seven
+`assert_called_once_with()` assertions became `assert_called_once_with(namespace="")` -- the same
+call, now explicit -- `_eventing_component is None` became `_eventing_components == []`, and one
+`get_event_handler` stub lambda took the namespace argument it is now passed. None of these is a
+behaviour change; each is an assertion on a call shape.
+
 ---
 
 ## Compatibility
@@ -3113,6 +3218,15 @@ Everything else remains non-breaking. Specifically:
   Whether Dapr merges the two or delivers twice needs checking against a real sidecar; it belongs on
   the broker-test list.
 - New config keys all default to current behaviour.
+- **`AppBuilder._eventing_component` is now `_eventing_components`, a list.** Underscore-private,
+  but anything introspecting it breaks. It holds exactly one element for every application that
+  declares no namespace.
+- **`event_publishing_enabled` is now read per agent**, through that agent's configuration view.
+  A root-level key still applies to a single-agent application unchanged; in a group an agent can
+  set its own, and `<agent>.event_publishing_enabled` wins over the shared value.
+- **`SessionsApiClient`, `SessionKeyProvider` and `SessionsBus` gained a leading optional
+  `namespace`.** All three are framework-constructed from `build()`, so the leading position
+  affects nobody.
 - **Phase 5 is not a consumer migration, and expects neither a replay nor a gap.** The plan
   requires this to be stated, because renaming a durable or changing a filter set is broker-side
   state and a recreated consumer resumes by its delivery policy. Neither happens here: the

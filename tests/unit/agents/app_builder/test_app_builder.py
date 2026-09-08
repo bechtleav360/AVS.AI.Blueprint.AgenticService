@@ -345,9 +345,9 @@ class TestBuildSessionsBranch:
 
         builder_for_build.build()
 
-        all_build_mocks.sessions_api_client.assert_called_once_with()
-        all_build_mocks.session_key_provider.assert_called_once_with()
-        all_build_mocks.sessions_bus.assert_called_once_with()
+        all_build_mocks.sessions_api_client.assert_called_once_with(namespace="")
+        all_build_mocks.session_key_provider.assert_called_once_with(namespace="")
+        all_build_mocks.sessions_bus.assert_called_once_with(namespace="")
         all_build_mocks.dapr_client.assert_not_called()
         all_build_mocks.nats_client.assert_not_called()
 
@@ -365,7 +365,7 @@ class TestBuildSessionsBranch:
 
         builder_for_build.build()
 
-        assert builder_for_build._eventing_component is None
+        assert builder_for_build._eventing_components == []
         assert all_build_mocks.sessions_bus.return_value in builder_for_build._lifecycle_components
 
     def test_sessions_bus_router_never_mounted(
@@ -416,8 +416,8 @@ class TestBuildDaprRegression:
 
         builder_for_build.build()
 
-        all_build_mocks.dapr_client.assert_called_once_with()
-        all_build_mocks.dapr_eventing.assert_called_once_with()
+        all_build_mocks.dapr_client.assert_called_once_with(namespace="")
+        all_build_mocks.dapr_eventing.assert_called_once_with(namespace="")
         all_build_mocks.sessions_bus.assert_not_called()
 
 
@@ -447,8 +447,8 @@ class TestBuildNatsRegression:
 
         builder_for_build.build()
 
-        all_build_mocks.nats_client.assert_called_once_with()
-        all_build_mocks.nats_eventing.assert_called_once_with()
+        all_build_mocks.nats_client.assert_called_once_with(namespace="")
+        all_build_mocks.nats_eventing.assert_called_once_with(namespace="")
         all_build_mocks.sessions_bus.assert_not_called()
 
 
@@ -526,7 +526,8 @@ class TestBuildSchedulerWiring:
         scheduler = MagicMock()
         mock_registry.get_schedulers.return_value = [scheduler]
         # The tick handler wire() registers is what makes get_event_handler() non-empty.
-        mock_registry.get_event_handler.side_effect = lambda: [MagicMock()] if scheduler.wire.called else []
+        # build() now asks per namespace, so the stub takes the argument it is given.
+        mock_registry.get_event_handler.side_effect = lambda namespace=None: [MagicMock()] if scheduler.wire.called else []
         self._config(build_config, event_bus="nats")
 
         builder_for_build.build()
@@ -604,7 +605,7 @@ class TestBuildPublishOnly:
         all_build_mocks.nats_eventing.assert_not_called()
         all_build_mocks.eps.assert_not_called()
         all_build_mocks.epubs.assert_called_once()
-        assert builder_for_build._eventing_component is None
+        assert builder_for_build._eventing_components == []
 
     def test_opt_in_accepts_the_string_an_environment_variable_delivers(
         self,

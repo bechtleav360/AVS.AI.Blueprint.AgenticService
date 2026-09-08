@@ -11,6 +11,7 @@ from uuid import UUID
 
 import httpx
 
+from ...component.namespace import ROOT_NAMESPACE
 from ..service_base import ServiceBase
 
 logger = logging.getLogger(__name__)
@@ -29,8 +30,15 @@ class SessionsApiClient(ServiceBase):
         api_key = "@format {env[SESSIONS_API_KEY]}"
     """
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, namespace: str = ROOT_NAMESPACE) -> None:
+        """Initialize the sessions API client for one agent.
+
+        Args:
+            namespace: The agent this client belongs to; ``""`` is the root, which is the
+                whole of a single-agent application. Named by ``AppBuilder.build()``, which
+                creates one per agent using the sessions transport; a project never passes it.
+        """
+        super().__init__(namespace=namespace)
         self._base_url: str | None = None
         self._api_key: str | None = None
         self._client: httpx.AsyncClient | None = None

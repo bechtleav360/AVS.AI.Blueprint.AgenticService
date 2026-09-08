@@ -72,6 +72,9 @@ def build_config() -> MagicMock:
     """
     config = MagicMock(spec=Config)
     config.get.return_value = ""  # safe default for all config.get() calls
+    # build() reads per-agent keys through Config.for_namespace(); the mock stands in for
+    # both the loader and its views, as mock_config does, so a test controls one object.
+    config.for_namespace.return_value = config
     return config
 
 
