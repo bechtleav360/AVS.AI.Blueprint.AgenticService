@@ -3004,6 +3004,42 @@ endpoint resolving the root one; only this agent's topics reaching the client; t
 subscription document holding one agent's topics and a root document unchanged; and namespace
 ownership, including that an illegal namespace is refused and that endpoints stay unregistered.
 
+### Phase 5, part 2 -- C1 gets the regression test the plan asks for
+
+No production change. The plan marks the consumer identity "**C1 -- invariant, cover with a
+test**", and the invariant was the one thing about P6's naming that nothing checked: the durable
+and the queue group are derived from the namespace, and the tests proved they *are* -- but nothing
+proved a deployment value cannot get in.
+
+That is the failure worth a permanent guard rather than a review. A durable that picks up the
+group name becomes a *different* durable the moment the agent is moved between groups, and a
+fresh JetStream consumer resumes according to its delivery policy: the agent either replays the
+stream from the beginning or silently skips whatever arrived while it was being renamed. Nothing
+in the process reports either. And the temptation is real, because the connection name
+(`f"{namespace}.{group}.{pod}"`) is right there in the same class and carries both values.
+
+`TestConsumerIdentityIgnoresTheDeployment` in `tests/unit/agents/clients/io/test_nats_client.py`,
+four cases. Each derives the queue group and the durable, changes the deployment, and derives them
+again from the same client -- so what is asserted is the derivation rather than a value cached at
+subscribe time:
+
+- the group name changing leaves both identifiers untouched;
+- the pod name changing leaves both untouched (a pod name in a durable would mean a new consumer
+  on every restart);
+- the connection name *does* change across the same edit, which is the positive half: the
+  deployment is visible where attribution needs it and nowhere else;
+- the JetStream `ConsumerConfig` carries `durable_name`, `filter_subject` and `deliver_group`
+  derived from the namespace and the topic, and neither the group nor the pod appears anywhere in
+  it.
+
+**The tests were verified to fail.** Injecting `BLUEPRINT_GROUP` into `_durable_for`'s prefix
+fails three of the four; injecting `POD_NAME` fails all four. An invariant test that passes
+against a broken implementation is worse than no test, so this was checked rather than assumed.
+
+The last case doubles as the record of why part 1 does not build a `filter_subjects` set: one
+durable per `(namespace, topic)` filtering one subject means declaring a topic *adds* a consumer
+and never rewrites one, so there is no filter to churn and no reconfiguration to migrate.
+
 ---
 
 ## Compatibility
