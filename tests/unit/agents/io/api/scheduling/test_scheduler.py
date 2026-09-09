@@ -18,6 +18,7 @@ from blueprint.agents.io.api.scheduling.scheduler import (
     SchedulerTickHandler,
     validate_crontab,
 )
+from blueprint.agents.component.namespace import namespace_scope
 from blueprint.agents.services.infrastructure.cache_service import DiskCacheService
 
 _SCHEDULER_MODULE = "blueprint.agents.io.api.scheduling.scheduler"
@@ -186,8 +187,32 @@ class TestValidateCrontab:
 
 
 class TestTickTopic:
-    def test_topic_derives_from_app_name_and_scheduler_name(self, scheduler: _TestScheduler) -> None:
+    def test_topic_derives_from_app_name_when_no_name_was_given(self, scheduler: _TestScheduler) -> None:
+        """No namespace, so app_name is the identity -- which is every single-agent application."""
         assert scheduler.tick_topic == f"cleanup_service.scheduler.{scheduler.name}"
+
+    def test_a_namespaced_scheduler_derives_from_its_own_name(self, settings: dict[str, Any], mock_registry: MagicMock) -> None:
+        """The name given in code wins over app_name, which belongs to the whole process.
+
+        This read used to be the module constant ROOT_NAMESPACE -- always "" -- left as a
+        placeholder for phase 2, so a namespaced scheduler derived its subject from app_name.
+        """
+        settings["scheduler_mode"] = SCHEDULER_MODE_EVENT
+        with namespace_scope("orders"):
+            namespaced = _TestScheduler()
+
+        assert namespaced.tick_topic == f"orders.scheduler.{namespaced.name}"
+
+    def test_two_agents_schedulers_of_one_name_get_two_subjects(self, settings: dict[str, Any], mock_registry: MagicMock) -> None:
+        """Derived from app_name they shared a subject and consumed each other's ticks."""
+        settings["scheduler_mode"] = SCHEDULER_MODE_EVENT
+        with namespace_scope("orders"):
+            orders = _TestScheduler()
+        with namespace_scope("billing"):
+            billing = _TestScheduler()
+
+        assert orders.tick_topic != billing.tick_topic
+        assert orders.tick_topic.startswith("orders.") and billing.tick_topic.startswith("billing.")
 
     def test_topic_follows_a_renamed_scheduler(self, settings: dict[str, Any], mock_registry: MagicMock) -> None:
         renamed = _TestScheduler()

@@ -3629,6 +3629,77 @@ afterwards, renaming to the same name and to a component's own qualified name bo
 renaming from an unregistered name still raising. `test_namespace_builder.py`'s dedupe test became
 two refusal tests.
 
+### One name per agent: the name given in code, with `app_name` as the fallback
+
+Raised by the user, whose premise was worth checking first: the namespace is **not** derived from
+`app_name`. It never was -- an agent's name comes from `with_namespace("orders")` in code, and
+config supplies nothing. But the instinct behind the question was right, because config was
+supplying a *second* name for the same agent, and two of the places that read it were wrong.
+
+The rule now, stated once: **the name given in code is the agent's identity; `app_name` is used
+only when no name was given, and is otherwise a display string for the process.**
+
+**1. An agent no longer has to restate its name in config.** `Config(agent_scope=...)` carried
+`Validator(f"{agent_scope}.app_name", must_exist=True)`, so every agent in a group had to declare
+an `app_name` of its own -- a second name, free to disagree with the first. The same agent could
+be `orders` in the registry, the queue group, the durable and the cache partition, and
+`Order Processing` in a dashboard. The validator is gone. `app_name` stays a root key for the
+OpenAPI title, `/info` and `/status/build`, and an agent may still set one *for display* without
+it touching identity.
+
+**2. Telemetry identity was the display name, which breaks C2.** `otel_service_name` defaulted to
+`app_name`, so an agent's `service.name` was whatever `app_name` said:
+
+```python
+    def _resolve_service_name(self) -> str:
+        if self._agent_scope:
+            scoped = self._settings.get(f"{self._agent_scope}.otel_service_name")
+            return str(scoped) if scoped else self._agent_scope
+        return str(self.get("otel_service_name", self.get("app_name", "agent-service")))
+```
+
+A scoped view answers with its own `otel_service_name` if the agent set one, and otherwise with
+the **namespace**. Note what it deliberately does *not* do: fall back to the root's
+`otel_service_name`. That is the one place a scoped read must not, because inheriting it would
+give every agent in a group the same `service.name` -- and then regrouping moves work between
+agents that no dashboard can tell apart, which is the whole of what C2 forbids. The root view
+keeps the old chain exactly, so a single-agent application's dashboards do not move.
+
+**3. A namespaced scheduler derived its tick subject from `app_name`.** This was a live defect
+left behind by a placeholder:
+
+```python
+-        # ROOT_NAMESPACE is still "" for every component; phase 2 is what gives this a value.
+-        identity = ROOT_NAMESPACE or str(self.config.get("app_name", "") or "").strip()
++        identity = self.namespace or str(self.config.get("app_name", "") or "").strip()
+```
+
+`ROOT_NAMESPACE` is the module constant `""`, so the expression was *always* `app_name`. The
+comment says phase 2 would give it a value -- phase 2 landed, `self.namespace` has one, and
+nothing came back to this line. The consequence: two agents in a group each with a `nightly`
+scheduler derived the same tick subject and would have consumed each other's ticks, and moving an
+agent between groups could change the subject its external `CronJob` publishes to, which is
+exactly what C1 forbids. The `source` string on the next line had the same inversion, so the
+error message named the wrong key. Both fixed, with two regression tests that fail against the old
+expression.
+
+Everything else that reads `app_name` was already right and is untouched: the NATS queue group
+(`if self.namespace: return self.namespace`, then `nats_queue_group`, then `app_name`), and the
+display readers.
+
+Tests: `tests/unit/agents/config/test_agent_identity.py`, 8 cases -- an agent's service name being
+its own name, an agent overriding it for itself, the root's override *not* leaking into an agent,
+a single-agent application still reading `app_name`, an explicit root override still winning at
+the root, the default when there is neither, and `app_name` staying readable and settable for
+display without touching identity. Two cases added to `test_scheduler.py` for the namespaced tick
+subject, and `test_agent_scope.py`'s "missing scoped app_name raises" became "an agent does not
+have to restate its name".
+
+**Not touched, deliberately:** `black --check` still fails on `config/config.py`, and did at HEAD too -- it is one of the files `CLAUDE.local.md` documents as
+disputed between `black` and `ruff format`. `black` reformatted a pre-existing ternary there when
+run over the changed files; that reformat was reverted, because accepting it would have started
+the ping-pong the two formatters play over that file.
+
 ---
 
 ## Compatibility
@@ -3702,6 +3773,19 @@ Everything else remains non-breaking. Specifically:
   Whether Dapr merges the two or delivers twice needs checking against a real sidecar; it belongs on
   the broker-test list.
 - New config keys all default to current behaviour.
+- **`<agent>.app_name` is no longer required.** A scoped `Config` used to refuse to load without
+  it. Setting one is still allowed and still read, but only for display.
+- **An agent's `otel_service_name` now defaults to its own name rather than to `app_name`, and no
+  longer inherits a root-level `otel_service_name`.** A single-agent application is unchanged:
+  explicit `otel_service_name`, then `app_name`, then the default. A grouped agent's
+  `service.name` becomes its agent name unless it sets its own -- which is the point (C2), and
+  which does change what a dashboard sees for a project that had been relying on the root value
+  while using namespaces.
+- **A namespaced scheduler's derived tick subject changes from `<app_name>.scheduler.<name>` to
+  `<agent>.scheduler.<name>`.** It was reading a placeholder constant, so it had always used
+  `app_name`. A root scheduler -- every one that exists today -- is unaffected. Any `CronJob`
+  publishing to a namespaced scheduler's derived subject has to be updated, and the startup log
+  names the subject.
 - **An explicit `name=` is now namespace-qualified, wherever it is set.** At the root -- every
   single-agent application -- `qualified_component_name("", name)` is `name`, so nothing changes.
   Inside a namespace, a component constructed directly with `name="planner"` registers as
