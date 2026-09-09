@@ -3798,7 +3798,7 @@ with an ERROR and the rest of the group still starts. The flag is read *before* 
 wired rather than after an exception, because there is no partial build to unwind: one process,
 one `build()`.
 
-#### The entry point (`b34e0d1`)
+#### The entry point (`029f287`)
 
 `python -m blueprint.agents.entrypoint`, and it exists to hold the three things `AppBuilder` must
 not: reading the environment, reading files, and exiting.
