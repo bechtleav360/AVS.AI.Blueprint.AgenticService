@@ -3687,6 +3687,14 @@ Everything else that reads `app_name` was already right and is untouched: the NA
 (`if self.namespace: return self.namespace`, then `nats_queue_group`, then `app_name`), and the
 display readers.
 
+**Which of these are breaking, precisely.** The `otel_service_name` change is, and it is listed as
+*Breaking change 2* under *Compatibility*: `Config(agent_scope=...)` is not new -- it landed in
+April and is on `develop` -- so a repo already using it sees its `service.name` change. The
+dropped validator is a loosening: configuration that was valid stays valid. The scheduler subject
+is **not** breaking for anything deployed, because a scheduler can only have a namespace if it was
+built inside a `namespace_scope`, which is branch-new; the *Compatibility* bullet says so rather
+than claiming a break that cannot happen.
+
 Tests: `tests/unit/agents/config/test_agent_identity.py`, 8 cases -- an agent's service name being
 its own name, an agent overriding it for itself, the root's override *not* leaking into an agent,
 a single-agent application still reading `app_name`, an explicit root override still winning at
@@ -3704,12 +3712,37 @@ the ping-pong the two formatters play over that file.
 
 ## Compatibility
 
-**One breaking change has landed: `scheduler_mode` is required.** A project that registers a
+**Two breaking changes have landed.** The second one only affects a project that already uses
+`Config(agent_scope=...)`; the scheduler change discussed further down is deliberately *not* on
+this list, and why is stated with it.
+
+**Breaking change 1: `scheduler_mode` is required.** A project that registers a
 scheduler and does not set it fails at `build()` with an error naming both values and what each
 one costs. Nothing changes behaviour silently: the alternative -- defaulting the key -- would
 either keep firing a timer per replica (#73) or stop ticking a service that has no broker, and
 neither is safe to inherit. The reasoning, including the counter-argument, is under *P5* above; it
 is a deliberate departure from spec sec. 7.5 and needs a spec amendment.
+
+**Breaking change 2: a scoped `Config`'s telemetry `service.name` is now the agent's name.**
+This affects a project that constructs `Config(agent_scope="foo")` -- which is not new, it has
+been available since April and is on `develop`, so this is a change to shipped behaviour rather
+than to something only this branch can reach.
+
+| | Was | Is |
+|---|---|---|
+| `otel_service_name` for a scoped view | `<scope>.otel_service_name`, else root `otel_service_name`, else `<scope>.app_name`, else root `app_name` | `<scope>.otel_service_name`, else the scope name |
+
+So a repo with `foo.app_name = "Foo Service"` and no `foo.otel_service_name` sees its
+`service.name` change from `Foo Service` to `foo`, and one relying on a *root*
+`otel_service_name` while using a scope sees it change to the scope name as well. The root path is
+untouched, so a project that passes no `agent_scope` -- every single-agent application -- is
+unaffected.
+
+**Migration** is one line if the old name matters: set `<scope>.otel_service_name` to whatever the
+dashboards already key on. Keeping the old chain was the alternative and is what C2 forbids: it
+lets every agent in a group report one `service.name`, and then regrouping moves work between
+agents no dashboard can tell apart. The point of the change is that the agent's name is the one
+identity it has.
 
 **Migrating an existing service with a scheduler** is one line, and which line depends on the
 deployment:
@@ -3782,10 +3815,19 @@ Everything else remains non-breaking. Specifically:
   which does change what a dashboard sees for a project that had been relying on the root value
   while using namespaces.
 - **A namespaced scheduler's derived tick subject changes from `<app_name>.scheduler.<name>` to
-  `<agent>.scheduler.<name>`.** It was reading a placeholder constant, so it had always used
-  `app_name`. A root scheduler -- every one that exists today -- is unaffected. Any `CronJob`
-  publishing to a namespaced scheduler's derived subject has to be updated, and the startup log
-  names the subject.
+  `<agent>.scheduler.<name>` -- and this is deliberately *not* counted as a breaking change.**
+  A scheduler's namespace is only non-empty when it was constructed inside a `namespace_scope`,
+  which exists only on this branch: `SchedulerBase.__init__` never took a namespace, and
+  `Component`'s namespace parameter arrived with P6. So no deployed scheduler can have one, and
+  no `CronJob` in the field publishes to a namespaced subject. A root scheduler -- every one that
+  exists -- derives exactly what it derived before.
+
+  It *is* a change for anyone who adopted this branch mid-flight and gave a scheduler a
+  namespace: their tick subject moves, and the publisher has to move with it. The startup log
+  names the subject in both modes, which is where to read the new value. Note also that
+  `Config(agent_scope=...)` alone does **not** give a scheduler a namespace -- a scoped config and
+  a component's namespace are different things before this branch -- so a project using
+  `agent_scope` today is unaffected by this one.
 - **An explicit `name=` is now namespace-qualified, wherever it is set.** At the root -- every
   single-agent application -- `qualified_component_name("", name)` is `name`, so nothing changes.
   Inside a namespace, a component constructed directly with `name="planner"` registers as
