@@ -1,5 +1,6 @@
 """Generic FastAPI application setup and configuration."""
 
+import importlib
 import logging
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import asynccontextmanager, contextmanager
@@ -35,6 +36,7 @@ from .services.eventing.event_publishing_service import EventPublishingService
 from .services.sessions import SessionKeyProvider, SessionsApiClient
 from .services.infrastructure.cache_backend_factory import CacheBackendFactory
 from .config import Config, TelemetryManager
+from .group_config import AgentSpec, GroupConfig, GroupConfigError
 from .utils import parse_bool
 
 HandlerT = TypeVar("HandlerT", bound=EventHandlerBase)
@@ -463,6 +465,132 @@ class AppBuilder:
         so an empty tuple means "root only" rather than "nothing registered".
         """
         return tuple(self._namespaces)
+
+    @classmethod
+    def from_group(cls, config: Config, *, environ: dict[str, str] | None = None) -> "AppBuilder":
+        """Resolve this process's group and apply it, in one call.
+
+        The convenience form of the entry point's first two lines. Kept separate from
+        :meth:`with_group` because this one performs I/O -- it is ``GroupConfig.resolve`` that
+        reads the environment and the group file -- while ``with_group`` does not, and a test
+        that wants an exact composition needs the half that does not.
+
+        Args:
+            config: The application's configuration.
+            environ: The environment to resolve from, for tests.
+
+        Returns:
+            A builder with every agent in the group applied.
+
+        Raises:
+            GroupConfigError: if the group cannot be resolved. See ``GroupConfig.resolve``.
+        """
+        return cls(config).with_group(GroupConfig.resolve(config, environ=environ))
+
+    def with_group(self, group: GroupConfig) -> "AppBuilder":
+        """Apply every agent in ``group``, and register the caches the group declares.
+
+        **Performs no I/O of its own**, which is what keeps this class a pure function of its
+        call sequence: no environment reads, no file reads, no ``sys.exit``, and no knowledge of
+        an agent repo's layout. Those belong to ``GroupConfig.resolve`` and to the entry point,
+        so a test can state an exact composition by constructing a ``GroupConfig`` literally.
+
+        Importing an agent's module is the one thing here that reaches outside, and it is
+        deliberately on this side of the line: it is driven entirely by the ``module`` strings
+        the group carries, so a test points them at test modules and controls neither the
+        environment nor the filesystem to do it. Imports happen **per group**, so cold start is
+        proportional to the number of agents this process actually hosts rather than to the
+        number the image contains.
+
+        A critical agent that cannot be loaded raises, which the entry point turns into a
+        non-zero exit before the port is bound. A non-critical one is skipped with an ERROR:
+        that flag is the deployment saying it would rather run the rest (spec sec. 9.1). The
+        flag is read *before* the agent is wired rather than after an exception, because there
+        is no partial build to unwind -- one process, one ``build()``.
+
+        Args:
+            group: The resolved group.
+
+        Returns:
+            This builder.
+
+        Raises:
+            GroupConfigError: if a critical agent's module or registration cannot be loaded.
+        """
+        logger.info(
+            "Applying group '%s': %d agent(s), %d declared cache(s)",
+            group.name,
+            len(group.agents),
+            len(group.cache_names),
+        )
+
+        for spec in group.agents:
+            registration = self._load_registration(spec)
+            if registration is None:
+                continue
+            self.with_namespace(spec.name, registration=registration)
+
+        for cache_name in group.cache_names:
+            self.with_cache(name=cache_name)
+
+        return self
+
+    @staticmethod
+    def _load_registration(spec: AgentSpec) -> AgentRegistration | None:
+        """Import an agent's declaration, or report why it could not be loaded.
+
+        Returns:
+            The registration, or ``None`` when a non-critical agent could not be loaded and is
+            to be skipped.
+
+        Raises:
+            GroupConfigError: if a critical agent cannot be loaded. The message names the agent
+                and the module path it came from, because the two are declared in different
+                files -- the agent name in the group file or an environment variable, the module
+                in the image's agent map -- and which of them is wrong is the first thing to
+                establish.
+        """
+        module_path, _, attribute = spec.module.partition(":")
+        if not module_path or not attribute:
+            return AppBuilder._skip_or_raise(
+                spec,
+                f"'{spec.module}' is not a valid declaration path. Write it as 'package.module:attribute', naming the "
+                "AgentRegistration the module assigns.",
+            )
+
+        try:
+            module = importlib.import_module(module_path)
+        except Exception as exc:
+            # Every exception, not only ImportError: importing a module runs it, so anything its
+            # top level does can fail here, and an agent whose declaration raises on import is
+            # exactly as unloadable as one whose module is absent.
+            return AppBuilder._skip_or_raise(spec, f"importing '{module_path}' raised {type(exc).__name__}: {exc}", exc)
+
+        registration = getattr(module, attribute, None)
+        if registration is None:
+            return AppBuilder._skip_or_raise(
+                spec, f"module '{module_path}' has no attribute '{attribute}', so its declaration cannot be read."
+            )
+        if not isinstance(registration, AgentRegistration):
+            return AppBuilder._skip_or_raise(
+                spec,
+                f"'{spec.module}' is a {type(registration).__name__}, not an AgentRegistration. An agent's "
+                "declaration is the object its components are declared on.",
+            )
+        logger.debug("Loaded the declaration for agent '%s' from '%s'", spec.name, spec.module)
+        return registration
+
+    @staticmethod
+    def _skip_or_raise(spec: AgentSpec, reason: str, cause: BaseException | None = None) -> None:
+        """Raise for a critical agent, or log and skip a non-critical one.
+
+        Raises:
+            GroupConfigError: when ``spec`` is critical.
+        """
+        if spec.critical:
+            raise GroupConfigError(f"Agent '{spec.name}' could not be loaded and is critical: {reason}") from cause
+        logger.error("Agent '%s' could not be loaded and is not critical, so it is skipped: %s", spec.name, reason)
+        return None
 
     @property
     def hosted_namespaces(self) -> tuple[str, ...]:
