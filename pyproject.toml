@@ -171,6 +171,7 @@ module = [
     "croniter",
     "dapr.*",
     "nats.*",
+    "yaml",
 ]
 ignore_missing_imports = true
 
