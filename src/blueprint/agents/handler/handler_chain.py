@@ -29,6 +29,25 @@ reach the transport as a returned value, and a third one would invite exactly th
 IDEMPOTENCY_CACHE_NAMESPACE = "idempotency"
 """Cache namespace holding the seen-event markers, kept away from application data."""
 
+RUNTIME_CONTEXT_KEY = "runtime"
+"""Context key carrying the ``AgentRuntime`` chosen for this event, when one was.
+
+Set by ``HandlerChain._bind_runtime`` before the winning handler runs, so a handler reads its
+runtime from the context it is handed rather than looking one up -- which in a grouped process
+is what keeps a namespace out of handler code. Absent when no runtime could be chosen, which
+is every application that has no agent and every one with several and no declaration.
+"""
+
+RUNTIME_NAME_CONTEXT_KEY = "runtime_name"
+"""Context key carrying the registry name of that runtime.
+
+Read as well as written: ``EventProcessingService.process_event`` puts its ``runtime_name``
+argument here, and ``_bind_runtime`` treats it as the caller's choice -- below the handler's
+own answer and above the single-runtime fallback. The name is kept beside the instance because
+it is what appears in logs, and a caller that only wants to record which runtime served an
+event should not have to reach into the object.
+"""
+
 _WILDCARD_IN_DECLARATION = re.compile(r"[*>?\[\]\s]")
 """Characters that mean a declared event type was meant as a pattern. See :class:`DispatchIndex`."""
 
@@ -206,6 +225,8 @@ class HandlerChain(Component):
         super().__init__(should_register=False, namespace=namespace)
         self._policy: IdempotencyPolicy | None = None
         self._index: DispatchIndex | None = None
+        # Handlers already warned about an unchoosable runtime. See _warn_ambiguous_runtime.
+        self._warned_ambiguous: set[str] = set()
         # The handler list the index was built from, so a change in the registered handlers is
         # noticed. See _candidates.
         self._indexed: tuple[EventHandlerBase, ...] = ()
@@ -331,6 +352,7 @@ class HandlerChain(Component):
             try:
                 if await handler.can_handle(event, context):
                     logger.info("Handler '%s' handling event '%s'", handler.name, event.type)
+                    self._bind_runtime(handler, event, context)
                     result = await handler.handle(event, context)
                     if result is not None:
                         span.set_attribute("handler.processed_by", handler.name)
@@ -344,6 +366,96 @@ class HandlerChain(Component):
 
         logger.warning("No handler in namespace '%s' processed event '%s'", self.namespace or ROOT_LABEL, event.type)
         return None
+
+    # ------------------------------------------------------------------
+    # Handler -> agent binding (phase 7)
+    # ------------------------------------------------------------------
+
+    def _bind_runtime(self, handler: EventHandlerBase, event: CloudEvent[Any], context: dict[str, Any]) -> None:
+        """Put the agent runtime this handler should use into ``context``, if one can be chosen.
+
+        Called between ``can_handle`` saying yes and ``handle`` running, which is the only point
+        where the answer is still useful: the winning handler is known, and it has not run yet.
+        Resolving after the fact -- which is where the plan put this -- would produce a runtime
+        nothing could act on.
+
+        Three sources, in order of how explicit they are:
+
+        1. ``handler.get_runtime_name(event, context)``, the handler's own choice for this event.
+        2. ``context["runtime_name"]``, which is what a caller passed to ``process_event``. That
+           parameter existed and was only logged; honouring it here is what makes it mean
+           something, while keeping the handler's own answer above it.
+        3. The single agent runtime in this handler's namespace, if there is exactly one. This is
+           what a single-agent application has in practice, and it is why the common case needs
+           no declaration at all.
+
+        With several runtimes and nothing declared, **nothing is bound**. The plan asks for an
+        error here, and that would break applications that work today: two agents plus handlers
+        that resolve their own runtime by name is a shape this framework already supports, and
+        the framework resolving nothing is exactly what those applications rely on. So the
+        ambiguity is reported once, at WARNING, naming the candidates and the override -- an
+        unexpected condition that was handled, which is what that level is for. A handler that
+        genuinely needs a runtime and finds none is a handler that has to say which one it wants.
+
+        Args:
+            handler: The handler about to run.
+            event: The event it is about to be given.
+            context: The processing context, mutated in place.
+
+        Raises:
+            ValueError: if a name *was* declared and no such runtime exists. A declaration the
+                framework cannot honour is a failure, not something to fall back from -- the
+                same reading as ``event_publishing_enabled`` without a transport.
+        """
+        declared = handler.get_runtime_name(event, context) or context.get(RUNTIME_NAME_CONTEXT_KEY)
+        if declared:
+            context[RUNTIME_NAME_CONTEXT_KEY] = declared
+            context[RUNTIME_CONTEXT_KEY] = self._runtime_named(str(declared), handler)
+            return
+
+        names = self.registry.get_agents(namespace=self.namespace)
+        if len(names) == 1:
+            context[RUNTIME_NAME_CONTEXT_KEY] = names[0]
+            context[RUNTIME_CONTEXT_KEY] = self.registry.get_agent(names[0], self.namespace)
+            return
+
+        if len(names) > 1:
+            self._warn_ambiguous_runtime(handler, names)
+
+    def _runtime_named(self, name: str, handler: EventHandlerBase) -> Any:
+        """Return the runtime called ``name`` in this agent, or raise saying what is registered.
+
+        The namespace is named explicitly, so the lookup is this agent's runtime first and a
+        shared root one second -- and never a neighbour's, which an unscoped lookup would reach.
+        """
+        try:
+            return self.registry.get_agent(name, self.namespace)
+        except ValueError as exc:
+            registered = ", ".join(self.registry.get_agents(namespace=self.namespace)) or "none"
+            raise ValueError(
+                f"Handler '{handler.name}' asked for agent runtime '{name}', which is not registered in namespace "
+                f"'{self.namespace or ROOT_LABEL}' or at the root (registered here: {registered}). Either register it, "
+                "or return a name that exists from get_runtime_name()."
+            ) from exc
+
+    def _warn_ambiguous_runtime(self, handler: EventHandlerBase, names: list[str]) -> None:
+        """Report once that a runtime could not be chosen, rather than on every delivery.
+
+        Once per handler, because the condition is a property of the code rather than of the
+        event: the same handler with the same namespace will be ambiguous for every event it
+        ever handles, and a per-delivery warning would bury the one line that matters.
+        """
+        if handler.name in self._warned_ambiguous:
+            return
+        self._warned_ambiguous.add(handler.name)
+        logger.warning(
+            "Handler '%s' in namespace '%s' did not say which agent runtime to use and %d are registered (%s), so "
+            "none was bound into the context. Override get_runtime_name() to choose one.",
+            handler.name,
+            self.namespace or ROOT_LABEL,
+            len(names),
+            ", ".join(names),
+        )
 
     # ------------------------------------------------------------------
     # Idempotency (P4)

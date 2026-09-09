@@ -3427,6 +3427,120 @@ subscription moved to the fan-out file; `test_dapr.py` moved from `_client` to `
 mock handlers gained a real `namespace` attribute, which `namespace_of` needs; and one
 `assert_called_once_with(namespace="")` became `assert_called_once_with()`.
 
+### Phase 7 -- a handler says which agent runtime should serve an event
+
+`EventHandlerBase`'s own usage docstring has shown `get_runtime_name` since before any of this
+work; the method did not exist. A project that overrode it got a method nothing ever called.
+Alongside it, `process_event` has taken a `runtime_name` argument that the spec's compatibility
+table records as "only logged". This closes both.
+
+**The hook, on `EventHandlerBase`:**
+
+```python
+    def get_runtime_name(self, event: GenericCloudEvent, context: dict[str, Any]) -> str | None:
+        return None
+```
+
+Per *event* rather than per handler, because the choice can depend on the payload -- one handler
+routing to a fast model or a thorough one on the same event type is the case it exists for.
+
+**The resolution happens in the chain, between selection and handling, and that is a departure
+from the plan.** The plan puts it in `EventProcessingService` "after the chain selects a
+handler". By then the handler has already run: the chain selects *and* runs in one pass, so a
+runtime resolved afterwards is a value nothing can act on. Inside the loop there is exactly one
+moment where the winner is known and the answer is still useful:
+
+```python
+                if await handler.can_handle(event, context):
+                    logger.info("Handler '%s' handling event '%s'", handler.name, event.type)
+                    self._bind_runtime(handler, event, context)
+                    result = await handler.handle(event, context)
+```
+
+So the runtime is *bound into the context the handler is about to be given*, under
+`RUNTIME_CONTEXT_KEY` (`"runtime"`) and `RUNTIME_NAME_CONTEXT_KEY` (`"runtime_name"`). A handler
+that wants a particular runtime reads it from the context rather than looking it up -- and in a
+grouped process it gets its own agent's runtime with no namespace anywhere in handler code, which
+is the constraint the whole feature is under. The fallthrough is unaffected: a candidate whose
+`handle` returns `None` passes on, and the next candidate gets its own binding.
+
+**Three sources, most explicit first:**
+
+```python
+        declared = handler.get_runtime_name(event, context) or context.get(RUNTIME_NAME_CONTEXT_KEY)
+        if declared:
+            context[RUNTIME_NAME_CONTEXT_KEY] = declared
+            context[RUNTIME_CONTEXT_KEY] = self._runtime_named(str(declared), handler)
+            return
+
+        names = self.registry.get_agents(namespace=self.namespace)
+        if len(names) == 1:
+            context[RUNTIME_NAME_CONTEXT_KEY] = names[0]
+            context[RUNTIME_CONTEXT_KEY] = self.registry.get_agent(names[0], self.namespace)
+            return
+```
+
+The handler's own answer, then the caller's `runtime_name`, then the single runtime in this
+handler's namespace. `process_event` now seeds its argument into the context:
+
+```python
+        if runtime_name:
+            context[RUNTIME_NAME_CONTEXT_KEY] = runtime_name
+```
+
+Only when asked for, so a caller that passes nothing leaves the key *absent* rather than `None` --
+the difference between "no preference" and "explicitly no runtime". That is what makes a parameter
+which has only ever been logged mean something, while keeping the handler's own answer above it.
+
+The namespace is named explicitly in both registry calls, for the reason it is named in
+`_handlers`: an omitted namespace on the root registry means every namespace, so the single-runtime
+count would include a neighbour's agent and "exactly one" would be wrong in a group. There is a
+test for two agents each owning a `planner`, where each chain binds its own.
+
+**The plan's ambiguity error is not implemented, and this is the substantive departure.** The plan
+says "`None` + multiple agents + no name declared -> raise a descriptive error". That would break
+applications that work today: two agents plus handlers that resolve their own runtime by name is a
+shape this framework already supports -- it is what the scaffolder generates, `self.registry
+.get_agent('<runtime_name>')` in a service's `on_startup` -- and those applications rely on the
+framework resolving nothing. Raising would fail every delivery in them. So nothing is bound, and
+the ambiguity is reported once per handler at WARNING, naming the candidates and the override.
+Once, because the condition is a property of the code rather than of the event: the same handler
+in the same namespace is ambiguous for every event it will ever see, and a per-delivery warning
+would bury the one line that matters. This needs a spec amendment; it is under *Open points*.
+
+**What *does* raise is a declaration the framework cannot honour:**
+
+```python
+            raise ValueError(
+                f"Handler '{handler.name}' asked for agent runtime '{name}', which is not registered in namespace "
+                f"'{self.namespace or ROOT_LABEL}' or at the root (registered here: {registered}). Either register it, "
+                "or return a name that exists from get_runtime_name()."
+            )
+```
+
+The same reading as `event_publishing_enabled` without a transport: an explicit statement the
+framework cannot satisfy is a failure, not something to fall back from silently.
+
+**Found while writing the tests, and worth recording:** constructing a component *directly* with
+an explicit `name=` does not qualify it with the namespace -- only `AppBuilder._register` does
+that (phase 3 part 1). So two `AgentRuntime(name="planner")` instances in two namespace scopes
+still collide on the one registry key. Everything the builder creates is safe; a test or a project
+that constructs a component by hand inside a `namespace_scope` is not. The test helper qualifies
+the name itself and says why. Not fixed here -- the fix would be `Component.__init__` qualifying an
+explicit name, which changes naming for every component in the framework and deserves its own step.
+
+Tests: `tests/unit/agents/handler/test_runtime_binding.py`, 18 cases against real
+`AgentRuntime`, `Config` and chains -- a declared runtime bound and bound *before* the handler
+runs; the choice varying with the payload; the handler winning over the caller and the caller
+winning over the fallback; `process_event` seeding its argument and leaving the key absent when
+it has none; one runtime bound with no declaration, none bound when there is no runtime at all,
+and each agent binding its own in a group; the ambiguous case binding nothing, reporting once
+rather than per delivery; an unknown declared name raising with the handler, the namespace and the
+registered names in the message; and the default hook returning `None`.
+
+**Verified not vacuous:** with the `_bind_runtime` call removed, 14 of the 18 fail -- the four
+that survive are the ones asserting that *nothing* is bound.
+
 ---
 
 ## Compatibility
@@ -3500,6 +3614,16 @@ Everything else remains non-breaking. Specifically:
   Whether Dapr merges the two or delivers twice needs checking against a real sidecar; it belongs on
   the broker-test list.
 - New config keys all default to current behaviour.
+- **`EventHandlerBase.get_runtime_name(event, context)` is new and defaults to `None`.** It was
+  already in the class's usage docstring, so a project may have written one; it is now actually
+  called. Returning `None` keeps today's behaviour.
+- **The processing context gains `runtime` and `runtime_name` keys when a runtime can be chosen.**
+  A single-agent application with one `AgentRuntime` now finds them populated where it did not
+  before -- additive, and nothing in the framework reads them. With several runtimes and no
+  declaration neither key is set, and a WARNING names the candidates once per handler.
+- **`process_event`'s `runtime_name` argument is no longer only logged.** It seeds the context as
+  the caller's choice, below the handler's own `get_runtime_name` and above the single-runtime
+  fallback. A caller that passes nothing is unaffected.
 - **`DaprEventing()` takes no namespace, and `DaprEventing._client` is now `_clients`, a dict
   keyed by namespace.** There is one endpoint per process, at the root. A single-agent
   application's document, delivery path and acknowledgement are all unchanged.
@@ -3707,6 +3831,18 @@ stay keyword-only and last, or an existing `with_cache(False)` would silently be
 ---
 
 ## Open points
+
+- **Phase 7's ambiguity error needs a spec amendment.** The plan asks `process_event` to raise
+  when a handler declares no runtime and several are registered. It is implemented as a
+  once-per-handler WARNING with nothing bound, because raising would fail every delivery in an
+  application that has two agents and handlers resolving their own runtime by name -- the shape
+  the scaffolder generates. The spec's compatibility table already calls phase 7 "purely
+  additive", which the raise would contradict; the plan bullet is what should change.
+- **An explicit `name=` is qualified with the namespace only on the builder path.** Constructing
+  a component directly inside a `namespace_scope` with `name="planner"` registers it as
+  `planner`, so two agents doing that collide on one registry key. `AppBuilder._register`
+  qualifies; `Component.__init__` does not. Fixing it there would change naming for every
+  component and wants its own step.
 
 - **P0-P5 have landed. P6 is next**, and two requirements for it were settled during P5 (see the
   namespace bullet below). What remains open from P5 is deferred work rather than unfinished work:

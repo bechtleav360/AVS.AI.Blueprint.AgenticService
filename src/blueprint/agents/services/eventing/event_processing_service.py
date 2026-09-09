@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from opentelemetry import trace
 from ...component.component import traced
 from ...component.namespace import ROOT_LABEL, ROOT_NAMESPACE, namespace_of
-from ...handler.handler_chain import HandlerChain
+from ...handler.handler_chain import RUNTIME_NAME_CONTEXT_KEY, HandlerChain
 from ...models import ProcessingResult, ProcessingStatus
 from ...models.events import GenericCloudEvent, HandlerResult, CloudEvent
 from ..service_base import ServiceBase
@@ -120,6 +120,15 @@ class EventProcessingService(ServiceBase):
         request_id = str(uuid4())
         context["request_id"] = request_id
         trace.get_current_span().set_attribute("request_id", request_id)
+
+        # The caller's choice of runtime, put where the chain will look for it. This
+        # parameter has existed since before there were agents to resolve and was only ever
+        # logged; the chain now treats it as a default, below the winning handler's own
+        # get_runtime_name() and above the single-runtime fallback. Only set when asked for,
+        # so a caller that passes nothing leaves the key absent rather than None -- which is
+        # the difference between "no preference" and "explicitly no runtime".
+        if runtime_name:
+            context[RUNTIME_NAME_CONTEXT_KEY] = runtime_name
 
         correlation_token = self._correlation_context.set(getattr(event, "id", None) or request_id)
 

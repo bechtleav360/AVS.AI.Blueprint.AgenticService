@@ -12,6 +12,7 @@ Handlers can also declare published event types by overriding:
 - `get_subscribed_topics()` - Return list of NATS topics to auto-subscribe on startup
 - `get_handled_event_types()` - Return the event types this handler accepts, so the
   dispatch index can skip it for everything else
+- `get_runtime_name()` - Return which agent runtime should serve this event
 
 The framework provides automatic OpenTelemetry tracing for all handlers.
 """
@@ -159,6 +160,41 @@ class EventHandlerBase(Component, ABC):
             )
 
         Default implementation returns None (no events published).
+        """
+
+        return None
+
+    def get_runtime_name(self, event: GenericCloudEvent, context: dict[str, Any]) -> str | None:
+        """Declare which agent runtime should serve this event, or ``None`` to let the framework decide.
+
+        Called between :meth:`can_handle_event` saying yes and :meth:`handle_event` running, so
+        what it returns is resolved and put in ``context`` under ``"runtime"`` (the
+        ``AgentRuntime``) and ``"runtime_name"`` (its registry name) **before** the handler runs.
+        A handler that wants a particular runtime for a particular event therefore reads it from
+        the context it is handed rather than looking it up -- and in a grouped process it gets
+        its *own* agent's runtime without naming a namespace anywhere.
+
+        Per event rather than per handler, because the choice can depend on the payload: one
+        handler routing to a fast model or a thorough one on the same event type is the case
+        this exists for.
+
+        **Returning ``None`` is the normal case.** With exactly one agent runtime in this
+        handler's namespace, that one is provided -- which is what a single-agent application
+        has in practice. With several and no declaration, nothing is provided and the ambiguity
+        is reported once: there is no basis for the framework to choose between them.
+
+        Args:
+            event: The event about to be handled.
+            context: The processing context, already carrying ``request_id`` and whatever
+                ``runtime_name`` the caller of ``process_event`` asked for.
+
+        Returns:
+            The registry name of the runtime to use, or ``None`` to let the framework decide.
+
+        Example::
+
+            def get_runtime_name(self, event, context):
+                return "thorough" if event.data.get("priority") == "high" else "fast"
         """
 
         return None
