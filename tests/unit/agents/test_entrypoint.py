@@ -13,7 +13,8 @@ from unittest.mock import patch
 import pytest
 
 from blueprint.agents import entrypoint
-from blueprint.agents.app_builder import AgentRegistration
+from blueprint.agents.app_builder import AgentRegistration, AppBuilder
+from blueprint.agents.config import Config
 from blueprint.agents.component.component import Component
 from blueprint.agents.services.service_base import ServiceBase
 
@@ -65,9 +66,13 @@ def component_names() -> list[str]:
     return sorted(registry.get_component_names_by_type(Component))
 
 
-class TestBuild:
+class TestBuildGroupApp:
+    def test_it_is_not_called_build(self) -> None:
+        """AppBuilder.build() returns a FastAPI; a second 'build' returning a tuple misleads."""
+        assert not hasattr(entrypoint, "build")
+
     def test_it_builds_the_group_the_environment_names(self, project: Path) -> None:
-        app, config = entrypoint.build(environ={"BLUEPRINT_AGENTS": "order", "BLUEPRINT_GROUP": "finance"})
+        app, config = entrypoint.build_group_app(environ={"BLUEPRINT_AGENTS": "order", "BLUEPRINT_GROUP": "finance"})
 
         assert app is not None
         assert config.get("app_name") == "the-process"
@@ -76,16 +81,16 @@ class TestBuild:
     def test_it_reads_the_group_file_when_there_is_one(self, project: Path) -> None:
         (project / "deployment-groups.yaml").write_text("groups:\n  - name: finance\n    agents: [order]\n")
 
-        entrypoint.build(environ={})
+        entrypoint.build_group_app(environ={})
 
         assert "order_order_service" in component_names()
 
     def test_a_resolution_failure_propagates(self, project: Path) -> None:
-        """build() raises; deciding what to do about it is main()'s job."""
+        """It raises; deciding what to do about it is main()'s job."""
         from blueprint.agents.group_config import GroupConfigError
 
         with pytest.raises(GroupConfigError):
-            entrypoint.build(environ={"BLUEPRINT_AGENTS": "not-in-this-image"})
+            entrypoint.build_group_app(environ={"BLUEPRINT_AGENTS": "not-in-this-image"})
 
 
 class TestMain:
@@ -153,3 +158,50 @@ class TestItIsRunnableAsAModule:
 
         assert 'if __name__ == "__main__":' in source
         assert "sys.exit(main())" in source
+
+
+class TestOneDeclarationServesBothDeploymentShapes:
+    """The same module, run standalone and run as a group -- spec sec. 11's single ``main.py``.
+
+    ``order_registration`` above is the whole of what a project's ``main.py`` needs to contain:
+    no ``AppBuilder``, no ``Config``, no ``run_app``, no ``if __name__``, no namespace and no
+    group. These cases prove that one such module serves both shapes, so there is nothing to
+    keep in sync between them.
+    """
+
+    def test_the_declaration_runs_standalone(self, project: Path) -> None:
+        """What an existing main.py does, unchanged: build it at the root and serve it."""
+        config = Config(settings_files=["settings.toml"])
+
+        app = AppBuilder(config).with_registration(order_registration).build()
+
+        assert app is not None
+        assert component_names() == ["order_service"]
+
+    def test_the_same_declaration_runs_as_a_group_of_one(self, project: Path) -> None:
+        """The entry point path: group size 1 is how an agent gets a process to itself."""
+        app, _ = entrypoint.build_group_app(environ={"BLUEPRINT_AGENTS": "order"})
+
+        assert app is not None
+        assert component_names() == ["order_order_service"]
+
+    def test_the_same_declaration_runs_beside_another_agent(self, project: Path) -> None:
+        (project / "agents.toml").write_text(
+            f'[agents.order]\nmodule = "{_THIS}:order_registration"\n\n[agents.billing]\nmodule = "{_THIS}:order_registration"\n'
+        )
+
+        entrypoint.build_group_app(environ={"BLUEPRINT_AGENTS": "order,billing"})
+
+        assert component_names() == ["billing_order_service", "order_order_service"]
+
+    def test_a_group_of_one_uses_the_agents_real_name(self, project: Path) -> None:
+        """Deliberate, and the migration consequence to know about (spec sec. 11).
+
+        Standalone runs at the root, so its component is ``order_service`` and its routes sit
+        under ``/api``. A group of one runs under the agent's own name, so the component is
+        ``order_order_service`` and the routes move to ``/api/order`` -- which is what makes
+        local URLs and consumer identity match production instead of differing from it.
+        """
+        entrypoint.build_group_app(environ={"BLUEPRINT_AGENTS": "order"})
+
+        assert component_names() == ["order_order_service"]

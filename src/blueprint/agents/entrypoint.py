@@ -39,12 +39,17 @@ writes its own ``main.py`` rather than discovering that this one guessed.
 """
 
 
-def build(*, environ: dict[str, str] | None = None) -> tuple[FastAPI, Config]:
+def build_group_app(*, environ: dict[str, str] | None = None) -> tuple[FastAPI, Config]:
     """Resolve the group, build the application, and return it with its configuration.
 
     Separate from :func:`main` so that the whole startup path is testable without a server and
     without ``sys.exit``: everything that can fail happens here, and ``main`` only decides what
     to do about it.
+
+    **Not called ``build``**, deliberately. ``AppBuilder.build()`` returns a ``FastAPI`` and is
+    what every existing ``main.py`` calls; a second ``build`` in this package that returns a
+    *tuple* invites exactly the misreading that the application builder's contract had changed.
+    It has not: this is a different function, in a module nothing imported before this phase.
 
     Args:
         environ: The environment to resolve the group from, for tests.
@@ -75,7 +80,7 @@ def main(*, environ: dict[str, str] | None = None) -> int:
         ``0`` if the server ran and stopped normally, ``1`` if the group could not be started.
     """
     try:
-        app, config = build(environ=environ)
+        app, config = build_group_app(environ=environ)
     except GroupConfigError as exc:
         # Printed as well as logged: logging is configured by AppBuilder, which may not have run
         # yet, and a container whose group is wrong must say so on stderr whatever state the

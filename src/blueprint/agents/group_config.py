@@ -49,6 +49,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from .component.namespace import validate_namespace
 from .config import Config
 
@@ -247,24 +249,9 @@ class GroupConfig:
     def _parse_group_file(path: Path) -> dict[str, Any]:
         """Parse the group file as YAML.
 
-        ``yaml`` is imported here rather than at module scope, and that is not laziness: it is
-        not a declared dependency of this package -- it arrives with ``uvicorn[standard]`` --
-        so a module-level import would make importing *anything* from this package fail in an
-        installation that trimmed it. Failing here instead affects only a deployment that
-        actually mounts a group file, and says what to install.
-
         Raises:
-            GroupConfigError: if PyYAML is unavailable, or the file is unreadable or not a
-                YAML mapping.
+            GroupConfigError: if the file is unreadable or is not a YAML mapping.
         """
-        try:
-            import yaml  # noqa: PLC0415 -- see the docstring
-        except ImportError as exc:  # pragma: no cover -- PyYAML ships with uvicorn[standard]
-            raise GroupConfigError(
-                f"A group file is mounted at {path} but PyYAML is not installed, so it cannot be read. Install "
-                f"'pyyaml', or drop the file and set '{AGENTS_ENV}' instead."
-            ) from exc
-
         try:
             document = yaml.safe_load(path.read_text(encoding="utf-8"))
         except (OSError, yaml.YAMLError) as exc:

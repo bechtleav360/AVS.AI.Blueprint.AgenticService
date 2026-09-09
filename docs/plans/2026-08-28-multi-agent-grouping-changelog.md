@@ -3847,6 +3847,56 @@ every declaration-loading failure for critical and non-critical agents, and that
 ignores the environment even when it is set; and the entry point building from either source,
 serving what it built, and returning non-zero with the reason on stderr without binding a port.
 
+### `build()` did not change, and one `main.py` does serve both shapes
+
+Both raised by the user against phase 8, and the first was a fair misreading of a name I chose
+badly.
+
+**`AppBuilder.build()` still returns a `FastAPI`.** Nothing about it changed in phase 8, and no
+existing `main.py` needs editing. The function that returns a tuple was `entrypoint.build()` -- a
+*different* function, in a module nothing imported before this phase. But a second `build` in the
+same package returning a different shape is exactly the trap it looks like, so it is now
+`entrypoint.build_group_app()`, with the reason in its docstring and a test asserting that
+`entrypoint.build` does not exist. The lesson is worth keeping: `build` is spoken for in this
+package.
+
+**One `main.py` for both shapes is not merely possible, it is what spec sec. 11 requires** -- and
+it already works. The single declaration the spec asks for is the whole file:
+
+```python
+registration = (
+    AgentRegistration()
+    .with_service(OrderService)
+    .with_handler(OrderValidationHandler)
+    .with_rest_api(OrderApi)
+)
+```
+
+No `AppBuilder`, no `Config`, no `run_app`, no `if __name__`, no namespace, no group. The same
+object then serves three deployments, which `TestOneDeclarationServesBothDeploymentShapes` now
+pins down rather than asserting:
+
+| Deployment | How | What runs |
+|---|---|---|
+| Standalone, as today | `AppBuilder(config).with_registration(registration).build()`, `uvicorn src.main:app` | root namespace |
+| Alone, as a group of one | `BLUEPRINT_AGENTS=order python -m blueprint.agents.entrypoint` | namespace `order` |
+| Beside other agents | `BLUEPRINT_AGENTS=order,billing ...` | namespaces `order`, `billing` |
+
+The dual-branch `main.py` the plan once described -- the component list duplicated under
+`if __name__ == "__main__"` and `else:` -- is what the spec forbids, and nothing in the
+implementation needs it: `agents.toml` points at `main:registration` like any other module, and a
+group of one is an ordinary group.
+
+**The one consequence to know about, and it is deliberate.** A group of one is *not* identical to
+standalone, because it uses the agent's real name: components become `order_order_service` rather
+than `order_service`, routes move from `/api/...` to `/api/order/...`, and the queue group becomes
+`order` rather than `app_name`. Spec sec. 11 chooses this on purpose -- "a dev mode that ran at
+`namespace=""` would give every developer local URLs and integration tests that differ from
+production" -- so local and CI match the deployment instead of diverging from it. Migrating an
+existing agent from standalone to a group of one therefore moves its routes and its consumer
+identity, which is a migration with consequences rather than a rename; phase 10 is where that gets
+written up for a project to follow.
+
 ---
 
 ## Compatibility
@@ -3951,10 +4001,10 @@ Everything else remains non-breaking. Specifically:
 - **New environment variables, all optional**: `BLUEPRINT_GROUP_CONFIG`, `BLUEPRINT_GROUP`,
   `BLUEPRINT_AGENTS`, `BLUEPRINT_CRITICAL_AGENTS`, `BLUEPRINT_AGENT_MAP`. They are read only by
   the group resolution, never by `Config`, so they cannot collide with a project's settings.
-- **PyYAML becomes a soft requirement of the group file only.** It is imported inside the parse,
-  so an installation without it can still import this package and run a standalone `main.py`; a
-  deployment that mounts a group file needs it, and gets a message saying so. It is not declared
-  as a dependency -- see *Open points*.
+- **`pyyaml>=6.0` is a new declared dependency.** Asked for and approved; it is what reads the
+  group file. Already present in every environment through `uvicorn[standard]`, so declaring it
+  changes no installed set -- it stops the group file depending on a *transitive* dependency,
+  which is the thing that breaks on an unrelated upgrade.
 - **`<agent>.app_name` is no longer required.** A scoped `Config` used to refuse to load without
   it. Setting one is still allowed and still read, but only for display.
 - **An agent's `otel_service_name` now defaults to its own name rather than to `app_name`, and no
@@ -4203,14 +4253,6 @@ stay keyword-only and last, or an existing `with_cache(False)` would silently be
 ---
 
 ## Open points
-
-- **PyYAML is not a declared dependency, and the group file needs it.** It is imported inside
-  `GroupConfig._parse_group_file` with a message naming what to install, and in practice it is
-  always present because `uvicorn[standard]` pulls it -- but relying on a transitive dependency
-  is exactly the thing that breaks on an unrelated upgrade. Adding `pyyaml` to `dependencies` is
-  one line and changes no installed set; `CLAUDE.local.md` says to ask before changing
-  dependencies, so it is asked here rather than done. The alternative, if the answer is no, is a
-  TOML group file -- which costs the ConfigMap-mount ergonomics the spec's format was chosen for.
 
 - **Phase 7's ambiguity error needs a spec amendment.** The plan asks `process_event` to raise
   when a handler declares no runtime and several are registered. It is implemented as a

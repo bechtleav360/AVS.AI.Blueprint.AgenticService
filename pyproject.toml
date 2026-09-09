@@ -41,6 +41,7 @@ dependencies = [
     "diskcache-rs>=0.4.4",
     "nats-py>=2.13.1",
     "croniter>=6.0.0",
+    "pyyaml>=6.0",
     "pytest",
     "pytest-asyncio"
 ]
