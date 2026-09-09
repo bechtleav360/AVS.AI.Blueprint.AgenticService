@@ -3708,6 +3708,145 @@ disputed between `black` and `ruff format`. `black` reformatted a pre-existing t
 run over the changed files; that reformat was reverted, because accepting it would have started
 the ping-pong the two formatters play over that file.
 
+### Phase 8 -- the group becomes a running process
+
+Everything before this made a group *possible*; nothing made one *start*. This is the phase that
+turns a deployment decision into a process: which agents run here arrives at container start,
+and the code that reads it is the only code allowed to.
+
+Three commits, split along the one line the plan is emphatic about -- **resolution versus
+wiring**. Environment reads, file reads and `sys.exit` stay out of `AppBuilder`, so it remains a
+pure function of its call sequence and a test can state an exact composition without controlling
+the environment or the filesystem.
+
+#### `GroupConfig` and its resolution (`d00ca03`)
+
+Two files, and their different lifetimes are the reason there are two rather than one:
+
+- **`agents.toml`** says which agents this *image* contains and where their declarations live.
+  It changes only when an agent is added or removed -- a rebuild anyway -- so it is baked in.
+- **`deployment-groups.yaml`** says which of them *this process* runs. Never baked in, since one
+  image serves every group, so it arrives as a mount or is replaced entirely by environment
+  variables.
+
+`GroupConfig.resolve` is the only member that reads either, plus the environment:
+
+```python
+        declared = cls._read_group_file(env, root)
+        name, agent_names, critical_names, cache_names = cls._apply_env_overrides(env, declared)
+        ...
+        agent_map = cls._read_agent_map(env, root)
+        agents = cls._resolve_agents(agent_names, critical_names, agent_map, name)
+```
+
+**Environment overrides the file key by key** (spec sec. 5.1), so a Deployment changes the agent
+list without restating the group's name or its caches, and each resolved value is logged with the
+source it came from -- "which agents did this pod actually start" being the first question asked
+of a group that misbehaves.
+
+One rule the spec does not state and the tests forced out: **when `BLUEPRINT_AGENTS` supplies the
+group and `BLUEPRINT_GROUP` names none, the file is not read at all.** That is the `docker run`
+and CI shape from sec. 5.1, and reading the file anyway made an unrelated multi-group file in the
+image *ambiguous* -- for nothing, because with no group named no slice of it applies and the only
+value it would have contributed is already overridden.
+
+**Every way of getting a group wrong is a startup failure**, because the alternative is a pod
+that passes its probes with a queue nobody is consuming: an agent the image does not contain, an
+agent named twice, a name that cannot be a namespace, an unknown group, a malformed or
+`groups`-less file, a missing or malformed agent map. Each message names what it found and what it
+expected. `critical` defaults to `True` for the reason sec. 9.1 gives -- a group short one
+consumer is worse than no pod -- and a *non*-critical agent missing from the map is skipped with
+an ERROR instead, since that flag is the deployment saying it would rather run the rest.
+
+Two details worth their lines. `AgentSpec.name` is put through `validate_namespace`, because it
+*becomes* a namespace: rejecting it here names the group file, while letting it through would
+surface as a validation error from inside some component's constructor. And PyYAML is imported
+inside the parse rather than at module scope -- it is not a declared dependency of this package,
+it arrives with `uvicorn[standard]`, so a module-level import would break importing *anything*
+from the package in an installation that trimmed it. See *Open points*.
+
+#### `with_group` and `from_group` (`71dfbb1`)
+
+```python
+        for spec in group.agents:
+            registration = self._load_registration(spec)
+            if registration is None:
+                continue
+            self.with_namespace(spec.name, registration=registration)
+
+        for cache_name in group.cache_names:
+            self.with_cache(name=cache_name)
+```
+
+The caches are the group's rather than any agent's, because a cache is process-wide (spec
+sec. 8) -- so phase 3 part 2's `with_cache(name=...)` is what the group's `cache_names` feed.
+
+Importing an agent's module is the one thing here that reaches outside, and it is deliberately on
+this side of the resolution/wiring line: it is driven entirely by the `module` strings the group
+carries, so a test points them at test modules and controls neither environment nor filesystem to
+do it. Imports happen **per group**, so cold start is proportional to the agents this process
+hosts rather than to the agents the image contains.
+
+`_load_registration` catches **every** exception from the import, not `ImportError` alone:
+importing a module runs it, and an agent whose declaration raises at import is exactly as
+unloadable as one whose module is absent. It also refuses an attribute that is not an
+`AgentRegistration`, and a `module` string that is not `package.module:attribute` -- both of which
+would otherwise fail later and further away.
+
+A critical agent that cannot be loaded raises `GroupConfigError`; a non-critical one is skipped
+with an ERROR and the rest of the group still starts. The flag is read *before* the agent is
+wired rather than after an exception, because there is no partial build to unwind: one process,
+one `build()`.
+
+#### The entry point (`b34e0d1`)
+
+`python -m blueprint.agents.entrypoint`, and it exists to hold the three things `AppBuilder` must
+not: reading the environment, reading files, and exiting.
+
+```python
+def build(*, environ: dict[str, str] | None = None) -> tuple[FastAPI, Config]:
+    config = Config(settings_files=DEFAULT_SETTINGS_FILES)
+    group = GroupConfig.resolve(config, environ=environ)
+    app = AppBuilder(config).with_group(group).build()
+    return app, config
+```
+
+Split from `main` so the whole startup path is testable without a server and without
+`sys.exit`: everything that can fail happens in `build`, and `main` only decides what to do about
+it. `main` returns a status rather than exiting, so a test asserts on the status; the
+`__main__` guard is what turns it into an exit.
+
+**Why it catches rather than lets the exception out.** A group that cannot be resolved must stop
+the process *before the port is bound* (spec sec. 9.1), so Kubernetes crash-loops with a readable
+message instead of reporting a healthy replica that is silently short a consumer. An uncaught
+exception also exits non-zero, but buries the one line an operator needs under a traceback of
+framework internals. The reason is `print`ed to stderr *as well as* logged, because logging is
+configured by `AppBuilder` -- which has not run yet when resolution fails.
+
+A project keeps its own `main.py` if it wants: a standalone deployment is untouched, and
+`uvicorn src.main:app` works exactly as before.
+
+#### Not in this phase, and why
+
+- **The settings-fragment merge.** The plan lists it here; the changelog's *Open points* has
+  carried it since config rework step 3a with **two unanswered questions** -- whether a fragment
+  declaring `envvar_prefix` is rejected, and whether a fragment may override a shared
+  infrastructure key at all. Both are decisions rather than implementations, and guessing either
+  produces a merge that silently drops or silently overrides configuration. Still open.
+- **`on_startup` raising** -- the third row of sec. 9.1's failure table. It says "mark namespace
+  down, pause consumers (C4), continue", which is phase 9's per-namespace degradation machinery,
+  not something to improvise here.
+- **`deployment-groups.yaml` and `agents.toml` are not generated.** Phase 8 *reads* them; the
+  scaffolder writing them belongs with the manifest generation that is already parked.
+
+Tests: `tests/unit/agents/test_group_config.py` (33 cases), `test_with_group.py` (24) and
+`test_entrypoint.py` (12) -- 69 in total. The group file and the environment as sources and in
+combination, precedence and its logging, criticality from both sources, every validation failure,
+the value object's freezing; one namespace per agent with order preserved, the group's caches,
+every declaration-loading failure for critical and non-critical agents, and that `with_group`
+ignores the environment even when it is set; and the entry point building from either source,
+serving what it built, and returning non-zero with the reason on stderr without binding a port.
+
 ---
 
 ## Compatibility
@@ -3806,6 +3945,16 @@ Everything else remains non-breaking. Specifically:
   Whether Dapr merges the two or delivers twice needs checking against a real sidecar; it belongs on
   the broker-test list.
 - New config keys all default to current behaviour.
+- **Phase 8 is entirely additive.** A standalone `main.py` deployment is untouched: nothing
+  reads `deployment-groups.yaml` or `agents.toml` unless `python -m blueprint.agents.entrypoint`
+  or `GroupConfig.resolve` is called, and `uvicorn src.main:app` behaves exactly as before.
+- **New environment variables, all optional**: `BLUEPRINT_GROUP_CONFIG`, `BLUEPRINT_GROUP`,
+  `BLUEPRINT_AGENTS`, `BLUEPRINT_CRITICAL_AGENTS`, `BLUEPRINT_AGENT_MAP`. They are read only by
+  the group resolution, never by `Config`, so they cannot collide with a project's settings.
+- **PyYAML becomes a soft requirement of the group file only.** It is imported inside the parse,
+  so an installation without it can still import this package and run a standalone `main.py`; a
+  deployment that mounts a group file needs it, and gets a message saying so. It is not declared
+  as a dependency -- see *Open points*.
 - **`<agent>.app_name` is no longer required.** A scoped `Config` used to refuse to load without
   it. Setting one is still allowed and still read, but only for display.
 - **An agent's `otel_service_name` now defaults to its own name rather than to `app_name`, and no
@@ -4054,6 +4203,14 @@ stay keyword-only and last, or an existing `with_cache(False)` would silently be
 ---
 
 ## Open points
+
+- **PyYAML is not a declared dependency, and the group file needs it.** It is imported inside
+  `GroupConfig._parse_group_file` with a message naming what to install, and in practice it is
+  always present because `uvicorn[standard]` pulls it -- but relying on a transitive dependency
+  is exactly the thing that breaks on an unrelated upgrade. Adding `pyyaml` to `dependencies` is
+  one line and changes no installed set; `CLAUDE.local.md` says to ask before changing
+  dependencies, so it is asked here rather than done. The alternative, if the answer is no, is a
+  TOML group file -- which costs the ConfigMap-mount ergonomics the spec's format was chosen for.
 
 - **Phase 7's ambiguity error needs a spec amendment.** The plan asks `process_event` to raise
   when a handler declares no runtime and several are registered. It is implemented as a
