@@ -417,7 +417,7 @@ class TestBuildDaprRegression:
         builder_for_build.build()
 
         all_build_mocks.dapr_client.assert_called_once_with(namespace="")
-        all_build_mocks.dapr_eventing.assert_called_once_with(namespace="")
+        all_build_mocks.dapr_eventing.assert_called_once_with()
         all_build_mocks.sessions_bus.assert_not_called()
 
 

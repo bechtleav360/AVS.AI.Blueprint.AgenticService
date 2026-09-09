@@ -3190,7 +3190,9 @@ name -- so the rewrite happens on the routes. `isinstance(route, APIRoute)` rath
 Mutating them is safe because a router belongs to exactly one component and `build()` runs once
 per process (`Component.configure` refuses a second call).
 
-**Grouped Dapr is refused at build time, and this is the part worth arguing.** Prefixing fixed
+**Grouped Dapr is refused at build time, and this is the part worth arguing.** *(Superseded by
+part 4 below, which routes and fans out in the process instead. The reasoning is kept because it
+is why the endpoint had to become singular.)* Prefixing fixed
 delivery, but discovery cannot be prefixed: the sidecar fetches `GET /dapr/subscribe` from one
 path, fixed by Dapr's protocol. With each agent's document behind its own prefix the sidecar finds
 *no* document, subscribes to nothing, and the pod reports itself healthy while consuming nothing
@@ -3297,6 +3299,134 @@ readiness, and each entry probing its own cache object.
 
 Also corrected here: part 2's entry said 17 test cases where the file has 18.
 
+### Phase 6, part 4 -- grouped Dapr works: one endpoint, routed and fanned out in the process
+
+Part 2 refused a group of consuming agents on Dapr, because discovery cannot be prefixed per
+agent. The user's answer was the right one and better than the refusal: **do the routing in the
+process.** Keep the one endpoint the sidecar's protocol demands, pick the agents from the event,
+and fan out -- since several agents may legitimately want the same event. Part 2's guard is
+removed.
+
+**There is one Dapr endpoint, at the root, and that is now structural:**
+
+```python
+    def __init__(self) -> None:
+        super().__init__(should_register=False)
+```
+
+`DaprEventing` takes **no namespace at all**, unlike every other transport component. That is not
+a simplification -- it is what keeps `_topics_by_agent` correct. That method reads *every* handler
+in the process, which it can only do because `self.registry` is the application's registry rather
+than one agent's view of it; a namespaced instance would silently see one agent's handlers and
+route only that agent's topics. Making the constructor refuse a namespace means the mistake cannot
+be made, and `route_prefix` is then always `""`, so the two fixed paths never move.
+
+**The routing table is read from the handlers:**
+
+```python
+        by_agent: dict[str, dict[str, None]] = {}
+        for handler in self.registry.get_event_handler():
+            for topic in handler.get_subscribed_topics():
+                if topic:
+                    by_agent.setdefault(namespace_of(handler), {})[topic] = None
+```
+
+An agent that declared no topic does not appear, because it has nothing to subscribe and nothing
+to be delivered.
+
+**The document is the union; the delivery is the fan-out.** Those are two different readings of
+the same table, and the asymmetry is the whole design:
+
+- `_declared_topics` flattens it, deduplicated, because the sidecar delivers a topic to the
+  application **once** however many agents want it -- so it is told once.
+- `_agents_for(topic)` inverts it, returning every agent that declared the topic. Fanning that
+  single delivery out is the application's job, not the sidecar's.
+
+```python
+        declared = tuple(namespace for namespace, topics in by_agent.items() if topic in topics)
+        if declared:
+            return declared
+        with_handlers = tuple(dict.fromkeys(namespace_of(handler) for handler in self.registry.get_event_handler()))
+        return with_handlers or (ROOT_NAMESPACE,)
+```
+
+The fallback is the same rule `DispatchIndex.candidates` applies one level down: **an absent
+declaration cannot narrow anything to nothing.** A topic nobody declared goes to every agent that
+has handlers, and each agent's `can_handle_event` decides. That is what a topic arriving from
+outside the application needs -- `dapr_declarative_subscriptions` makes the document empty, so no
+handler need declare anything and the framework never sees the topic list, yet the sidecar still
+delivers. Routing such a delivery nowhere would silence the application, and an unhandled event
+acknowledges (spec sec. 7.2), so the events would be consumed and discarded. For a single-agent
+application both branches are the root, so nothing changes there.
+
+**`publish` dispatches once per agent and does not let a failure stop the others:**
+
+```python
+        for namespace in agents:
+            try:
+                await self._process_cloud_event(cloud_event, {"dapr_topic": topic}, topic, namespace=namespace)
+                dispositions.append(DeliveryDisposition.ACK)
+            except Exception as exc:
+                disposition = disposition_for(exc)
+                dispositions.append(disposition)
+                ...
+```
+
+Letting the exception out of the loop would let one agent silently cancel a neighbour's work. Each
+failure is logged with its own agent named, so a fan-out failure stays attributable (C7).
+
+**The single acknowledgement is `combined_disposition`, new in `models/errors.py`** beside the
+disposition table it extends, since it is a spec sec. 7.2 concern rather than a Dapr detail:
+
+```python
+    outcomes = set(dispositions)
+    if DeliveryDisposition.NAK in outcomes:
+        return DeliveryDisposition.NAK
+    if DeliveryDisposition.ACK in outcomes or not outcomes:
+        return DeliveryDisposition.ACK
+    return DeliveryDisposition.TERM
+```
+
+Each step is a decision, argued in its docstring. **Any NAK wins**, because one agent asked for
+the delivery again and the only way to give it one is to ask for the whole message again.
+**Otherwise ACK beats TERM**, because a TERM from one agent means *that* agent found the message
+undeliverable -- a finished outcome -- and if another agent handled it, the message was handled;
+answering TERM would report a successful delivery as dropped. **All TERM is TERM.** Empty is ACK:
+nothing was dispatched, so nothing failed.
+
+**The cost, stated because it has no NATS equivalent:** there is one delivery, so one
+acknowledgement, so **a retry asked for by one agent redelivers to every agent in the group**.
+A grouped Dapr deployment therefore wants `idempotency_enabled`, or handlers that tolerate a
+repeat. Under NATS each agent has its own consumer and its own ack, and no such coupling exists.
+This is in the class docstring as well as here, because it is the thing an operator has to know.
+
+**Plumbing:** `_process_cloud_event` and `_dispatch_cloud_event` took an optional `namespace`,
+defaulting to the endpoint's own -- every caller but this one. The unhandled and duplicate
+counters now carry the agent the dispatch was *for* rather than the endpoint's namespace, which
+for the fan-out is the difference between attributing an event to the agent that declined it and
+attributing every event in the process to the root.
+
+**`AppBuilder._wire_dapr_endpoint`** replaces `_refuse_grouped_dapr`: the Dapr branch of
+`_wire_transport` now creates only the per-agent client, and one root endpoint is created after
+the loop if anything in the process consumes. NATS endpoints stay per agent, because there the
+broker routes -- one consumer per `(namespace, topic)` -- and nothing needs to be done in
+process.
+
+Tests: `tests/unit/agents/io/api/eventing/test_dapr_fanout.py`, 24 cases against real handlers,
+config and chains -- the routing table keyed per agent and an agent that declared nothing absent
+from it; the document as the deduplicated union with every route at the fixed path; `_agents_for`
+resolving one declaring agent, two declaring agents, an undeclared topic to every agent with
+handlers, and a single-agent application to the root; the fan-out reaching both declaring agents,
+skipping a non-declaring one, dispatching once for a single-agent application, and continuing past
+one agent's failure; all six acknowledgement combinations; each agent's client receiving its own
+topics and being kept per agent; and the constructor refusing a namespace.
+
+Updated: `test_route_namespacing.py` lost `TestGroupedDaprIsRefused` and gained the Dapr endpoint
+staying at the root; `test_eventing_namespaces.py` is now NATS-only, since Dapr's per-agent
+subscription moved to the fan-out file; `test_dapr.py` moved from `_client` to `_clients` and its
+mock handlers gained a real `namespace` attribute, which `namespace_of` needs; and one
+`assert_called_once_with(namespace="")` became `assert_called_once_with()`.
+
 ---
 
 ## Compatibility
@@ -3370,6 +3500,16 @@ Everything else remains non-breaking. Specifically:
   Whether Dapr merges the two or delivers twice needs checking against a real sidecar; it belongs on
   the broker-test list.
 - New config keys all default to current behaviour.
+- **`DaprEventing()` takes no namespace, and `DaprEventing._client` is now `_clients`, a dict
+  keyed by namespace.** There is one endpoint per process, at the root. A single-agent
+  application's document, delivery path and acknowledgement are all unchanged.
+- **A group of consuming agents on Dapr now works** (it was refused in phase 6 part 2). One
+  delivery is fanned out to every agent that declared the topic, and the one acknowledgement is
+  their combination -- so **a retry asked for by one agent redelivers to all of them.** Set
+  `idempotency_enabled` for grouped Dapr, or keep handlers repeat-tolerant. NATS is unaffected.
+- **`_process_cloud_event` and `_dispatch_cloud_event` gained a trailing optional `namespace`.**
+  Both are protected; the default is the endpoint's own namespace, which is what every caller
+  except the Dapr fan-out passes.
 - **The `/cache/*` endpoints take an optional `?name=`, defaulting to `default`.** Every existing
   call is unchanged. New answer: an unknown name is `404` rather than `503`, and `POST
   /cache/evict` now includes a `"cache"` field in its response body.
@@ -3567,24 +3707,6 @@ stay keyword-only and last, or an existing `with_cache(False)` would silently be
 ---
 
 ## Open points
-
-- **Grouped Dapr needs one process-wide subscription document.** `build()` refuses two or more
-  consuming agents on `event_bus = "dapr"` (phase 6 part 2), because the sidecar fetches
-  `GET /dapr/subscribe` from one fixed path and per-agent documents leave it subscribed to
-  nothing. The fix is a single discovery endpoint returning the union of every agent's
-  subscriptions, each entry naming that agent's own `/api/<agent>/events/{topic}` route. That
-  changes the sidecar-facing contract, so it wants a decision rather than an implementation
-  chosen in passing: whether the union lives on a root component the builder creates, or whether
-  grouped Dapr stays unsupported and groups are NATS-only. Nothing in the spec addresses the
-  grouped Dapr case.
-
-- **Two spec amendments are outstanding for `with_namespace` (phase 3 part 1).** Spec sec. 4.2
-  types the return as `AppBuilder | NamespaceBuilder` and lists a `config: Config | None`
-  parameter. The union is honoured at runtime but resolved by `@overload` so no caller narrows it;
-  the `config` parameter is **not** accepted, because config rework step 2 left it with no reader
-  -- `Component.config` derives each component's view from the one loaded tree. The spec should
-  say so rather than describing a parameter the implementation refuses. Reasoning in the phase 3
-  part 1 entry above.
 
 - **P0-P5 have landed. P6 is next**, and two requirements for it were settled during P5 (see the
   namespace bullet below). What remains open from P5 is deferred work rather than unfinished work:

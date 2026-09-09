@@ -1,5 +1,6 @@
 """Handler exceptions, and the delivery disposition each one implies."""
 
+from collections.abc import Iterable
 from enum import Enum
 
 
@@ -71,3 +72,41 @@ def disposition_for(exc: BaseException) -> DeliveryDisposition:
         if isinstance(exc, error_type):
             return disposition
     return DeliveryDisposition.NAK
+
+
+def combined_disposition(dispositions: Iterable[DeliveryDisposition]) -> DeliveryDisposition:
+    """Return the one disposition that answers for several dispatches of one delivery.
+
+    Needed where a single delivery is fanned out to several agents and the transport reads
+    exactly one answer -- which is the Dapr path in a grouped process: the sidecar delivers a
+    topic once and reads one status from the response.
+
+    The order is ``NAK`` > ``ACK`` > ``TERM``, and each step is a decision:
+
+    - **Any ``NAK`` wins.** One agent asked for the delivery again, and the only way to give it
+      one is to ask for a redelivery of the whole message. The cost is that the agents which
+      already succeeded see it again, so a grouped Dapr deployment wants
+      ``idempotency_enabled`` -- there is no per-agent acknowledgement to be had on this path,
+      because there is no per-agent delivery.
+    - **Otherwise any ``ACK`` wins over ``TERM``.** A ``TERM`` from one agent means *that* agent
+      found the message undeliverable, which is a finished outcome rather than a failure of the
+      delivery; if another agent handled it, the message was handled. Answering ``TERM`` there
+      would report a successful delivery as dropped.
+    - **All ``TERM`` is ``TERM``.** Every agent judged it undeliverable, and no redelivery
+      changes that.
+
+    An empty argument is ``ACK``: nothing was dispatched, so nothing failed, and the delivery is
+    complete. That is the same answer the single-agent path gives for an event no handler wanted.
+
+    Args:
+        dispositions: What each dispatch of this delivery earned.
+
+    Returns:
+        The disposition to report to the transport.
+    """
+    outcomes = set(dispositions)
+    if DeliveryDisposition.NAK in outcomes:
+        return DeliveryDisposition.NAK
+    if DeliveryDisposition.ACK in outcomes or not outcomes:
+        return DeliveryDisposition.ACK
+    return DeliveryDisposition.TERM

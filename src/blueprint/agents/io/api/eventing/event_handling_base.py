@@ -9,6 +9,7 @@ from typing import Any
 from opentelemetry import metrics
 
 from ....component.component import traced
+from ....component.namespace import ROOT_LABEL
 from ....handler.handler_chain import DUPLICATE_CONTEXT_KEY
 from ....models import ProcessingResult, ProcessingStatus
 from ....models.errors import DeliveryDisposition
@@ -67,8 +68,14 @@ class EventHandlingBase(RestApiBase, CloudEventProcessorMixin, ABC):
         cloud_event: CloudEvent[Any],
         context: dict[str, Any],
         topic: str,
+        namespace: str | None = None,
     ) -> ProcessingResult:
-        """Dispatch a CloudEvent through the handler chain, letting failures propagate.
+        """Dispatch a CloudEvent through one agent's handler chain, letting failures propagate.
+
+        ``namespace`` names the agent to dispatch to, defaulting to this endpoint's own -- which
+        is every case but one. The exception is the Dapr path in a grouped process: the sidecar
+        delivers to one fixed path, so a single root endpoint receives the delivery and fans it
+        out, naming a different agent on each call.
 
         Deliberately does not log those failures. Every caller of this method is a transport
         edge that must both decide the delivery disposition and report the failure (spec
@@ -96,17 +103,18 @@ class EventHandlingBase(RestApiBase, CloudEventProcessorMixin, ABC):
         own key there (``nats_topic``, ``dapr_topic``), and those keys reach user handlers,
         so they cannot be unified without breaking them.
         """
-        logger.debug("Processing CloudEvent: %s", cloud_event.id)
-        processing_result = await self._dispatch_cloud_event(cloud_event, context)
-        # The endpoint's own namespace, not a hardcoded root. Both counters are documented as
+        agent = self.namespace if namespace is None else namespace
+        logger.debug("Processing CloudEvent %s for namespace '%s'", cloud_event.id, agent or ROOT_LABEL)
+        processing_result = await self._dispatch_cloud_event(cloud_event, context, namespace=agent)
+        # The agent this dispatch was for, not a hardcoded root. Both counters are documented as
         # per-namespace and were attributing every event in the process to the root, so a group
         # would have reported one agent's broad subscription as everybody's. The value is the
         # namespace verbatim, so a single-agent application keeps reporting '' and its existing
         # dashboards do not see a new label value.
         if context.get(DUPLICATE_CONTEXT_KEY):
-            _DUPLICATE_EVENTS.add(1, {"namespace": self.namespace, "topic": topic})
-            logger.debug("Event %s on topic '%s' was already processed", cloud_event.id, topic)
+            _DUPLICATE_EVENTS.add(1, {"namespace": agent, "topic": topic})
+            logger.debug("Event %s on topic '%s' was already processed by '%s'", cloud_event.id, topic, agent or ROOT_LABEL)
         elif processing_result.status is ProcessingStatus.NO_HANDLER_FOUND:
-            _UNHANDLED_EVENTS.add(1, {"namespace": self.namespace, "topic": topic})
-            logger.debug("No handler had work for event %s on topic '%s'", cloud_event.id, topic)
+            _UNHANDLED_EVENTS.add(1, {"namespace": agent, "topic": topic})
+            logger.debug("No handler in '%s' had work for event %s on topic '%s'", agent or ROOT_LABEL, cloud_event.id, topic)
         return processing_result

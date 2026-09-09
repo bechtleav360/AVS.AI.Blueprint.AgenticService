@@ -673,7 +673,7 @@ class AppBuilder:
         event_bus_type = str(self._config.get("event_bus", "") or "").strip().lower()
         for namespace in self.hosted_namespaces:
             self._wire_transport(registry, namespace, event_bus_type)
-        self._refuse_grouped_dapr(event_bus_type)
+        self._wire_dapr_endpoint(registry, event_bus_type)
 
         # 4. Create internal services (auto-register)
         # EventProcessingService is only useful when there's a handler to route
@@ -766,9 +766,8 @@ class AppBuilder:
             return
 
         if event_bus_type == "dapr":
+            # The client is per agent; the endpoint is not. See _wire_dapr_endpoint.
             DaprClient(namespace=namespace)  # auto-registers
-            if consumes:
-                self._eventing_components.append(DaprEventing(namespace=namespace))
         elif event_bus_type == "nats":
             NATSClient(namespace=namespace)  # auto-registers
             if consumes:
@@ -855,41 +854,30 @@ class AppBuilder:
         if self._actuator_api is not None:
             app.include_router(self._actuator_api.router, tags=["actuators"])
 
-    def _refuse_grouped_dapr(self, event_bus_type: str) -> None:
-        """Refuse to build a group of consuming agents on the Dapr transport.
+    def _wire_dapr_endpoint(self, registry: Registry, event_bus_type: str) -> None:
+        """Create the process's single Dapr endpoint, at the root, if anything consumes.
 
-        The delivery path is per agent, and that part works: each endpoint is mounted under
-        ``/api/<agent>``, so no two agents answer each other's deliveries. **Discovery is not
-        per agent, and cannot be.** The sidecar fetches ``GET /dapr/subscribe`` from exactly one
-        path, fixed by Dapr's protocol -- so with each agent's document behind its own prefix
-        the sidecar finds no document at all, subscribes to nothing, and the pod reports itself
-        healthy while consuming nothing. That is the failure mode this whole feature is built to
-        make impossible, so it fails at build time instead.
+        One endpoint however many agents this process hosts, and that is forced rather than
+        chosen. Both Dapr paths are fixed by its protocol: the sidecar fetches
+        ``GET /dapr/subscribe`` from one place and posts deliveries where that document says.
+        An endpoint per agent behind its own prefix would leave the sidecar with no document to
+        fetch, subscribed to nothing, on a pod reporting itself healthy.
 
-        Fixing it properly means one process-wide discovery endpoint returning the union of
-        every agent's subscriptions, each entry naming that agent's own delivery route. That is
-        a change to the sidecar-facing contract rather than an internal detail, and it is not in
-        this phase; the changelog carries it as an open point. NATS is unaffected -- it has no
-        discovery endpoint, because the client subscribes directly.
+        So the endpoint is built at the root -- unprefixed, exactly where a single-agent
+        application has always served it -- and it does the routing itself: the union of every
+        agent's topics in the document, and one dispatch per agent that declared the delivered
+        topic. NATS needs none of this, because the broker routes: one consumer per
+        ``(namespace, topic)``, so its endpoints stay per agent.
 
         Args:
-            event_bus_type: The resolved ``event_bus``. Checked rather than the endpoint types,
-                because one transport type serves the whole process -- and because the type is
-                the thing that is known here without asking each endpoint what it is.
-
-        Raises:
-            ValueError: if more than one namespace would consume events over Dapr.
+            registry: The application's registry, asked whether anything consumes at all.
+            event_bus_type: The resolved ``event_bus``; anything but ``"dapr"`` returns.
         """
-        if event_bus_type != "dapr" or len(self._eventing_components) <= 1:
+        if event_bus_type != "dapr" or not registry.get_event_handler():
             return
-
-        agents = ", ".join(f"'{component.namespace or ROOT_LABEL}'" for component in self._eventing_components)
-        raise ValueError(
-            f"{len(self._eventing_components)} agents ({agents}) consume events and 'event_bus' is 'dapr', which cannot yet host "
-            "a group. The Dapr sidecar fetches the subscription document from one fixed path, so each agent's document "
-            "behind its own prefix would leave the sidecar subscribed to nothing -- with the pod reporting itself "
-            "healthy. Run these agents in separate groups, or set 'event_bus' to 'nats', which subscribes per agent "
-            "directly and needs no discovery endpoint."
+        self._eventing_components.append(DaprEventing())
+        logger.info(
+            "One Dapr endpoint serves this process, fanning each delivery out to the agents that declared its topic",
         )
 
     @staticmethod

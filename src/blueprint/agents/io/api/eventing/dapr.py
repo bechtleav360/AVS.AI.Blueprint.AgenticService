@@ -10,8 +10,8 @@ from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 
 from ....clients.io.dapr_client import DaprClient
-from ....component.namespace import ROOT_LABEL, ROOT_NAMESPACE
-from ....models.errors import DeliveryDisposition, HandlerError, disposition_for
+from ....component.namespace import ROOT_LABEL, ROOT_NAMESPACE, namespace_of
+from ....models.errors import DeliveryDisposition, HandlerError, combined_disposition, disposition_for
 from ....models.events import CloudEvent
 from ..rest_api_base import RestApiBase
 from .dapr_response import dapr_status
@@ -53,9 +53,7 @@ class DaprEventing(EventHandlingBase):
 
     The application holds no broker connection -- the sidecar does. The sidecar discovers
     what to deliver by calling ``GET /dapr/subscribe``, then pushes each message to
-    ``POST /events/{topic}``, whose response body is the acknowledgement. Under a namespace
-    both paths move beneath ``route_prefix``, and the subscription document names the moved
-    path -- otherwise two agents in one group would answer each other's deliveries.
+    ``POST /events/{topic}``, whose response body is the acknowledgement.
 
     Both halves are driven by the same ``get_subscribed_topics()`` declarations the NATS
     transport uses:
@@ -67,49 +65,89 @@ class DaprEventing(EventHandlingBase):
       ``health_check()``. The client never invokes those callbacks, because delivery arrives
       over HTTP rather than through a client-side subscription.
 
+    One endpoint for the process, fanned out to the agents
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Unlike the NATS endpoint, there is exactly **one** of these however many agents the process
+    hosts, and it lives at the root. The two paths above are fixed by Dapr's protocol: the
+    sidecar fetches the document from one place and posts deliveries where the document says.
+    An endpoint per agent, each behind its own prefix, would leave the sidecar with no document
+    to fetch at all.
+
+    So the routing that NATS gets from the broker -- one consumer per ``(namespace, topic)`` --
+    is done here instead, in the process:
+
+    - :meth:`subscribe` returns the **union** of every agent's declared topics, deduplicated,
+      because the sidecar needs telling once per topic.
+    - :meth:`publish` looks the delivered topic up in :meth:`_agents_for` and dispatches once
+      **per agent that declared it**, each through that agent's own handler chain. Two agents
+      declaring one topic therefore both receive it, which is the same rule spec sec. 7.6 states
+      for the broker-side case.
+    - The one acknowledgement the sidecar reads is the combination of what each dispatch earned
+      (:func:`combined_disposition`).
+
+    **The cost, which has no equivalent under NATS: a redelivery is shared.** There is one
+    delivery, so there is one acknowledgement; if any agent asks for a retry, every agent in the
+    group sees the message again. A grouped Dapr deployment therefore wants
+    ``idempotency_enabled`` set, or handlers that tolerate a repeat. Under NATS each agent has
+    its own consumer and its own acknowledgement, and no such coupling exists.
+
     Config keys
     ~~~~~~~~~~~
     ``dapr_pubsub_name`` (str, default ``"pubsub"``): the Dapr pub/sub component to bind to.
     ``dapr_declarative_subscriptions`` (bool, default ``False``): set ``True`` when
     subscriptions are declared outside the application (CRD or YAML) so the discovery
-    endpoint returns an empty document and the sidecar cannot subscribe twice.
+    endpoint returns an empty document and the sidecar cannot subscribe twice. Note that the
+    framework then has no topic-to-agent map, so a delivery is offered to every agent -- see
+    :meth:`_agents_for`.
     """
 
     route_class = DaprDeliveryRoute
 
-    def __init__(self, namespace: str = ROOT_NAMESPACE) -> None:
-        """Initialize the Dapr endpoint for one agent.
+    def __init__(self) -> None:
+        """Initialize the process's Dapr endpoint.
 
-        Args:
-            namespace: The agent this endpoint declares subscriptions for. ``""`` is the root,
-                which is the whole of a single-agent application.
+        **Takes no namespace, unlike every other transport component.** There is one of these
+        per process and it belongs to the root, because Dapr's two paths are fixed by its
+        protocol and cannot be prefixed per agent. Making that structural rather than
+        documented is what keeps :meth:`_topics_by_agent` correct: it reads *every* handler in
+        the process, which it can only do because ``self.registry`` is the application's
+        registry rather than one agent's view of it. A namespaced instance would see one
+        agent's handlers and silently route only that agent's topics.
         """
-        super().__init__(should_register=False, namespace=namespace)
-        self._client: DaprClient | None = None
+        super().__init__(should_register=False)
+        # The client per agent, not one client: this endpoint is shared by the process, and
+        # the clients are not. Populated in on_startup; empty when no agent declared a topic.
+        self._clients: dict[str, DaprClient] = {}
 
     async def on_startup(self) -> None:
-        self._client = self.registry.get_component(DaprClient, namespace=self.namespace)
+        """Hand each agent's topics to that agent's client, for readiness reporting.
 
-        # Delivery is driven by the subscription document in subscribe(); this handing-over
-        # exists so the client starts its sidecar-reachability retry and can report
-        # subscriptions_ready. Removing it would silently disable readiness gating.
-        topic_callbacks: dict[str, Callable[[CloudEvent[Any]], Awaitable[None]]] = {
-            topic: self._make_event_callback(topic) for topic in self._declared_topics()
-        }
+        Delivery is driven by the subscription document in :meth:`subscribe`; this handing-over
+        exists so each client starts its sidecar-reachability retry and can report
+        ``subscriptions_ready``. Removing it would silently disable readiness gating.
 
-        if topic_callbacks:
+        Per agent rather than once for the process, even though this endpoint is shared: the
+        client is per agent (spec sec. 6), and readiness reported against the wrong agent is
+        what makes ``readiness_policy = "critical"`` unusable.
+        """
+        topics_by_agent = self._topics_by_agent()
+        if not topics_by_agent:
+            logger.debug("DaprEventing: no handler declared a topic; nothing to report as ready")
+            return
+
+        for namespace, topics in topics_by_agent.items():
+            client = self.registry.get_component(DaprClient, namespace=namespace)
+            self._clients[namespace] = client
+            topic_callbacks: dict[str, Callable[[CloudEvent[Any]], Awaitable[None]]] = {
+                topic: self._make_event_callback(topic) for topic in topics
+            }
             logger.info(
                 "Namespace '%s' declares %d topic(s) to the sidecar: %s",
-                self.namespace or ROOT_LABEL,
+                namespace or ROOT_LABEL,
                 len(topic_callbacks),
                 ", ".join(topic_callbacks),
             )
-            await self._client.subscribe(topic_callbacks)
-        else:
-            logger.debug(
-                "DaprEventing: no handler in namespace '%s' declared a topic; nothing to report as ready",
-                self.namespace or ROOT_LABEL,
-            )
+            await client.subscribe(topic_callbacks)
 
     async def on_shutdown(self) -> None:
         pass
@@ -149,53 +187,127 @@ class DaprEventing(EventHandlingBase):
 
         pubsub_name = self.config.get("dapr_pubsub_name", "pubsub")
         # route_prefix, not a bare '/events/...': this document is what makes the sidecar post
-        # anywhere at all, so it has to name the path the router is actually mounted at. For the
-        # root that prefix is empty and the document is byte-identical to what it always was.
+        # anywhere at all, so it has to name the path the router is actually mounted at. This
+        # endpoint is always the root one, so the prefix is empty and the document is
+        # byte-identical to what it always was -- the property is read rather than hardcoded so
+        # the two cannot drift if that ever changes.
         return [
             {"pubsubname": pubsub_name, "topic": topic, "route": f"{self.route_prefix}/events/{topic}"} for topic in self._declared_topics()
         ]
 
-    def _declared_topics(self) -> list[str]:
-        """Return the topics this agent's handlers declare, in declaration order.
+    def _topics_by_agent(self) -> dict[str, list[str]]:
+        """Return each agent's declared topics, keyed by namespace, in declaration order.
 
-        Scoped to this agent's namespace for the reason ``HandlerChain._handlers`` names it
-        too: on the root registry an omitted namespace means *every* namespace, so the root
-        endpoint would publish every agent's topics into one subscription document and the
-        sidecar would deliver them all through the root chain.
+        Read from the handlers themselves rather than from any list of agents: an agent that
+        declared no topic has nothing to subscribe and nothing to be delivered, so it does not
+        appear here at all. Every handler in the process is walked, which is what makes this the
+        one place that sees the whole routing picture -- and it is only safe because this
+        endpoint is the process's single Dapr endpoint rather than one of several.
         """
-        topics: dict[str, None] = {}
-        for handler in self.registry.get_event_handler(namespace=self.namespace):
+        by_agent: dict[str, dict[str, None]] = {}
+        # No namespace argument, which here means every namespace: this endpoint is the root
+        # one -- enforced by __init__ taking no namespace at all -- so its registry is the
+        # application's rather than one agent's view, and an omitted namespace is the whole
+        # process. That is the one place in the framework where this reading is what is wanted.
+        for handler in self.registry.get_event_handler():
             for topic in handler.get_subscribed_topics():
                 if topic:
-                    topics[topic] = None
+                    by_agent.setdefault(namespace_of(handler), {})[topic] = None
+        return {namespace: list(topics) for namespace, topics in by_agent.items()}
+
+    def _declared_topics(self) -> list[str]:
+        """Return every topic any agent in this process declares, deduplicated.
+
+        This is the union, not one agent's list, because it renders the sidecar's subscription
+        document and the sidecar needs telling **once** per topic -- it delivers a topic to the
+        application once however many agents want it. Fanning that one delivery out is
+        :meth:`publish`'s job, not the sidecar's.
+        """
+        topics: dict[str, None] = {}
+        for declared in self._topics_by_agent().values():
+            for topic in declared:
+                topics[topic] = None
         return list(topics)
+
+    def _agents_for(self, topic: str) -> tuple[str, ...]:
+        """Return the agents a delivery on ``topic`` is offered to.
+
+        The agents that declared the topic, in a stable order. When **nobody** declared it,
+        every agent that has handlers at all -- which is the same rule
+        ``DispatchIndex.candidates`` applies one level down: a declaration narrows who is asked,
+        and its absence cannot narrow anything to nothing.
+
+        That fallback is what a topic arriving from outside the application needs.
+        ``dapr_declarative_subscriptions`` makes the subscription document empty, so the
+        framework never sees the topic list at all and no handler need declare anything; the
+        sidecar still delivers. Sending such a delivery nowhere would silence the application,
+        and an unhandled event acknowledges (spec sec. 7.2), so the events would be consumed and
+        discarded. For a single-agent application both branches are the root, so this changes
+        nothing there.
+        """
+        by_agent = self._topics_by_agent()
+        declared = tuple(namespace for namespace, topics in by_agent.items() if topic in topics)
+        if declared:
+            return declared
+        with_handlers = tuple(dict.fromkeys(namespace_of(handler) for handler in self.registry.get_event_handler()))
+        return with_handlers or (ROOT_NAMESPACE,)
 
     @RestApiBase.post("/events/{topic}", tags=["dapr"])
     async def publish(self, topic: str, cloud_event: CloudEvent[Any]) -> dict[str, Any]:
-        """Receive an event from the sidecar and answer with its acknowledgement.
+        """Receive an event from the sidecar, offer it to every agent that wants it, and answer.
 
         The returned dict is the acknowledgement, so this method is Dapr's equivalent of
         ``NATSClient._settle`` and follows the same table (spec sec. 7.2): a handler chain
-        that returned answers ``SUCCESS`` whatever its status, and a raised exception is
-        classified by ``disposition_for`` and rendered into Dapr's words. One ``except``
-        rather than one per error type, so the two transports cannot drift apart.
-        """
+        that returned acknowledges whatever its status, and a raised exception is classified by
+        ``disposition_for`` and rendered into Dapr's words. One ``except`` rather than one per
+        error type, so the two transports cannot drift apart.
 
-        try:
-            await self._process_cloud_event(cloud_event, {"dapr_topic": topic}, topic)
-        except Exception as exc:
-            disposition = disposition_for(exc)
-            reason = exc.reason if isinstance(exc, HandlerError) else str(exc)
-            logger.error(
-                "Handler failed for event %s on topic '%s', answering %s: %s",
+        **One delivery, one answer, several agents.** Each agent named by :meth:`_agents_for`
+        gets its own dispatch through its own chain, and a failure in one does not stop the
+        others -- an agent that raised must not silently cancel a neighbour's work, which is
+        what letting the exception out of the loop would do. The answers are then combined by
+        :func:`combined_disposition`, whose docstring carries the ordering and its cost: a retry
+        asked for by one agent redelivers to all of them.
+
+        The reason string reports the first failure. There is one field for it and no way to
+        return several, so it names the first agent that failed rather than concatenating; the
+        per-agent errors are logged individually above it, each with its agent.
+        """
+        agents = self._agents_for(topic)
+        dispositions: list[DeliveryDisposition] = []
+        reason: str | None = None
+
+        for namespace in agents:
+            try:
+                await self._process_cloud_event(cloud_event, {"dapr_topic": topic}, topic, namespace=namespace)
+                dispositions.append(DeliveryDisposition.ACK)
+            except Exception as exc:
+                disposition = disposition_for(exc)
+                dispositions.append(disposition)
+                if reason is None:
+                    reason = exc.reason if isinstance(exc, HandlerError) else str(exc)
+                logger.error(
+                    "Handler in namespace '%s' failed for event %s on topic '%s', answering %s: %s",
+                    namespace or ROOT_LABEL,
+                    cloud_event.id,
+                    topic,
+                    dapr_status(disposition),
+                    exc,
+                    exc_info=True,
+                )
+
+        combined = combined_disposition(dispositions)
+        if len(agents) > 1:
+            logger.debug(
+                "Event %s on topic '%s' was offered to %d agents (%s); answering %s",
                 cloud_event.id,
                 topic,
-                dapr_status(disposition),
-                exc,
-                exc_info=True,
+                len(agents),
+                ", ".join(namespace or ROOT_LABEL for namespace in agents),
+                dapr_status(combined),
             )
-            return {"status": dapr_status(disposition), "reason": reason}
-
         # An unmatched event acknowledges like any other completed dispatch; the accounting
         # that keeps it visible lives in _process_cloud_event, shared with the NATS edge.
-        return {"status": dapr_status(DeliveryDisposition.ACK)}
+        if reason is None:
+            return {"status": dapr_status(combined)}
+        return {"status": dapr_status(combined), "reason": reason}

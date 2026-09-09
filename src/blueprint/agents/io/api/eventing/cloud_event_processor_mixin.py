@@ -31,8 +31,9 @@ class CloudEventProcessorMixin:
         self,
         cloud_event: CloudEvent[Any],
         context: dict[str, Any],
+        namespace: str | None = None,
     ) -> ProcessingResult:
-        """Dispatch a CloudEvent through the processing service.
+        """Dispatch a CloudEvent through the processing service, for one agent.
 
         Sets up correlation context and OTel span attributes, optionally unwraps
         Dapr-style envelopes, then delegates to EventProcessingService.
@@ -73,14 +74,11 @@ class CloudEventProcessorMixin:
                 span.set_attribute("event.unwrapped", True)
 
             processing_service = self.registry.get_service(EventProcessingService)  # type: ignore[attr-defined]
-            # The namespace of the transport endpoint that received this delivery, so the event
-            # is dispatched to that agent's handlers. One processing service serves the process;
-            # the namespace is what tells it which chain to use.
-            processing_result = await processing_service.process_event(
-                cloud_event,
-                context,
-                namespace=self.namespace,  # type: ignore[attr-defined]
-            )
+            # Which agent to dispatch to: the caller's choice where it fans one delivery out to
+            # several, otherwise this endpoint's own namespace. One processing service serves the
+            # process; the namespace is what tells it which chain to use.
+            target = self.namespace if namespace is None else namespace  # type: ignore[attr-defined]
+            processing_result = await processing_service.process_event(cloud_event, context, namespace=target)
 
             if not isinstance(processing_result, ProcessingResult):
                 logger.error(

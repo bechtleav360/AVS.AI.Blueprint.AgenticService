@@ -100,7 +100,14 @@ class TestRoutePrefix:
 
     def test_an_agents_component_is_prefixed_with_its_name(self, dapr_config: Config) -> None:
         Component.configure(dapr_config)
-        assert DaprEventing(namespace="orders").route_prefix == "/api/orders"
+        with namespace_scope("orders"):
+            api = OrderApi()
+        assert api.route_prefix == "/api/orders"
+
+    def test_the_dapr_endpoint_is_always_the_root_one(self, dapr_config: Config) -> None:
+        """It takes no namespace at all: Dapr's paths are fixed, so there is one endpoint."""
+        Component.configure(dapr_config)
+        assert DaprEventing().route_prefix == ""
 
 
 class TestRestRoutesMoveUnderTheAgent:
@@ -164,48 +171,6 @@ class TestTags:
         assert tags_for(app, "/api/orders") == ["orders"]
 
 
-class TestGroupedDaprIsRefused:
-    """Discovery cannot be per agent: the sidecar fetches it from one path, fixed by Dapr.
-
-    Each agent's document behind its own prefix leaves the sidecar with no document at all --
-    subscribed to nothing, on a pod that reports itself healthy. That is refused at build time
-    rather than deployed.
-    """
-
-    def test_two_consuming_agents_on_dapr_are_refused(self, dapr_config: Config) -> None:
-        registration = AgentRegistration().with_handler(OrderHandler)
-        builder = AppBuilder(dapr_config)
-        builder.with_namespace("orders", registration=registration)
-        builder.with_namespace("billing", registration=registration)
-
-        with pytest.raises(ValueError, match="cannot yet host a group"):
-            builder.build()
-
-    def test_the_refusal_names_both_agents(self, dapr_config: Config) -> None:
-        registration = AgentRegistration().with_handler(OrderHandler)
-        builder = AppBuilder(dapr_config)
-        builder.with_namespace("orders", registration=registration)
-        builder.with_namespace("billing", registration=registration)
-
-        with pytest.raises(ValueError, match="'orders', 'billing'"):
-            builder.build()
-
-    def test_one_agent_on_dapr_is_fine(self, dapr_config: Config) -> None:
-        builder = AppBuilder(dapr_config)
-        builder.with_namespace("orders", registration=AgentRegistration().with_handler(OrderHandler))
-
-        assert "/api/orders/events/{topic}" in paths(builder.build())
-
-    def test_two_agents_on_nats_are_fine(self, nats_config: Config) -> None:
-        """NATS has no discovery endpoint; the client subscribes directly, per agent."""
-        registration = AgentRegistration().with_handler(OrderHandler)
-        builder = AppBuilder(nats_config)
-        builder.with_namespace("orders", registration=registration)
-        builder.with_namespace("billing", registration=registration)
-
-        assert len(builder.build().openapi()["paths"]) > 0
-
-
 class TestEventingRoutes:
     def test_a_root_delivery_path_is_unchanged(self, dapr_config: Config) -> None:
         """A sidecar posting to /events/{topic} keeps working for every existing deployment."""
@@ -213,15 +178,17 @@ class TestEventingRoutes:
 
         assert "/events/{topic}" in paths(app)
 
-    def test_an_agents_delivery_path_moves_under_it(self, dapr_config: Config) -> None:
+    def test_the_dapr_delivery_path_never_moves(self, dapr_config: Config) -> None:
+        """Dapr's two paths are fixed by its protocol, so its endpoint stays at the root."""
         builder = AppBuilder(dapr_config)
         builder.with_namespace("orders", registration=AgentRegistration().with_handler(OrderHandler))
 
         app = builder.build()
 
-        assert "/api/orders/events/{topic}" in paths(app)
+        assert {"/events/{topic}", "/dapr/subscribe"} <= set(paths(app))
+        assert "/api/orders/events/{topic}" not in paths(app)
 
-    def test_two_agents_get_their_own_delivery_paths(self, nats_config: Config) -> None:
+    def test_two_agents_get_their_own_nats_delivery_paths(self, nats_config: Config) -> None:
         """Unprefixed, FastAPI would serve one agent's endpoint for both agents' deliveries."""
         registration = AgentRegistration().with_handler(OrderHandler)
         builder = AppBuilder(nats_config)
@@ -231,16 +198,6 @@ class TestEventingRoutes:
         app = builder.build()
 
         assert {"/api/orders/events/{topic}", "/api/billing/events/{topic}"} <= set(paths(app))
-
-    async def test_the_subscription_document_names_the_mounted_path(self, dapr_config: Config) -> None:
-        """The document and the mount must agree, or every delivery 404s on a healthy app."""
-        Component.configure(dapr_config)
-        with namespace_scope("orders"):
-            OrderHandler()
-
-        document = await DaprEventing(namespace="orders").subscribe()
-
-        assert document == [{"pubsubname": "pubsub", "topic": "orders.created", "route": "/api/orders/events/orders.created"}]
 
     async def test_a_root_document_is_unchanged(self, dapr_config: Config) -> None:
         Component.configure(dapr_config)

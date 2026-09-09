@@ -1,4 +1,4 @@
-"""Per-agent topic subscription, for both transports (spec sec. 7.6).
+"""Per-agent topic subscription on the NATS transport (spec sec. 7.6).
 
 The requirement being pinned down is that each ``(namespace, topic)`` pair is subscribed on its
 own behalf: an agent subscribes to its own handlers' topics and its own configured list, and two
@@ -13,13 +13,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from blueprint.agents.clients.io.dapr_client import DaprClient
 from blueprint.agents.clients.io.nats_client import NATSClient
 from blueprint.agents.component.component import Component
 from blueprint.agents.component.namespace import ROOT_NAMESPACE, namespace_scope
 from blueprint.agents.config import Config
 from blueprint.agents.handler.event_handler_base import EventHandlerBase
-from blueprint.agents.io.api.eventing.dapr import DaprEventing
 from blueprint.agents.io.api.eventing.nats import NatsEventing
 from blueprint.agents.models.events import GenericCloudEvent
 
@@ -169,52 +167,9 @@ class TestNatsResolvesItsOwnClient:
         assert sorted(subscribe.call_args[0][0]) == ["orders.created", "orders.legacy"]
 
 
-class TestDaprDeclaresForOneAgent:
-    async def test_the_subscription_document_holds_only_this_agents_topics(self, two_agent_config: Config) -> None:
-        with namespace_scope("orders"):
-            OrderHandler()
-        with namespace_scope("billing"):
-            BillingHandler()
-
-        document = await DaprEventing(namespace="orders").subscribe()
-
-        assert [entry["topic"] for entry in document] == ["orders.created"]
-
-    async def test_two_agents_wanting_one_topic_both_declare_it(self, two_agent_config: Config) -> None:
-        with namespace_scope("orders"):
-            OrderHandler()
-        with namespace_scope("billing"):
-            SharedTopicHandler()
-
-        orders = await DaprEventing(namespace="orders").subscribe()
-        billing = await DaprEventing(namespace="billing").subscribe()
-
-        assert [entry["topic"] for entry in orders] == [entry["topic"] for entry in billing] == ["orders.created"]
-
-    async def test_a_root_document_is_unchanged(self, two_agent_config: Config) -> None:
-        OrderHandler()
-
-        document = await DaprEventing().subscribe()
-
-        assert [entry["topic"] for entry in document] == ["orders.created"]
-
-    async def test_it_takes_its_own_namespaces_client(self, two_agent_config: Config) -> None:
-        with namespace_scope("orders"):
-            OrderHandler()
-            orders_client = DaprClient(namespace="orders")
-        with namespace_scope("billing"):
-            DaprClient(namespace="billing")
-        endpoint = DaprEventing(namespace="orders")
-
-        with patch.object(DaprClient, "subscribe", new_callable=AsyncMock):
-            await endpoint.on_startup()
-
-        assert endpoint._client is orders_client
-
-
 class TestNamespaceOwnership:
     def test_an_endpoint_defaults_to_the_root(self, two_agent_config: Config) -> None:
-        assert (NatsEventing().namespace, DaprEventing().namespace) == (ROOT_NAMESPACE, ROOT_NAMESPACE)
+        assert NatsEventing().namespace == ROOT_NAMESPACE
 
     def test_an_endpoint_takes_the_namespace_it_is_given(self, two_agent_config: Config) -> None:
         assert NatsEventing(namespace="orders").namespace == "orders"
