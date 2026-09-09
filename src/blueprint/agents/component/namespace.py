@@ -202,6 +202,20 @@ def qualified_component_name(namespace: str, base_name: str) -> str:
     The root namespace keeps the bare name, so an existing application's registry keys
     -- ``nats_client``, ``event_publishing_service`` -- do not change and neither do
     the lookups and health-check entries that use them.
+
+    Every name a component can be given passes through here: the one derived from its class, an
+    explicit constructor argument, and an assignment to ``Component.name``. So a name always
+    carries the agent it belongs to, which is what lets two agents' components be told apart in
+    a log.
+
+    **Deliberately not idempotent.** Skipping the prefix when a name already starts with it
+    looks like a safeguard against ``orders_orders_db`` and is worse than the problem: a base
+    name can legitimately begin with the namespace -- ``BillingHandler`` in namespace
+    ``billing`` derives ``billing_handler`` -- and such a component would silently register
+    unqualified, which is exactly the ambiguity the qualification exists to remove. "Already
+    prefixed" is not decidable from the string, so it is not guessed. The cost is that a caller
+    who qualifies a name itself gets it qualified twice; the result is redundant but still
+    unambiguous, and no framework code does it.
     """
     return base_name if not namespace else f"{namespace}_{base_name}"
 

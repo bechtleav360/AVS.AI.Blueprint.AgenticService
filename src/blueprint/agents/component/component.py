@@ -144,7 +144,12 @@ class Component(ABC, metaclass=_ComponentMeta):
         # and treating that as a decision would pin every developer-written component to the
         # root and make the ambient scope apply to nothing that matters.
         self._namespace = validate_namespace(namespace or current_namespace())
-        self._name = name or qualified_component_name(self._namespace, camel_to_snake(self.__class__.__name__))
+        # An explicit name is qualified exactly like a derived one. It used to be taken
+        # verbatim, which made a component's registry key -- the name that appears in every log
+        # line, health entry and span -- say nothing about which agent it belonged to. Two
+        # agents in a group each with a 'planner' were then one indistinguishable 'planner' in
+        # the logs, and the second one to register collided on the key.
+        self._name = qualified_component_name(self._namespace, name or camel_to_snake(self.__class__.__name__))
         if should_register:
             self.registry.add_component(self.name, self)
 
@@ -155,9 +160,20 @@ class Component(ABC, metaclass=_ComponentMeta):
 
     @name.setter
     def name(self, value: str) -> None:
-        """Set the component name. Also updates the name in the component registry."""
-        self.registry.update_component_name(self._name, value)
-        self._name = value
+        """Rename the component, in the registry as well as on the instance.
+
+        The new name is qualified with this component's namespace, for the same reason the
+        constructor qualifies one: a name that does not carry its agent is a name that cannot be
+        told apart from a neighbour's in a log. ``qualified_component_name`` is idempotent, so a
+        caller that has already qualified the name is not punished for it.
+
+        Raises:
+            ValueError: if the component is not registered under its current name, or if the new
+                name is already taken -- see ``Registry.update_component_name``.
+        """
+        qualified = qualified_component_name(self._namespace, value)
+        self.registry.update_component_name(self._name, qualified)
+        self._name = qualified
 
     @property
     def namespace(self) -> str:

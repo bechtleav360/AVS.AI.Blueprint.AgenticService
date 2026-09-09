@@ -3541,6 +3541,94 @@ registered names in the message; and the default hook returning `None`.
 **Verified not vacuous:** with the `_bind_runtime` call removed, 14 of the 18 fail -- the four
 that survive are the ones asserting that *nothing* is bound.
 
+### An ambiguous name fails at startup, wherever it comes from
+
+Raised by the user against phase 7's open point, and the reason given is the right frame for it:
+a registry name is what appears in every log line, span and health entry, so **two components
+that share one -- or one whose name does not say which agent it belongs to -- cannot be told
+apart when someone is reading the logs.** That has to fail while the process is starting, not be
+disambiguated silently or, worse, resolved by dropping one of them.
+
+Four paths could produce an ambiguous name. All four are closed.
+
+**1. An explicit `name=` reached `Component` verbatim.** The derived name was qualified with the
+namespace; an explicit one was not:
+
+```python
+-        self._name = name or qualified_component_name(self._namespace, camel_to_snake(self.__class__.__name__))
++        self._name = qualified_component_name(self._namespace, name or camel_to_snake(self.__class__.__name__))
+```
+
+So `AgentRuntime(name="planner")` built inside `namespace_scope("orders")` registered as
+`planner`. The log line said `planner` and nothing about which agent's, and a second agent's
+`planner` collided on the key. `AppBuilder._register` had been compensating by qualifying after
+construction; it now assigns the bare name and lets the setter do it, so the rule lives in one
+place instead of two.
+
+**2. `Component.name`'s setter took the new name verbatim** -- the same hole, reachable by any
+component doing `self.name = "..."`. It qualifies now.
+
+**3. `Registry.update_component_name` silently dropped whatever held the target name.** It was:
+
+```python
+        self._components[new_name] = self._components.pop(old_name)
+```
+
+Renaming one component onto another's name **removed the other from the registry**, and the only
+symptom was a collaborator that could no longer be found -- no error, no log. It now refuses,
+naming what is there; renaming to the name a component already has is a no-op rather than a
+failure, which is what makes the qualifying setter safe to call twice.
+
+**4. `AppBuilder.with_namespace` deduplicated a repeated agent name.** Declaring `orders` twice
+quietly merged two agents' components into one namespace:
+
+```python
+        if namespace in self._namespaces:
+            raise ValueError(
+                f"Namespace '{namespace}' is already hosted by this process, so it cannot be declared again. Two "
+                "agents cannot share a name: the name is what identifies an agent in every log line, span, queue "
+                "group, durable and cache partition, ..."
+            )
+```
+
+The agent name is the strongest case of the user's point: it reaches the queue group, the
+JetStream durable and the cache partition as well as the logs, so two agents under one name are
+indistinguishable to the broker too. The message names the legitimate case it might be mistaken
+for -- one agent assembled from several parts -- and says to compose those into a single
+`AgentRegistration` instead.
+
+**`qualified_component_name` is deliberately *not* idempotent**, and finding out why was the one
+surprise here. Skipping the prefix when a name already appears to carry it looks like a safeguard
+against `orders_orders_db`; it is worse than the problem. A base name can legitimately begin with
+the namespace -- `BillingHandler` in namespace `billing` derives `billing_handler` -- and such a
+component would then register *unqualified*, which is exactly the ambiguity being removed. It was
+implemented that way first and a test caught it. "Already prefixed" is not decidable from the
+string, so it is not guessed; the docstring says so, and there is a test for the
+`BillingHandler`-in-`billing` case. The cost is that a caller who qualifies a name itself gets it
+qualified twice -- redundant, still unambiguous, and no framework code does it.
+
+**The duplicate-name error now says what to do.** `add_component`'s message was `Component with
+name X already exists`, which in a group does not say whose or why:
+
+```python
+                f"Component name '{name}' is already taken by a {existing}, so {type(component).__name__} in namespace "
+                f"'{agent}' cannot register under it. Registry names have to be unique across the whole process: they "
+                "are what identifies a component in logs, spans and health entries, and two components sharing one "
+                "name cannot be told apart afterwards. A name is qualified with its namespace automatically, so this "
+                "is either two components of one class in one agent, or two explicit names that collide -- pass a "
+                "distinct 'name=' to one of them."
+```
+
+Tests: `tests/unit/agents/component/test_name_uniqueness.py`, 16 cases -- a directly constructed
+component qualified, two agents each holding a `planner`, the root keeping the bare name, a
+rename qualified and a root rename unchanged; the `BillingHandler`-in-`billing` case and the
+qualifier being a plain prefix; two components of one class in one agent colliding, two explicit
+names colliding, the message naming the agent and the fix, and a root component not colliding
+with an agent's; renaming onto a taken name refused with the other component still registered
+afterwards, renaming to the same name and to a component's own qualified name both no-ops, and
+renaming from an unregistered name still raising. `test_namespace_builder.py`'s dedupe test became
+two refusal tests.
+
 ---
 
 ## Compatibility
@@ -3614,6 +3702,15 @@ Everything else remains non-breaking. Specifically:
   Whether Dapr merges the two or delivers twice needs checking against a real sidecar; it belongs on
   the broker-test list.
 - New config keys all default to current behaviour.
+- **An explicit `name=` is now namespace-qualified, wherever it is set.** At the root -- every
+  single-agent application -- `qualified_component_name("", name)` is `name`, so nothing changes.
+  Inside a namespace, a component constructed directly with `name="planner"` registers as
+  `orders_planner` where it used to register as `planner`. The builder path already behaved this
+  way.
+- **`Registry.update_component_name` refuses a name that is taken** instead of overwriting the
+  entry. Anything relying on the overwrite was losing a component silently.
+- **`AppBuilder.with_namespace` refuses an agent name it already hosts** instead of merging into
+  it. To assemble one agent from several parts, compose them into one `AgentRegistration`.
 - **`EventHandlerBase.get_runtime_name(event, context)` is new and defaults to `None`.** It was
   already in the class's usage docstring, so a project may have written one; it is now actually
   called. Returning `None` keeps today's behaviour.
@@ -3838,12 +3935,6 @@ stay keyword-only and last, or an existing `with_cache(False)` would silently be
   application that has two agents and handlers resolving their own runtime by name -- the shape
   the scaffolder generates. The spec's compatibility table already calls phase 7 "purely
   additive", which the raise would contradict; the plan bullet is what should change.
-- **An explicit `name=` is qualified with the namespace only on the builder path.** Constructing
-  a component directly inside a `namespace_scope` with `name="planner"` registers it as
-  `planner`, so two agents doing that collide on one registry key. `AppBuilder._register`
-  qualifies; `Component.__init__` does not. Fixing it there would change naming for every
-  component and wants its own step.
-
 - **P0-P5 have landed. P6 is next**, and two requirements for it were settled during P5 (see the
   namespace bullet below). What remains open from P5 is deferred work rather than unfinished work:
   both modes now fire a cron once across three replicas, which was P5's acceptance criterion.

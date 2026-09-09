@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from .io.api.actuators.health import HealthCheckerBase
 
 from .component.component import Component
-from .component.namespace import ROOT_LABEL, ROOT_NAMESPACE, namespace_of, namespace_scope, qualified_component_name, validate_namespace
+from .component.namespace import ROOT_LABEL, ROOT_NAMESPACE, namespace_of, namespace_scope, validate_namespace
 from .component.registry import DEFAULT_CACHE_NAME, Registry
 from .agent.agent_runtime import AgentRuntime
 from .handler.event_handler_base import EventHandlerBase
@@ -429,12 +429,21 @@ class AppBuilder:
                 "application."
             )
 
+        if namespace in self._namespaces:
+            raise ValueError(
+                f"Namespace '{namespace}' is already hosted by this process, so it cannot be declared again. Two "
+                "agents cannot share a name: the name is what identifies an agent in every log line, span, queue "
+                "group, durable and cache partition, so a second agent under it would be indistinguishable from the "
+                "first and their components would merge into one registry namespace. Give one of them a different "
+                "name, or -- if this is one agent assembled from several parts -- compose the parts into a single "
+                "AgentRegistration and apply that once."
+            )
+
         # Recorded before anything is built, so that a registration failing half way through
         # still leaves the namespace declared: the startup log and the readiness policy have to
         # be able to say that an agent was meant to be here.
-        if namespace not in self._namespaces:
-            self._namespaces.append(namespace)
-            logger.info("Hosting agent namespace '%s'", namespace)
+        self._namespaces.append(namespace)
+        logger.info("Hosting agent namespace '%s'", namespace)
 
         if registration is None:
             return NamespaceBuilder(self, namespace)
@@ -566,12 +575,11 @@ class AppBuilder:
             instance = target
 
         if name is not None:
-            # Qualified for the same reason Component.__init__ qualifies a derived name: one
-            # registration applied to two agents would otherwise register both under the one
-            # literal name, and the second would fail on the collision. It stays findable by
-            # the bare name the caller wrote, because Registry._lookup tries
-            # '<namespace>_<name>' before '<name>'.
-            instance.name = qualified_component_name(namespace_of(instance), name)
+            # Assigned bare: the setter qualifies it with the component's own namespace, which is
+            # the single place that rule lives now. One registration applied to two agents
+            # therefore registers 'orders_db' and 'billing_db' rather than colliding on 'db',
+            # and either stays findable by the bare name because Registry._lookup qualifies too.
+            instance.name = name
         return instance
 
     def with_cache(self, enabled: bool = True, enable_locking: bool = True, *, name: str = DEFAULT_CACHE_NAME) -> "AppBuilder":
