@@ -4,9 +4,10 @@
 injected at container start rather than baked in at build time -- so which agents a pod runs is
 a deployment decision and changing it is a Deployment edit, not a rebuild.
 
-This module exists to hold the three things ``AppBuilder`` must not: reading the environment,
-reading files, and exiting the process. Everything it does is four lines; the rest of the file is
-about what happens when one of them fails.
+This module exists to hold the one thing neither ``AppBuilder`` nor ``AgentGroup.assemble``
+may do: exit the process. The environment and file reads belong to ``AgentGroup.resolve``, which
+is separated from ``assemble`` for that reason. Everything this module does is three lines; the
+rest of the file is about what happens when one of them fails.
 
 **Why exit rather than raise.** A group that cannot be resolved must stop the process *before the
 port is bound* (spec sec. 9.1), so that Kubernetes crash-loops the pod with a readable message
@@ -23,9 +24,9 @@ import sys
 
 from fastapi import FastAPI
 
-from .app_builder import AppBuilder
+from .agent_group import AgentGroup
 from .config import DEFAULT_SETTINGS_FILES, Config
-from .group_config import GroupConfig, GroupConfigError
+from .group_config import GroupConfigError
 from .utils import run_app
 
 logger = logging.getLogger(__name__)
@@ -53,8 +54,7 @@ def build_group_app(*, environ: dict[str, str] | None = None) -> tuple[FastAPI, 
         GroupConfigError: if the group cannot be resolved or a critical agent cannot be loaded.
     """
     config = Config(settings_files=DEFAULT_SETTINGS_FILES)
-    group = GroupConfig.resolve(config, environ=environ)
-    app = AppBuilder(config).with_group(group).build()
+    app = AgentGroup.resolve(config, environ=environ).assemble(config)
     return app, config
 
 

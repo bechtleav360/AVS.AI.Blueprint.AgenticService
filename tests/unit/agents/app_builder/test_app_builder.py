@@ -138,16 +138,25 @@ class TestWithCache:
 
 
 class TestWithHealthChecker:
-    def test_stored_pending_before_build(self, builder: AppBuilder) -> None:
+    def test_recorded_before_build(self, builder: AppBuilder) -> None:
+        """Recorded like every other declaration, so a group carries it over with the rest."""
         checker = MagicMock()
         builder.with_health_checker("my_service", checker)
-        assert builder._custom_health_checkers["my_service"] is checker
+        declaration = builder.declarations[0]
+        assert (declaration.kind, declaration.name, declaration.target) == ("health_checker", "my_service", checker)
 
     def test_multiple_checkers_accumulated_before_build(self, builder: AppBuilder) -> None:
         a, b = MagicMock(), MagicMock()
         builder.with_health_checker("svc_a", a)
         builder.with_health_checker("svc_b", b)
-        assert len(builder._custom_health_checkers) == 2
+        realize(builder)
+        assert builder._health_checkers == {"svc_a": a, "svc_b": b}
+
+    def test_a_checker_is_never_constructed(self, builder: AppBuilder) -> None:
+        """A checker is not a Component: the object declared is the object used."""
+        checker = MagicMock()
+        realize(builder.with_health_checker("db", checker))
+        assert builder._health_checkers["db"] is checker
 
     def test_added_immediately_after_build(self, builder: AppBuilder) -> None:
         mock_actuator = MagicMock()

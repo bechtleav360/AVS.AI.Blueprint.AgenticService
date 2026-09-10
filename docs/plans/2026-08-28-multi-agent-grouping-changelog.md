@@ -4234,6 +4234,116 @@ constructor arguments forwarded to `build`, and refused by the other `with_*` me
 
 ---
 
+### Phase 8b, step 3 -- `AgentGroup`: named declarations in, one application out
+
+**New module `agent_group.py`.** Collection is its own unit, in a class `AppBuilder` has never
+heard of. That is the correction that killed the earlier `absorb(builder)` design: an
+`AppBuilder` records what *one* agent is made of and never learns it can be collected, so every
+rule that exists only because agents share a process lives in the new file rather than being
+scattered into the builder, where it would punish the single-agent case for a situation it is
+not in.
+
+**`AgentGroup(name, agents, *, cache_names=())`** takes a `Mapping[str, AppBuilder]` -- a mapping
+rather than a list because two agents cannot share a name, and a mapping says so structurally
+instead of needing a check. Each key is validated as a namespace and the root is refused.
+`cache_names` is D3's casualty and is marked as such; it is what `GroupConfig` still carries.
+
+**Three things happen there and nowhere else:**
+
+- **`resolve(config, *, environ=None)`** -- the only I/O: `GroupConfig.resolve` reads the
+  environment and the group file. It is `AppBuilder.from_group` moved and renamed.
+- **`from_config(group)`** -- imports each agent's module and reads the named attribute, which
+  must now be an **`AppBuilder`**, not an `AgentRegistration`. `_load_declaration` and
+  `_skip_or_raise` moved across with the critical/non-critical rule intact: a critical agent
+  that cannot be loaded raises, a non-critical one is skipped with an ERROR. Reads no
+  environment and no files, so a test states an exact composition literally.
+- **`assemble(config)`** -- one root `AppBuilder`, one `build()`, one `FastAPI`:
+
+      for namespace, builder in self._agents.items():
+          root.host_agent(namespace)
+          with namespace_scope(namespace):
+              for declaration in builder.declarations:
+                  declaration.replay(root)
+
+  The namespace is never passed as an argument. The collector opens a `namespace_scope` and
+  `_record` reads it from there -- the same ambient mechanism a component uses, and the reason
+  step 4 can delete the `namespace=` keyword without the group losing anything.
+
+**`Declaration.replay(builder)`** is how a recorded call moves onto another builder:
+
+      arguments = () if self.target is None else (self.target,)
+      getattr(builder, f"with_{self.kind}")(*arguments, name=self.name, **self.kwargs)
+
+Resolved by name with `getattr` rather than through a table, which is the fourth Builder
+anti-pattern -- replay drift -- mitigated as the proposal specified: a table is a second place
+to edit, and a missing method fails just as loudly as a `KeyError` while needing no maintenance.
+One branch above it handles `with_health_checker(name, checker)`, whose name is positional where
+every other `with_*` takes it as a keyword; the irregularity is cheaper in one commented branch
+than as a breaking change to published API.
+
+**The refusals** (spec sec. 4.2), all in `_refuse_what_a_group_cannot_honour`, all run before
+anything is replayed so a bad group leaves no half-populated registry:
+
+| Refused | Because |
+|---|---|
+| the builder has already been built | its components exist and belong to the root, and `build()` injects the configuration process-wide, which happens once |
+| `AppBuilder(config)` | one process has one settings tree, one logging configuration and one port, and the group supplies all three |
+| a declaration holding an instance | it was constructed at that line, before the group existed, so its namespace and registry key are already the root's |
+
+**Order matters and is documented in the code:** the already-built check runs *first*, because
+`build()` adopts whatever configuration it resolved, so a built builder always reports one too --
+check the configuration first and its message is the only one anybody ever sees. Found by a test
+that asserted the wrong message.
+
+**`app_builder.py`**
+
+- **`host_agent(namespace)`** -- extracted from `with_namespace`, which now calls it. Not a
+  `with_*`: it declares no component, it states a fact about the process. `build()` needs that
+  fact because two of the things it does are per agent rather than per component -- it wires one
+  transport per hosted agent, and asks each agent's configuration whether that agent publishes.
+  Neither can be derived from the declarations, because an agent may declare nothing and still
+  have opted into publishing. The builder is *told*; it never learns another builder exists.
+- **`has_config` and `is_built`** -- two public booleans, which is what the collector reads.
+  Booleans rather than the objects: handing out the configuration would hand out the *unscoped*
+  loader, and config rework step 2b removed every path to that.
+- **`with_health_checker` records** a `Declaration` with `kind="health_checker"` instead of
+  stashing into a lazily-created `_custom_health_checkers` attribute behind a `hasattr` check.
+  This is what stops a group silently dropping an agent's readiness checks, and it hands step 6
+  the `(namespace, name)` pair it needs as data. The key is still the bare name, so a readiness
+  payload is unchanged and two agents declaring `"db"` still collide -- that is step 6's fix.
+  Calling it *after* `build()` still adds straight to the live `ActuatorApi`, because by then
+  the declarations have been replayed and recording would do nothing.
+- `_UNCONSTRUCTED_KINDS` names the two kinds the replay pass does not construct: a cache is
+  created by `CacheBackendFactory`, and a health checker is not a `Component` at all.
+- **Deleted:** `from_group`, `with_group`, `_load_registration`, `_skip_or_raise` -- 126 lines,
+  and with them the `importlib` and `group_config` imports. `AppBuilder` no longer references
+  `GroupConfig` in any form.
+
+**`entrypoint.py`** now reads:
+
+      config = Config(settings_files=DEFAULT_SETTINGS_FILES)
+      app = AgentGroup.resolve(config, environ=environ).assemble(config)
+
+so the module holds the one thing neither `AppBuilder` nor `assemble` may do: exit the process.
+Its header said it held "the three things `AppBuilder` must not: reading the environment, reading
+files, and exiting the process"; two of those now belong to `AgentGroup.resolve`, and the
+docstring says so.
+
+`AgentGroup` is exported from `blueprint.agents`.
+
+**Tests.** `test_with_group.py` becomes `tests/unit/agents/test_agent_group.py`, rewritten
+against the new surface: one namespace per agent, a group of one, one declaration serving two
+agents, a declaration not consumed by being assembled, an empty group, name validation, all
+three refusals with the messages that name the agent and the fix, a factory accepted where an
+instance is refused, nothing assembled when a refusal fires, the group's caches and an agent's
+own cache, a health checker carried over, loading and the critical flag, no I/O in `from_config`,
+`resolve`, and a case asserting `AppBuilder` has neither `with_group` nor `from_group`.
+`test_entrypoint.py`'s declaration is now an unbuilt `AppBuilder`, and its standalone case builds
+a separate one -- a builder builds once, and only that file runs both shapes in one process.
+1994 unit tests pass, 15 more than before this step.
+
+---
+
 ---
 
 ## Compatibility

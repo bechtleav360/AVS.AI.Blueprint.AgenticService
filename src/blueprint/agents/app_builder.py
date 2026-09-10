@@ -1,6 +1,5 @@
 """Generic FastAPI application setup and configuration."""
 
-import importlib
 import logging
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import asynccontextmanager, contextmanager
@@ -37,8 +36,14 @@ from .services.eventing.event_publishing_service import EventPublishingService
 from .services.sessions import SessionKeyProvider, SessionsApiClient
 from .services.infrastructure.cache_backend_factory import CacheBackendFactory
 from .config import DEFAULT_SETTINGS_FILES, Config, TelemetryManager
-from .group_config import AgentSpec, GroupConfig, GroupConfigError
 from .utils import parse_bool
+
+_UNCONSTRUCTED_KINDS = frozenset({"cache", "health_checker"})
+"""Declaration kinds the replay pass does not construct.
+
+A cache is created by ``CacheBackendFactory`` rather than by calling a class, and a health
+checker is not a ``Component`` at all -- the object declared is the object used.
+"""
 
 HandlerT = TypeVar("HandlerT", bound=EventHandlerBase)
 ServiceT = TypeVar("ServiceT", bound=ServiceBase)
@@ -82,7 +87,8 @@ class Declaration:
     a second class. Deferring construction to ``build()`` removes that reason.
 
     Attributes:
-        kind: Which ``with_*`` recorded this, and therefore how ``build()`` replays it.
+        kind: Which ``with_*`` recorded this. It names both how ``build()`` constructs it
+            and, through :meth:`replay`, the method that records it again.
         target: A component class, a zero-argument factory returning one, an unbuilt
             ``AgentBuilder``, or an already-built component. ``None`` for a cache, which
             names no class.
@@ -106,9 +112,37 @@ class Declaration:
 
         An already-built component was constructed at the caller's own source line, so it is in
         the registry before ``build()`` runs, while a class or factory is constructed during the
-        replay. That difference is what ``AppBuilder._check_declaration_order`` inspects.
+        replay. That difference is what ``AppBuilder._check_declaration_order`` inspects, and
+        what a group refuses outright.
         """
         return isinstance(self.target, Component)
+
+    def replay(self, builder: "AppBuilder") -> None:
+        """Re-issue this call on ``builder``, which records it again.
+
+        How a collector moves one agent's declarations onto the root builder that wires the
+        process. The namespace is *not* passed: the collector opens a
+        :func:`~blueprint.agents.component.namespace.namespace_scope` around the replay and
+        ``_record`` reads it from there, which is the same ambient mechanism a component uses
+        and the reason no namespace appears in any signature.
+
+        The method is resolved by name with ``getattr`` rather than looked up in a table. A
+        table is a second place to edit and fails with a ``KeyError`` at replay time; a missing
+        attribute fails the same way but needs no maintenance, and the surfaces-agree test
+        pins that every recorded ``kind`` has a method to go back to.
+
+        Args:
+            builder: The builder to record this call on.
+        """
+        if self.kind == "health_checker":
+            # The one irregular signature: with_health_checker(name, checker) takes its name
+            # positionally, where every other with_* takes it as a keyword override of a
+            # derived name. Left that way because it is published API; the irregularity is
+            # cheaper here, in one branch, than as a breaking change to the method.
+            builder.with_health_checker(self.name or "", self.target)
+            return
+        arguments = () if self.target is None else (self.target,)
+        getattr(builder, f"with_{self.kind}")(*arguments, name=self.name, **self.kwargs)
 
 
 @dataclass(frozen=True)
@@ -425,6 +459,10 @@ class AppBuilder:
         # special case in _build_rest_endpoints.
         self._lifecycle_components: list[Component] = []
         self._actuator_api: ActuatorApi | None = None
+        # Health checkers declared before build(), collected out of the declarations by the
+        # replay pass. A dict rather than a list because the readiness payload is keyed on the
+        # entry name, and a later declaration of the same name replaces an earlier one.
+        self._health_checkers: dict[str, HealthCheckerBase] = {}
         # Which agents this process hosts. See the 'namespaces' property for why the
         # builder is the thing that keeps the list rather than the registry.
         self._namespaces: list[str] = []
@@ -483,6 +521,28 @@ class AppBuilder:
         if self._config is not None:
             return self._config
         return self._use_config(Config(settings_files=DEFAULT_SETTINGS_FILES))
+
+    @property
+    def has_config(self) -> bool:
+        """Whether a configuration has been supplied yet.
+
+        A boolean rather than the object: handing out the configuration would hand out the
+        *unscoped* loader, which config rework step 2b removed every path to. What a caller
+        legitimately needs to know is whether this builder brought its own -- which is what
+        :class:`~blueprint.agents.agent_group.AgentGroup` refuses, one process having one
+        settings tree.
+        """
+        return self._config is not None
+
+    @property
+    def is_built(self) -> bool:
+        """Whether ``build()`` has already run.
+
+        Read by a collector, which cannot place an application that already exists: its
+        components are constructed and belong to the root namespace, and ``build()`` has
+        already injected the configuration process-wide.
+        """
+        return self._built
 
     def _require_config(self) -> Config:
         """Return the configuration, which exists only from ``build()`` onwards.
@@ -583,12 +643,49 @@ class AppBuilder:
         # Recorded before anything is built, so that a registration failing half way through
         # still leaves the namespace declared: the startup log and the readiness policy have to
         # be able to say that an agent was meant to be here.
-        self._namespaces.append(namespace)
-        logger.info("Hosting agent namespace '%s'", namespace)
+        self.host_agent(namespace)
 
         if registration is None:
             return NamespaceBuilder(self, namespace)
         return self.with_registration(registration, namespace)
+
+    def host_agent(self, namespace: str) -> "AppBuilder":
+        """Record that this process serves ``namespace``, whether or not it declares anything.
+
+        Not a ``with_*``: it declares no component. It states a fact about the *process*, and
+        ``build()`` needs that fact because two of the things it does are per agent rather than
+        per component -- it wires one transport for each hosted agent, and it asks each agent's
+        own configuration whether that agent publishes. Neither can be derived from the
+        declarations, since an agent may declare no component and still have opted into
+        publishing.
+
+        Called by :class:`~blueprint.agents.agent_group.AgentGroup`, which is the object that
+        was *told* the composition. The builder is not: it is handed the list, and it never
+        learns that another builder exists.
+
+        Args:
+            namespace: The agent's name.
+
+        Returns:
+            This builder.
+
+        Raises:
+            ValueError: if ``namespace`` is not a legal namespace, is the root, or is already
+                hosted by this process.
+        """
+        agent = validate_namespace(namespace)
+        if not agent:
+            raise ValueError("host_agent('') names no agent: '' is the root namespace, which every application already serves.")
+        if agent in self._namespaces:
+            raise ValueError(
+                f"Namespace '{agent}' is already hosted by this process, so it cannot be declared again. Two "
+                "agents cannot share a name: the name is what identifies an agent in every log line, span, queue "
+                "group, durable and cache partition, so a second agent under it would be indistinguishable from "
+                "the first and their components would merge into one registry namespace."
+            )
+        self._namespaces.append(agent)
+        logger.info("Hosting agent namespace '%s'", agent)
+        return self
 
     @property
     def namespaces(self) -> tuple[str, ...]:
@@ -604,132 +701,6 @@ class AppBuilder:
         so an empty tuple means "root only" rather than "nothing registered".
         """
         return tuple(self._namespaces)
-
-    @classmethod
-    def from_group(cls, config: Config, *, environ: dict[str, str] | None = None) -> "AppBuilder":
-        """Resolve this process's group and apply it, in one call.
-
-        The convenience form of the entry point's first two lines. Kept separate from
-        :meth:`with_group` because this one performs I/O -- it is ``GroupConfig.resolve`` that
-        reads the environment and the group file -- while ``with_group`` does not, and a test
-        that wants an exact composition needs the half that does not.
-
-        Args:
-            config: The application's configuration.
-            environ: The environment to resolve from, for tests.
-
-        Returns:
-            A builder with every agent in the group applied.
-
-        Raises:
-            GroupConfigError: if the group cannot be resolved. See ``GroupConfig.resolve``.
-        """
-        return cls(config).with_group(GroupConfig.resolve(config, environ=environ))
-
-    def with_group(self, group: GroupConfig) -> "AppBuilder":
-        """Apply every agent in ``group``, and register the caches the group declares.
-
-        **Performs no I/O of its own**, which is what keeps this class a pure function of its
-        call sequence: no environment reads, no file reads, no ``sys.exit``, and no knowledge of
-        an agent repo's layout. Those belong to ``GroupConfig.resolve`` and to the entry point,
-        so a test can state an exact composition by constructing a ``GroupConfig`` literally.
-
-        Importing an agent's module is the one thing here that reaches outside, and it is
-        deliberately on this side of the line: it is driven entirely by the ``module`` strings
-        the group carries, so a test points them at test modules and controls neither the
-        environment nor the filesystem to do it. Imports happen **per group**, so cold start is
-        proportional to the number of agents this process actually hosts rather than to the
-        number the image contains.
-
-        A critical agent that cannot be loaded raises, which the entry point turns into a
-        non-zero exit before the port is bound. A non-critical one is skipped with an ERROR:
-        that flag is the deployment saying it would rather run the rest (spec sec. 9.1). The
-        flag is read *before* the agent is wired rather than after an exception, because there
-        is no partial build to unwind -- one process, one ``build()``.
-
-        Args:
-            group: The resolved group.
-
-        Returns:
-            This builder.
-
-        Raises:
-            GroupConfigError: if a critical agent's module or registration cannot be loaded.
-        """
-        logger.info(
-            "Applying group '%s': %d agent(s), %d declared cache(s)",
-            group.name,
-            len(group.agents),
-            len(group.cache_names),
-        )
-
-        for spec in group.agents:
-            registration = self._load_registration(spec)
-            if registration is None:
-                continue
-            self.with_namespace(spec.name, registration=registration)
-
-        for cache_name in group.cache_names:
-            self.with_cache(name=cache_name)
-
-        return self
-
-    @staticmethod
-    def _load_registration(spec: AgentSpec) -> AgentRegistration | None:
-        """Import an agent's declaration, or report why it could not be loaded.
-
-        Returns:
-            The registration, or ``None`` when a non-critical agent could not be loaded and is
-            to be skipped.
-
-        Raises:
-            GroupConfigError: if a critical agent cannot be loaded. The message names the agent
-                and the module path it came from, because the two are declared in different
-                files -- the agent name in the group file or an environment variable, the module
-                in the image's agent map -- and which of them is wrong is the first thing to
-                establish.
-        """
-        module_path, _, attribute = spec.module.partition(":")
-        if not module_path or not attribute:
-            return AppBuilder._skip_or_raise(
-                spec,
-                f"'{spec.module}' is not a valid declaration path. Write it as 'package.module:attribute', naming the "
-                "AgentRegistration the module assigns.",
-            )
-
-        try:
-            module = importlib.import_module(module_path)
-        except Exception as exc:
-            # Every exception, not only ImportError: importing a module runs it, so anything its
-            # top level does can fail here, and an agent whose declaration raises on import is
-            # exactly as unloadable as one whose module is absent.
-            return AppBuilder._skip_or_raise(spec, f"importing '{module_path}' raised {type(exc).__name__}: {exc}", exc)
-
-        registration = getattr(module, attribute, None)
-        if registration is None:
-            return AppBuilder._skip_or_raise(
-                spec, f"module '{module_path}' has no attribute '{attribute}', so its declaration cannot be read."
-            )
-        if not isinstance(registration, AgentRegistration):
-            return AppBuilder._skip_or_raise(
-                spec,
-                f"'{spec.module}' is a {type(registration).__name__}, not an AgentRegistration. An agent's "
-                "declaration is the object its components are declared on.",
-            )
-        logger.debug("Loaded the declaration for agent '%s' from '%s'", spec.name, spec.module)
-        return registration
-
-    @staticmethod
-    def _skip_or_raise(spec: AgentSpec, reason: str, cause: BaseException | None = None) -> None:
-        """Raise for a critical agent, or log and skip a non-critical one.
-
-        Raises:
-            GroupConfigError: when ``spec`` is critical.
-        """
-        if spec.critical:
-            raise GroupConfigError(f"Agent '{spec.name}' could not be loaded and is critical: {reason}") from cause
-        logger.error("Agent '%s' could not be loaded and is not critical, so it is skipped: %s", spec.name, reason)
-        return None
 
     @property
     def hosted_namespaces(self) -> tuple[str, ...]:
@@ -984,18 +955,28 @@ class AppBuilder:
         logger.info("Registered cache '%s' as %s (locking=%s)", name, type(cache_service).__name__, enable_locking)
 
     def with_health_checker(self, name: str, checker: "HealthCheckerBase") -> "AppBuilder":
-        """Register a custom health checker on the ActuatorApi.
+        """Declare a custom health checker for the readiness probe.
 
-        Must be called after build() has created the ActuatorApi, or the checker
-        will be added during build() automatically. Prefer calling before build().
+        Recorded like every other declaration, and flushed into the ``ActuatorApi`` by
+        ``build()``. Recording it is what lets a group carry an agent's checkers over with the
+        rest of its declaration instead of silently dropping them.
+
+        A checker is not a ``Component``, so it is never constructed here: the object passed
+        is the object used, whichever namespace it was created in.
+
+        Args:
+            name: The entry this checker appears under in the readiness payload.
+            checker: The checker.
+
+        Note:
+            Calling this *after* ``build()`` adds the checker straight to the live
+            ``ActuatorApi``, because by then the declarations have already been replayed and
+            recording it would do nothing.
         """
         if self._actuator_api is not None:
             self._actuator_api.add_health_providers({name: checker})
-        else:
-            # Stored temporarily; flushed into ActuatorApi during build()
-            if not hasattr(self, "_custom_health_checkers"):
-                self._custom_health_checkers: dict[str, HealthCheckerBase] = {}
-            self._custom_health_checkers[name] = checker
+            return self
+        self._declarations.append(Declaration(kind="health_checker", target=checker, name=name, namespace=current_namespace(), kwargs={}))
         return self
 
     # ------------------------------------------------------------------
@@ -1016,6 +997,9 @@ class AppBuilder:
         so building it in the middle of the pass would interleave it into the registry's
         insertion order and shift the components declared after it.
 
+        Health checkers are constructed by nobody: a checker is not a ``Component``, so the
+        pass only collects them for ``build()`` to hand to the actuator.
+
         Args:
             config: The application's configuration, handed to the declarations that take one.
 
@@ -1025,7 +1009,7 @@ class AppBuilder:
         """
         built: list[tuple[Declaration, Any]] = []
         for entry in self._declarations:
-            if entry.kind != "cache":
+            if entry.kind not in _UNCONSTRUCTED_KINDS:
                 built.append((entry, self._construct(entry, config)))
 
         # After construction, not before: a class's priority is a property of the object, and
@@ -1037,6 +1021,8 @@ class AppBuilder:
         for entry in self._declarations:
             if entry.kind == "cache":
                 self._create_cache(entry)
+            elif entry.kind == "health_checker":
+                self._health_checkers[entry.name or ""] = entry.target
 
         logger.debug("Constructed %d declaration(s)", len(self._declarations))
 
@@ -1182,8 +1168,7 @@ class AppBuilder:
         for cache_name, cache in registry.get_all_caches().items():
             entry = "cache" if cache_name == DEFAULT_CACHE_NAME else f"cache:{cache_name}"
             health_providers[entry] = CacheHealthChecker(cache)
-        if hasattr(self, "_custom_health_checkers"):
-            health_providers.update(self._custom_health_checkers)
+        health_providers.update(self._health_checkers)
         if health_providers:
             self._actuator_api.add_health_providers(health_providers)
 
