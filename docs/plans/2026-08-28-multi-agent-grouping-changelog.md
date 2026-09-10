@@ -5326,6 +5326,74 @@ that covers the Dockerfile and `main.py` paths a unit test cannot reach.
 
 ---
 
+### Phase 8b, step 9 part 1 -- `AGENTS.md` exists
+
+`CLAUDE.md:5` has said *"See `AGENTS.md` for architecture, component patterns, and testing
+conventions shared across all AI assistants"* for months, and
+`git log --all --diff-filter=A -- AGENTS.md` returns nothing: the file was never written and
+later deleted, it was **cited into existence**. `docs/plans/2026-06-10-sessions-job-handler.md:122`
+goes further and quotes what it "states" about versioning. So this part adds no new home for
+documentation -- it turns a pointer that resolves nowhere into one that resolves.
+
+**What it contains**, in the order it is read:
+
+- **Where things are** -- one table for `src/blueprint/agents/`, module by module, and one
+  paragraph pointing at the prose in `docs/` for users. Every path in it was checked to exist.
+- **Component patterns** -- the six base classes and the five things every component of any of
+  them has in common (its constructor takes only what its author wrote; `self.registry`,
+  `self.config` and `self.executor` answer for its own agent; collaborators are resolved in
+  `on_startup`, not `__init__`; the lifecycle pair; what `should_register=False` is for), plus
+  the acknowledgement contract for handlers.
+- **Design rules**, in six groups, each rule stating the rule, the reason, and **the failure it
+  prevents**: construction and assembly (collect then wire; one declaration surface; single-use
+  builders; group policy belongs to the collector), namespaces and isolation (a component never
+  learns it is in a group; structural where it can be and audited where it cannot; no cross-agent
+  fallback; an omitted namespace on the root registry means every namespace; entering the root
+  scope is not a no-op), names that leave the process (validated never repaired; two components of
+  one class collide on the derived name; a check answerable at the call stays at the call),
+  declarations and defaults (an empty declaration means everything; a key whose absence changes
+  behaviour is required), configuration and logging (injected before any component exists, read
+  through the component's own view, no public read path to the loader; isolation audited not
+  enforced; a process-scope key cannot be set per agent; logging belongs to the application), and
+  versioning.
+- **Testing conventions** -- the unit/integration split and the `integration` marker, the
+  `TESTS.md` per package, probing against real objects, asserting on the observable thing rather
+  than on the call, what a test's docstring is for, that the frozen suite is frozen, and that a
+  guard test states its rule in its failure message.
+- **How the work is done** -- no unused code; probe rather than assume, and say which it was; the
+  spec wins on precedence, not on correctness; report the code, not the wrapper.
+
+**The failure line is the point.** A rule without the failure it prevents is advice, and advice
+gets argued away by the next person with a deadline. Most of these were bought with a defect --
+`namespace_scope("")` silently resetting every component to the root, a `MagicMock` registry
+hiding six ownership bugs, `must_exist=True` beside a `default=` passing while the key is unset --
+and the failure line is the receipt.
+
+**Two claims in it were wrong when written, and were fixed rather than softened.**
+
+- *"Every test package has a `TESTS.md`."* Ten of them do, all under `tests/unit/agents/`, but
+  the top level -- where `test_agent_group.py`, `test_group_config.py`, `test_entrypoint.py` and
+  the new frozen suite live -- had none, and `tests/unit/agent_generator/` and
+  `tests/integration/` still have none. So `tests/unit/agents/TESTS.md` was written as part of
+  this commit, and the rule now says what is true, exceptions included. A rule that is already
+  violated by the tree it governs is the same failure as a document cited into existence.
+- *"A `CHANGELOG.md` entry under the unreleased section."* The section is spelled `[Unreleased]`;
+  checked against the file.
+
+**The versioning quotation now resolves.** `.github/workflows/publish.yml` extracts the version
+from the git tag and rewrites `pyproject.toml` at build time, so the sessions plan's claim that
+"`AGENTS.md` states versioning is handled by CI publishing; manual bumps are forbidden" is true
+of the pipeline -- and is now stated in `AGENTS.md`, which is where that plan said to look. Part 3
+has one less thing to fix.
+
+`CLAUDE.md:5` was extended to name the design rules as well, since the file it points at now
+carries them.
+
+No production code changed; 2100 unit tests still pass. Parts 2 (the guard tests) and 3 (the
+documentation cleanup) follow as their own commits.
+
+---
+
 ## Open points
 
 - **Phase 7's ambiguity error needs a spec amendment.** The plan asks `process_event` to raise
