@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from blueprint.agents.app_builder import AppBuilder
+from blueprint.agents.component.namespace import namespace_scope
 from blueprint.agents.services.service_base import ServiceBase
 from tests.unit.agents.app_builder.conftest import StubHandler, realize, wire_empty_registry
 
@@ -150,13 +151,22 @@ class TestWithHealthChecker:
         builder.with_health_checker("svc_a", a)
         builder.with_health_checker("svc_b", b)
         realize(builder)
-        assert builder._health_checkers == {"svc_a": a, "svc_b": b}
+        assert [(entry.name, entry.checker) for entry in builder._health_checkers] == [("svc_a", a), ("svc_b", b)]
 
     def test_a_checker_is_never_constructed(self, builder: AppBuilder) -> None:
         """A checker is not a Component: the object declared is the object used."""
         checker = MagicMock()
         realize(builder.with_health_checker("db", checker))
-        assert builder._health_checkers["db"] is checker
+        assert builder._health_checkers[0].checker is checker
+
+    def test_a_checker_carries_the_agent_it_was_declared_in(self, builder: AppBuilder) -> None:
+        """D4: the agent travels with the checker as data, not folded into its name."""
+        with namespace_scope("orders"):
+            builder.with_health_checker("db", MagicMock())
+        realize(builder)
+
+        entry = builder._health_checkers[0]
+        assert (entry.name, entry.namespace, entry.key) == ("db", "orders", "orders.db")
 
     def test_added_immediately_after_build(self, builder: AppBuilder) -> None:
         mock_actuator = MagicMock()
@@ -165,7 +175,8 @@ class TestWithHealthChecker:
         checker = MagicMock()
         builder.with_health_checker("live_service", checker)
 
-        mock_actuator.add_health_providers.assert_called_once_with({"live_service": checker})
+        entries = mock_actuator.add_health_providers.call_args[0][0]
+        assert [(entry.name, entry.namespace, entry.checker) for entry in entries] == [("live_service", "", checker)]
 
     def test_returns_self_for_chaining(self, builder: AppBuilder) -> None:
         assert builder.with_health_checker("svc", MagicMock()) is builder
@@ -324,8 +335,8 @@ class TestBuild:
 
         actuator_instance = all_build_mocks.actuator.return_value
         actuator_instance.add_health_providers.assert_called_once()
-        call_kwargs = actuator_instance.add_health_providers.call_args[0][0]
-        assert "my_svc" in call_kwargs
+        entries = actuator_instance.add_health_providers.call_args[0][0]
+        assert "my_svc" in [entry.key for entry in entries]
 
 
 # ----------------------------------------------------------------------

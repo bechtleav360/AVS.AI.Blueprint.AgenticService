@@ -248,6 +248,27 @@ def qualified_component_name(namespace: str, base_name: str) -> str:
     return base_name if not namespace else f"{namespace}_{base_name}"
 
 
+def qualified_entry_name(namespace: str, name: str) -> str:
+    """Return the name ``name`` is *displayed* under inside ``namespace``.
+
+    For the names that identify something in a payload or a document rather than in the
+    registry: a readiness entry, an OpenAPI tag. The root keeps the bare name, so a
+    single-agent application's readiness payload and Swagger groups do not change.
+
+    ``.`` rather than the ``_`` of :func:`qualified_component_name`, and the two are not
+    interchangeable. A registry name is an identifier that other code *looks up*, and ``_`` is
+    what every lookup qualifies with; an entry name is a label nothing resolves, and it may
+    contain characters a registry name never does -- ``cache:sessions`` is one. Rendering both
+    the same way would suggest a readiness key can be passed to ``get_component``, and it
+    cannot.
+
+    The namespace is kept **as data** wherever this is used, and this is only its rendering:
+    recovering an agent by splitting the result breaks on the first name containing a dot, and
+    ``v2.sessions`` is a legal cache name.
+    """
+    return name if not namespace else f"{namespace}.{name}"
+
+
 def namespace_of(component: Any) -> str:
     """Return the namespace a component belongs to, or the root for one that has none.
 

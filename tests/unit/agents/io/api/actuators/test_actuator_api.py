@@ -9,6 +9,7 @@ import pytest
 from blueprint.agents.component.component import Component
 from blueprint.agents.component.registry import Registry
 from blueprint.agents.config import Config
+from blueprint.agents.io.api.actuators.health.health_base import HealthCheckEntry
 from blueprint.agents.io.api.actuators.actuator_api import ActuatorApi
 
 
@@ -147,13 +148,13 @@ class TestLifecycle:
         mock_cache_cls.assert_called_once_with(check_interval_seconds=60)
 
     async def test_on_startup_registers_pending_providers(self, actuator_api: ActuatorApi, mock_config: MagicMock) -> None:
-        provider = MagicMock()
-        actuator_api._pending_providers = {"db": provider}
+        entry = HealthCheckEntry(name="db", namespace="", checker=MagicMock())
+        actuator_api.add_health_providers([entry])
         with patch("blueprint.agents.io.api.actuators.actuator_api.HealthCheckCache") as mock_cache_cls:
             mock_cache_cls.return_value.start = AsyncMock()
-            mock_cache_cls.return_value.set_health_check_provider = MagicMock()
+            mock_cache_cls.return_value.set_health_entries = MagicMock()
             await actuator_api.on_startup()
-        mock_cache_cls.return_value.set_health_check_provider.assert_called_once_with({"db": provider})
+        mock_cache_cls.return_value.set_health_entries.assert_called_once_with([entry])
 
     async def test_on_shutdown_stops_health_cache(self, actuator_api: ActuatorApi, mock_config: MagicMock) -> None:
         mock_cache = MagicMock()
@@ -338,3 +339,47 @@ class TestEnvStatus:
 
         assert result.namespaces == {}
         assert result.settings["APP_NAME"] == "root-app"
+
+
+class TestRegisteringChecks:
+    """``add_health_providers`` is the one funnel, so the rules about entries live there."""
+
+    def test_checks_accumulate_across_calls(self, actuator_api: ActuatorApi) -> None:
+        """It used to assign: a with_health_checker() after build() wiped every wired check."""
+        first = HealthCheckEntry(name="nats_client", namespace="", checker=MagicMock())
+        second = HealthCheckEntry(name="db", namespace="", checker=MagicMock())
+
+        actuator_api.add_health_providers([first])
+        actuator_api.add_health_providers([second])
+
+        assert actuator_api.health_entries == (first, second)
+
+    def test_two_agents_may_use_one_name(self, actuator_api: ActuatorApi) -> None:
+        orders = HealthCheckEntry(name="db", namespace="orders", checker=MagicMock())
+        billing = HealthCheckEntry(name="db", namespace="billing", checker=MagicMock())
+
+        actuator_api.add_health_providers([orders, billing])
+
+        assert [entry.key for entry in actuator_api.health_entries] == ["orders.db", "billing.db"]
+
+    def test_a_duplicate_key_is_refused(self, actuator_api: ActuatorApi) -> None:
+        """A dict kept the last one, so a check could vanish with nothing logged."""
+        actuator_api.add_health_providers([HealthCheckEntry(name="db", namespace="orders", checker=MagicMock())])
+
+        with pytest.raises(ValueError, match="already taken"):
+            actuator_api.add_health_providers([HealthCheckEntry(name="db", namespace="orders", checker=MagicMock())])
+
+    def test_a_duplicate_within_one_call_is_refused(self, actuator_api: ActuatorApi) -> None:
+        entry = HealthCheckEntry(name="db", namespace="", checker=MagicMock())
+
+        with pytest.raises(ValueError, match="already taken"):
+            actuator_api.add_health_providers([entry, HealthCheckEntry(name="db", namespace="", checker=MagicMock())])
+
+    def test_a_check_added_after_startup_reaches_the_live_cache(self, actuator_api: ActuatorApi) -> None:
+        cache = MagicMock()
+        actuator_api._health_cache = cache
+        entry = HealthCheckEntry(name="db", namespace="", checker=MagicMock())
+
+        actuator_api.add_health_providers([entry])
+
+        cache.set_health_entries.assert_called_once_with([entry])

@@ -4949,6 +4949,153 @@ agents declaring `sessions` get separate stores and neither can read the other's
 
 ---
 
+### Phase 8b, step 6 -- a health check carries the agent it belongs to
+
+**D4.** A readiness check was a dict entry, `name -> checker`, and that lost the attribution
+twice over. Two agents calling `with_health_checker("db", ...)` collided on one key and one
+disappeared with nothing logged; and even where the keys differed -- a client's registry name is
+already unique -- nothing recorded *whose* check a failing entry was, which is exactly what
+`readiness_policy = "critical"` (phase 9) has to answer.
+
+**`HealthCheckEntry`, in `health/health_base.py`** -- the value object the dict becomes:
+
+    @dataclass(frozen=True)
+    class HealthCheckEntry:
+        name: str
+        namespace: str
+        checker: HealthCheckerBase
+
+        @property
+        def key(self) -> str:
+            return qualified_entry_name(self.namespace, self.name)
+
+        @property
+        def agent(self) -> str:
+            return self.namespace or ROOT_LABEL
+
+The agent is **data**; `key` is only its rendering. Recovering the namespace by splitting the key
+would break on the first name containing the separator, and `cache:v2.sessions` is one. `agent`
+exists so a log line can name the root without every caller writing the `or ROOT_LABEL`.
+
+**`qualified_entry_name` in `component/namespace.py`** is the rendering, and it is a *second*
+naming rule rather than a reuse of `qualified_component_name`:
+
+    def qualified_entry_name(namespace: str, name: str) -> str:
+        return name if not namespace else f"{namespace}.{name}"
+
+`.` rather than `_`, deliberately. A registry name is an identifier other code looks up, and `_`
+is what every lookup qualifies with; an entry name is a label nothing resolves, and it may
+contain characters a registry name never does -- `cache:sessions` already does. Rendering both
+the same way would suggest a readiness key can be passed to `get_component`, and it cannot. The
+route-tag prefixing in `_mount` now calls it too, so the dotted form has one definition instead
+of two spellings.
+
+**`HealthCheckCache` polls entries, not a mapping.** `set_health_check_provider(dict)` becomes
+`set_health_entries(Sequence[HealthCheckEntry])`, and the poll loop lost its intermediate dict:
+
+    results = await asyncio.gather(*(entry.checker.health_check() for entry in self._entries), return_exceptions=True)
+
+    for entry, result in zip(self._entries, results, strict=True):
+        if isinstance(result, BaseException):
+            logger.warning("Health check '%s' of agent '%s' failed: %s", entry.name, entry.agent, result)
+            components[entry.key] = ComponentHealth(status="unhealthy", message=f"Check failed: {result}")
+        else:
+            components[entry.key] = result
+
+The payload is still `dict[str, ComponentHealth]` keyed by `entry.key`, so the response *shape*
+is unchanged and the root's keys do not move. What is new is that the object doing the ANDing
+knows whose each result is -- phase 9 groups these by `entry.namespace` and needs no string
+surgery to do it. The failure log names the agent separately from the entry, because "whose
+check is failing" is the question asked of a group.
+
+**`ActuatorApi.add_health_providers` accumulates, and refuses a duplicate key.** It took a
+mapping and **assigned** it:
+
+    self._pending_providers = providers        # before
+    self._health_cache.set_health_check_provider(providers)
+
+That is a live defect, not just a shape: the method's own docstring documents calling
+`with_health_checker` *after* `build()`, and doing so replaced every client and cache check the
+build had wired -- before startup by overwriting `_pending_providers`, after startup by
+overwriting the cache's mapping. The readiness probe then reported one component and nothing
+else. It now appends to `self._health_entries`, re-pushes the whole list to a live cache, and
+raises on a key that is already taken:
+
+    raise ValueError(
+        f"Health check '{entry.name}' of agent '{entry.agent}' would appear in the readiness payload as "
+        f"'{entry.key}', which is already taken by a {type(existing.checker).__name__} of agent "
+        f"'{existing.agent}'. Two checks under one entry cannot be told apart in the payload, so one of "
+        "them has to be renamed."
+    )
+
+Refused rather than kept-last, because silent loss is the whole of what D4 is about. It is
+checked here rather than at `with_health_checker` because this is the single funnel every source
+passes through -- clients, caches, declared checkers, and post-build additions -- and a collision
+between two *different* sources is only visible at this point. `health_entries` is a public
+read-only property; `_pending_providers` is gone.
+
+**`AppBuilder` attributes every source.** `_health_checkers` is a `list[HealthCheckEntry]`, and
+the three sources compose their entries:
+
+    health_providers: list[HealthCheckEntry] = [
+        HealthCheckEntry(name=client.base_name, namespace=client.namespace, checker=ClientHealthChecker([client]))
+        for client in registry.get_clients()
+    ]
+    for namespace, cache_name, cache in registry.cache_entries():
+        name = "cache" if cache_name == DEFAULT_CACHE_NAME else f"cache:{cache_name}"
+        health_providers.append(HealthCheckEntry(name=name, namespace=namespace, checker=CacheHealthChecker(cache)))
+    health_providers.extend(self._health_checkers)
+
+and `with_health_checker` records `current_namespace()` on the entry for the post-build path as
+well, so a checker declared inside an agent's scope belongs to that agent wherever it is flushed.
+
+**`Component.base_name` is new, and the client entry is why.** A client's registry name is
+already qualified -- `orders_nats_client` -- so passing it as the entry name rendered
+`orders.orders_nats_client`. Stripping the prefix back off is not available:
+`qualified_component_name` is deliberately not idempotent, precisely because "does
+`billing_handler` in agent `billing` carry a prefix?" is not decidable from the string. So the
+unqualified half is kept at construction instead of being recovered later:
+
+    self._base_name = name or camel_to_snake(self.__class__.__name__)
+    self._name = qualified_component_name(self._namespace, self._base_name)
+
+The setter updates both. A grouped client's readiness key is therefore `orders.nats_client`, and
+a root client's is `nats_client` -- the key it has always had.
+
+**What a payload looks like now**, from a probe against real objects (two agents, each with a
+handler, a cache and a `db` checker):
+
+    orders.nats_client       | orders  | ClientHealthChecker
+    billing.nats_client      | billing | ClientHealthChecker
+    orders.cache             | orders  | CacheHealthChecker
+    billing.cache:sessions   | billing | CacheHealthChecker
+    orders.db                | orders  | DbChecker
+    billing.db               | billing | DbChecker
+
+Every entry reads `<agent>.<what>`, and the same probe confirmed the duplicate refusal fires and
+that a post-build checker now adds a seventh entry instead of replacing the six.
+
+**Unchanged on purpose:** the policy. Every checker is still polled on a timer and ANDed, so one
+unhealthy check still returns 503 for the whole pod -- in a group, one agent's outage still
+removes every agent from rotation. That is `readiness_policy = "all"`, which phase 9 makes
+selectable; this step only makes the attribution available to it. `ComponentHealth` and
+`ReadinessResponse` are untouched, so nothing about the response schema changes.
+
+**Tests.** `test_health_cache.py` moved onto entries and gained `TestAnEntryIsAttributedToItsAgent`
+(root keeps the bare name, an agent's is prefixed, two agents declaring one name are two
+components, the failure log names the agent). `test_actuator_api.py` gained
+`TestRegisteringChecks` (accumulation across calls, two agents sharing a name, a duplicate
+refused across calls and within one call, a post-startup addition reaching the live cache).
+`test_build_namespaces.py` gained `TestEveryReadinessEntryNamesItsAgent` against real components
+-- including that the key does not carry the agent twice, and that `namespace` is readable
+without splitting the key. `test_name_uniqueness.py` gained `TestBaseName`, whose last case pins
+the non-idempotence that `base_name` exists to work around. The app_builder, named-cache and
+agent-group tests that asserted on the old dict now read `health_entries`.
+
+1996 unit tests pass, zero failures.
+
+---
+
 ## Open points
 
 - **Phase 7's ambiguity error needs a spec amendment.** The plan asks `process_event` to raise

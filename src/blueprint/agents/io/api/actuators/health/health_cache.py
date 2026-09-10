@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from .....models.api import ComponentHealth, ReadinessResponse
+from .health_base import HealthCheckEntry
 
 if TYPE_CHECKING:
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -52,15 +54,22 @@ class HealthCheckCache:
         )
         self._last_update: datetime = datetime.now()
         self._lock = asyncio.Lock()
-        self._health_check_provider: dict[str, Any] | None = None
+        self._entries: tuple[HealthCheckEntry, ...] = ()
 
-    def set_health_check_provider(self, provider: dict[str, Any]) -> None:
-        """Set the health check provider dependencies.
+    def set_health_entries(self, entries: Sequence[HealthCheckEntry]) -> None:
+        """Set the checks to poll, replacing whatever was set before.
+
+        Entries rather than a ``name -> checker`` mapping because each one carries the agent it
+        belongs to as data (see :class:`HealthCheckEntry`). The payload is still keyed by
+        ``entry.key``, so nothing about the response shape changes; what is new is that this
+        object knows *whose* check each result is, which is what a per-agent readiness policy
+        needs (phase 9).
 
         Args:
-            provider: Dictionary of component_name -> HealthCheckProvider
+            entries: The checks to poll. The whole set, not an addition: ``ActuatorApi``
+                accumulates and re-pushes, so this object holds one authoritative list.
         """
-        self._health_check_provider = provider
+        self._entries = tuple(entries)
 
     async def start(self) -> None:
         """Start the background health check scheduler."""
@@ -108,7 +117,7 @@ class HealthCheckCache:
 
     async def _run_health_checks(self) -> None:
         """Run all health checks and update cache."""
-        if not self._health_check_provider:
+        if not self._entries:
             logger.debug("No health check providers configured")
             return
 
@@ -117,23 +126,26 @@ class HealthCheckCache:
                 components: dict[str, ComponentHealth] = {}
 
                 # Run all health checks concurrently
-                tasks = {name: provider.health_check() for name, provider in self._health_check_provider.items()}
+                results: list[ComponentHealth | BaseException] = await asyncio.gather(
+                    *(entry.checker.health_check() for entry in self._entries), return_exceptions=True
+                )
 
-                results: list[ComponentHealth | BaseException] = await asyncio.gather(*tasks.values(), return_exceptions=True)
-
-                for name, result in zip(tasks.keys(), results, strict=True):
+                for entry, result in zip(self._entries, results, strict=True):
                     if isinstance(result, BaseException):
+                        # The agent is named separately from the entry key, because that is the
+                        # question asked of a group: whose check is failing, not only which one.
                         logger.warning(
-                            "Health check failed for %s: %s",
-                            name,
+                            "Health check '%s' of agent '%s' failed: %s",
+                            entry.name,
+                            entry.agent,
                             result,
                         )
-                        components[name] = ComponentHealth(
+                        components[entry.key] = ComponentHealth(
                             status="unhealthy",
                             message=f"Check failed: {result}",
                         )
                     else:
-                        components[name] = result
+                        components[entry.key] = result
 
                 # Determine overall status
                 all_healthy = all(component.status == "healthy" for component in components.values())

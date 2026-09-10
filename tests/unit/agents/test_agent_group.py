@@ -277,8 +277,8 @@ class TestTheGroupsCaches:
         with patch("blueprint.agents.app_builder.ActuatorApi") as actuator, patch("blueprint.agents.app_builder.FastAPI"):
             AgentGroup("finance", {"order": declaration}).assemble(config)
 
-        providers = actuator.return_value.add_health_providers.call_args[0][0]
-        assert providers["db"] is checker
+        entries = actuator.return_value.add_health_providers.call_args[0][0]
+        assert [(entry.key, entry.checker) for entry in entries] == [("order.db", checker)]
 
 
 class TestLoadingADeclaration:

@@ -253,3 +253,48 @@ class TestPublishOptInWithoutATransport:
 
         with pytest.raises(ValueError, match="'reporting'"):
             build(builder)
+
+
+def entry_keys(builder: AppBuilder) -> list[str]:
+    """The readiness entry names ``build()`` wired, in order."""
+    assert builder._actuator_api is not None
+    return [entry.key for entry in builder._actuator_api.health_entries]
+
+
+class TestEveryReadinessEntryNamesItsAgent:
+    """D4: a check is attributed to the agent it belongs to, as data, and rendered from it.
+
+    Against real components, because the interesting entries are the ones ``build()`` derives
+    from what it wired -- a client per agent -- rather than the ones a test hands it.
+    """
+
+    def test_each_agents_client_is_its_own_entry(self, nats_config: Config) -> None:
+        builder = hosting(nats_config, orders=AppBuilder().with_handler(OrderHandler), billing=AppBuilder().with_handler(BillingHandler))
+
+        build(builder)
+
+        assert {"orders.nats_client", "billing.nats_client"} <= set(entry_keys(builder))
+
+    def test_the_key_does_not_carry_the_agent_twice(self, nats_config: Config) -> None:
+        """The registry name is already qualified with '_', so passing it would double up."""
+        builder = hosting(nats_config, orders=AppBuilder().with_handler(OrderHandler))
+
+        build(builder)
+
+        assert "orders.orders_nats_client" not in entry_keys(builder)
+
+    def test_a_single_agent_application_keeps_the_entry_it_had(self, nats_config: Config) -> None:
+        builder = AppBuilder(nats_config).with_handler(OrderHandler)
+
+        build(builder)
+
+        assert "nats_client" in entry_keys(builder)
+
+    def test_the_agent_is_available_without_splitting_the_key(self, nats_config: Config) -> None:
+        """What phase 9's readiness_policy needs: whose check this is, as a value."""
+        builder = hosting(nats_config, orders=AppBuilder().with_handler(OrderHandler))
+
+        build(builder)
+
+        entries = {entry.key: entry for entry in builder._actuator_api.health_entries}  # type: ignore[union-attr]
+        assert entries["orders.nats_client"].namespace == "orders"

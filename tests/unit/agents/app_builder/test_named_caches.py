@@ -11,6 +11,7 @@ in ``tests/unit/agents/services/infrastructure/test_cache_backend_factory.py``.
 """
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -51,6 +52,18 @@ def builder(cache_dir: Path) -> AppBuilder:
 def registry() -> Registry:
     assert Component.shared_registry is not None
     return Component.shared_registry
+
+
+def entry_keys(builder: AppBuilder) -> list[str]:
+    """The readiness entry names ``build()`` wired, in order."""
+    assert builder._actuator_api is not None
+    return [entry.key for entry in builder._actuator_api.health_entries]
+
+
+def checkers(builder: AppBuilder) -> dict[str, Any]:
+    """The wired checkers by readiness entry name."""
+    assert builder._actuator_api is not None
+    return {entry.key: entry.checker for entry in builder._actuator_api.health_entries}
 
 
 class TestTheDefaultCacheIsUnchanged:
@@ -171,7 +184,7 @@ class TestEveryCacheReachesReadiness:
         with patch("blueprint.agents.app_builder.FastAPI"):
             builder.build()
 
-        assert "cache" in builder._actuator_api._pending_providers  # type: ignore[union-attr]
+        assert "cache" in entry_keys(builder)
 
     def test_a_named_cache_gets_its_own_entry(self, builder: AppBuilder) -> None:
         builder.with_cache().with_cache(name="sessions")
@@ -179,8 +192,7 @@ class TestEveryCacheReachesReadiness:
         with patch("blueprint.agents.app_builder.FastAPI"):
             builder.build()
 
-        providers = builder._actuator_api._pending_providers  # type: ignore[union-attr]
-        assert {"cache", "cache:sessions"} <= set(providers)
+        assert {"cache", "cache:sessions"} <= set(entry_keys(builder))
 
     def test_a_named_cache_alone_still_reaches_readiness(self, builder: AppBuilder) -> None:
         """Previously the probe was keyed on the default name, so this cache went unprobed."""
@@ -189,7 +201,7 @@ class TestEveryCacheReachesReadiness:
         with patch("blueprint.agents.app_builder.FastAPI"):
             builder.build()
 
-        assert "cache:sessions" in builder._actuator_api._pending_providers  # type: ignore[union-attr]
+        assert "cache:sessions" in entry_keys(builder)
 
     def test_each_entry_probes_its_own_cache(self, builder: AppBuilder) -> None:
         builder.with_cache().with_cache(name="sessions")
@@ -197,7 +209,7 @@ class TestEveryCacheReachesReadiness:
         with patch("blueprint.agents.app_builder.FastAPI"):
             builder.build()
 
-        providers = builder._actuator_api._pending_providers  # type: ignore[union-attr]
+        providers = checkers(builder)
         assert providers["cache"]._cache is registry().get_cache()
         assert providers["cache:sessions"]._cache is registry().get_cache("sessions")
 
@@ -263,6 +275,6 @@ class TestACacheBelongsToTheAgentThatDeclaredIt:
         with patch("blueprint.agents.app_builder.FastAPI"):
             builder.build()
 
-        providers = builder._actuator_api._pending_providers  # type: ignore[union-attr]
+        providers = checkers(builder)
         assert {"orders.cache", "orders.cache:sessions"} <= set(providers)
         assert providers["orders.cache"]._cache is registry().get_cache(namespace="orders")

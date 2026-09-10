@@ -19,6 +19,7 @@ from .component.namespace import (
     construction_scope,
     current_namespace,
     namespace_of,
+    qualified_entry_name,
     validate_namespace,
 )
 from .component.registry import DEFAULT_CACHE_NAME, Registry
@@ -28,7 +29,7 @@ from .handler.event_handler_base import EventHandlerBase
 from .io.api.rest_api_base import RestApiBase
 from .io.api.scheduling.scheduler import SchedulerBase
 from .io.api.actuators.actuator_api import ActuatorApi
-from .io.api.actuators.health import CacheHealthChecker, ClientHealthChecker
+from .io.api.actuators.health import CacheHealthChecker, ClientHealthChecker, HealthCheckEntry
 from .io.api.eventing.dapr import DaprEventing
 from .io.api.eventing.nats import NatsEventing
 from .io.api.eventing.sessions_bus import SessionsBus
@@ -195,7 +196,7 @@ class AppBuilder:
         # Health checkers declared before build(), collected out of the declarations by the
         # replay pass. A dict rather than a list because the readiness payload is keyed on the
         # entry name, and a later declaration of the same name replaces an earlier one.
-        self._health_checkers: dict[str, HealthCheckerBase] = {}
+        self._health_checkers: list[HealthCheckEntry] = []
         # Which agents this process hosts. See the 'namespaces' property for why the
         # builder is the thing that keeps the list rather than the registry.
         self._namespaces: list[str] = []
@@ -645,10 +646,14 @@ class AppBuilder:
         rest of its declaration instead of silently dropping them.
 
         A checker is not a ``Component``, so it is never constructed here: the object passed
-        is the object used, whichever namespace it was created in.
+        is the object used, whichever namespace it was created in. The *agent* it belongs to is
+        still the one in force where this call is written, and it travels with the checker as
+        data -- so two agents may both declare ``"db"`` and appear as ``orders.db`` and
+        ``billing.db`` instead of one of them vanishing into the other's dict slot.
 
         Args:
-            name: The entry this checker appears under in the readiness payload.
+            name: What this checker is called within its agent. It appears in the readiness
+                payload under that name at the root, and under ``<agent>.<name>`` in a group.
             checker: The checker.
 
         Note:
@@ -657,7 +662,7 @@ class AppBuilder:
             recording it would do nothing.
         """
         if self._actuator_api is not None:
-            self._actuator_api.add_health_providers({name: checker})
+            self._actuator_api.add_health_providers([HealthCheckEntry(name=name, namespace=current_namespace(), checker=checker)])
             return self
         self._declarations.append(Declaration(kind="health_checker", target=checker, name=name, namespace=current_namespace(), kwargs={}))
         return self
@@ -705,7 +710,7 @@ class AppBuilder:
             if entry.kind == "cache":
                 self._create_cache(entry, config)
             elif entry.kind == "health_checker":
-                self._health_checkers[entry.name or ""] = entry.target
+                self._health_checkers.append(HealthCheckEntry(name=entry.name or "", namespace=entry.namespace, checker=entry.target))
 
         logger.debug("Constructed %d declaration(s)", len(self._declarations))
 
@@ -841,7 +846,14 @@ class AppBuilder:
 
         # 5. Create ActuatorApi and wire health checkers from all registered clients
         self._actuator_api = ActuatorApi()
-        health_providers: dict[str, HealthCheckerBase] = {client.name: ClientHealthChecker([client]) for client in registry.get_clients()}
+        # The client's *base* name, not its registry name: the registry name is already
+        # qualified with '_' ('orders_nats_client'), and the entry composes its own rendering,
+        # so passing the registry name would read 'orders.orders_nats_client'. A root client's
+        # base name is its registry name, so an existing payload key does not move.
+        health_providers: list[HealthCheckEntry] = [
+            HealthCheckEntry(name=client.base_name, namespace=client.namespace, checker=ClientHealthChecker([client]))
+            for client in registry.get_clients()
+        ]
         # Pull every registered cache into the readiness probe so a Redis outage takes the pod
         # out of service rotation instead of letting it silently serve cache misses. Every
         # cache, not just the default one: a named cache is a real backend with a real
@@ -849,12 +861,11 @@ class AppBuilder:
         # Redis nobody was told about. The default keeps the entry name 'cache' it has always
         # had, so an existing /readiness payload is unchanged.
         for namespace, cache_name, cache in registry.cache_entries():
-            entry = "cache" if cache_name == DEFAULT_CACHE_NAME else f"cache:{cache_name}"
-            # The agent prefixes the entry, so two agents' default caches are two entries
-            # rather than one that silently reports whichever was registered last. The root
-            # keeps the bare entry, so an existing readiness payload is unchanged.
-            health_providers[f"{namespace}.{entry}" if namespace else entry] = CacheHealthChecker(cache)
-        health_providers.update(self._health_checkers)
+            name = "cache" if cache_name == DEFAULT_CACHE_NAME else f"cache:{cache_name}"
+            # The agent is carried on the entry, so two agents' default caches are two entries
+            # rather than one that silently reports whichever was registered last.
+            health_providers.append(HealthCheckEntry(name=name, namespace=namespace, checker=CacheHealthChecker(cache)))
+        health_providers.extend(self._health_checkers)
         if health_providers:
             self._actuator_api.add_health_providers(health_providers)
 
@@ -1082,7 +1093,7 @@ class AppBuilder:
                 # A Starlette BaseRoute has no tags; an APIRoute does, and those are the
                 # ones the decorators produce. Anything else is left alone.
                 if isinstance(route, APIRoute) and route.tags:
-                    route.tags = [f"{component.namespace}.{tag}" for tag in route.tags]
+                    route.tags = [qualified_entry_name(component.namespace, str(tag)) for tag in route.tags]
         app.include_router(component.router, prefix=prefix)
 
     # ------------------------------------------------------------------
