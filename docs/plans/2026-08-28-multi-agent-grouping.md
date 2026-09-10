@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Status** | P0-P6 and phases 0-8 landed on `feature/multi-agent-namespaces`. Next: **phase 8b**, then 9, then 10. |
-| **Amendment** | `docs/plans/2026-09-10-builder-unification.md` -- decided 2026-09-10. Phase 8b below is its work breakdown; phases 0 and 3 are superseded by it. |
+| **Status** | P0-P6, phases 0-8 and **phase 8b step 1** landed on `feature/multi-agent-namespaces`. Next: 8b steps 2-9, then phase 9, then 10. |
+| **Amendment** | `docs/plans/2026-09-10-builder-unification.md` -- decided 2026-09-10. Phase 8b below is its work breakdown; phases 0 and 3 are superseded by it. Step 9 was added on 2026-09-10 and is not in that proposal's original breakdown. |
 | **Deferred out** | `docs/plans/2026-09-10-config-validation-unification.md` -- configuration validation is not part of this feature and **must not** be touched during 8b. |
 | **Spec (normative)** | `docs/specs/2026-08-28-multi-agent-grouping.md` |
 | **What landed, and why** | `docs/plans/2026-08-28-multi-agent-grouping-changelog.md` -- read before resuming |
@@ -861,9 +861,143 @@ three classes then have no purpose. Four sites become one.
    authoring-time validation); a test asserting the declaration surface and `AgentGroup`'s replay
    agree, so the recorder cannot drift from the API it replays; the frozen compatibility suite
    extended to pin the standalone shape (spec sec. 10.2).
+9. **The rules, and the documents that carry them.** Last, because a rule can only be written
+   once the thing it describes exists. Three parts, each its own commit -- see the section below.
 
 **Done when** an existing standalone `main.py` runs unchanged, the same file with two lines removed
-runs in a group, and adding a hypothetical `with_widget` requires exactly one edit.
+runs in a group, adding a hypothetical `with_widget` requires exactly one edit, and every principle
+this overhaul established is written down in one place with a test behind the ones a test can hold.
+
+---
+
+## Phase 8b step 9 -- the rules, and the documents that carry them
+
+**Decided 2026-09-10 with the user, after an audit of every markdown reference in the repo.** The
+problem this solves is not documentation for its own sake: this overhaul establishes principles --
+collect then wire, ambient namespaces, validate never repair -- that a later feature can violate
+without anyone noticing, because they are currently recorded only in a 4600-line changelog nobody
+will read end to end.
+
+### Where they go, and why it is `AGENTS.md`
+
+`CLAUDE.md:5` says *"See `AGENTS.md` for architecture, component patterns, and testing conventions
+shared across all AI assistants."* **`AGENTS.md` has never existed.**
+`git log --all --diff-filter=A -- AGENTS.md` returns nothing: it was not written and later deleted,
+it was cited into existence. `docs/plans/2026-06-10-sessions-job-handler.md:122` goes further and
+quotes what it "states" about versioning.
+
+So writing it adds no node to the graph -- it turns a pointer that resolves nowhere into one that
+resolves. The alternatives were a new `docs/concepts/design-rules.md` (a fresh file in a tree that
+already has orphans, leaving the `AGENTS.md` pointer dead beside a new live one) and folding the
+rules into `docs/concepts/architecture.md` (descriptive prose for users; binding rules read badly
+mixed into it). Both were rejected for the same reason: they add, and this repository's
+documentation problem is that it already has more homes than content.
+
+### Part 1 -- `AGENTS.md`
+
+One document, grouped by what a rule governs. Each rule states the rule, the reason, and **the
+failure it prevents** -- a rule without its failure is advice, and advice gets argued away. Draft
+list; wording is settled when the step runs.
+
+**Construction and assembly**
+
+- **Collect, then wire.** A declaration API records; nothing is constructed, registered or
+  connected until `build()`. *Failure:* a component constructed during accumulation exists before
+  any namespace does and belongs to the root for ever -- which is what forced a second builder
+  class to exist for three phases.
+- **One declaration surface.** Adding a capability is one edit. A second class whose only job is
+  to defer construction is the smell this phase removed, not a pattern to copy.
+- **A builder is single-use, and says so**, rather than surfacing someone else's "already set".
+- **Group policy belongs to the collector.** Standalone stays permissive; the group refuses what
+  it cannot honour, at assembly, naming the agent and the fix. *Failure:* restrictions scattered
+  into the builder punish the single-agent case for the group's constraints.
+
+**Namespaces and isolation**
+
+- **A component never learns it is in a group.** The namespace is ambient, read by
+  `Component.__init__`; it is never a constructor parameter of a project's component, and never
+  enumerable from anything a component can reach (C6). *Failure:* an agent that can read its
+  neighbours can be written to depend on them, and regrouping then breaks it.
+- **Isolation is structural where it can be, audited where it cannot.** Separate stores beat a
+  prefix; where walling off would break a supported use, log and name the reader instead.
+- **A lookup never falls back across agents.** *Failure:* two agents that both asked for
+  `sessions` silently share one store, and only in production.
+- **An omitted namespace on the root registry means every namespace, not the root.** Framework
+  code that dispatches per agent names its namespace explicitly, even where it looks redundant.
+
+**Names and values that leave the process**
+
+- **A name that crosses the process boundary is validated, never repaired.** Queue groups,
+  durables, subjects, cache names, environment prefixes. *Failure:* silent rewriting breaks an
+  external dependency with nothing in the logs to debug.
+- **A check answerable at the call stays at the call.** *Failure:* an error reported several
+  `with_*` calls later names the wrong line.
+
+**Declarations and defaults**
+
+- **An empty declaration means everything, not nothing.** *Failure:* treating an empty set as
+  authoritative silences the application, and an unhandled event acknowledges -- so the deliveries
+  vanish rather than piling up where somebody would see them.
+- **A key whose absence changes behaviour is required, not defaulted**, and `must_exist=True`
+  beside a `default=` is a lie Dynaconf never enforces.
+
+**Configuration and logging**
+
+- **Configuration is injected before any component exists**, and is read through the component's
+  own scoped view. There is no public read path to the unscoped loader.
+- **Logging is configured by the application**, never by library code, a constructor, or import
+  time.
+
+**How the work is done**
+
+- **No unused code in the framework.** Git history is where removed work belongs; a plausible
+  unused abstraction misleads the next session into building on it.
+- **Probe against real objects.** Every real defect this feature surfaced was found by testing
+  against a real registry rather than a mock; a mock registry hides resolution bugs by
+  construction.
+- **The spec wins on precedence, not on correctness.** Challenge a requirement's premise, and
+  argue any departure in the changelog rather than quietly complying or quietly diverging.
+
+### Part 2 -- the guard tests
+
+Prose alone has already failed once here: `AGENTS.md` was cited for months without existing. So
+every rule that is mechanically checkable gets a test in
+`tests/unit/agents/test_design_rules.py`, whose failure message names the rule it enforces.
+
+| Guard | What it asserts |
+|---|---|
+| declaration surface | every `AppBuilder.with_*` records and constructs nothing -- called reflectively, registry asserted untouched |
+| replay agreement | the declaration surface and `AgentGroup`'s replay agree (step 8's test, moved here and generalised) |
+| no unscoped config | no attribute on `Component` or its metaclass returns the loader; `for_namespace` on a view raises |
+| no cross-agent fallback | `get_cache` raises on an unknown name; `get_known_namespaces` does not exist |
+| validated names | each namespace-bearing entry point refuses an illegal input rather than rewriting it |
+| logging ownership | no `basicConfig`, handler or formatter attachment in `src/` outside `LoggingManager` |
+| no diagnostics via print | `print(` absent from `src/` except the entry point's deliberate stderr line |
+| **references resolve** | every markdown link and document reference in the repo points at a file that exists -- the check that would have caught `AGENTS.md` |
+
+The last one is what makes the rest durable, and it is why this part is not optional.
+
+### Part 3 -- clean up the puddle
+
+The same audit found real duplication, and the instruction was that `AGENTS.md` alone is not
+enough: everything else has to be coherent too.
+
+- **`docs/superpowers/`** -- `plans/` and `specs/` mirroring `docs/plans` and `docs/specs`:
+  3 files, 2079 lines, and **nothing in the repo links to any of them.** A second, abandoned home
+  for the same two document types. Fold into `docs/plans` / `docs/specs` or delete; git history
+  keeps them either way.
+- **Four cache documents, 968 lines** -- `docs/concepts/caching.md` (347),
+  `docs/concepts/cache-system-overview.md` (232), `docs/concepts/cache-architecture.md` (181),
+  `docs/guides/caching-getting-started.md` (208). `docs/README.md` links one of the four.
+  Consolidate, and link whatever survives.
+- **The false quotation** at `docs/plans/2026-06-10-sessions-job-handler.md:122`, which attributes
+  a versioning statement to a document that has never existed. Verify the claim against reality,
+  or remove it.
+- **`docs/development-workflow.md`**, cited by this plan's own file summary and never written:
+  write it, or drop the reference.
+
+Phase 10's documentation work is unaffected: it writes the multi-agent setup guide, which is
+content, not coherence.
 
 ---
 
@@ -1010,6 +1144,7 @@ the guide alone that nothing broker-side changed.
 | `agent_group.py` (new) | 8b (collection, and every group refusal) |
 | `agent/agent_builder.py` | 8b (records; `config` optional in `__init__`, accepted by `build`) |
 | `services/infrastructure/cache_service.py`, `io/api/actuators/` | 8b (per-agent caches and `/cache/*`; health-checker keys qualified) |
+| `AGENTS.md` (new), `tests/unit/agents/test_design_rules.py` (new) | 8b step 9 (the rules this overhaul establishes, and the guards that hold them) |
 | `__init__.py` | 0 |
 | `component/registry.py` | 1 (namespace storage, named caches, executor registry) |
 | `component/component.py` | 2 (`namespace` param, `executor` property) |

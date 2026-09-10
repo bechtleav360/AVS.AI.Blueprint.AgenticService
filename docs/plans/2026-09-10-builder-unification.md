@@ -276,6 +276,12 @@ Three shapes, one implementation:
 7. Settings fragments (D5), including the process-scope key refusal.
 8. Docstrings (D7); the surfaces-agree test; the frozen compatibility suite that pins the
    standalone shape.
+9. **The rules, last.** `AGENTS.md` -- the file `CLAUDE.md` already cites and that has never
+   existed -- carrying every principle this overhaul establishes, each with its reason and the
+   failure it prevents; a guard test for each rule a test can hold, including one asserting that
+   every document reference in the repo resolves; and the documentation duplication the audit
+   found cleaned up. Last, because a rule can only describe something that exists. Breakdown in
+   the plan's *Phase 8b step 9* section.
 
 Each step is its own commit, reported before the next begins, per `CLAUDE.md`.
 

@@ -4095,6 +4095,58 @@ application that would drown the assertion. 1962 unit tests pass, 34 more than b
 
 ---
 
+### Phase 8b gains a step 9: the rules this overhaul establishes, written where they will be read
+
+**No code changed. A step was added to the plan, and a documentation audit was run to decide where
+it lands.** Recorded here because the audit's findings are the reviewable artefact and because they
+changed the answer.
+
+**The question.** This overhaul settles principles -- collect then wire, the namespace is ambient,
+a name that leaves the process is validated and never repaired -- that a later feature can violate
+without anyone noticing. They exist today only in this changelog, which is now over 4600 lines and
+which nobody will read end to end. So: write them down as rules, and put a test behind the ones a
+test can hold. Placed **last** in phase 8b, because a rule can only describe something that exists.
+
+**The finding that decided the location.** `CLAUDE.md:5` has always said *"See `AGENTS.md` for
+architecture, component patterns, and testing conventions shared across all AI assistants."*
+**`AGENTS.md` has never existed.** `git log --all --diff-filter=A -- AGENTS.md` returns nothing --
+it was not written and later deleted, it was cited into existence. Worse,
+`docs/plans/2026-06-10-sessions-job-handler.md:122` quotes what it *states* about versioning, so a
+claim has already been sourced to a document that is not there.
+
+That inverted the recommendation. A new `docs/concepts/design-rules.md` would have added a file and
+left the dead pointer beside a live one; writing `AGENTS.md` turns a reference that resolves nowhere
+into one that resolves, at no net cost in files.
+
+**The rest of the audit**, over all 61 tracked markdown files. Two real problems, both duplication
+rather than absence:
+
+- **`docs/superpowers/`** holds `plans/` and `specs/` mirroring `docs/plans` and `docs/specs` --
+  3 files, 2079 lines -- and **nothing in the repository links to any of them.** A second,
+  abandoned home for the same two document types.
+- **Four cache documents totalling 968 lines:** `docs/concepts/caching.md` (347),
+  `docs/concepts/cache-system-overview.md` (232), `docs/concepts/cache-architecture.md` (181),
+  `docs/guides/caching-getting-started.md` (208). `docs/README.md` links one of the four.
+
+Two further references resolve nowhere and are legitimate: `docs/guides/multi-agent-setup.md` is a
+phase 10 deliverable, and `agent_group.py` is phase 8b step 3. One is not:
+`docs/development-workflow.md`, cited by this plan's own file summary and never written. Everything
+else that a naive sweep flags -- `nats.py`, `config.py`, `settings.toml` -- is this repository's
+bare-filename shorthand, which is convention rather than rot; the audit script resolves those
+against `src/blueprint/agents/` before reporting.
+
+**What step 9 will do**, in three commits: write `AGENTS.md`; add
+`tests/unit/agents/test_design_rules.py` with one guard per mechanically checkable rule -- including
+a reference-resolution guard, which is the check that would have caught `AGENTS.md` and is what
+makes the rest durable; and clean up the duplication above. Step 8's surfaces-agree test moves into
+that file rather than being written twice.
+
+**The user's instruction, recorded because it widened the step:** `AGENTS.md` alone is not enough --
+everything else has to be coherent too. Hence part 3, which is documentation debt this feature did
+not create.
+
+---
+
 ---
 
 ## Compatibility
