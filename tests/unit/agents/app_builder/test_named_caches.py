@@ -17,6 +17,7 @@ import pytest
 
 from blueprint.agents.app_builder import AppBuilder
 from blueprint.agents.component.component import Component
+from blueprint.agents.component.namespace import namespace_scope
 from blueprint.agents.component.registry import DEFAULT_CACHE_NAME, Registry
 from blueprint.agents.config import Config
 from blueprint.agents.models.config import CacheConfig
@@ -199,3 +200,69 @@ class TestEveryCacheReachesReadiness:
         providers = builder._actuator_api._pending_providers  # type: ignore[union-attr]
         assert providers["cache"]._cache is registry().get_cache()
         assert providers["cache:sessions"]._cache is registry().get_cache("sessions")
+
+
+class TestACacheBelongsToTheAgentThatDeclaredIt:
+    """``with_cache()`` inside an agent's scope registers to that agent, and stores apart (D3)."""
+
+    def test_it_is_registered_to_the_declaring_agent(self, builder: AppBuilder) -> None:
+        with namespace_scope("orders"):
+            builder.with_cache(name="sessions")
+        realize(builder)
+
+        assert isinstance(registry().get_cache("sessions", namespace="orders"), CacheService)
+        assert registry().get_all_caches() == {}, "the root declared nothing"
+
+    def test_its_directory_carries_the_agent(self, builder: AppBuilder, cache_dir: Path) -> None:
+        with namespace_scope("orders"):
+            builder.with_cache(name="sessions")
+        realize(builder)
+
+        cache = registry().get_cache("sessions", namespace="orders")
+        assert isinstance(cache, DiskCacheService)
+        assert cache.cache_dir == cache_dir / "orders.sessions"
+
+    def test_two_agents_declaring_one_name_get_two_caches(self, builder: AppBuilder) -> None:
+        with namespace_scope("orders"):
+            builder.with_cache(name="sessions")
+        with namespace_scope("billing"):
+            builder.with_cache(name="sessions")
+        realize(builder)
+
+        orders = registry().get_cache("sessions", namespace="orders")
+        billing = registry().get_cache("sessions", namespace="billing")
+        assert orders is not billing
+        assert isinstance(orders, DiskCacheService) and isinstance(billing, DiskCacheService)
+        assert orders.cache_dir != billing.cache_dir
+
+    def test_both_backends_still_register_as_components(self, builder: AppBuilder) -> None:
+        """Two of one class collide on the derived registry name unless each is built in its own scope."""
+        with namespace_scope("orders"):
+            builder.with_cache()
+        with namespace_scope("billing"):
+            builder.with_cache()
+        realize(builder)
+
+        assert registry().get_component("orders_disk_cache_service") is registry().get_cache(namespace="orders")
+        assert registry().get_component("billing_disk_cache_service") is registry().get_cache(namespace="billing")
+
+    def test_the_backend_is_chosen_from_the_agents_own_configuration(self, builder: AppBuilder) -> None:
+        """C5: one agent in a group may run on redis while its neighbour uses the disk."""
+        with namespace_scope("orders"):
+            builder.with_cache(name="sessions")
+        realize(builder)
+
+        builder._config.for_namespace.assert_any_call("orders")  # type: ignore[attr-defined]
+
+    def test_a_readiness_entry_names_the_agent(self, builder: AppBuilder) -> None:
+        """Two agents' default caches are two entries, not one that reports the last registered."""
+        with namespace_scope("orders"):
+            builder.with_cache().with_cache(name="sessions")
+        builder.host_agent("orders")
+
+        with patch("blueprint.agents.app_builder.FastAPI"):
+            builder.build()
+
+        providers = builder._actuator_api._pending_providers  # type: ignore[union-attr]
+        assert {"orders.cache", "orders.cache:sessions"} <= set(providers)
+        assert providers["orders.cache"]._cache is registry().get_cache(namespace="orders")

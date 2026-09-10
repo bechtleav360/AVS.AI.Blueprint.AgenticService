@@ -369,6 +369,111 @@ class TestNamedCaches:
         assert registry.get_all_caches() == {}
 
 
+class TestCachesPerAgent:
+    """A cache belongs to the agent that declared it, and to no other (spec sec. 8, D3).
+
+    The store is keyed on ``(namespace, name)``, so the name alone no longer identifies a
+    cache. What each case below pins down is that there is **no route** from one agent to
+    another's cache: not by name, not through the root, and not by enumeration.
+    """
+
+    def test_a_view_registers_for_its_own_agent(self, registry: Registry) -> None:
+        """A component calls ``self.registry.add_cache(...)`` and names no namespace."""
+        cache = MagicMock()
+        registry.for_namespace("orders").add_cache("sessions", cache)
+        assert registry.get_cache("sessions", namespace="orders") is cache
+
+    def test_two_agents_may_both_declare_one_name(self, registry: Registry) -> None:
+        orders, billing = MagicMock(), MagicMock()
+        registry.add_cache("sessions", orders, namespace="orders")
+        registry.add_cache("sessions", billing, namespace="billing")
+
+        assert registry.for_namespace("orders").get_cache("sessions") is orders
+        assert registry.for_namespace("billing").get_cache("sessions") is billing
+
+    def test_one_name_registered_twice_for_one_agent_still_replaces(self, registry: Registry) -> None:
+        """Two agents are not a collision; the same agent twice still is, and warns."""
+        first, second = MagicMock(), MagicMock()
+        registry.add_cache("sessions", first, namespace="orders")
+        registry.add_cache("sessions", second, namespace="orders")
+        assert registry.get_cache("sessions", namespace="orders") is second
+
+    def test_an_agent_cannot_reach_a_neighbours_cache(self, registry: Registry) -> None:
+        registry.add_cache("sessions", MagicMock(), namespace="orders")
+
+        with pytest.raises(ValueError, match="No cache registered as 'sessions' for agent 'billing'"):
+            registry.for_namespace("billing").get_cache("sessions")
+
+    def test_an_agent_does_not_fall_back_to_the_root(self, registry: Registry) -> None:
+        """Components resolve namespace-then-root; caches deliberately do not."""
+        registry.add_cache("sessions", MagicMock())
+
+        with pytest.raises(ValueError, match="for agent 'orders'"):
+            registry.for_namespace("orders").get_cache("sessions")
+
+    def test_the_root_does_not_see_an_agents_cache(self, registry: Registry) -> None:
+        registry.add_cache("sessions", MagicMock(), namespace="orders")
+        assert registry.get_all_caches() == {}
+        assert registry.has_cache("sessions") is False
+
+    def test_the_default_alias_is_per_agent(self, registry: Registry) -> None:
+        orders, billing = MagicMock(), MagicMock()
+        registry.for_namespace("orders").cache_service = orders
+        registry.for_namespace("billing").cache_service = billing
+
+        assert registry.for_namespace("orders").cache_service is orders
+        assert registry.for_namespace("billing").cache_service is billing
+
+    def test_the_alias_raises_for_an_agent_that_declared_none(self, registry: Registry) -> None:
+        """This is the check ``idempotency_enabled`` fails on, and it is now per agent."""
+        registry.for_namespace("orders").cache_service = MagicMock()
+
+        with pytest.raises(ValueError, match="No cache service registered for agent 'billing'"):
+            _ = registry.for_namespace("billing").cache_service
+
+    def test_has_cache_answers_about_the_asking_agent(self, registry: Registry) -> None:
+        registry.for_namespace("orders").cache_service = MagicMock()
+
+        assert registry.for_namespace("orders").has_cache() is True
+        assert registry.for_namespace("billing").has_cache() is False
+
+    def test_get_all_caches_is_one_agents(self, registry: Registry) -> None:
+        registry.add_cache("sessions", MagicMock(), namespace="orders")
+        registry.add_cache("prompts", MagicMock(), namespace="billing")
+
+        assert sorted(registry.get_all_caches("orders")) == ["sessions"]
+        assert sorted(registry.for_namespace("billing").get_all_caches()) == ["prompts"]
+
+    def test_cache_entries_carries_the_agent_as_data(self, registry: Registry) -> None:
+        """As data, not as a prefix: a cache name may legally contain the separator."""
+        orders, root = MagicMock(), MagicMock()
+        registry.add_cache("v2.sessions", orders, namespace="orders")
+        registry.add_cache("default", root)
+
+        assert [(namespace, name) for namespace, name, _ in registry.cache_entries()] == [
+            ("orders", "v2.sessions"),
+            ("", "default"),
+        ]
+
+    def test_cache_entries_is_refused_on_a_view(self, registry: Registry) -> None:
+        """C6: a view is what agent code holds, so it must not enumerate the neighbours."""
+        registry.add_cache("sessions", MagicMock(), namespace="orders")
+
+        with pytest.raises(RuntimeError, match="asked for every cache in the process"):
+            registry.for_namespace("orders").cache_entries()
+
+    def test_clear_clears_every_agents_cache(self, registry: Registry) -> None:
+        orders, billing = MagicMock(), MagicMock()
+        registry.add_cache("sessions", orders, namespace="orders")
+        registry.add_cache("sessions", billing, namespace="billing")
+
+        registry.clear()
+
+        orders.clear.assert_called_once()
+        billing.clear.assert_called_once()
+        assert registry.cache_entries() == []
+
+
 class TestExecutors:
     """One thread pool per namespace, created only when something actually needs one."""
 

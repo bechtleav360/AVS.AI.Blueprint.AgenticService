@@ -254,3 +254,47 @@ class TestCacheNameValidation:
         with pytest.raises(ValueError):
             CacheBackendFactory.create(disk_config, name="../evil")
         assert not (tmp_path / "evil").exists()
+
+
+class TestAgentIsolation:
+    """Two agents declaring one name get two stores, not one shared by accident (D3).
+
+    The isolation is structural: it is the directory and the key prefix that differ, so it
+    cannot be defeated by a call site that forgets to pass something.
+    """
+
+    def test_the_root_stores_where_it_always_did(self, disk_config: CacheConfig) -> None:
+        assert CacheBackendFactory.storage_name("", "sessions") == "sessions"
+
+    def test_an_agents_cache_carries_the_agent(self) -> None:
+        assert CacheBackendFactory.storage_name("orders", "sessions") == "orders.sessions"
+
+    def test_the_separator_keeps_it_a_legal_cache_name(self) -> None:
+        """``.`` is in the cache alphabet and not in the namespace alphabet, so neither can forge the other."""
+        CacheBackendFactory.validate_name(CacheBackendFactory.storage_name("orders", "sessions"))
+
+    def test_two_agents_do_not_share_a_directory(self, disk_config: CacheConfig) -> None:
+        orders = CacheBackendFactory.create(disk_config, name="sessions", namespace="orders")
+        billing = CacheBackendFactory.create(disk_config, name="sessions", namespace="billing")
+
+        assert orders.cache_dir != billing.cache_dir  # type: ignore[attr-defined]
+
+    def test_an_agents_default_cache_is_its_own_directory(self, disk_config: CacheConfig) -> None:
+        """The default name is not special once an agent owns it: only the root keeps the mount itself."""
+        agent = CacheBackendFactory.create(disk_config, namespace="orders")
+        root = CacheBackendFactory.create(disk_config)
+
+        assert str(agent.cache_dir) == str(Path(root.cache_dir) / "orders.default")  # type: ignore[attr-defined]
+
+    def test_the_directory_stays_inside_the_configured_one(self, disk_config: CacheConfig) -> None:
+        """Under ``readOnlyRootFilesystem`` only the mount is writable, so a sibling would fail."""
+        agent = CacheBackendFactory.create(disk_config, name="sessions", namespace="orders")
+
+        assert Path(disk_config.cache_dir) in Path(agent.cache_dir).parents  # type: ignore[attr-defined]
+
+    def test_the_redis_prefix_carries_the_agent(self, disk_config: CacheConfig) -> None:
+        config = CacheConfig(cache_dir=disk_config.cache_dir, backend="redis", key_prefix="app")
+
+        assert CacheBackendFactory._scoped_key_prefix(config, CacheBackendFactory.storage_name("orders", "sessions")) == (
+            "app:orders.sessions"
+        )

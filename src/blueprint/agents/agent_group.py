@@ -24,7 +24,7 @@ Three things happen here and nowhere else:
 
 import importlib
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 
 from fastapi import FastAPI
 
@@ -52,7 +52,7 @@ class AgentGroup:
     gets a process to itself while still being deployed by the group mechanism.
     """
 
-    def __init__(self, name: str, agents: Mapping[str, AppBuilder], *, cache_names: Sequence[str] = ()) -> None:
+    def __init__(self, name: str, agents: Mapping[str, AppBuilder]) -> None:
         """Declare a group.
 
         Args:
@@ -63,9 +63,6 @@ class AgentGroup:
                 durable name, cache partition and telemetry service name. A mapping rather
                 than a list because two agents cannot share a name, and a mapping says so
                 structurally instead of needing a check.
-            cache_names: Process-wide caches the group declares. **Removed by D3**, which makes
-                a cache private to the agent that declared it; kept only until that lands, and
-                a group that declares none -- every group today -- is unaffected either way.
 
         Raises:
             ValueError: if an agent's name is not a legal namespace, or is the root.
@@ -81,7 +78,6 @@ class AgentGroup:
                     "Give the agent the name it is deployed under."
                 )
             self._agents[namespace] = builder
-        self._cache_names = tuple(cache_names)
 
     @property
     def name(self) -> str:
@@ -144,7 +140,7 @@ class AgentGroup:
         Raises:
             GroupConfigError: if a critical agent's module or declaration cannot be loaded.
         """
-        logger.info("Resolving group '%s': %d agent(s), %d declared cache(s)", group.name, len(group.agents), len(group.cache_names))
+        logger.info("Resolving group '%s': %d agent(s)", group.name, len(group.agents))
 
         agents: dict[str, AppBuilder] = {}
         for spec in group.agents:
@@ -153,7 +149,7 @@ class AgentGroup:
                 continue
             agents[spec.name] = builder
 
-        return cls(group.name, agents, cache_names=group.cache_names)
+        return cls(group.name, agents)
 
     @staticmethod
     def _load_declaration(spec: AgentSpec) -> AppBuilder | None:
@@ -253,9 +249,6 @@ class AgentGroup:
             with namespace_scope(namespace):
                 for declaration in builder.declarations:
                     declaration.replay(root)
-
-        for cache_name in self._cache_names:
-            root.with_cache(name=cache_name)
 
         return root.build()
 

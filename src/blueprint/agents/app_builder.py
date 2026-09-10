@@ -1,8 +1,8 @@
 """Generic FastAPI application setup and configuration."""
 
 import logging
-from collections.abc import AsyncIterator, Callable, Iterator, Mapping
-from contextlib import asynccontextmanager, contextmanager
+from collections.abc import AsyncIterator, Callable, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -13,7 +13,14 @@ if TYPE_CHECKING:
     from .io.api.actuators.health import HealthCheckerBase
 
 from .component.component import Component
-from .component.namespace import ROOT_LABEL, ROOT_NAMESPACE, current_namespace, namespace_of, namespace_scope, validate_namespace
+from .component.namespace import (
+    ROOT_LABEL,
+    ROOT_NAMESPACE,
+    construction_scope,
+    current_namespace,
+    namespace_of,
+    validate_namespace,
+)
 from .component.registry import DEFAULT_CACHE_NAME, Registry
 from .agent.agent_builder import AgentBuilder
 from .agent.agent_runtime import AgentRuntime
@@ -52,29 +59,6 @@ SchedulerT = TypeVar("SchedulerT", bound=SchedulerBase)
 RestApiT = TypeVar("RestApiT", bound=RestApiBase)
 
 logger = logging.getLogger(__name__)
-
-
-@contextmanager
-def _construction_scope(namespace: str) -> Iterator[None]:
-    """Construct inside ``namespace``, or leave the ambient namespace exactly as it is.
-
-    The difference matters because ``namespace_scope("")`` is not a no-op: it *sets* the current
-    namespace to the root. A declaration recorded outside any scope carries ``""``, and entering
-    a scope for it would reset the namespace in force -- which is what happens when a whole
-    agent's declarations are replayed inside one scope, and would silently move every one of
-    them back to the root.
-
-    Args:
-        namespace: The agent to construct for, or ``""`` to keep whatever is already in force.
-
-    Yields:
-        Nothing; the scope is ambient.
-    """
-    if not namespace:
-        yield
-        return
-    with namespace_scope(namespace):
-        yield
 
 
 @dataclass(frozen=True)
@@ -544,10 +528,10 @@ class AppBuilder:
         if declaration.is_built:
             instance = declaration.target
         elif isinstance(declaration.target, AgentBuilder):
-            with _construction_scope(declaration.namespace):
+            with construction_scope(declaration.namespace):
                 instance = declaration.target.build(config.for_namespace(declaration.namespace), **declaration.kwargs)
         else:
-            with _construction_scope(declaration.namespace):
+            with construction_scope(declaration.namespace):
                 instance = declaration.target(**declaration.kwargs)
 
         if declaration.name is not None:
@@ -608,21 +592,50 @@ class AppBuilder:
         )
         return self
 
-    def _create_cache(self, declaration: Declaration) -> None:
-        """Create one declared cache and register it under its name.
+    def _create_cache(self, declaration: Declaration, config: Config) -> None:
+        """Create one declared cache and register it to the agent that declared it.
+
+        Three things are per agent here, and each of them is what makes a cache private to the
+        agent that declared it (spec sec. 8, D3):
+
+        - **The backend is chosen from the agent's own configuration view**, so one agent in a
+          group can run on redis while its neighbour uses the disk.
+        - **The store is isolated by the agent as well as the name**, which
+          ``CacheBackendFactory`` does from the namespace it is handed -- two agents declaring
+          ``sessions`` get separate directories or separate key prefixes, not one shared store.
+        - **The registry entry is keyed on the agent**, so ``get_cache("sessions")`` reaches
+          this agent's and can never reach a neighbour's.
+
+        The backend is constructed inside the agent's construction scope -- entered by the
+        factory, from the namespace it is handed -- because a cache backend is itself a
+        ``Component``: without it two agents' caches would both derive ``disk_cache_service``
+        and collide on that one registry name.
 
         Args:
             declaration: A ``kind="cache"`` declaration; its ``name`` is the cache's name.
+            config: The application's configuration, scoped to the declaring agent here.
         """
         name = declaration.name or DEFAULT_CACHE_NAME
+        namespace = declaration.namespace
         enable_locking = bool(declaration.kwargs["enable_locking"])
-        # The name goes to the factory rather than being resolved here: which store a name
-        # maps to is backend knowledge, and the factory is where a backend is chosen and where
-        # a new one would be added.
-        cache_service = CacheBackendFactory.create(self._require_config().get_cache_config(), enable_locking=enable_locking, name=name)
+        # The name and the namespace go to the factory rather than being resolved here: which
+        # store they map to is backend knowledge, and the factory is where a backend is chosen
+        # and where a new one would be added.
+        cache_service = CacheBackendFactory.create(
+            config.for_namespace(namespace).get_cache_config(),
+            enable_locking=enable_locking,
+            name=name,
+            namespace=namespace,
+        )
         registry: Registry = Component.shared_registry  # type: ignore[assignment]
-        registry.add_cache(name, cache_service)
-        logger.info("Registered cache '%s' as %s (locking=%s)", name, type(cache_service).__name__, enable_locking)
+        registry.add_cache(name, cache_service, namespace=namespace)
+        logger.info(
+            "Registered cache '%s' for agent '%s' as %s (locking=%s)",
+            name,
+            namespace or ROOT_LABEL,
+            type(cache_service).__name__,
+            enable_locking,
+        )
 
     def with_health_checker(self, name: str, checker: "HealthCheckerBase") -> "AppBuilder":
         """Declare a custom health checker for the readiness probe.
@@ -690,7 +703,7 @@ class AppBuilder:
 
         for entry in self._declarations:
             if entry.kind == "cache":
-                self._create_cache(entry)
+                self._create_cache(entry, config)
             elif entry.kind == "health_checker":
                 self._health_checkers[entry.name or ""] = entry.target
 
@@ -835,9 +848,12 @@ class AppBuilder:
         # connection, and one that only the default cache was probed would be an unreachable
         # Redis nobody was told about. The default keeps the entry name 'cache' it has always
         # had, so an existing /readiness payload is unchanged.
-        for cache_name, cache in registry.get_all_caches().items():
+        for namespace, cache_name, cache in registry.cache_entries():
             entry = "cache" if cache_name == DEFAULT_CACHE_NAME else f"cache:{cache_name}"
-            health_providers[entry] = CacheHealthChecker(cache)
+            # The agent prefixes the entry, so two agents' default caches are two entries
+            # rather than one that silently reports whichever was registered last. The root
+            # keeps the bare entry, so an existing readiness payload is unchanged.
+            health_providers[f"{namespace}.{entry}" if namespace else entry] = CacheHealthChecker(cache)
         health_providers.update(self._health_checkers)
         if health_providers:
             self._actuator_api.add_health_providers(health_providers)
@@ -983,8 +999,14 @@ class AppBuilder:
         for eventing_component in self._eventing_components:
             self._mount(app, eventing_component, root_prefix="")
 
-        if registry.has_cache():
-            app.include_router(CacheManagementApi().router, prefix="/api", tags=["cache"])
+        for namespace in self._cache_owners(registry):
+            # One router per agent that has a cache, mounted under that agent's prefix, so
+            # ``/api/orders/cache/stats`` reports the orders agent's cache and nothing else.
+            # A process-wide endpoint would report one agent's keys to another, which is the
+            # collision spec sec. 8 exists to close.
+            with construction_scope(namespace):
+                cache_api = CacheManagementApi()
+            self._mount(app, cache_api, root_prefix="/api")
 
         if self._actuator_api is not None:
             app.include_router(self._actuator_api.router, tags=["actuators"])
@@ -1014,6 +1036,24 @@ class AppBuilder:
         logger.info(
             "One Dapr endpoint serves this process, fanning each delivery out to the agents that declared its topic",
         )
+
+    @staticmethod
+    def _cache_owners(registry: Registry) -> list[str]:
+        """Return the namespaces that have at least one cache, in registration order.
+
+        Derived from the registry rather than from :attr:`hosted_namespaces` because a cache is
+        declared, not implied: an agent that declared none gets no endpoint at all, exactly as
+        an application built without ``with_cache()`` has never served ``/cache/*``.
+
+        Args:
+            registry: The application's registry. Read process-wide, which is why this takes
+                the application's own and not a component's view.
+        """
+        owners: list[str] = []
+        for namespace, _, _ in registry.cache_entries():
+            if namespace not in owners:
+                owners.append(namespace)
+        return owners
 
     @staticmethod
     def _mount(app: FastAPI, component: RestApiBase, *, root_prefix: str) -> None:

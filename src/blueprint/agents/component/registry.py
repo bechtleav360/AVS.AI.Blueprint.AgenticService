@@ -82,12 +82,11 @@ class Registry:
         Registry._component_class = component_class
         self._correlation_context = CorrelationContextProvider.get_correlation_context()
 
-        self._caches: dict[str, CacheService] = {}
+        self._caches: dict[tuple[str, str], CacheService] = {}
         self._components: dict[str, Any] = {}
         self._executors: dict[str, ThreadPoolExecutor] = {}
         self._default_namespace: str | None = None
         self._views: dict[str, Registry] = {}
-        self._scoped_caches: dict[str, CacheService] = {}
 
         logger.info("ComponentRegistry initialized")
 
@@ -157,9 +156,6 @@ class Registry:
         view = copy(self)
         view._default_namespace = namespace
         view._views = {}
-        # Its own, because the entries are per agent: the shallow copy would otherwise have
-        # every view handing out the first agent's lens.
-        view._scoped_caches = {}
         self._views[namespace] = view
         return view
 
@@ -266,8 +262,31 @@ class Registry:
             executor.shutdown(wait=True)
         self._executors.clear()
 
-    def add_cache(self, name: str, cache: CacheService) -> None:
-        """Register a cache under ``name``, replacing any cache already registered under it.
+    def _cache_owner(self, namespace: str | None) -> str:
+        """Return which agent a cache call is about.
+
+        An omitted ``namespace`` means **this agent**: that agent on a view, and the root on
+        the application's own registry. It deliberately does *not* mean "every namespace" the
+        way it does for components (see :meth:`_effective_namespace`), because every cache
+        operation names exactly one cache -- there is no cache that belongs to all agents, and
+        a lookup that ranged over the process would be the cross-agent sharing spec sec. 8
+        exists to prevent.
+
+        Args:
+            namespace: The agent named at the call site, or ``None`` to take it from this
+                object.
+        """
+        if namespace is not None:
+            return namespace
+        return self._default_namespace or ROOT_NAMESPACE
+
+    def add_cache(self, name: str, cache: CacheService, *, namespace: str | None = None) -> None:
+        """Register a cache under ``name`` for one agent, replacing any cache already there.
+
+        A cache belongs to the agent that declared it (spec sec. 8): the store is keyed on
+        ``(namespace, name)``, so two agents may both register ``sessions`` and neither can
+        reach the other's. The agent is taken from this object -- a view registers for its own
+        namespace, the application's registry for the root -- unless ``namespace`` names one.
 
         Replacing is allowed rather than refused, because a cache is not tied to the build the
         way a component is: one can legitimately be swapped or added after startup. It is logged
@@ -278,92 +297,110 @@ class Registry:
         Args:
             name: What to register it as. See :data:`DEFAULT_CACHE_NAME`.
             cache: The cache to register.
+            namespace: The agent it belongs to. Omitted means this object's agent.
         """
 
-        if name in self._caches:
+        agent = self._cache_owner(namespace)
+        key = (agent, name)
+        if key in self._caches:
             logger.warning(
-                "Cache '%s' is already registered as %s and is being replaced by %s",
+                "Cache '%s' of agent '%s' is already registered as %s and is being replaced by %s",
                 name,
-                type(self._caches[name]).__name__,
+                agent or ROOT_LABEL,
+                type(self._caches[key]).__name__,
                 type(cache).__name__,
             )
         else:
-            logger.info("Registering cache '%s': %s", name, type(cache).__name__)
-        self._caches[name] = cache
+            logger.info("Registering cache '%s' for agent '%s': %s", name, agent or ROOT_LABEL, type(cache).__name__)
+        self._caches[key] = cache
 
-    def get_cache(self, name: str = DEFAULT_CACHE_NAME) -> CacheService:
-        """Get the cache registered under ``name``.
+    def get_cache(self, name: str = DEFAULT_CACHE_NAME, *, namespace: str | None = None) -> CacheService:
+        """Get the cache one agent registered under ``name``.
 
-        There is deliberately **no fallback to the default cache**. Caches are the one thing
-        agents must not share by accident (spec sec. 8): two independently written agents both
-        asking for ``"sessions"`` would silently share one store the moment they were grouped,
-        and only in production. A name that is not registered is therefore an error, not an
-        invitation to hand over some other cache.
+        There are deliberately **two fallbacks that do not exist**: none from an unknown name to
+        the default cache, and none from an agent to the root or to a neighbour. An agent has
+        exactly the caches it declared with ``with_cache`` and no others (spec sec. 8), because
+        two independently written agents both asking for ``"sessions"`` would otherwise share
+        one store the moment they were grouped, and only in production. A name this agent did
+        not declare is therefore an error, not an invitation to hand over some other cache.
 
         Args:
             name: Which cache. Defaults to :data:`DEFAULT_CACHE_NAME`.
+            namespace: The agent asking. Omitted means this object's agent, which is what lets
+                a component write ``self.registry.get_cache("sessions")`` with no namespace in
+                sight and still reach its own store.
 
         Returns:
-            The cache registered under that name.
+            The cache that agent registered under that name.
 
         Raises:
-            ValueError: If no cache is registered under ``name``.
+            ValueError: If that agent registered no cache under ``name``.
         """
 
-        cache = self._caches.get(name)
+        agent = self._cache_owner(namespace)
+        cache = self._caches.get((agent, name))
         if cache is None:
-            registered = ", ".join(sorted(self._caches)) or "none"
-            raise ValueError(f"No cache registered as '{name}' (registered: {registered})")
-        if self._default_namespace:
-            return self._scoped_cache(name, cache)
+            registered = ", ".join(sorted(self.get_all_caches(agent))) or "none"
+            raise ValueError(f"No cache registered as '{name}' for agent '{agent or ROOT_LABEL}' (registered: {registered})")
         return cache
 
-    def _scoped_cache(self, name: str, cache: CacheService) -> CacheService:
-        """Return this view's agent-scoped lens on ``cache`` (spec sec. 8).
+    def get_all_caches(self, namespace: str | None = None) -> dict[str, CacheService]:
+        """Return one agent's caches by name, as a copy.
 
-        Built here rather than at registration because the same backend serves every agent: one
-        cache, N views of it, each prefixing its own partitions. Cached per name so an agent
-        asking twice gets one object, which keeps the lens as cheap as the raw cache.
-        """
-        # Imported here: agent_scoped_cache imports CacheService, which is a ServiceBase, which
-        # is a Component -- and component.py imports this module.
-        from ..services.infrastructure.agent_scoped_cache import AgentScopedCache
+        One agent's, not the process's: the keys are bare cache names, and two agents' caches
+        share those. What ranges over the process is :meth:`cache_entries`, whose entries carry
+        the agent.
 
-        agent = self._default_namespace
-        assert agent is not None  # nosec B101 -- guarded by the caller; a view always has one
-        scoped = self._scoped_caches.get(name)
-        if scoped is None:
-            scoped = AgentScopedCache(cache, agent)
-            self._scoped_caches[name] = scoped
-        return scoped
+        A copy so that a caller iterating the caches -- the cache management endpoints do --
+        cannot mutate the registry by accident.
 
-    def get_all_caches(self) -> dict[str, CacheService]:
-        """Return every registered cache by name, as a copy.
-
-        A copy so that a caller iterating the caches -- the health checks and the cache
-        management endpoints do -- cannot mutate the registry by accident.
+        Args:
+            namespace: The agent asking. Omitted means this object's agent.
         """
 
-        return dict(self._caches)
+        agent = self._cache_owner(namespace)
+        return {name: cache for (owner, name), cache in self._caches.items() if owner == agent}
+
+    def cache_entries(self) -> list[tuple[str, str, CacheService]]:
+        """Return every cache in the process as ``(namespace, name, cache)``, in registration order.
+
+        The one cache view that crosses agents, for the callers that build the process rather
+        than live in it: ``build()``, which puts every cache into the readiness probe and mounts
+        the management endpoints. The agent is returned **as data** rather than folded into the
+        name, so a caller that has to attribute a cache to an agent -- the readiness payload
+        does -- never has to split a string that may legally contain the separator.
+
+        Raises:
+            RuntimeError: if called on a view. A view is what agent code holds, and an agent
+                that can enumerate its neighbours' caches can be written to depend on them
+                (C6). Assembly reads this from the application's own registry.
+        """
+
+        if self._default_namespace is not None:
+            raise RuntimeError(
+                f"The registry view for namespace '{self._default_namespace}' was asked for every cache in the "
+                "process. An agent sees only the caches it declared; use get_all_caches() for those."
+            )
+        return [(namespace, name, cache) for (namespace, name), cache in self._caches.items()]
 
     @property
     def cache_service(self) -> CacheService:
-        """The default cache. Retained as an alias for ``get_cache()`` (spec sec. 8).
+        """This agent's default cache. Retained as an alias for ``get_cache()`` (spec sec. 8).
 
         Returns:
-            The cache registered as :data:`DEFAULT_CACHE_NAME`
+            The cache registered as :data:`DEFAULT_CACHE_NAME` for this object's agent
 
         Raises:
-            ValueError: If no cache service is registered
+            ValueError: If no cache service is registered for it
         """
 
-        if not self._caches:
-            raise ValueError("No cache service registered")
+        if not self.get_all_caches():
+            raise ValueError(f"No cache service registered for agent '{self._cache_owner(None) or ROOT_LABEL}'")
         return self.get_cache()
 
     @cache_service.setter
     def cache_service(self, cache_service: CacheService) -> None:
-        """Register the default cache. Retained as an alias for ``add_cache()`` (spec sec. 8).
+        """Register this agent's default cache. Retained as an alias for ``add_cache()`` (spec sec. 8).
 
         Args:
             cache_service: The cache service instance to register
@@ -568,23 +605,26 @@ class Registry:
         logger.info("Clearing all components from registry")
         self.clear_components()
         self.shutdown_executors()
-        for name, cache in self._caches.items():
-            logger.info("Clearing cache '%s'", name)
+        for (namespace, name), cache in self._caches.items():
+            logger.info("Clearing cache '%s' of agent '%s'", name, namespace or ROOT_LABEL)
             cache.clear()
         self._caches.clear()
 
-    def has_cache(self, name: str = DEFAULT_CACHE_NAME) -> bool:
-        """Check whether a cache is registered under ``name``.
+    def has_cache(self, name: str = DEFAULT_CACHE_NAME, *, namespace: str | None = None) -> bool:
+        """Check whether this agent registered a cache under ``name``.
 
         Args:
             name: Which cache. Defaults to :data:`DEFAULT_CACHE_NAME`, so an existing caller
                 asking whether "the" cache exists keeps its meaning.
+            namespace: The agent asking. Omitted means this object's agent, so a component
+                asking whether it has a cache is answered about its own -- which is what makes
+                ``idempotency_enabled`` a per-agent requirement rather than a process-wide one.
 
         Returns:
-            True if a cache is registered under that name, False otherwise
+            True if that agent has a cache under that name, False otherwise
         """
 
-        return name in self._caches
+        return (self._cache_owner(namespace), name) in self._caches
 
     def has_event_handler(self, name: str | None = None, namespace: str | None = None) -> bool:
         """Check if a handler is registered.

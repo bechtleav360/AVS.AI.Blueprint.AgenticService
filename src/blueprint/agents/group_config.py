@@ -45,7 +45,7 @@ question asked of a group that misbehaves.
 import logging
 import os
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -114,14 +114,17 @@ class GroupConfig:
             broker-side identifier may derive from it, or moving an agent between groups would
             be visible to the broker (C1).
         agents: The agents to host, in the order the group declared them.
-        cache_names: Caches to register for the process, beyond the default one. A cache is
-            process-wide (spec sec. 8), so it is the group's to declare rather than any single
-            agent's.
+
+    Note:
+        A group declares **no caches**. A cache belongs to the agent that declared it with
+        ``with_cache`` and is reachable from no other (spec sec. 8), so there is no
+        process-wide cache for a group to name. ``cache_names`` in a group file is therefore
+        read by nothing; it is ignored rather than refused, so a file written against the
+        earlier shape still starts the process it describes.
     """
 
     name: str
     agents: tuple[AgentSpec, ...]
-    cache_names: tuple[str, ...] = field(default=())
 
     @property
     def agent_names(self) -> tuple[str, ...]:
@@ -158,7 +161,7 @@ class GroupConfig:
         root = config.get_package_root()
 
         declared = cls._read_group_file(env, root)
-        name, agent_names, critical_names, cache_names = cls._apply_env_overrides(env, declared)
+        name, agent_names, critical_names = cls._apply_env_overrides(env, declared)
 
         if not agent_names:
             raise GroupConfigError(
@@ -170,13 +173,12 @@ class GroupConfig:
         agent_map = cls._read_agent_map(env, root)
         agents = cls._resolve_agents(agent_names, critical_names, agent_map, name)
 
-        group = cls(name=name, agents=tuple(agents), cache_names=tuple(cache_names))
+        group = cls(name=name, agents=tuple(agents))
         logger.info(
-            "Resolved group '%s' with %d agent(s): %s%s",
+            "Resolved group '%s' with %d agent(s): %s",
             group.name,
             len(group.agents),
             ", ".join(f"{agent.name}{'' if agent.critical else ' (non-critical)'}" for agent in group.agents),
-            f"; caches: {', '.join(group.cache_names)}" if group.cache_names else "",
         )
         return group
 
@@ -313,13 +315,13 @@ class GroupConfig:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _apply_env_overrides(env: dict[str, str] | Any, declared: dict[str, Any]) -> tuple[str, list[str], set[str], list[str]]:
+    def _apply_env_overrides(env: dict[str, str] | Any, declared: dict[str, Any]) -> tuple[str, list[str], set[str]]:
         """Overlay environment variables on the file's slice, key by key, logging each source.
 
         Key by key rather than all-or-nothing (spec sec. 5.1): a Deployment that wants a
-        different agent list should not have to restate the group's name and caches to get it.
-        The log line per value is what answers "where did this pod's agent list come from",
-        which is the first question asked of a group that started with the wrong contents.
+        different agent list should not have to restate the group's name to get it. The log
+        line per value is what answers "where did this pod's agent list come from", which is
+        the first question asked of a group that started with the wrong contents.
         """
 
         def _split(raw: str) -> list[str]:
@@ -328,8 +330,7 @@ class GroupConfig:
         name = str(declared.get("name", "") or "").strip()
         agents = [str(agent).strip() for agent in declared.get("agents", []) or [] if str(agent).strip()]
         critical = {str(agent).strip() for agent in declared.get("critical_agents", []) or [] if str(agent).strip()}
-        caches = [str(cache).strip() for cache in declared.get("cache_names", []) or [] if str(cache).strip()]
-        sources = {"name": "file", "agents": "file", "critical_agents": "file", "cache_names": "file"}
+        sources = {"name": "file", "agents": "file", "critical_agents": "file"}
 
         if override := str(env.get(GROUP_ENV, "") or "").strip():
             if not name:
@@ -347,7 +348,7 @@ class GroupConfig:
         for key, source in sources.items():
             if source != "file" or declared:
                 logger.info("Group value '%s' resolved from %s", key, source)
-        return name, agents, critical, caches
+        return name, agents, critical
 
     @staticmethod
     def _resolve_agents(agent_names: list[str], critical_names: set[str], agent_map: dict[str, str], group_name: str) -> list[AgentSpec]:

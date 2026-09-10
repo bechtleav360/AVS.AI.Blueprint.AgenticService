@@ -60,11 +60,17 @@ class TestFromTheGroupFile:
 
         assert group.agents[0] == AgentSpec(name="invoice", module="agents.invoice.declaration:registration", critical=True)
 
-    def test_declared_caches_are_carried(self, project: Config) -> None:
-        """A cache is process-wide, so it is the group's to declare rather than an agent's."""
+    def test_a_declared_cache_list_is_read_by_nothing(self, project: Config) -> None:
+        """A cache belongs to the agent that declared it (D3), so a group declares none.
+
+        The group file in this fixture still carries ``cache_names``. It is *ignored* rather
+        than refused, so a file written against the earlier shape still starts the process it
+        describes -- a rollout must not fail over a key that has become inert.
+        """
         group = GroupConfig.resolve(project, environ={"BLUEPRINT_GROUP": "finance"})
 
-        assert group.cache_names == ("sessions",)
+        assert group.agent_names == ("invoice", "order")
+        assert not hasattr(group, "cache_names")
 
     def test_another_group_in_the_same_file(self, project: Config) -> None:
         group = GroupConfig.resolve(project, environ={"BLUEPRINT_GROUP": "contracts"})
@@ -161,7 +167,7 @@ class TestPrecedence:
     def test_the_files_other_values_survive_the_override(self, project: Config) -> None:
         group = GroupConfig.resolve(project, environ={"BLUEPRINT_GROUP": "finance", "BLUEPRINT_AGENTS": "dunning"})
 
-        assert (group.name, group.cache_names) == ("finance", ("sessions",))
+        assert (group.name, group.agent_names) == ("finance", ("dunning",))
 
     def test_the_source_of_each_value_is_logged(self, project: Config, caplog: pytest.LogCaptureFixture) -> None:
         """The first question asked of a group with the wrong contents is where they came from."""
@@ -260,7 +266,7 @@ class TestTheValueObject:
         """Constructed literally, so a test states a composition instead of arranging files."""
         group = GroupConfig(name="finance", agents=(AgentSpec(name="invoice", module="pkg:reg"),))
 
-        assert (group.name, group.agent_names, group.cache_names) == ("finance", ("invoice",), ())
+        assert (group.name, group.agent_names) == ("finance", ("invoice",))
 
     def test_it_is_frozen(self) -> None:
         group = GroupConfig(name="finance", agents=())

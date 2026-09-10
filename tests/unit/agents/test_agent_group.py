@@ -58,6 +58,12 @@ billing_declaration = AppBuilder().with_service(BillingService)
 not_a_declaration = "this is not an AppBuilder"
 
 
+def registry() -> Any:
+    """The process's registry, which every assertion below reads after assembly."""
+    assert Component.shared_registry is not None
+    return Component.shared_registry
+
+
 @pytest.fixture(autouse=True)
 def reset_component_state() -> Generator[None]:
     with patch(
@@ -218,32 +224,50 @@ class TestWhatAGroupRefuses:
 
 
 class TestTheGroupsCaches:
-    def test_declared_caches_are_registered(self, config: Config, tmp_path: Path) -> None:
-        config.get_cache_config = lambda: CacheConfig(cache_dir=str(tmp_path / "cache"), backend="disk")  # type: ignore[method-assign]
+    """A group declares no caches: every cache belongs to the agent that declared it (D3)."""
 
-        AgentGroup("finance", {"order": order_declaration}, cache_names=("sessions", "prompts")).assemble(config)
+    def test_a_group_cannot_declare_a_cache(self) -> None:
+        """There is no process-wide cache, so there is no argument for naming one."""
+        with pytest.raises(TypeError):
+            AgentGroup("finance", {"order": order_declaration}, cache_names=("sessions",))  # type: ignore[call-arg]
 
-        registry = Component.shared_registry
-        assert registry is not None
-        assert sorted(registry.get_all_caches()) == ["prompts", "sessions"]
-
-    def test_a_group_with_no_caches_registers_none(self, config: Config) -> None:
+    def test_a_group_whose_agents_declare_none_registers_none(self, config: Config) -> None:
         AgentGroup("finance", {"order": order_declaration}).assemble(config)
 
-        registry = Component.shared_registry
-        assert registry is not None
-        assert registry.get_all_caches() == {}
+        assert registry().cache_entries() == []
 
-    def test_an_agents_own_cache_is_carried_over(self, config: Config, tmp_path: Path) -> None:
+    def test_an_agents_own_cache_is_carried_over_and_belongs_to_it(self, config: Config, tmp_path: Path) -> None:
         """A with_cache() in an agent's declaration is replayed like everything else."""
         config.get_cache_config = lambda: CacheConfig(cache_dir=str(tmp_path / "cache"), backend="disk")  # type: ignore[method-assign]
         declaration = AppBuilder().with_service(OrderService).with_cache(name="sessions")
 
         AgentGroup("finance", {"order": declaration}).assemble(config)
 
-        registry = Component.shared_registry
-        assert registry is not None
-        assert sorted(registry.get_all_caches()) == ["sessions"]
+        assert [(namespace, name) for namespace, name, _ in registry().cache_entries()] == [("order", "sessions")]
+        assert registry().get_all_caches() == {}, "the root declared none, so the root has none"
+
+    def test_two_agents_declaring_one_name_get_separate_stores(self, config: Config, tmp_path: Path) -> None:
+        """The whole of D3: ``sessions`` in two agents is two caches, not one shared by accident."""
+        config.get_cache_config = lambda: CacheConfig(cache_dir=str(tmp_path / "cache"), backend="disk")  # type: ignore[method-assign]
+        order = AppBuilder().with_service(OrderService).with_cache(name="sessions")
+        billing = AppBuilder().with_service(BillingService).with_cache(name="sessions")
+
+        AgentGroup("finance", {"order": order, "billing": billing}).assemble(config)
+
+        theirs = registry().get_cache("sessions", namespace="order")
+        neighbours = registry().get_cache("sessions", namespace="billing")
+        assert theirs is not neighbours
+        assert theirs.cache_dir != neighbours.cache_dir  # type: ignore[attr-defined]
+
+    def test_neither_agent_can_read_the_others_cache(self, config: Config, tmp_path: Path) -> None:
+        config.get_cache_config = lambda: CacheConfig(cache_dir=str(tmp_path / "cache"), backend="disk")  # type: ignore[method-assign]
+        order = AppBuilder().with_service(OrderService).with_cache(name="sessions")
+        billing = AppBuilder().with_service(BillingService)
+
+        AgentGroup("finance", {"order": order, "billing": billing}).assemble(config)
+
+        with pytest.raises(ValueError, match="No cache registered as 'sessions' for agent 'billing'"):
+            registry().for_namespace("billing").get_cache("sessions")
 
     def test_a_health_checker_is_carried_over(self, config: Config) -> None:
         """Recording it is what stops a group silently dropping an agent's readiness checks."""

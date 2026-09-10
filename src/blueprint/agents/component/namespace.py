@@ -175,6 +175,34 @@ def namespace_scope(namespace: str) -> Iterator[str]:
         _CURRENT_NAMESPACE.reset(token)
 
 
+@contextmanager
+def construction_scope(namespace: str) -> Iterator[None]:
+    """Construct inside ``namespace``, or leave the ambient namespace exactly as it is.
+
+    The difference matters because :func:`namespace_scope` with ``""`` is not a no-op: it
+    *sets* the current namespace to the root. Anything recorded outside a scope carries ``""``,
+    and entering a scope for it would reset the namespace in force -- which is what happens
+    when a whole agent's declarations are replayed inside one scope, and would silently move
+    every one of them back to the root.
+
+    Lives here rather than in one of its callers because it is the guarded form of
+    :func:`namespace_scope`, and every place that constructs on behalf of a namespace it was
+    *handed* needs it: the builder replaying a declaration, and the cache factory, which is
+    given the owning agent as an argument.
+
+    Args:
+        namespace: The agent to construct for, or ``""`` to keep whatever is already in force.
+
+    Yields:
+        Nothing; the scope is ambient.
+    """
+    if not namespace:
+        yield
+        return
+    with namespace_scope(namespace):
+        yield
+
+
 def display_segment(value: str, placeholder: str) -> str:
     """Return ``value`` reduced to one safe segment of a dot-separated identity string.
 

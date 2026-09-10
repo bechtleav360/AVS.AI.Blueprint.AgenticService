@@ -4775,6 +4775,180 @@ stay keyword-only and last, or an existing `with_cache(False)` would silently be
 
 ---
 
+### Phase 8b, step 5 -- a cache is private to the agent that declared it
+
+**D3, and the half of spec sec. 8 that was never built.** Sec. 8 requires that cache names be
+namespace-scoped and that `get_cache(name)` resolve within the declaring agent and raise
+otherwise. What existed was the *data-partition* half: `AgentScopedCache`, a lens that prefixed
+each call's partition argument with the agent, over one shared backend. Two agents therefore
+still shared a store, a `size_limit` and a Redis keyspace, and the isolation held only as long
+as every call site went through the lens.
+
+The isolation is now **structural**: separate registry entries, separate directories, separate
+key prefixes. There is nothing left for a prefixing lens to prevent, so it is deleted.
+
+**`Registry` -- the store is keyed on `(namespace, name)`**
+
+    self._caches: dict[tuple[str, str], CacheService] = {}
+
+and every cache method takes the owning agent, defaulted from the object it is called on:
+
+    def _cache_owner(self, namespace: str | None) -> str:
+        if namespace is not None:
+            return namespace
+        return self._default_namespace or ROOT_NAMESPACE
+
+That default is the whole developer-facing story: `Component.registry` hands a component its own
+namespace's view, so `self.registry.get_cache("sessions")` reaches this agent's store with no
+namespace at the call site -- and `add_cache`, `has_cache`, `get_all_caches` and the
+`cache_service` alias resolve the same way. `add_cache(name, cache, namespace=...)` names one
+explicitly, which is what `build()` uses.
+
+**`_cache_owner` deliberately differs from `_effective_namespace`.** For components an omitted
+namespace on the application's registry means *every* namespace, which is what `build()` and the
+lifespan need when they iterate. For caches it means *the root*, because every cache operation
+names exactly one cache: there is no cache that belongs to all agents, and a lookup ranging over
+the process would be the cross-agent sharing sec. 8 exists to prevent.
+
+- `get_cache` has **two fallbacks that do not exist** -- none from an unknown name to the
+  default, and none from an agent to the root or a neighbour. The message names the agent and
+  lists what *that* agent has: `No cache registered as 'sessions' for agent 'billing'
+  (registered: none)`.
+- `get_all_caches(namespace=None)` is **one agent's**, keyed by bare name.
+- **`cache_entries()` is new** and is the only cache view that crosses agents:
+  `list[tuple[str, str, CacheService]]`, `(namespace, name, cache)`. It **raises on a view**
+  (C6) -- a view is what agent code holds, and an agent that can enumerate its neighbours' caches
+  can be written to depend on them. The agent is returned **as data**, not folded into the name,
+  because a cache name may legally contain the separator (`v2.sessions`), so a caller that has to
+  attribute a cache to an agent must not be splitting a string. `clear()` iterates the tuple keys
+  and names the agent in its log line.
+
+**`CacheBackendFactory` -- one argument carries every consequence of ownership**
+
+`create(config, enable_locking, name, *, namespace="")`. The bare name stays what is validated
+and what appears in the registry; the *storage* name is composed here, in the same class that
+already owned "how a name becomes a separate store":
+
+    @staticmethod
+    def storage_name(namespace: str, name: str) -> str:
+        return name if not namespace else f"{namespace}.{name}"
+
+`_scoped_cache_dir` and `_scoped_key_prefix` now take that storage name, so agent `orders`
+declaring `sessions` gets `<cache_dir>/orders.sessions` on disk and `<prefix>:orders.sessions` on
+Redis, and its *default* cache gets `<cache_dir>/orders.default` -- only the root keeps the
+configured directory itself, which is what leaves a single-agent application reading exactly the
+store it always did. The directory stays a **subdirectory** of `cache.cache_dir` for the reason
+named caches already did: under `readOnlyRootFilesystem` only the mount is writable, so one
+volume per group still works and a group does not multiply the writable paths a pod needs.
+
+`.` is the separator because it is in the cache-name alphabet and not in the namespace alphabet:
+an agent's storage name is still a legal cache name, and no cache name can forge one. `_` is in
+both, which would make `orders_sessions` ambiguous between agent `orders` and a root cache of
+that name.
+
+**`create` also enters the namespace scope itself**:
+
+    storage = CacheBackendFactory.storage_name(namespace, name)
+    with construction_scope(namespace):
+        if config.backend == "redis":
+            return CacheBackendFactory._create_redis(config, enable_locking, name, storage)
+        return CacheBackendFactory._create_disk(config, enable_locking, name, storage)
+
+A cache backend is itself a `Component`, so two agents' caches both derive
+`disk_cache_service` and collide on that one registry name unless each is constructed inside its
+agent's scope. Doing it in the factory rather than at the call site means the `namespace`
+argument alone decides *both* where the cache stores and what it registers as, whatever scope
+the caller happens to be in -- **found by a test**: the first version scoped only in `build()`,
+and a direct `create(..., namespace="orders")` produced an agent-scoped store with a root
+registry name, which failed the moment a second agent did the same.
+
+**`construction_scope` moved to `component/namespace.py`** and is now public. It was
+`app_builder._construction_scope`: the guarded form of `namespace_scope` that leaves the ambient
+namespace alone for the root, because `namespace_scope("")` is not a no-op -- it *sets* the root.
+The factory needs exactly that guard, and the trap is one that gets re-derived wrongly, so the
+one implementation lives beside the thing it guards.
+
+**`AppBuilder` -- three things are per agent at build time**
+
+`_create_cache(declaration, config)` now takes the configuration and reads the agent's own view:
+
+    cache_service = CacheBackendFactory.create(
+        config.for_namespace(namespace).get_cache_config(),
+        enable_locking=enable_locking,
+        name=name,
+        namespace=namespace,
+    )
+    registry.add_cache(name, cache_service, namespace=namespace)
+
+So the *backend* is chosen per agent too (C5): one agent in a group can run on redis while its
+neighbour uses the disk, which a process-wide read of `cache.backend` could not express.
+
+**The readiness probe attributes each cache to its agent:**
+
+    for namespace, cache_name, cache in registry.cache_entries():
+        entry = "cache" if cache_name == DEFAULT_CACHE_NAME else f"cache:{cache_name}"
+        health_providers[f"{namespace}.{entry}" if namespace else entry] = CacheHealthChecker(cache)
+
+Two agents' default caches were previously one entry keyed `cache`, so the payload reported
+whichever registered last and one agent's Redis outage was invisible. The root keeps the bare
+`cache` / `cache:sessions` entries, so an existing readiness payload does not change. (Step 6
+generalises this to every health checker and stores the attribution as data; this is the cache
+half, which step 5 cannot leave broken.)
+
+**`/cache/*` became per agent:**
+
+    for namespace in self._cache_owners(registry):
+        with construction_scope(namespace):
+            cache_api = CacheManagementApi()
+        self._mount(app, cache_api, root_prefix="/api")
+
+One router per agent that declared a cache, mounted under that agent's `/api/<agent>` prefix by
+the `route_prefix` mechanism phase 6 built, each resolving names through its own registry view.
+So `/api/orders/cache/stats` reports the orders agent's caches and cannot reach billing's --
+where one process-wide endpoint would have reported one agent's keys to another. `_cache_owners`
+derives the list from `cache_entries()` rather than from `hosted_namespaces`, because a cache is
+declared and not implied: an agent that declared none gets no endpoint, exactly as an application
+built without `with_cache()` has never served `/cache/*`. A standalone application keeps
+`/api/cache/*` unchanged, and its 503/404 branches now speak about that agent's caches.
+
+**Deleted**
+
+- **`AgentScopedCache`** (`services/infrastructure/agent_scoped_cache.py`) and `Registry`'s
+  `_scoped_cache` / `_scoped_caches` machinery, including the reset of `_scoped_caches` in
+  `for_namespace`. Separate stores make the isolation structural, so the lens has nothing left to
+  prevent -- and it had a real weakness: it was per registry *view*, so framework code holding
+  `Component.shared_registry` directly still reached the shared store.
+- **`GroupConfig.cache_names`**, its env-override slot and its line in the resolution log; the
+  `cache_names` argument to `AgentGroup` and the `with_cache` replay loop in `assemble`. A group
+  declares no caches because there is no process-wide cache to declare. `cache_names` in a
+  mounted group file is now **read by nothing** -- ignored rather than refused, because a
+  rollout must not fail over a key that has become inert, and `GroupConfig` reports only what it
+  understands.
+
+**Knock-on, as D3 predicted:** `has_cache()` and `cache_service` answer per agent, so an agent
+with `idempotency_enabled = true` must itself declare `with_cache()`; a neighbour's cache no
+longer satisfies it. The existing error message already says exactly what to add. This is what
+changed `test_event_processing_namespaces.py`'s fixture, whose `orders` agent enables dedup: its
+cache is now registered *for* `orders` instead of at the root.
+
+**Tests.** `test_agent_scoped_cache.py` deleted with its subject. New: `TestCachesPerAgent` in
+`test_registry.py` (13 cases -- two agents holding one name, no fallback by name, through the
+root or by enumeration, the per-agent alias and `has_cache`, `cache_entries` carrying the agent
+as data and refused on a view, `clear` reaching every agent);
+`TestACacheBelongsToTheAgentThatDeclaredIt` in `test_named_caches.py` (registration, directory,
+two agents' separate stores, both backends registering as components, the agent's own config view,
+and the readiness entry); `TestAgentIsolation` in `test_cache_backend_factory.py` (the storage
+name at the root and for an agent, the separator staying a legal cache name, separate directories
+and Redis prefixes, the directory staying inside the mount); `TestCacheEndpointsPerAgent` in
+`test_route_namespacing.py` (per-agent paths through `app.openapi()`, no endpoint for an agent
+that declared none, and the standalone paths unchanged). `test_agent_group.py`'s
+`TestTheGroupsCaches` is rewritten around agents owning caches, including the D3 case -- two
+agents declaring `sessions` get separate stores and neither can read the other's.
+
+1975 unit tests pass, zero failures.
+
+---
+
 ## Open points
 
 - **Phase 7's ambiguity error needs a spec amendment.** The plan asks `process_event` to raise
@@ -4915,15 +5089,21 @@ stay keyword-only and last, or an existing `with_cache(False)` would silently be
 - **Nothing observes dead-lettering.** It is logged, but there is no counter, so "how many messages
   did we give up on today" cannot be answered from metrics. It belongs with the telemetry work in
   phase 9, next to `blueprint.events.unhandled`.
-- ~~**Cache names are not namespace-scoped**~~ -- **done**, by prefixing the partition
-  (`AgentScopedCache`). The deployment constraint decided it: a backend per agent per name would
-  multiply the writable paths a group needs and split one `emptyDir`'s budget N ways. Two things
-  it leaves open. The lens is per *registry view*, so framework code that reaches
-  `Component.shared_registry` directly still gets the shared store -- correct today, and worth
-  re-checking whenever a framework component starts caching on an agent's behalf. And nothing
-  migrates keys written before the prefix existed: an application upgrading with a persistent
-  redis cache sees its old entries as absent, which is a cold cache rather than an error, but
-  should be said in the migration guide (phase 10).
+- ~~**Cache names are not namespace-scoped**~~ -- **done twice.** First by prefixing the
+  partition (`AgentScopedCache`), then properly in phase 8b step 5, which keys the registry on
+  `(namespace, name)` and gives each agent its own directory and Redis prefix; the lens is
+  deleted, and with it the hole that framework code reaching `Component.shared_registry`
+  directly still got the shared store. The deployment constraint that argued for one shared
+  backend still holds and is still honoured: an agent's store is a *subdirectory* of
+  `cache.cache_dir`, so a group still needs exactly one writable mount. What remains open is
+  migration -- **the key layout changed twice**, so an application upgrading with a persistent
+  redis cache or a mounted disk cache sees its old entries as absent. A cold cache rather than
+  an error, and it must be said in the migration guide (phase 10), for both hops.
+- **The cache documentation is wrong about the endpoints, and now about their paths too.**
+  `docs/concepts/caching.md` documents `GET`/`PUT /api/cache/{namespace}/{key}`, which have never
+  existed (the API is `stats`, `namespaces`, `evict`), and step 5 moved a grouped agent's routes
+  to `/api/<agent>/cache/*`. Left for step 9 part 3, which owns the four overlapping cache
+  documents; fixing one of them here would have been the fifth version of the same content.
 - **The examples are not migrated, by decision (2026-09-08).** Note that phase 8b changes what
   blocks them: `AgentRegistration` is deleted, and passing instances (`with_rest_api(MonitorApi())`)
   stays legal standalone -- it is refused only when a builder is collected into a group. So the
