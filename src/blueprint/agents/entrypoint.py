@@ -24,19 +24,11 @@ import sys
 from fastapi import FastAPI
 
 from .app_builder import AppBuilder
-from .config import Config
+from .config import DEFAULT_SETTINGS_FILES, Config
 from .group_config import GroupConfig, GroupConfigError
 from .utils import run_app
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_SETTINGS_FILES = ["settings.toml", ".secrets.toml"]
-"""Settings the entry point loads, in Dynaconf's usual order.
-
-Named here rather than left to a default because this module *is* the deployment's entry point:
-what it loads is part of the contract with the image, and a project that needs something else
-writes its own ``main.py`` rather than discovering that this one guessed.
-"""
 
 
 def build_group_app(*, environ: dict[str, str] | None = None) -> tuple[FastAPI, Config]:

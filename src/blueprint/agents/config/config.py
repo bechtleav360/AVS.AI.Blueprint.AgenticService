@@ -36,6 +36,17 @@ keeps them out of reach.
 """
 
 
+DEFAULT_SETTINGS_FILES = ["settings.toml", ".secrets.toml"]
+"""The settings files the framework loads when the application names none.
+
+Dynaconf's usual pair, in its usual order. It lives here rather than in whichever caller needed
+it first because two of them need the same answer: the container entry point, whose contract with
+the image is which files it reads, and ``AppBuilder.build()`` when it has to construct a ``Config``
+because the application handed it none. A project that needs something else passes its own
+``Config``; nothing guesses twice.
+"""
+
+
 DEFAULT_ENVVAR_PREFIX = "DYNACONF"
 """The prefix an environment override carries unless the project declares another one.
 

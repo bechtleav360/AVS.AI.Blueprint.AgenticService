@@ -12,7 +12,7 @@ from blueprint.agents.services.infrastructure.cache_service import CacheService
 logger = logging.getLogger(__name__)
 
 _ALLOWED_CACHE_NAME = re.compile(r"\A[a-z0-9][a-z0-9_.-]*\Z")
-"""What a cache name may look like. See :meth:`CacheBackendFactory._validate_name`."""
+"""What a cache name may look like. See :meth:`CacheBackendFactory.validate_name`."""
 
 
 class CacheBackendFactory:
@@ -48,13 +48,13 @@ class CacheBackendFactory:
         Raises:
             ValueError: if ``name`` cannot serve as a cache name.
         """
-        CacheBackendFactory._validate_name(name)
+        CacheBackendFactory.validate_name(name)
         if config.backend == "redis":
             return CacheBackendFactory._create_redis(config, enable_locking, name)
         return CacheBackendFactory._create_disk(config, enable_locking, name)
 
     @staticmethod
-    def _validate_name(name: str) -> None:
+    def validate_name(name: str) -> None:
         """Reject a cache name that cannot serve as one.
 
         The name becomes a filesystem path segment and a segment of a Redis key prefix, so

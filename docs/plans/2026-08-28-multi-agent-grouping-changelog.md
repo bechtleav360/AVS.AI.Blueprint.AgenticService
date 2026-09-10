@@ -4007,6 +4007,94 @@ blueprint.agents.orchestrator` corrected to `entrypoint`; the *not a separate or
 argument reconciled with `AgentGroup`; cache and executor sharing rows corrected; testing
 expectations extended.
 
+### Phase 8b, step 1 -- `AppBuilder` records, and `build()` is the only thing that builds
+
+**`Declaration` (`app_builder.py`), the five `with_*` and `with_cache` store instead of
+constructing, `build(config=None)` replays them.** This is the change the whole unification rests
+on: `with_handler(H)` used to construct `H` on the spot, so a component declared before any
+namespace existed belonged to the root for ever -- which is the only reason `AgentRegistration`
+had to exist as a second class. It no longer does.
+
+- **`Declaration`** is a frozen value object holding `kind`, `target`, `name`, `namespace` and
+  `kwargs`. `target` is a class, a zero-argument factory, an already-built component, or `None`
+  for a cache. `is_built` reports whether `target` is already a `Component`, which is what the
+  order check below reads.
+- **`_record(kind, target, namespace, kwargs, *, name, method)`** replaces `_register`. It
+  resolves the namespace **at the call**, not at construction -- `namespace or
+  current_namespace()` -- because the caller's scope is what carries it and by the time the
+  replay runs no scope is in force. Two checks stay at record time, both answerable there and
+  both better reported at the offending line: `validate_namespace(namespace)`, and the
+  already-built-instance-for-another-namespace refusal (unchanged wording, moved from
+  `_register`).
+- **`_construct(declaration)`** is the other half of the old `_register`: it enters
+  `_construction_scope(declaration.namespace)` and calls `declaration.target(**kwargs)`, or
+  adopts the instance, then assigns the explicit name. A class and a factory are now handled by
+  the same branch, because a class *is* a zero-argument factory once its keyword arguments are
+  applied -- which is what lets `lambda: AgentBuilder(...).build()` be deferred exactly as far as
+  a class is.
+- **`declarations`** is a public read-only snapshot, for the collector in step 3 and for a test
+  that wants to assert what a `main.py` declares without building any of it.
+- **`_construct_declarations()`** replays in call order, then creates the caches. Caches last on
+  purpose: a cache backend is itself a `Component`, so building one mid-pass would interleave it
+  into the registry's insertion order and shift every component declared after it.
+
+**`build(config=None)`** gained three things. It refuses a second call with its own message
+rather than surfacing `Component.configure`'s "already set" from three frames down. It settles
+the configuration -- given to `__init__`, given here, or, when neither, loaded from
+`DEFAULT_SETTINGS_FILES`, which is what makes the migrated `AppBuilder().build()` shape work.
+And it injects the configuration **before** constructing anything, which is strictly more correct
+than the old order: every component now exists in a process that already has its configuration.
+
+**`_check_declaration_order`** is the one new refusal. An instance is constructed by the caller
+at its own source line and is therefore in the registry *before* `build()` runs, while a class is
+constructed during the replay -- so an instance recorded after a class registers before it.
+That is not cosmetic: `DispatchIndex.build` resolves handler priority ties by registration order.
+The check runs **after** construction, deliberately, because a class's priority is a property of
+the object and reading it off the class would mean parsing a default argument and being wrong
+about every handler that computes one; the application is not returned when it raises, so the
+components already in the registry go nowhere. It fires only for handlers, only within one
+namespace, and only at equal priority -- the only case where the order decides anything.
+
+**`configure_logging()` moves, but not all the way to `build()`.** The plan says `build()`; that
+is right for a declaration-only `main.py` and wrong for the shape the scaffolder still generates,
+where `with_service(OrderService())` constructs at its source line and the builder's own
+`with_namespace` / `with_cache` calls log as they go. So the call lives in one place,
+`_use_config`, which runs from `__init__` when a configuration is given there and from `build()`
+when it is not. An existing `AppBuilder(config)` chain therefore logs exactly as it did.
+
+**Smaller changes that this needed:**
+
+- `EventHandlerBase.priority` -- a public property over `_priority`. The ordering rule is
+  enforced from outside the class, and `__lt__` answers the sorting question, not that one.
+- `CacheBackendFactory._validate_name` -> `validate_name`. `with_cache` calls it at record time,
+  because a cache name becomes a directory segment and a Redis key prefix: it crosses the process
+  boundary, so it is validated where it is written. The factory still validates when it creates
+  the backend -- it owns the rule, and nothing reaches it only through the builder.
+- `DEFAULT_SETTINGS_FILES` moved from `entrypoint.py` to `config/config.py` and is exported from
+  the `config` package. Two callers now need the same answer: the container entry point, and
+  `build()` when the application handed it no configuration.
+- `AgentRegistration.apply` hands a factory to the builder instead of calling it. A factory used
+  to be invoked at apply time -- producing an instance that landed in the registry before every
+  class of the same agent -- and now defers as far as a class does.
+- The registry-creation fallback considered for `build()` was **not** added: `AppBuilder.__init__`
+  constructs a `TelemetryManager`, which is a `Component`, so the shared registry always exists by
+  the time `build()` runs. Verified rather than assumed.
+
+**Behavioural change, stated for the migration guide:** nothing is in the registry until
+`build()`, so code that looks a component up between `with_*` calls breaks. The framework's own
+convention already forbids it -- collaborators are resolved in `on_startup` -- so the fix is the
+documented pattern.
+
+**Tests.** New `tests/unit/agents/app_builder/test_deferred_wiring.py` (32 cases): nothing is
+constructed or registered before `build()`, what a declaration records, the order refusal and the
+three cases it must *not* fire on, where the configuration may be handed over, the single-use
+guard, and an application that declares nothing. The existing suites that asserted on the registry
+straight after a `with_*` call now say when construction happens, through a `realize()` helper in
+`conftest.py` that runs `build()`'s own replay pass without the actuator, root API and FastAPI
+application that would drown the assertion. 1962 unit tests pass, 34 more than before this step.
+
+---
+
 ---
 
 ## Compatibility

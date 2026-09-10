@@ -7,7 +7,7 @@ import pytest
 
 from blueprint.agents.app_builder import AppBuilder
 from blueprint.agents.services.service_base import ServiceBase
-from tests.unit.agents.app_builder.conftest import StubHandler, wire_empty_registry
+from tests.unit.agents.app_builder.conftest import StubHandler, realize, wire_empty_registry
 
 # ---------------------------------------------------------------------------
 # logging ownership
@@ -53,8 +53,13 @@ class TestWithHandler:
             builder.with_handler(NotAHandler)
 
     def test_class_is_instantiated_and_registered(self, builder: AppBuilder, mock_registry: MagicMock) -> None:
-        builder.with_handler(StubHandler)
+        realize(builder.with_handler(StubHandler))
         mock_registry.add_component.assert_called_once()
+
+    def test_a_class_is_not_instantiated_before_build(self, builder: AppBuilder, mock_registry: MagicMock) -> None:
+        """Recording is the whole of a with_*() call: a component built now predates every namespace."""
+        builder.with_handler(StubHandler)
+        mock_registry.add_component.assert_not_called()
 
     def test_instance_is_accepted_without_re_instantiation(self, builder: AppBuilder, mock_registry: MagicMock) -> None:
         instance = StubHandler()
@@ -63,7 +68,7 @@ class TestWithHandler:
         mock_registry.add_component.assert_not_called()
 
     def test_name_set_on_created_instance(self, builder: AppBuilder, mock_registry: MagicMock) -> None:
-        builder.with_handler(StubHandler, name="custom_handler")
+        realize(builder.with_handler(StubHandler, name="custom_handler"))
         mock_registry.update_component_name.assert_called_once()
 
     def test_returns_self_for_chaining(self, builder: AppBuilder, mock_registry: MagicMock) -> None:

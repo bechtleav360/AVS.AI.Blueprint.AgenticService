@@ -23,6 +23,8 @@ from blueprint.agents.group_config import AgentSpec, GroupConfig, GroupConfigErr
 from blueprint.agents.models.config import CacheConfig
 from blueprint.agents.services.service_base import ServiceBase
 
+from .conftest import realize
+
 _THIS = "tests.unit.agents.app_builder.test_with_group"
 
 
@@ -66,7 +68,8 @@ def spec(name: str, attribute: str, *, critical: bool = True) -> AgentSpec:
 
 def component_names() -> list[str]:
     registry = Component.shared_registry
-    assert registry is not None
+    if registry is None:
+        return []
     return sorted(registry.get_component_names_by_type(Component))
 
 
@@ -74,7 +77,7 @@ class TestOneNamespacePerAgent:
     def test_each_agent_is_applied_under_its_own_name(self, config: Config) -> None:
         group = GroupConfig(name="finance", agents=(spec("order", "order_registration"), spec("billing", "billing_registration")))
 
-        AppBuilder(config).with_group(group)
+        realize(AppBuilder(config).with_group(group))
 
         assert component_names() == ["billing_billing_service", "order_order_service"]
 
@@ -101,7 +104,7 @@ class TestOneNamespacePerAgent:
         """Group size 1 is how an agent gets a process to itself; nothing about it is special."""
         group = GroupConfig(name="just-order", agents=(spec("order", "order_registration"),))
 
-        AppBuilder(config).with_group(group)
+        realize(AppBuilder(config).with_group(group))
 
         assert component_names() == ["order_order_service"]
 
@@ -109,7 +112,7 @@ class TestOneNamespacePerAgent:
         """One declaration, applied per agent -- the property the whole design rests on."""
         group = GroupConfig(name="two", agents=(spec("order", "order_registration"), spec("billing", "order_registration")))
 
-        AppBuilder(config).with_group(group)
+        realize(AppBuilder(config).with_group(group))
 
         assert component_names() == ["billing_order_service", "order_order_service"]
 
@@ -120,14 +123,14 @@ class TestTheGroupsCaches:
         config.get_cache_config = lambda: CacheConfig(cache_dir=str(tmp_path / "cache"), backend="disk")  # type: ignore[method-assign]
         group = GroupConfig(name="finance", agents=(spec("order", "order_registration"),), cache_names=("sessions", "prompts"))
 
-        AppBuilder(config).with_group(group)
+        realize(AppBuilder(config).with_group(group))
 
         registry = Component.shared_registry
         assert registry is not None
         assert sorted(registry.get_all_caches()) == ["prompts", "sessions"]
 
     def test_a_group_with_no_caches_registers_none(self, config: Config) -> None:
-        AppBuilder(config).with_group(GroupConfig(name="finance", agents=(spec("order", "order_registration"),)))
+        realize(AppBuilder(config).with_group(GroupConfig(name="finance", agents=(spec("order", "order_registration"),))))
 
         registry = Component.shared_registry
         assert registry is not None
@@ -138,7 +141,7 @@ class TestTheGroupsCaches:
         config.get_cache_config = lambda: CacheConfig(cache_dir=str(tmp_path / "cache"), backend="disk")  # type: ignore[method-assign]
         group = GroupConfig(name="finance", agents=(), cache_names=("sessions",))
 
-        AppBuilder(config).with_cache().with_group(group)
+        realize(AppBuilder(config).with_cache().with_group(group))
 
         registry = Component.shared_registry
         assert registry is not None
@@ -190,6 +193,7 @@ class TestLoadingADeclaration:
         with caplog.at_level("ERROR", logger="blueprint.agents.app_builder"):
             builder = AppBuilder(config).with_group(group)
 
+        realize(builder)
         assert builder.namespaces == ("billing",)
         assert component_names() == ["billing_billing_service"]
         assert "is not critical, so it is skipped" in caplog.text
@@ -203,7 +207,7 @@ class TestLoadingADeclaration:
             ),
         )
 
-        AppBuilder(config).with_group(group)
+        realize(AppBuilder(config).with_group(group))
 
         assert component_names() == ["billing_billing_service"]
 
@@ -214,9 +218,11 @@ class TestLoadingADeclaration:
             agents=(AgentSpec(name="order", module="no.such.module:registration"), spec("billing", "billing_registration")),
         )
 
+        builder = AppBuilder(config)
         with pytest.raises(GroupConfigError):
-            AppBuilder(config).with_group(group)
+            builder.with_group(group)
 
+        realize(builder)
         assert "billing_billing_service" not in component_names()
 
 
@@ -234,7 +240,7 @@ class TestNoIoOfItsOwn:
     def test_a_group_can_be_constructed_literally(self, config: Config) -> None:
         group = GroupConfig(name="finance", agents=(spec("order", "order_registration"),))
 
-        AppBuilder(config).with_group(group)
+        realize(AppBuilder(config).with_group(group))
 
         assert component_names() == ["order_order_service"]
 
@@ -248,6 +254,7 @@ class TestFromGroup:
 
         builder = AppBuilder.from_group(config, environ={"BLUEPRINT_AGENTS": "order", "BLUEPRINT_GROUP": "finance"})
 
+        realize(builder)
         assert builder.namespaces == ("order",)
         assert component_names() == ["order_order_service"]
 

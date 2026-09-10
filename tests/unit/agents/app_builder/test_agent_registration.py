@@ -16,7 +16,7 @@ from blueprint.agents.config import Config
 from blueprint.agents.io.api.rest_api_base import RestApiBase
 from blueprint.agents.services.service_base import ServiceBase
 
-from .conftest import StubHandler
+from .conftest import StubHandler, realize
 
 
 class OrderService(ServiceBase):
@@ -128,11 +128,11 @@ class TestRejections:
 class TestApplyToOneAgent:
     def test_a_single_agent_application_registers_at_the_root(self, two_agent_config: Config) -> None:
         """Unchanged naming: this is what an existing project gets, whichever way it declares."""
-        AppBuilder(two_agent_config).with_registration(AgentRegistration().with_service(OrderService))
+        realize(AppBuilder(two_agent_config).with_registration(AgentRegistration().with_service(OrderService)))
         assert service_names() == ["order_service"]
 
     def test_applying_under_a_namespace_qualifies_the_name(self, two_agent_config: Config) -> None:
-        AppBuilder(two_agent_config).with_registration(AgentRegistration().with_service(OrderService), "orders")
+        realize(AppBuilder(two_agent_config).with_registration(AgentRegistration().with_service(OrderService), "orders"))
         assert service_names() == ["orders_order_service"]
 
     def test_with_registration_returns_the_builder(self, two_agent_config: Config) -> None:
@@ -140,13 +140,13 @@ class TestApplyToOneAgent:
         assert builder.with_registration(AgentRegistration()) is builder
 
     def test_constructor_arguments_reach_the_component(self, two_agent_config: Config) -> None:
-        AppBuilder(two_agent_config).with_registration(AgentRegistration().with_service(ConfiguredService, retries=3))
+        realize(AppBuilder(two_agent_config).with_registration(AgentRegistration().with_service(ConfiguredService, retries=3)))
         registry = Component.shared_registry
         assert registry is not None
         assert registry.get_component("configured_service").retries == 3
 
     def test_an_explicit_name_is_forwarded(self, two_agent_config: Config) -> None:
-        AppBuilder(two_agent_config).with_registration(AgentRegistration().with_service(OrderService, name="svc"))
+        realize(AppBuilder(two_agent_config).with_registration(AgentRegistration().with_service(OrderService, name="svc")))
         assert service_names() == ["svc"]
 
     def test_an_illegal_namespace_is_refused(self, two_agent_config: Config) -> None:
@@ -163,6 +163,7 @@ class TestOneDeclarationTwoAgents:
 
         builder.with_registration(registration, "orders")
         builder.with_registration(registration, "billing")
+        realize(builder)
 
         assert service_names() == ["billing_order_service", "orders_order_service"]
 
@@ -173,6 +174,7 @@ class TestOneDeclarationTwoAgents:
         builder.with_registration(registration, "orders")
         builder.with_registration(registration, "billing")
         Component.configure(two_agent_config)
+        realize(builder)
 
         registry = Component.shared_registry
         assert registry is not None
@@ -193,7 +195,7 @@ class TestFactories:
         """The form the fluent AgentBuilder needs: a chain that cannot be a class plus kwargs."""
         registration = AgentRegistration().with_service(lambda: ConfiguredService(retries=7))
 
-        AppBuilder(two_agent_config).with_registration(registration, "orders")
+        realize(AppBuilder(two_agent_config).with_registration(registration, "orders"))
 
         registry = Component.shared_registry
         assert registry is not None
@@ -207,7 +209,7 @@ class TestFactories:
             seen.append(current_namespace())
             return OrderService()
 
-        AppBuilder(two_agent_config).with_registration(AgentRegistration().with_service(build_service), "orders")
+        realize(AppBuilder(two_agent_config).with_registration(AgentRegistration().with_service(build_service), "orders"))
 
         assert seen == ["orders"]
 
@@ -215,3 +217,14 @@ class TestFactories:
         calls: list[int] = []
         AgentRegistration().with_service(lambda: calls.append(1) or OrderService())
         assert calls == []
+
+    def test_a_factory_is_not_called_when_the_registration_is_applied(self, two_agent_config: Config) -> None:
+        """Deferred as far as a class is: applying records the factory, build() calls it."""
+        calls: list[int] = []
+        registration = AgentRegistration().with_service(lambda: calls.append(1) or OrderService())
+
+        builder = AppBuilder(two_agent_config).with_registration(registration, "orders")
+        assert calls == []
+
+        realize(builder)
+        assert calls == [1]

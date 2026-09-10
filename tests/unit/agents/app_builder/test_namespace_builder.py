@@ -18,7 +18,7 @@ from blueprint.agents.config import Config
 from blueprint.agents.io.api.rest_api_base import RestApiBase
 from blueprint.agents.services.service_base import ServiceBase
 
-from .conftest import StubHandler
+from .conftest import StubHandler, realize
 
 
 class OrderService(ServiceBase):
@@ -84,42 +84,46 @@ def component_names() -> list[str]:
 
 class TestNamespaceOnTheBuilderMethods:
     def test_a_namespace_qualifies_the_registry_name(self, two_agent_config: Config) -> None:
-        AppBuilder(two_agent_config).with_service(OrderService, namespace="orders")
+        realize(AppBuilder(two_agent_config).with_service(OrderService, namespace="orders"))
         assert component_names() == ["orders_order_service"]
 
     def test_the_namespace_reaches_the_component_itself(self, two_agent_config: Config) -> None:
-        AppBuilder(two_agent_config).with_service(OrderService, namespace="orders")
+        realize(AppBuilder(two_agent_config).with_service(OrderService, namespace="orders"))
         registry = Component.shared_registry
         assert registry is not None
         assert registry.get_component("orders_order_service").namespace == "orders"
 
     def test_the_namespace_is_not_forwarded_to_the_constructor(self, two_agent_config: Config) -> None:
         """StrictService takes no namespace argument, which is what every project's code looks like."""
-        AppBuilder(two_agent_config).with_service(StrictService, namespace="orders", retries=3)
+        realize(AppBuilder(two_agent_config).with_service(StrictService, namespace="orders", retries=3))
         registry = Component.shared_registry
         assert registry is not None
         built = registry.get_component("orders_strict_service")
         assert (built.namespace, built.retries) == ("orders", 3)
 
     def test_no_namespace_keeps_todays_names(self, two_agent_config: Config) -> None:
-        AppBuilder(two_agent_config).with_service(OrderService)
+        realize(AppBuilder(two_agent_config).with_service(OrderService))
         assert component_names() == ["order_service"]
 
     def test_the_default_does_not_reset_an_ambient_namespace(self, two_agent_config: Config) -> None:
         """The trap: ``namespace_scope("")`` *sets* the root, so the default must not open a scope.
 
         This is the path ``AgentRegistration.apply`` takes -- it opens one scope per agent and
-        then calls these methods without a namespace argument.
+        then calls these methods without a namespace argument. The scope is read when the call
+        is *recorded*, and ``realize`` runs afterwards with no scope in force, so this also
+        pins that the namespace is captured rather than looked up at construction time.
         """
         builder = AppBuilder(two_agent_config)
         with namespace_scope("orders"):
             builder.with_service(OrderService)
+        realize(builder)
         assert component_names() == ["orders_order_service"]
 
     def test_an_explicit_namespace_wins_over_the_ambient_one(self, two_agent_config: Config) -> None:
         builder = AppBuilder(two_agent_config)
         with namespace_scope("orders"):
             builder.with_service(OrderService, namespace="billing")
+        realize(builder)
         assert component_names() == ["billing_order_service"]
 
     def test_the_ambient_namespace_is_restored_afterwards(self, two_agent_config: Config) -> None:
@@ -137,6 +141,7 @@ class TestNamespaceOnTheBuilderMethods:
     def test_every_method_takes_a_namespace(self, two_agent_config: Config, method: str, target: Any, expected: str) -> None:
         builder = AppBuilder(two_agent_config)
         getattr(builder, method)(target, namespace="orders")
+        realize(builder)
         assert component_names() == [expected]
 
     def test_an_illegal_namespace_is_refused(self, two_agent_config: Config) -> None:
@@ -150,11 +155,11 @@ class TestNamespaceOnTheBuilderMethods:
 
 class TestExplicitNames:
     def test_an_explicit_name_is_qualified_with_the_namespace(self, two_agent_config: Config) -> None:
-        AppBuilder(two_agent_config).with_service(OrderService, name="db", namespace="orders")
+        realize(AppBuilder(two_agent_config).with_service(OrderService, name="db", namespace="orders"))
         assert component_names() == ["orders_db"]
 
     def test_an_explicit_name_at_the_root_is_unchanged(self, two_agent_config: Config) -> None:
-        AppBuilder(two_agent_config).with_service(OrderService, name="db")
+        realize(AppBuilder(two_agent_config).with_service(OrderService, name="db"))
         assert component_names() == ["db"]
 
     def test_one_declaration_with_an_explicit_name_serves_two_agents(self, two_agent_config: Config) -> None:
@@ -164,12 +169,13 @@ class TestExplicitNames:
 
         builder.with_namespace("orders", registration=registration)
         builder.with_namespace("billing", registration=registration)
+        realize(builder)
 
         assert component_names() == ["billing_db", "orders_db"]
 
     def test_the_bare_name_still_finds_it(self, two_agent_config: Config) -> None:
         """Registry._lookup tries '<namespace>_<name>' first, so qualifying costs the caller nothing."""
-        AppBuilder(two_agent_config).with_service(OrderService, name="db", namespace="orders")
+        realize(AppBuilder(two_agent_config).with_service(OrderService, name="db", namespace="orders"))
         registry = Component.shared_registry
         assert registry is not None
         assert registry.get_component("db", namespace="orders").namespace == "orders"
@@ -195,14 +201,14 @@ class TestAlreadyBuiltInstances:
         with namespace_scope("orders"):
             instance = OrderService()
 
-        AppBuilder(two_agent_config).with_service(instance, namespace="orders")
+        realize(AppBuilder(two_agent_config).with_service(instance, namespace="orders"))
         assert component_names() == ["orders_order_service"]
 
     def test_an_instance_at_the_root_is_unaffected(self, two_agent_config: Config) -> None:
         Component.configure(two_agent_config)
         instance = OrderService()
 
-        AppBuilder(two_agent_config).with_service(instance)
+        realize(AppBuilder(two_agent_config).with_service(instance))
         assert component_names() == ["order_service"]
 
 
@@ -211,6 +217,7 @@ class TestWithNamespace:
         builder = AppBuilder(two_agent_config)
         returned = builder.with_namespace("orders", registration=AgentRegistration().with_service(OrderService))
         assert returned is builder
+        realize(builder)
         assert component_names() == ["orders_order_service"]
 
     def test_no_registration_opens_a_namespace_block(self, two_agent_config: Config) -> None:
@@ -269,7 +276,7 @@ class TestDeclaredNamespaces:
 
 class TestNamespaceBlock:
     def test_every_call_lands_in_the_namespace(self, two_agent_config: Config) -> None:
-        (
+        realize(
             AppBuilder(two_agent_config)
             .with_namespace("orders")
             .with_service(OrderService)
@@ -288,7 +295,7 @@ class TestNamespaceBlock:
         assert builder.with_namespace("orders").end() is builder
 
     def test_two_blocks_build_two_independent_agents(self, two_agent_config: Config) -> None:
-        (
+        realize(
             AppBuilder(two_agent_config)
             .with_namespace("orders")
             .with_service(OrderService)
@@ -302,10 +309,11 @@ class TestNamespaceBlock:
     def test_a_registration_can_be_applied_inside_a_block(self, two_agent_config: Config) -> None:
         block = AppBuilder(two_agent_config).with_namespace("orders")
         block.with_registration(AgentRegistration().with_service(OrderService))
+        realize(block.end())
         assert component_names() == ["orders_order_service"]
 
     def test_constructor_arguments_survive_the_delegation(self, two_agent_config: Config) -> None:
-        AppBuilder(two_agent_config).with_namespace("orders").with_service(StrictService, retries=5).end()
+        realize(AppBuilder(two_agent_config).with_namespace("orders").with_service(StrictService, retries=5).end())
         registry = Component.shared_registry
         assert registry is not None
         assert registry.get_component("orders_strict_service").retries == 5

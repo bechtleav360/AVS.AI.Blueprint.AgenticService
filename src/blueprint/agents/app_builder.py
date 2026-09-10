@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from .io.api.actuators.health import HealthCheckerBase
 
 from .component.component import Component
-from .component.namespace import ROOT_LABEL, ROOT_NAMESPACE, namespace_of, namespace_scope, validate_namespace
+from .component.namespace import ROOT_LABEL, ROOT_NAMESPACE, current_namespace, namespace_of, namespace_scope, validate_namespace
 from .component.registry import DEFAULT_CACHE_NAME, Registry
 from .agent.agent_runtime import AgentRuntime
 from .handler.event_handler_base import EventHandlerBase
@@ -35,7 +35,7 @@ from .services.eventing.event_processing_service import EventProcessingService
 from .services.eventing.event_publishing_service import EventPublishingService
 from .services.sessions import SessionKeyProvider, SessionsApiClient
 from .services.infrastructure.cache_backend_factory import CacheBackendFactory
-from .config import Config, TelemetryManager
+from .config import DEFAULT_SETTINGS_FILES, Config, TelemetryManager
 from .group_config import AgentSpec, GroupConfig, GroupConfigError
 from .utils import parse_bool
 
@@ -53,10 +53,10 @@ def _construction_scope(namespace: str) -> Iterator[None]:
     """Construct inside ``namespace``, or leave the ambient namespace exactly as it is.
 
     The difference matters because ``namespace_scope("")`` is not a no-op: it *sets* the current
-    namespace to the root. :meth:`AgentRegistration.apply` opens one scope per agent and then
-    calls the builder's ``with_*`` methods, which default ``namespace`` to the root -- so
-    entering a scope unconditionally would reset every component of every agent back to the
-    root, silently, and the ambient mechanism would apply to nothing.
+    namespace to the root. A declaration recorded outside any scope carries ``""``, and entering
+    a scope for it would reset the namespace in force -- which is what happens when a whole
+    agent's declarations are replayed inside one scope, and would silently move every one of
+    them back to the root.
 
     Args:
         namespace: The agent to construct for, or ``""`` to keep whatever is already in force.
@@ -69,6 +69,44 @@ def _construction_scope(namespace: str) -> Iterator[None]:
         return
     with namespace_scope(namespace):
         yield
+
+
+@dataclass(frozen=True)
+class Declaration:
+    """One ``with_*`` call recorded by an :class:`AppBuilder`, replayed by ``build()``.
+
+    Recording rather than constructing is what lets one builder class serve both deployment
+    shapes. A component built while a ``with_*`` call is running is built *before any namespace
+    exists*, so it belongs to the root for ever -- which is why declaring an agent used to need
+    a second class. Deferring construction to ``build()`` removes that reason.
+
+    Attributes:
+        kind: Which ``with_*`` recorded this, and therefore how ``build()`` replays it.
+        target: A component class, a zero-argument factory returning one, or an
+            already-built component. ``None`` for a cache, which names no class.
+        name: Registry name override, or ``None`` to let the component derive its own. For a
+            cache this is the cache's name, which is never ``None``.
+        namespace: The agent this belongs to, resolved when the call was recorded: the explicit
+            ``namespace=`` argument if one was given, otherwise whatever scope was in force.
+        kwargs: Constructor arguments, forwarded when ``target`` is a class or a factory. For a
+            cache, the remaining ``with_cache`` arguments.
+    """
+
+    kind: str
+    target: Any
+    name: str | None
+    namespace: str
+    kwargs: Mapping[str, Any]
+
+    @property
+    def is_built(self) -> bool:
+        """Whether ``target`` is a component that already exists.
+
+        An already-built component was constructed at the caller's own source line, so it is in
+        the registry before ``build()`` runs, while a class or factory is constructed during the
+        replay. That difference is what ``AppBuilder._check_declaration_order`` inspects.
+        """
+        return isinstance(self.target, Component)
 
 
 @dataclass(frozen=True)
@@ -185,9 +223,10 @@ class AgentRegistration:
         Public rather than private because the caller is another class: ``AppBuilder`` for a
         single agent today, the group entry point per agent later.
 
-        Every component is constructed inside :func:`namespace_scope`, which is the whole
-        mechanism -- ``Component.__init__`` reads the ambient namespace, so no component and no
-        constructor signature mentions one. A factory is called here for the same reason.
+        Nothing is constructed here either: the builder records each call and constructs it in
+        ``build()``. What this scope decides is the namespace each declaration is *recorded*
+        with, and ``build()`` re-enters it before constructing -- ``Component.__init__`` reads
+        the ambient namespace, so no component and no constructor signature mentions one.
 
         Args:
             builder: The builder to register on.
@@ -206,12 +245,12 @@ class AgentRegistration:
         }
 
         with namespace_scope(namespace):
+            # A factory is handed over as itself rather than called here. The builder records
+            # it and calls it during build(), inside this same namespace -- so a factory is now
+            # deferred exactly as far as a class is, and an agent's components all appear in
+            # the registry at the same moment instead of a factory's landing at apply time.
             for entry in self._components:
-                # A class goes to the builder, which instantiates it -- still inside this scope.
-                # A factory has to be called here, because the builder would take the callable
-                # itself for an already-built component.
-                target = entry.target if isinstance(entry.target, type) else entry.target()
-                appliers[entry.kind](target, name=entry.name, **entry.kwargs)
+                appliers[entry.kind](entry.target, name=entry.name, **entry.kwargs)
 
         logger.debug(
             "Applied %d component(s) to namespace '%s': %s",
@@ -329,19 +368,46 @@ class AppBuilder:
             .build()
         )
 
-    Components are instantiated via with_*() calls (accepting either a class or
-    an instance) and auto-register themselves in the shared registry. AppBuilder
-    injects the Config in build() before the lifespan starts.
+    A ``with_*()`` call **records** what to build; nothing is constructed and nothing reaches
+    the registry until ``build()``. That is the property that lets one builder serve both a
+    standalone application and one agent of a group: a component constructed while a ``with_*``
+    call is running would be built before any namespace existed and would belong to the root
+    whichever agent declared it.
+
+    Two consequences worth knowing:
+
+    - **A component cannot be looked up between ``with_*`` calls.** Resolve collaborators in
+      ``on_startup``, which is the framework's convention anyway.
+    - **An already-built instance is the exception**, because the caller constructed it at its
+      own source line. It is in the registry before ``build()`` runs, so an instance recorded
+      after a class registers before it -- see :meth:`_check_declaration_order`, which refuses
+      the one case where that changes behaviour.
+
+    The configuration may be given here or to ``build()``, but not both. Given here it is
+    adopted immediately, which is what an existing ``AppBuilder(config)...build()`` chain does
+    and what keeps its ``with_*`` logging formatted as it always was.
     """
 
-    def __init__(self, config: Config) -> None:
-        # Logging is configured here rather than in Config.__init__: it is the application's
-        # decision, not the configuration loader's, and one Config per namespace would
-        # otherwise reconfigure the root logger once per agent. This runs before any
-        # with_*() call, so component construction is already logged with the right format.
-        config.configure_logging()
-        self._config = config
+    def __init__(self, config: Config | None = None) -> None:
+        """Start a declaration.
+
+        Args:
+            config: The application's configuration. Optional so that a declaration can be
+                written where no configuration is in scope -- a ``main.py`` that is only a
+                declaration, or an agent of a group, whose configuration belongs to the
+                process rather than to it. ``build()`` takes it instead.
+        """
+        self._config: Config | None = None
+        if config is not None:
+            self._use_config(config)
         self._telemetry_manager = TelemetryManager()
+        # Every with_*() call, in call order. Order is preserved because it is meaningful:
+        # handler priority ties are resolved by registration order, and build() replays this
+        # list to reproduce it.
+        self._declarations: list[Declaration] = []
+        # build() runs once. Tracked here so that a second call says so, rather than surfacing
+        # as Component.configure's "already set" from three frames down.
+        self._built = False
         # One transport endpoint per agent that consumes. A list rather than a single slot
         # because a group's agents each subscribe on their own behalf (spec sec. 7.6); it holds
         # exactly one element for every application that declares no namespace.
@@ -355,6 +421,72 @@ class AppBuilder:
         # Which agents this process hosts. See the 'namespaces' property for why the
         # builder is the thing that keeps the list rather than the registry.
         self._namespaces: list[str] = []
+
+    # ------------------------------------------------------------------
+    # Configuration
+    # ------------------------------------------------------------------
+
+    def _use_config(self, config: Config) -> Config:
+        """Adopt ``config`` as this application's configuration and configure logging from it.
+
+        Logging is configured the moment a configuration arrives, whether that is in
+        ``__init__`` or in ``build()``. It is the application's decision rather than the
+        configuration loader's -- ``Config.__init__`` deliberately does not do it, because one
+        ``Config`` per namespace would reconfigure the root logger once per agent -- and doing
+        it here means an ``AppBuilder(config)`` chain still logs its own ``with_*`` calls with
+        the application's format, exactly as it did when construction happened there.
+
+        Args:
+            config: The configuration to adopt.
+
+        Returns:
+            The same configuration, so callers can chain.
+        """
+        config.configure_logging()
+        self._config = config
+        return config
+
+    def _resolve_config(self, config: Config | None) -> Config:
+        """Settle which configuration ``build()`` uses, and adopt it if it is new.
+
+        Args:
+            config: What was passed to ``build()``, or ``None``.
+
+        Returns:
+            The configuration to build with: the one given here, the one given to
+            ``__init__``, or -- when neither exists -- one loaded from
+            :data:`~blueprint.agents.config.DEFAULT_SETTINGS_FILES`.
+
+        Raises:
+            ValueError: if a configuration was given to both ``__init__`` and ``build()``.
+                Refused rather than resolved by precedence: the two are different objects with
+                different trees, half the application would already have been declared against
+                the first, and silently discarding one of them is the failure mode that a
+                per-agent override is hardest to debug through.
+        """
+        if config is not None and self._config is not None:
+            raise ValueError(
+                "A Config was passed to both AppBuilder(config) and build(config), and there is no rule for "
+                "choosing between them: they are separate trees, and whichever lost would take its log level, its "
+                "app_name and every agent override with it. Pass it in exactly one place -- AppBuilder(config) for "
+                "an application that has its configuration where it is declared, build(config) for one that does not."
+            )
+        if config is not None:
+            return self._use_config(config)
+        if self._config is not None:
+            return self._config
+        return self._use_config(Config(settings_files=DEFAULT_SETTINGS_FILES))
+
+    def _require_config(self) -> Config:
+        """Return the configuration, which exists only from ``build()`` onwards.
+
+        Raises:
+            RuntimeError: if called before ``build()`` has settled which configuration to use.
+                Internal: every caller runs during or after the wiring pass.
+        """
+        if self._config is None:
+            raise RuntimeError("The application's configuration is not settled until build() runs.")
+        return self._config
 
     # ------------------------------------------------------------------
     # Fluent registration API
@@ -611,86 +743,92 @@ class AppBuilder:
     def with_handler(
         self, handler: type[HandlerT] | HandlerT, *, name: str | None = None, namespace: str = ROOT_NAMESPACE, **kwargs: Any
     ) -> "AppBuilder":
-        """Register an event handler class or instance.
+        """Declare an event handler class, factory or instance.
+
+        Recorded, not built: the handler is constructed by ``build()``. Prefer the class form,
+        which is the only one a group can place in the right namespace.
 
         Args:
-            handler: The handler class to build, or an already-built instance.
+            handler: The handler class to build, a zero-argument callable returning one, or an
+                already-built instance.
             name: Registry name override, qualified with the namespace like a derived one.
-            namespace: The agent this handler belongs to. ``""`` keeps whatever namespace is
-                already in force, which is what lets a registration applied per agent land in
-                the right one.
-            **kwargs: Constructor arguments, forwarded when a class is passed.
+            namespace: The agent this handler belongs to. ``""`` records whatever namespace is
+                in force at the call, which is what lets a registration applied per agent land
+                in the right one.
+            **kwargs: Constructor arguments, forwarded when a class or factory is passed.
         """
         if isinstance(handler, type) and not issubclass(handler, EventHandlerBase):
             raise TypeError(f"Expected EventHandlerBase subclass, got {handler.__name__}")
-        self._register(handler, namespace, kwargs, name=name, method="with_handler")
-        return self
+        return self._record("handler", handler, namespace, kwargs, name=name, method="with_handler")
 
     def with_service(
         self, service: type[ServiceT] | ServiceT, *, name: str | None = None, namespace: str = ROOT_NAMESPACE, **kwargs: Any
     ) -> "AppBuilder":
-        """Register a business service class or instance. See :meth:`with_handler` for the arguments."""
-        self._register(service, namespace, kwargs, name=name, method="with_service")
-        return self
+        """Declare a business service. See :meth:`with_handler` for the arguments."""
+        return self._record("service", service, namespace, kwargs, name=name, method="with_service")
 
     def with_agent(
         self, agent: type[AgentT] | AgentT, *, name: str | None = None, namespace: str = ROOT_NAMESPACE, **kwargs: Any
     ) -> "AppBuilder":
-        """Register an agent runtime class or instance. See :meth:`with_handler` for the arguments."""
-        self._register(agent, namespace, kwargs, name=name, method="with_agent")
-        return self
+        """Declare an agent runtime. See :meth:`with_handler` for the arguments."""
+        return self._record("agent", agent, namespace, kwargs, name=name, method="with_agent")
 
     def with_scheduler(
         self, scheduler: type[SchedulerT] | SchedulerT, *, name: str | None = None, namespace: str = ROOT_NAMESPACE, **kwargs: Any
     ) -> "AppBuilder":
-        """Register a scheduler class or instance. See :meth:`with_handler` for the arguments."""
-        self._register(scheduler, namespace, kwargs, name=name, method="with_scheduler")
-        return self
+        """Declare a scheduler. See :meth:`with_handler` for the arguments."""
+        return self._record("scheduler", scheduler, namespace, kwargs, name=name, method="with_scheduler")
 
     def with_rest_api(
         self, api: type[RestApiT] | RestApiT, *, name: str | None = None, namespace: str = ROOT_NAMESPACE, **kwargs: Any
     ) -> "AppBuilder":
-        """Register a custom REST API class or instance. See :meth:`with_handler` for the arguments."""
-        self._register(api, namespace, kwargs, name=name, method="with_rest_api")
-        return self
+        """Declare a custom REST API. See :meth:`with_handler` for the arguments."""
+        return self._record("rest_api", api, namespace, kwargs, name=name, method="with_rest_api")
 
-    @staticmethod
-    def _register(target: Any, namespace: str, kwargs: Mapping[str, Any], *, name: str | None, method: str) -> Any:
-        """Build ``target`` inside ``namespace`` -- or adopt it if it is already built -- and name it.
+    @property
+    def declarations(self) -> tuple[Declaration, ...]:
+        """Everything recorded on this builder, in call order.
 
-        Registration itself does not happen here: ``Component.__init__`` adds the instance to
-        the registry, so the only two things left are *which namespace it is constructed in* and
-        *what it is called*.
+        The declaration is the builder's product until ``build()`` turns it into an
+        application. Exposed because a collector assembling a group replays these itself
+        instead of calling ``build()``, and because a test can assert what a ``main.py``
+        declares without constructing any of it.
+        """
+        return tuple(self._declarations)
 
-        **The namespace is never handed to** ``target``. A project's component takes the
-        constructor arguments its author wrote and nothing else, so the namespace travels
-        through the ambient scope and is read by ``Component.__init__``. That is why
-        ``with_service(OrderService, namespace="orders")`` does not become
-        ``OrderService(namespace="orders")`` and does not require ``OrderService`` to know what
-        a namespace is -- which is the whole point of the ambient mechanism.
+    def _record(self, kind: str, target: Any, namespace: str, kwargs: Mapping[str, Any], *, name: str | None, method: str) -> "AppBuilder":
+        """Store one ``with_*`` call, resolving the namespace it belongs to now rather than later.
 
-        An already-built instance cannot be moved into a namespace: its namespace, and its
-        registry key with it, were fixed by the scope it was constructed in. A mismatch is
-        refused rather than ignored, because ignoring it registers the component at the root
-        while the caller believes it belongs to an agent.
+        The namespace is settled here and not at replay time because *here* is where the
+        caller's context exists: an explicit ``namespace=`` argument, or whatever
+        :func:`namespace_scope` is in force, which is how a registration applied per agent
+        marks its components without any of them mentioning a namespace.
+
+        Two checks stay at record time rather than moving to the replay, because both can be
+        answered here and a caller is better told at the line that is wrong than several
+        ``with_*`` calls later. The namespace is validated -- it is a name that reaches a
+        queue group and a durable, so it is validated and never repaired -- and an
+        already-built instance offered to a namespace other than its own is refused, which is
+        answerable now because the instance exists and ``namespace_of`` can be asked.
 
         Args:
-            target: A component class to build, or a built component to adopt.
-            namespace: The agent to build inside; ``""`` keeps the ambient namespace.
-            kwargs: Constructor arguments, used only when ``target`` is a class.
-            name: Registry name override, or ``None`` to keep the derived name.
+            kind: Which ``with_*`` this is, and therefore how ``build()`` replays it.
+            target: A component class, a zero-argument factory, or a built component.
+            namespace: The explicit namespace argument, or ``""`` to take the ambient one.
+            kwargs: Constructor arguments.
+            name: Registry name override, or ``None``.
             method: The builder method being called, for the error message.
 
         Returns:
-            The component instance, already in the registry.
+            This builder.
 
         Raises:
-            ValueError: if a built instance is offered to a namespace other than its own.
+            TypeError: if ``target`` is neither a component nor callable.
+            ValueError: if ``namespace`` is not a legal namespace, or if a built instance is
+                offered to a namespace other than its own.
         """
-        if isinstance(target, type):
-            with _construction_scope(namespace):
-                instance = target(**kwargs)
-        else:
+        namespace = validate_namespace(namespace)
+        if isinstance(target, Component):
             built_in = namespace_of(target)
             if namespace and built_in != namespace:
                 raise ValueError(
@@ -700,14 +838,50 @@ class AppBuilder:
                     f"the class instead -- {method}({type(target).__name__}, namespace='{namespace}', ...) -- so that "
                     "it is built inside that namespace."
                 )
-            instance = target
+        elif not callable(target):
+            raise TypeError(f"{method}() needs a component class, a callable returning one, or a built component, got {target!r}.")
 
-        if name is not None:
+        self._declarations.append(
+            Declaration(kind=kind, target=target, name=name, namespace=namespace or current_namespace(), kwargs=dict(kwargs))
+        )
+        return self
+
+    def _construct(self, declaration: Declaration) -> Any:
+        """Build one declaration inside its namespace -- or adopt it if it is already built.
+
+        Registration itself does not happen here: ``Component.__init__`` adds the instance to
+        the registry, so the only two things left are *which namespace it is constructed in*
+        and *what it is called*.
+
+        **The namespace is never handed to the component.** A project's component takes the
+        constructor arguments its author wrote and nothing else, so the namespace travels
+        through the ambient scope and is read by ``Component.__init__``. That is why
+        ``with_service(OrderService, namespace="orders")`` does not become
+        ``OrderService(namespace="orders")`` and does not require ``OrderService`` to know what
+        a namespace is -- which is the whole point of the ambient mechanism.
+
+        A class and a factory are treated identically, because a class *is* a zero-argument
+        factory once its keyword arguments are applied. That is what lets a fluent chain --
+        ``lambda: AgentBuilder(...).build()`` -- be deferred as far as a class is.
+
+        Args:
+            declaration: The recorded call to replay.
+
+        Returns:
+            The component instance, already in the registry.
+        """
+        if declaration.is_built:
+            instance = declaration.target
+        else:
+            with _construction_scope(declaration.namespace):
+                instance = declaration.target(**declaration.kwargs)
+
+        if declaration.name is not None:
             # Assigned bare: the setter qualifies it with the component's own namespace, which is
             # the single place that rule lives now. One registration applied to two agents
             # therefore registers 'orders_db' and 'billing_db' rather than colliding on 'db',
             # and either stays findable by the bare name because Registry._lookup qualifies too.
-            instance.name = name
+            instance.name = declaration.name
         return instance
 
     def with_cache(self, enabled: bool = True, enable_locking: bool = True, *, name: str = DEFAULT_CACHE_NAME) -> "AppBuilder":
@@ -727,6 +901,10 @@ class AppBuilder:
         switched *on*, with no ``TypeError`` to notice. So ``with_cache()``,
         ``with_cache(False)`` and ``with_cache(True, False)`` all still mean what they meant.
 
+        Recorded like every other ``with_*`` call and created by ``build()``, which is also
+        what lets it be declared before any configuration exists: the backend is chosen from
+        ``get_cache_config()``, and that configuration may not arrive until ``build(config)``.
+
         Args:
             enabled: Whether to create the cache at all. ``False`` registers nothing.
             enable_locking: File-based locking for multi-process safety, for the disk backend.
@@ -740,18 +918,37 @@ class AppBuilder:
             logger.info("Caching disabled; cache '%s' is not registered", name)
             return self
 
+        # Validated now, not at replay: the name becomes a directory segment and a Redis key
+        # prefix, so it crosses the process boundary, and the call that wrote it is where the
+        # mistake is. The factory validates again when it creates the backend -- it is the
+        # rule's owner, and nothing reaches it only through here.
+        CacheBackendFactory.validate_name(name)
+        self._declarations.append(
+            Declaration(
+                kind="cache",
+                target=None,
+                name=name,
+                namespace=current_namespace(),
+                kwargs={"enable_locking": enable_locking},
+            )
+        )
+        return self
+
+    def _create_cache(self, declaration: Declaration) -> None:
+        """Create one declared cache and register it under its name.
+
+        Args:
+            declaration: A ``kind="cache"`` declaration; its ``name`` is the cache's name.
+        """
+        name = declaration.name or DEFAULT_CACHE_NAME
+        enable_locking = bool(declaration.kwargs["enable_locking"])
         # The name goes to the factory rather than being resolved here: which store a name
         # maps to is backend knowledge, and the factory is where a backend is chosen and where
         # a new one would be added.
-        cache_service = CacheBackendFactory.create(self._config.get_cache_config(), enable_locking=enable_locking, name=name)
-        # Read after the service is built, never before: a cache service is itself a Component,
-        # and Component.__init__ is what creates the shared registry on first use. Capturing it
-        # first is an AttributeError on None for an application whose first builder call is
-        # with_cache().
+        cache_service = CacheBackendFactory.create(self._require_config().get_cache_config(), enable_locking=enable_locking, name=name)
         registry: Registry = Component.shared_registry  # type: ignore[assignment]
         registry.add_cache(name, cache_service)
         logger.info("Registered cache '%s' as %s (locking=%s)", name, type(cache_service).__name__, enable_locking)
-        return self
 
     def with_health_checker(self, name: str, checker: "HealthCheckerBase") -> "AppBuilder":
         """Register a custom health checker on the ActuatorApi.
@@ -772,18 +969,129 @@ class AppBuilder:
     # Build
     # ------------------------------------------------------------------
 
-    def build(self) -> FastAPI:
-        """Create and configure the FastAPI application.
+    def _construct_declarations(self) -> None:
+        """Replay every recorded declaration, in the order it was recorded.
+
+        This is the whole of what deferred wiring costs: one pass, in call order, each entry
+        constructed inside the namespace it was recorded with. Components register themselves
+        from ``Component.__init__``, so after this pass the registry holds exactly what the
+        ``with_*`` calls used to put there directly.
+
+        Caches come last, after every component. They are created through
+        ``CacheBackendFactory`` rather than by a constructor, and nothing about a cache depends
+        on a component or the other way round -- but a cache backend is itself a ``Component``,
+        so building it in the middle of the pass would interleave it into the registry's
+        insertion order and shift the components declared after it.
+
+        Raises:
+            ValueError: if the recorded order cannot be reproduced. See
+                :meth:`_check_declaration_order`.
+        """
+        built: list[tuple[Declaration, Any]] = []
+        for entry in self._declarations:
+            if entry.kind != "cache":
+                built.append((entry, self._construct(entry)))
+
+        # After construction, not before: a class's priority is a property of the object, and
+        # asking the class for it means reading a default argument and being wrong about every
+        # handler that computes one. The application is not returned when this raises, so the
+        # components already in the registry go nowhere.
+        self._check_declaration_order(built)
+
+        for entry in self._declarations:
+            if entry.kind == "cache":
+                self._create_cache(entry)
+
+        logger.debug("Constructed %d declaration(s)", len(self._declarations))
+
+    @staticmethod
+    def _check_declaration_order(built: list[tuple[Declaration, Any]]) -> None:
+        """Refuse a declaration order that construction cannot reproduce.
+
+        An already-built instance is constructed by the caller at its own source line, so it is
+        in the registry before ``build()`` runs; a class or a factory is constructed during the
+        replay. So an instance recorded *after* a class registers *before* it, and registration
+        order is not decoration: ``DispatchIndex.build`` resolves handler priority ties by it,
+        which a project may well be relying on without having said so.
+
+        Only handlers, only within one agent, and only at equal priority, because that is the
+        only case where the order decides anything. Different priorities sort deterministically
+        whichever way round the two were registered, two agents never share a chain, and
+        nothing else the registry holds is order sensitive.
+
+        Detected rather than repaired: the fix is one keyword away -- pass the class -- and
+        reordering the registry behind the caller's back would make the file say one thing and
+        the application do another.
+
+        Args:
+            built: Each non-cache declaration paired with the component it produced, in
+                declaration order.
+
+        Raises:
+            ValueError: if a handler instance was recorded after a handler class or factory of
+                the same priority in the same namespace.
+        """
+        handlers = [
+            (position, entry, component) for position, (entry, component) in enumerate(built) if isinstance(component, EventHandlerBase)
+        ]
+
+        for position, entry, component in handlers:
+            if entry.is_built:
+                continue
+            for later_position, later, later_component in handlers:
+                if later_position <= position or not later.is_built:
+                    continue
+                if later.namespace != entry.namespace or later_component.priority != component.priority:
+                    continue
+                raise ValueError(
+                    f"{type(later_component).__name__} was passed to with_handler() as an instance after "
+                    f"{type(component).__name__} was declared as a class, and both have priority "
+                    f"{component.priority}. An instance is built where it is written and a class is built by "
+                    "build(), so the instance registers first and is tried first -- the reverse of what this file "
+                    f"says. Pass {type(later_component).__name__} as a class as well, so that both are built in "
+                    "declaration order, or give one of them a different priority so the order stops depending on "
+                    "registration at all."
+                )
+
+    def build(self, config: Config | None = None) -> FastAPI:
+        """Construct everything declared, wire it, and return the FastAPI application.
 
         This method:
+        0. Settles the configuration and constructs every recorded declaration
         1. Injects Config into the Component class hierarchy
         2. Wires each registered scheduler for its scheduler_mode
         3. Creates the IO client, and the eventing endpoint only if something consumes
         4. Wires health checkers from all registered clients
         5. Returns a FastAPI app with lifespan management
+
+        Args:
+            config: The application's configuration, for a builder that was constructed
+                without one. Omit it when ``AppBuilder(config)`` already has it.
+
+        Returns:
+            The application.
+
+        Raises:
+            ValueError: if a configuration was given twice, or if the recorded order cannot be
+                reproduced (see :meth:`_check_declaration_order`).
+            RuntimeError: if this builder has already been built.
         """
-        # 1. Inject config — enforced once-only by metaclass guard
-        Component.configure(self._config)
+        if self._built:
+            raise RuntimeError(
+                "This AppBuilder has already been built, and a builder produces one application: build() injects "
+                "the configuration into the Component hierarchy and constructs every declaration, both of which are "
+                "once-per-process. Declare a new AppBuilder for a second application -- and note that the "
+                "components of the first are still in the process-wide registry, so a test doing this wants "
+                "Component.reset_shared_state() between cases."
+            )
+        self._built = True
+        resolved_config = self._resolve_config(config)
+
+        # 0. Inject config first, then construct. Nothing was built while the with_*() calls
+        # ran, so this is the first moment any component exists -- and every one of them is
+        # created with the configuration already in place, rather than the other way round.
+        Component.configure(resolved_config)
+        self._construct_declarations()
 
         registry: Registry = Component.shared_registry  # type: ignore[assignment]
 
@@ -806,7 +1114,7 @@ class AppBuilder:
         # per process -- 'event_bus' is read from the root config, and mixing NATS with Dapr
         # is out of scope for this plan -- but which agents get a client, and which of them
         # get an endpoint, is decided per agent below.
-        event_bus_type = str(self._config.get("event_bus", "") or "").strip().lower()
+        event_bus_type = str(resolved_config.get("event_bus", "") or "").strip().lower()
         for namespace in self.hosted_namespaces:
             self._wire_transport(registry, namespace, event_bus_type)
         self._wire_dapr_endpoint(registry, event_bus_type)
@@ -845,9 +1153,9 @@ class AppBuilder:
 
         # 6. Build FastAPI app
         app = FastAPI(
-            title=self._config.get("app_name", "blueprint-service"),
-            description=self._config.get("app_description", ""),
-            version=self._config.get("app_version", "0.0.0"),
+            title=resolved_config.get("app_name", "blueprint-service"),
+            description=resolved_config.get("app_description", ""),
+            version=resolved_config.get("app_version", "0.0.0"),
             lifespan=self._create_lifespan_manager(),
             docs_url="/docs",
             redoc_url="/redoc",
@@ -964,7 +1272,7 @@ class AppBuilder:
         Raises:
             ValueError: if the key holds a non-empty value that is not a boolean.
         """
-        raw = self._config.for_namespace(namespace).get("event_publishing_enabled", False)
+        raw = self._require_config().for_namespace(namespace).get("event_publishing_enabled", False)
         if raw is None or (isinstance(raw, str) and not raw.strip()):
             return False
         return parse_bool(raw, "event_publishing_enabled")
