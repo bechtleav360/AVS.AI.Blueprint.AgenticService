@@ -4344,6 +4344,82 @@ a separate one -- a builder builds once, and only that file runs both shapes in 
 
 ---
 
+### Phase 8b, step 4 -- four declaration surfaces become one
+
+**Deleted: `RegisteredComponent`, `AgentRegistration`, `NamespaceBuilder`,
+`AppBuilder.with_registration`, `AppBuilder.with_namespace` and its two `@overload`s, and the
+`namespace=` keyword on all five `with_*`.** `app_builder.py` goes from 1566 lines to 1236.
+`AgentRegistration.apply` and its `appliers` dict go with the class.
+
+This is the payoff the phase was for. Adding one `with_*` method meant editing four places --
+`AppBuilder`, `AgentRegistration`, `NamespaceBuilder`, and `apply`'s `appliers` dict -- and
+three of those failed *silently*, the capability simply absent from that surface. There is now
+one place. The other three existed only to defer construction until a namespace was in force,
+and step 1 removed that reason.
+
+**What replaced each of them**
+
+| Deleted | Now |
+|---|---|
+| `AgentRegistration` | an unbuilt `AppBuilder` -- used without `build()`, it *is* the declaration |
+| `NamespaceBuilder` + `with_namespace` | `AgentGroup`, which takes named builders |
+| `AgentRegistration.apply` + `appliers` | `Declaration.replay`, resolving the method with `getattr` |
+| `namespace=` on the five `with_*` | the ambient scope the group opens |
+
+**`_record` lost its namespace parameter**, and that is the point rather than a tidy-up:
+
+      namespace = current_namespace()
+
+A declaration takes the namespace in force *where it is written* -- the root for a standalone
+application, the agent's own for a declaration a group is replaying inside `namespace_scope`.
+So nothing a developer writes names a namespace, and the same file serves both deployment
+shapes unchanged.
+
+**A removed keyword that would have kept working is refused.** `namespace` is not an error to
+Python once the parameter is gone -- it falls into `**kwargs` and is forwarded to the
+component's constructor, and `ServiceBase` accepts one. So `with_service(OrderService,
+namespace="orders")` would have gone on placing the component in `orders`, by an entirely
+different mechanism, until the first component with its own `__init__` failed at build time
+instead. `_record` therefore refuses the keyword by name and says what it would otherwise do.
+Found by writing the test that asserts the keyword is gone and watching it not raise.
+
+**Smaller changes:**
+
+- The five `with_*` type hints gained `| Callable[[], T]`. Factories were always accepted and
+  were only ever in `AgentRegistration`'s signatures; with that class gone, `AppBuilder`'s
+  signatures have to say what it takes.
+- The instance-namespace refusal is still there and still reachable -- ``with_service(instance)``
+  with a scope open -- but its message no longer suggests a `namespace=` argument as the fix.
+- `blueprint.agents` no longer exports `AgentRegistration` or `NamespaceBuilder`.
+- `AgentSpec.module`'s docstring says `AppBuilder` rather than `AgentRegistration`; it is what
+  step 3 made true and this is where it is written down.
+
+**Tests.** `test_agent_registration.py` deleted -- its subject no longer exists.
+`test_namespace_builder.py` becomes `test_namespace_placement.py`, keeping every case whose
+subject survives the API change: the ambient scope qualifies the registry name, reaches the
+component, is never forwarded to its constructor, and is captured at the call rather than at
+construction; explicit names are qualified; an already-built instance is refused for another
+namespace; `host_agent` records the composition and refuses a duplicate, the root and an illegal
+name; a scoped declaration is not a hosted agent. It gains `TestTheDeletedSurfaces`, four cases
+pinning that the other three surfaces stay deleted and unexported.
+
+`test_build_namespaces.py` and `test_route_namespacing.py` were written against
+`with_namespace(...)`. The route tests now use `AgentGroup(...).assemble(config)` directly,
+because they assert on the application. The transport tests need the *root builder* -- the
+endpoints they assert on register nowhere, and `assemble()` returns the application and keeps
+its builder private -- so they use a local `hosting()` helper that runs `assemble`'s loop
+through the same public `Declaration.replay`, with a docstring pointing at `test_agent_group.py`
+for the group's own behaviour.
+
+`tests/unit/agents/app_builder/TESTS.md` updated: it documented two files that no longer exist
+and a `with_health_checker` that no longer works that way.
+
+1963 unit tests pass, zero failures. The count is 31 *lower* than after step 3, and that is the
+deletion showing up rather than coverage lost: the cases for two classes that no longer exist
+went with them.
+
+---
+
 ---
 
 ## Compatibility

@@ -85,7 +85,7 @@ class AgentSpec:
             prefix, queue group, durable name, cache partition and telemetry service name. Held
             to the namespace alphabet, so a group file cannot name an agent the rest of the
             system could not identify.
-        module: Where the agent's ``AgentRegistration`` lives, as ``"module.path:attribute"``.
+        module: Where the agent's ``AppBuilder`` declaration lives, as ``"module.path:attribute"``.
             Comes from the agent map, never from the group file: what an agent *is* belongs to
             the image, and only which agents run belongs to the deployment.
         critical: Whether this agent failing to load must stop the process. Defaults to

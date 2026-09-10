@@ -8,8 +8,9 @@ Test coverage for `src/blueprint/agents/app_builder.py`.
 
 | File | Class under test | What is covered |
 |---|---|---|
-| `test_agent_registration.py` | `AgentRegistration`, `AppBuilder.with_registration` | Nothing is constructed at declaration time; declaration order, names and constructor kwargs survive the round trip; no `with_cache`; an already-built component and a non-callable are refused; root application keeps the bare registry name and a namespace qualifies it; one declaration applied twice yields two independently configured agents (each with its own scoped `Config` view); the ambient namespace is left behind afterwards; factories are deferred and called inside the namespace |
-| `test_app_builder.py` | `AppBuilder` | `with_handler` (TypeError for non-subclass, class instantiated, instance accepted without re-instantiation, name propagated, returns self); `with_service`/`with_agent`/`with_scheduler`/`with_rest_api` (instance accepted, returns self); `with_cache` (enabled creates DiskCacheService, disabled skips config read); `with_health_checker` (stored pending before build, added immediately after build, multiple checkers accumulated, returns self); `build()` (event_bus=dapr/nats/unknown/no-handlers routing, EventPublishingService conditional on IO clients, pending health checkers wired, returns FastAPI instance); scheduler wiring (an event-mode scheduler is wired before the transport decision, so its tick handler is what causes a NATS client and eventing endpoint to be created; an in-process scheduler alone creates neither); the publish/consume split (`event_publishing_enabled` off means no client; on means a client with no eventing component and no `EventProcessingService`; the string form an environment variable delivers; rejections for no transport, `"sessions"` and a non-boolean; and a consuming application still publishing without the key) |
+| `test_deferred_wiring.py` | `AppBuilder`, `Declaration` | Nothing is constructed or registered before `build()`; what a declaration records (kind, target, name, ambient namespace, kwargs); the declaration-order refusal and the three cases it must *not* fire on; where the configuration may be handed over and the refusal when it is given twice; the single-use guard; an application that declares nothing; an unbuilt `AgentBuilder` handed to `with_agent` and built with its agent's scoped view |
+| `test_namespace_placement.py` | `AppBuilder`, `namespace_scope`, `host_agent` | A component reaches the right agent without anyone naming a namespace: the ambient scope qualifies the registry name, reaches the component and is never forwarded to its constructor; it is captured at the call, not at construction; explicit names are qualified too; an already-built instance is refused for another namespace; `host_agent` records the composition and refuses a duplicate, the root and an illegal name; and the four deleted surfaces (`AgentRegistration`, `RegisteredComponent`, `NamespaceBuilder`, `with_namespace`/`with_registration`) stay deleted |
+| `test_app_builder.py` | `AppBuilder` | `with_handler` (TypeError for non-subclass, class instantiated, instance accepted without re-instantiation, name propagated, returns self); `with_service`/`with_agent`/`with_scheduler`/`with_rest_api` (instance accepted, returns self); `with_cache` (enabled creates DiskCacheService, disabled skips config read); `with_health_checker` (recorded as a `Declaration` before build, added straight to the actuator after build, several accumulate, a checker is never constructed, returns self); `build()` (event_bus=dapr/nats/unknown/no-handlers routing, EventPublishingService conditional on IO clients, pending health checkers wired, returns FastAPI instance); scheduler wiring (an event-mode scheduler is wired before the transport decision, so its tick handler is what causes a NATS client and eventing endpoint to be created; an in-process scheduler alone creates neither); the publish/consume split (`event_publishing_enabled` off means no client; on means a client with no eventing component and no `EventProcessingService`; the string form an environment variable delivers; rejections for no transport, `"sessions"` and a non-boolean; and a consuming application still publishing without the key) |
 
 ---
 
@@ -19,7 +20,7 @@ Test coverage for `src/blueprint/agents/app_builder.py`.
 
 | Fixture | Scope | Purpose |
 |---|---|---|
-| `reset_component_state` | function / **autouse** | Patches `CorrelationContextProvider`, resets `Component.shared_config` and `Component.shared_registry` after every test |
+| `reset_component_state` | function / **autouse** | Patches `CorrelationContextProvider`, then calls `Component.reset_shared_state()` after every test |
 | `mock_config` | function | `MagicMock(spec=Config)` injected via `Component.configure` |
 | `mock_registry` | function | `MagicMock(spec=Registry)` stored in `Component.shared_registry` |
 | `builder` | function | `AppBuilder(mock_config)` — for fluent-setter tests where shared_config is pre-set |
@@ -30,6 +31,10 @@ Test coverage for `src/blueprint/agents/app_builder.py`.
 `wire_empty_registry(mock_registry)` is a helper (not a fixture) that sets all registry collection methods to return empty lists, giving `build()` tests a clean baseline to override selectively.
 
 `StubHandler` is defined in `conftest.py` as a minimal concrete `EventHandlerBase` for tests that need to pass a real handler type to `with_handler`.
+
+`realize(builder)` is a helper (not a fixture) that runs `build()`'s own replay pass on its own. A `with_*()` call records rather than constructs, so a test asserting on the registry has to say when construction happens; `build()` would do it but also creates the actuator, the root API and a FastAPI application, which would drown the one or two components the test is about.
+
+**Group assembly is tested in `tests/unit/agents/test_agent_group.py`**, not here: collection is `AgentGroup`'s job and an `AppBuilder` never learns it can be collected.
 
 ---
 

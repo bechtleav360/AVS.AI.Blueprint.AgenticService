@@ -139,9 +139,10 @@ class TestWhatIsRecorded:
             builder.with_service(OrderService)
         assert builder.declarations[0].namespace == "orders"
 
-    def test_an_explicit_namespace_is_what_is_recorded(self, config: Config) -> None:
-        builder = AppBuilder(config).with_service(OrderService, namespace="billing")
-        assert builder.declarations[0].namespace == "billing"
+    def test_a_namespace_keyword_is_refused(self, config: Config) -> None:
+        """It was a parameter until step 4; dropped, it would reach the constructor instead."""
+        with pytest.raises(TypeError, match="does not take a namespace"):
+            AppBuilder(config).with_service(OrderService, namespace="billing")
 
     def test_a_cache_is_recorded_too(self, config: Config) -> None:
         builder = AppBuilder(config).with_cache(name="sessions")
@@ -197,7 +198,11 @@ class TestDeclarationOrder:
         """Handlers of different agents are never in one chain, so their order is not shared."""
         with namespace_scope("billing"):
             billing_handler = SecondHandler()
-        builder = AppBuilder(config).with_handler(FirstHandler, namespace="orders").with_handler(billing_handler, namespace="billing")
+        builder = AppBuilder(config)
+        with namespace_scope("orders"):
+            builder.with_handler(FirstHandler)
+        with namespace_scope("billing"):
+            builder.with_handler(billing_handler)
 
         builder.build()
 
@@ -310,7 +315,10 @@ class TestAnUnbuiltAgentBuilder:
         seen: list[Config] = []
         agent.build = lambda cfg=None, **kwargs: seen.append(cfg) or MagicMock()  # type: ignore[method-assign]
 
-        AppBuilder(config).with_agent(agent, namespace="orders").build()
+        builder = AppBuilder(config)
+        with namespace_scope("orders"):
+            builder.with_agent(agent)
+        builder.build()
 
         assert len(seen) == 1
         assert seen[0] is config.for_namespace("orders")

@@ -12,10 +12,10 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from blueprint.agents.app_builder import AgentRegistration, AppBuilder
+from blueprint.agents.app_builder import AppBuilder
 from blueprint.agents.clients.io.nats_client import NATSClient
 from blueprint.agents.component.component import Component
-from blueprint.agents.component.namespace import ROOT_NAMESPACE
+from blueprint.agents.component.namespace import ROOT_NAMESPACE, namespace_scope
 from blueprint.agents.config import Config
 from blueprint.agents.handler.event_handler_base import EventHandlerBase
 from blueprint.agents.io.api.eventing.nats import NatsEventing
@@ -98,11 +98,30 @@ def build(builder: AppBuilder) -> None:
         builder.build()
 
 
+def hosting(config: Config, **agents: AppBuilder) -> AppBuilder:
+    """The root builder ``AgentGroup.assemble`` would produce, kept in hand.
+
+    These cases are about what ``build()`` wires *per agent*, and two of the things it wires --
+    the transport endpoints -- register nowhere, so the assertions need the builder itself.
+    ``assemble()`` returns the application and keeps its builder private, so the loop below is
+    the one inside it, driven through the same public ``Declaration.replay``. The group's own
+    behaviour is tested in ``tests/unit/agents/test_agent_group.py``.
+
+    Keyword arguments rather than a dict so an agent's name reads as a name at the call site,
+    which is how a group file names it too.
+    """
+    root = AppBuilder(config)
+    for namespace, declaration in agents.items():
+        root.host_agent(namespace)
+        with namespace_scope(namespace):
+            for entry in declaration.declarations:
+                entry.replay(root)
+    return root
+
+
 class TestOneClientPerConsumingAgent:
     def test_each_agent_gets_its_own_client(self, nats_config: Config) -> None:
-        builder = AppBuilder(nats_config)
-        builder.with_namespace("orders", registration=AgentRegistration().with_handler(OrderHandler))
-        builder.with_namespace("billing", registration=AgentRegistration().with_handler(BillingHandler))
+        builder = hosting(nats_config, orders=AppBuilder().with_handler(OrderHandler), billing=AppBuilder().with_handler(BillingHandler))
 
         build(builder)
 
@@ -117,8 +136,7 @@ class TestOneClientPerConsumingAgent:
 
     def test_the_root_gets_no_client_when_it_has_nothing(self, nats_config: Config) -> None:
         """A grouped application usually has nothing at the root, and then the root pass is a no-op."""
-        builder = AppBuilder(nats_config)
-        builder.with_namespace("orders", registration=AgentRegistration().with_handler(OrderHandler))
+        builder = hosting(nats_config, orders=AppBuilder().with_handler(OrderHandler))
 
         build(builder)
 
@@ -126,17 +144,14 @@ class TestOneClientPerConsumingAgent:
 
     def test_an_agent_that_neither_consumes_nor_publishes_gets_no_client(self, nats_config: Config) -> None:
         """Spec sec. 6: a connection for it is a readiness dependency on traffic that does not exist."""
-        builder = AppBuilder(nats_config)
-        builder.with_namespace("orders", registration=AgentRegistration().with_handler(OrderHandler))
-        builder.with_namespace("billing", registration=AgentRegistration().with_service(QuietService))
+        builder = hosting(nats_config, orders=AppBuilder().with_handler(OrderHandler), billing=AppBuilder().with_service(QuietService))
 
         build(builder)
 
         assert registry_names(NATSClient) == ["orders_nats_client"]
 
     def test_a_publish_only_agent_gets_a_client_and_no_endpoint(self, nats_config: Config) -> None:
-        builder = AppBuilder(nats_config)
-        builder.with_namespace("reporting", registration=AgentRegistration().with_service(QuietService))
+        builder = hosting(nats_config, reporting=AppBuilder().with_service(QuietService))
 
         build(builder)
 
@@ -154,9 +169,7 @@ class TestOneClientPerConsumingAgent:
 
 class TestOneEndpointPerConsumingAgent:
     def test_each_consuming_agent_gets_an_endpoint(self, nats_config: Config) -> None:
-        builder = AppBuilder(nats_config)
-        builder.with_namespace("orders", registration=AgentRegistration().with_handler(OrderHandler))
-        builder.with_namespace("billing", registration=AgentRegistration().with_handler(BillingHandler))
+        builder = hosting(nats_config, orders=AppBuilder().with_handler(OrderHandler), billing=AppBuilder().with_handler(BillingHandler))
 
         build(builder)
 
@@ -177,9 +190,7 @@ class TestOneEndpointPerConsumingAgent:
         assert registry_names(NATSClient) == []
 
     async def test_each_endpoint_subscribes_only_its_own_topics(self, nats_config: Config) -> None:
-        builder = AppBuilder(nats_config)
-        builder.with_namespace("orders", registration=AgentRegistration().with_handler(OrderHandler))
-        builder.with_namespace("billing", registration=AgentRegistration().with_handler(BillingHandler))
+        builder = hosting(nats_config, orders=AppBuilder().with_handler(OrderHandler), billing=AppBuilder().with_handler(BillingHandler))
         build(builder)
 
         with patch.object(NATSClient, "subscribe", new_callable=AsyncMock) as subscribe:
@@ -192,9 +203,7 @@ class TestOneEndpointPerConsumingAgent:
 
 class TestOnePublishingServicePerAgentWithAClient:
     def test_each_agent_with_a_client_gets_one(self, nats_config: Config) -> None:
-        builder = AppBuilder(nats_config)
-        builder.with_namespace("orders", registration=AgentRegistration().with_handler(OrderHandler))
-        builder.with_namespace("billing", registration=AgentRegistration().with_handler(BillingHandler))
+        builder = hosting(nats_config, orders=AppBuilder().with_handler(OrderHandler), billing=AppBuilder().with_handler(BillingHandler))
 
         build(builder)
 
@@ -209,9 +218,7 @@ class TestOnePublishingServicePerAgentWithAClient:
         assert registry_names(EventPublishingService) == ["event_publishing_service"]
 
     def test_an_agent_without_a_client_gets_none(self, nats_config: Config) -> None:
-        builder = AppBuilder(nats_config)
-        builder.with_namespace("orders", registration=AgentRegistration().with_handler(OrderHandler))
-        builder.with_namespace("billing", registration=AgentRegistration().with_service(QuietService))
+        builder = hosting(nats_config, orders=AppBuilder().with_handler(OrderHandler), billing=AppBuilder().with_service(QuietService))
 
         build(builder)
 
@@ -223,8 +230,7 @@ class TestHostedNamespaces:
         assert AppBuilder(nats_config).hosted_namespaces == (ROOT_NAMESPACE,)
 
     def test_the_root_comes_first_and_the_agents_in_order(self, nats_config: Config) -> None:
-        builder = AppBuilder(nats_config)
-        builder.with_namespace("orders").end().with_namespace("billing").end()
+        builder = hosting(nats_config, orders=AppBuilder(), billing=AppBuilder())
 
         assert builder.hosted_namespaces == (ROOT_NAMESPACE, "orders", "billing")
 
@@ -243,8 +249,7 @@ class TestPublishOptInWithoutATransport:
             event_publishing_enabled = true
             """.replace("\n            ", "\n        "),
         )
-        builder = AppBuilder(config)
-        builder.with_namespace("reporting", registration=AgentRegistration().with_service(QuietService))
+        builder = hosting(config, reporting=AppBuilder().with_service(QuietService))
 
         with pytest.raises(ValueError, match="'reporting'"):
             build(builder)
