@@ -5237,6 +5237,95 @@ agent's file not reaching another, and a group given none.
 
 ---
 
+### Phase 8b, step 8 -- what a group does to each declaration, said where it is read, and gated
+
+Three parts, and the first one is documentation on purpose. The decision taken when `AgentGroup`
+was designed was **RTFM, not authoring-time validation**: a group refuses what it cannot honour
+at assembly, and everything else it does to a declaration -- moving routes, scoping a cache,
+resolving a scheduler's mode per agent -- is *behaviour*, not an error, so the place it has to be
+written is the method a developer is already reading.
+
+**Part 1: group behaviour on each `with_*`.** Every declaration method now carries an **In a
+group:** paragraph, and each says something that method does not share with the others:
+
+- `with_handler` -- its own `HandlerChain` and its own subscription, so it is never offered a
+  neighbour's events, and `idempotency_enabled` needs a cache *this* agent declared.
+- `with_service` -- only the registry name changes (`orders_order_service`), plus what
+  `self.registry` and `self.config` answer for.
+- `with_agent` -- the class and factory forms work, but only the `AgentBuilder` form is handed
+  the scoped configuration view, so a runtime reading its own model wants that one.
+- `with_scheduler` -- `scheduler_mode` resolves per agent, so an in-process timer can sit beside
+  an event-driven neighbour; `"in_process"` claims each tick in *this* agent's cache and
+  `"event"` needs the group's `event_bus`; its routes move with the agent's.
+- `with_rest_api` -- **the routes move**: `/api/<agent>`, tags prefixed, nothing in the component
+  changed, but a client of a grouped agent addresses the prefixed path.
+- `with_cache` -- private to the declaring agent, separate stores for the same name, backend from
+  this agent's configuration, `/cache/*` per agent.
+- `with_health_checker` -- the entry becomes `<agent>.<name>`, a collision is refused rather than
+  silently reduced, and the readiness *policy* is unchanged (still ANDed, still 503 for the pod).
+
+**Part 2: the surfaces-agree gate**, `tests/unit/agents/app_builder/test_declaration_surface.py`.
+Adding a capability is now one edit, but the group still has to move a recorded call from one
+builder to another, and `Declaration.replay` does that with
+`getattr(builder, f"with_{self.kind}")`. So there are exactly two ways for the halves to part
+company, and **neither is visible in a single-agent application**: a method that records a `kind`
+no method answers to, and a replay that does not reproduce the call. Both would be found in
+production by whoever first grouped two agents.
+
+The gate discovers the methods rather than listing them --
+
+    return sorted(name for name in dir(AppBuilder) if name.startswith("with_"))
+
+-- and pairs each with a sample call, so **a new `with_*` fails this file until it is listed**.
+Per method it asserts: exactly one declaration recorded; the registry untouched (collect, then
+wire); `replay` onto a fresh builder reproduces the declaration exactly; a replay inside
+`namespace_scope("orders")` takes the namespace from the scope and not from the source; and the
+recorded `kind` has a `with_<kind>` to go back to.
+
+**Probed, because a gate that cannot fail is decoration.** Three drift modes injected against
+the real classes:
+
+    1. uncovered methods the gate would report: ['with_widget']
+    2. recorded kind 'gadget'; AppBuilder has with_gadget(): False
+       replay of that kind fails, as the gate predicts: 'AppBuilder' object has no attribute 'with_gadget'
+    3. declarations equal after a lossy replay: False
+       recorded name: planner | replayed name: None
+
+A `with_widget` added to `AppBuilder` is reported as uncovered; one recording `kind="gadget"` is
+caught by the kind assertion *and* fails replay with the `AttributeError` the docstring predicts;
+and a `replay` that drops `name` breaks the equality.
+
+**Part 3: the frozen compatibility suite**, `tests/unit/agents/test_frozen_compatibility.py` --
+spec sec. 10.2, which asks for a suite "never updated to the new API; if it needs editing, a
+break shipped". It did not exist; it does now, and its module docstring says exactly that. Twenty
+cases, every one written the way a project in `examples/` writes it today, instance forms
+included, because four of the seven examples pass constructed objects:
+
+    app = AppBuilder(config).with_service(InventoryService).with_rest_api(InventoryApi()).with_cache().build()
+
+and asserting the observable things such a project depends on: `with_cache(False)` and
+`with_cache(True, False)` positionally (sec. 10.1 names both); `get_component("inventory_service")`
+and `get_component("disk_cache_service")` resolving unprefixed; `registry.cache_service` as the
+alias; two services resolving *one* cache object; `/api/inventory` with its own tag unrewritten;
+`/api/cache/stats` unprefixed; `/health/ready`, `/health/live` and `/info` where they were; the
+readiness entries `cache` and a bare `database`; and a component constructed with
+`super().__init__()` getting `("inventory_service", "")`.
+
+The fixture is an example's `settings.toml` key for key -- `app_name`, `app_port`,
+`app_environment`, `log_level`, `[default.cache]` -- which is the same file step 7 refuses to
+raise over. The one fixture that is *not* frozen usage is the autouse
+`Component.reset_shared_state()`, and it says so: a test file is many processes in one, which a
+deployment never is.
+
+**Not done, and belongs in this open point rather than this step:** sec. 10.2's second half, the
+generated-project smoke test (`asbs setup`, then build and start the result unchanged). It needs
+Docker, which this machine does not have, and it is the only part of the compatibility guarantee
+that covers the Dockerfile and `main.py` paths a unit test cannot reach.
+
+2100 unit tests pass, zero failures. The 60 added are the two new files.
+
+---
+
 ## Open points
 
 - **Phase 7's ambiguity error needs a spec amendment.** The plan asks `process_event` to raise

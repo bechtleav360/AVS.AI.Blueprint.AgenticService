@@ -369,9 +369,12 @@ class AppBuilder:
 
         Recorded, not built: the handler is constructed by ``build()``.
 
-        **In a group**, prefer the class or factory form. An already-built instance is refused
-        at assembly, because its namespace and registry key were fixed where it was
-        constructed -- see :class:`~blueprint.agents.agent_group.AgentGroup`.
+        **In a group:** prefer the class or factory form -- an already-built instance is refused
+        at assembly, because its namespace and registry key were fixed where it was constructed
+        (see :class:`~blueprint.agents.agent_group.AgentGroup`). This agent gets its own
+        ``HandlerChain`` and its own broker subscription, so it is never offered a neighbour's
+        events, and ``idempotency_enabled`` needs a cache **this** agent declared: a cache is
+        private to the agent that declared it (:meth:`with_cache`).
 
         Args:
             handler: The handler class to build, a zero-argument callable returning one, or an
@@ -387,7 +390,13 @@ class AppBuilder:
     def with_service(
         self, service: type[ServiceT] | ServiceT | Callable[[], ServiceT], *, name: str | None = None, **kwargs: Any
     ) -> "AppBuilder":
-        """Declare a business service. See :meth:`with_handler` for the arguments."""
+        """Declare a business service. See :meth:`with_handler` for the arguments.
+
+        **In a group:** nothing about a service changes except its registry name, which is
+        qualified with the agent (``orders_order_service``), and what it resolves --
+        ``self.registry`` and ``self.config`` answer for its own agent. An already-built
+        instance is refused at assembly, as for every other declaration.
+        """
         return self._record("service", service, kwargs, name=name, method="with_service")
 
     def with_agent(
@@ -402,6 +411,11 @@ class AppBuilder:
 
             AppBuilder().with_agent(AgentBuilder(runtime_name="orders").with_model_from_config())
 
+        **In a group:** the class and factory forms work too and are built inside this agent's
+        scope like anything else; what they do *not* get is the scoped configuration view, so a
+        runtime that reads its own model from configuration wants the ``AgentBuilder`` form. An
+        already-built ``AgentRuntime`` instance is refused at assembly.
+
         See :meth:`with_handler` for the arguments.
         """
         return self._record("agent", agent, kwargs, name=name, method="with_agent")
@@ -409,13 +423,29 @@ class AppBuilder:
     def with_scheduler(
         self, scheduler: type[SchedulerT] | SchedulerT | Callable[[], SchedulerT], *, name: str | None = None, **kwargs: Any
     ) -> "AppBuilder":
-        """Declare a scheduler. See :meth:`with_handler` for the arguments."""
+        """Declare a scheduler. See :meth:`with_handler` for the arguments.
+
+        **In a group:** ``scheduler_mode`` is read through this agent's own configuration view,
+        so one agent may run an in-process timer beside a neighbour driven by external ticks.
+        Both modes need something of this agent's own -- ``"in_process"`` claims each tick in a
+        cache **this** agent declared (:meth:`with_cache`), and ``"event"`` needs ``event_bus``,
+        which is the group's to set. The scheduler's own REST routes move under
+        ``/api/<agent>`` with every other route of this agent.
+        """
         return self._record("scheduler", scheduler, kwargs, name=name, method="with_scheduler")
 
     def with_rest_api(
         self, api: type[RestApiT] | RestApiT | Callable[[], RestApiT], *, name: str | None = None, **kwargs: Any
     ) -> "AppBuilder":
-        """Declare a custom REST API. See :meth:`with_handler` for the arguments."""
+        """Declare a custom REST API. See :meth:`with_handler` for the arguments.
+
+        **In a group:** the routes move. A root component keeps the paths it always served
+        under ``/api``; a component belonging to an agent serves them under ``/api/<agent>``,
+        and its OpenAPI tags are prefixed with the agent, so two agents that declare the same
+        path do not collide and each agent's operations group together in Swagger UI. Nothing in
+        the component changes -- the prefix comes from ``RestApiBase.route_prefix``, which the
+        namespace decides -- but a client of a grouped agent addresses the prefixed path.
+        """
         return self._record("rest_api", api, kwargs, name=name, method="with_rest_api")
 
     @property
@@ -554,6 +584,14 @@ class AppBuilder:
         any component reads one back with ``self.registry.get_cache("sessions")``. There is
         deliberately no fallback from an unknown name to the default (spec sec. 8).
 
+        **In a group:** a cache belongs to the agent that declared it and to no other (spec
+        sec. 8). Two agents may both declare ``sessions`` and get separate stores -- separate
+        directories on disk, separate key prefixes on Redis -- and ``get_cache("sessions")``
+        resolves within the declaring agent with no fallback to a neighbour's or to the root's.
+        The backend is chosen from this agent's own configuration, so one agent can run on
+        Redis beside a neighbour on disk, and ``/cache/*`` is served per agent under
+        ``/api/<agent>``.
+
         ``name`` is **keyword-only and comes last**, which is a constraint rather than a style
         choice. ``with_cache(False)`` disables caching today; had ``name`` been the first
         parameter that call would have become a cache named ``False`` with caching silently
@@ -646,10 +684,14 @@ class AppBuilder:
         rest of its declaration instead of silently dropping them.
 
         A checker is not a ``Component``, so it is never constructed here: the object passed
-        is the object used, whichever namespace it was created in. The *agent* it belongs to is
-        still the one in force where this call is written, and it travels with the checker as
-        data -- so two agents may both declare ``"db"`` and appear as ``orders.db`` and
-        ``billing.db`` instead of one of them vanishing into the other's dict slot.
+        is the object used, whichever namespace it was created in.
+
+        **In a group:** the *agent* it belongs to is the one in force where this call is
+        written, and it travels with the checker as data -- so two agents may both declare
+        ``"db"`` and appear as ``orders.db`` and ``billing.db`` instead of one of them vanishing
+        into the other's dict slot. Two checks that would still share one entry are refused
+        rather than silently reduced to one. The readiness *policy* is unchanged: every check is
+        ANDed, so one agent's failing check takes the whole pod out of rotation.
 
         Args:
             name: What this checker is called within its agent. It appears in the readiness
