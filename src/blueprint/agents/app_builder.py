@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 from .component.component import Component
 from .component.namespace import ROOT_LABEL, ROOT_NAMESPACE, current_namespace, namespace_of, namespace_scope, validate_namespace
 from .component.registry import DEFAULT_CACHE_NAME, Registry
+from .agent.agent_builder import AgentBuilder
 from .agent.agent_runtime import AgentRuntime
 from .handler.event_handler_base import EventHandlerBase
 from .io.api.rest_api_base import RestApiBase
@@ -82,8 +83,9 @@ class Declaration:
 
     Attributes:
         kind: Which ``with_*`` recorded this, and therefore how ``build()`` replays it.
-        target: A component class, a zero-argument factory returning one, or an
-            already-built component. ``None`` for a cache, which names no class.
+        target: A component class, a zero-argument factory returning one, an unbuilt
+            ``AgentBuilder``, or an already-built component. ``None`` for a cache, which
+            names no class.
         name: Registry name override, or ``None`` to let the component derive its own. For a
             cache this is the cache's name, which is never ``None``.
         namespace: The agent this belongs to, resolved when the call was recorded: the explicit
@@ -169,16 +171,21 @@ class AgentRegistration:
         """Declare a business service class."""
         return self._add("service", service, name, kwargs)
 
-    def with_agent(self, agent: type[AgentT] | Callable[[], AgentT], *, name: str | None = None, **kwargs: Any) -> "AgentRegistration":
-        """Declare an agent runtime, as a class or as a factory.
+    def with_agent(
+        self, agent: type[AgentT] | AgentBuilder | Callable[[], AgentT], *, name: str | None = None, **kwargs: Any
+    ) -> "AgentRegistration":
+        """Declare an agent runtime, as a class, an unbuilt ``AgentBuilder``, or a factory.
 
-        The factory form exists for the fluent builder: an ``AgentRuntime`` assembled by
-        ``AgentBuilder(...).with_model_from_config()...build()`` cannot be expressed as a class
-        plus keyword arguments. Wrapping that chain in a ``lambda`` defers it into
-        :meth:`apply`, so the model and prompt are resolved inside the agent's own namespace
-        rather than at import time::
+        The ``AgentBuilder`` form is the one to write. An ``AgentRuntime`` assembled by a
+        fluent chain cannot be expressed as a class plus keyword arguments, and the builder is
+        now a declaration in its own right -- so hand it over unbuilt and the application
+        builds it inside this agent's namespace, against this agent's configuration view::
 
-            AgentRegistration().with_agent(lambda: AgentBuilder(config, runtime_name="orders").build())
+            AgentRegistration().with_agent(AgentBuilder(runtime_name="orders").with_model_from_config())
+
+        The factory form still works and is what anything else a plain call cannot express
+        goes in. Prefer the builder: a ``lambda`` closes over whichever configuration was in
+        scope where it was written, which in a group is another agent's.
         """
         return self._add("agent", agent, name, kwargs)
 
@@ -212,7 +219,7 @@ class AgentRegistration:
                 f"with_{kind}({type(target).__name__}, ...) with its constructor arguments as keyword arguments -- "
                 "or a callable returning it."
             )
-        if not callable(target):
+        if not callable(target) and not (kind == "agent" and isinstance(target, AgentBuilder)):
             raise TypeError(f"AgentRegistration.with_{kind}() needs a component class or a callable returning one, got {target!r}.")
         self._components.append(RegisteredComponent(kind=kind, target=target, name=name, kwargs=dict(kwargs)))
         return self
@@ -768,9 +775,19 @@ class AppBuilder:
         return self._record("service", service, namespace, kwargs, name=name, method="with_service")
 
     def with_agent(
-        self, agent: type[AgentT] | AgentT, *, name: str | None = None, namespace: str = ROOT_NAMESPACE, **kwargs: Any
+        self, agent: type[AgentT] | AgentT | AgentBuilder, *, name: str | None = None, namespace: str = ROOT_NAMESPACE, **kwargs: Any
     ) -> "AppBuilder":
-        """Declare an agent runtime. See :meth:`with_handler` for the arguments."""
+        """Declare an agent runtime, as a class, an unbuilt ``AgentBuilder``, a factory or an instance.
+
+        The ``AgentBuilder`` form is the one that works in a group. ``build()`` calls
+        ``agent.build(config.for_namespace(...))``, so the model, prompt and metrics are
+        resolved from *this agent's* configuration view rather than from whatever was in
+        scope where the chain was written::
+
+            AppBuilder().with_agent(AgentBuilder(runtime_name="orders").with_model_from_config())
+
+        See :meth:`with_handler` for the arguments.
+        """
         return self._record("agent", agent, namespace, kwargs, name=name, method="with_agent")
 
     def with_scheduler(
@@ -838,6 +855,12 @@ class AppBuilder:
                     f"the class instead -- {method}({type(target).__name__}, namespace='{namespace}', ...) -- so that "
                     "it is built inside that namespace."
                 )
+        elif isinstance(target, AgentBuilder):
+            if kind != "agent":
+                raise TypeError(
+                    f"An AgentBuilder was passed to {method}(), which declares a {kind}. An AgentBuilder produces an "
+                    "AgentRuntime, so it belongs in with_agent()."
+                )
         elif not callable(target):
             raise TypeError(f"{method}() needs a component class, a callable returning one, or a built component, got {target!r}.")
 
@@ -846,7 +869,7 @@ class AppBuilder:
         )
         return self
 
-    def _construct(self, declaration: Declaration) -> Any:
+    def _construct(self, declaration: Declaration, config: Config) -> Any:
         """Build one declaration inside its namespace -- or adopt it if it is already built.
 
         Registration itself does not happen here: ``Component.__init__`` adds the instance to
@@ -861,17 +884,27 @@ class AppBuilder:
         a namespace is -- which is the whole point of the ambient mechanism.
 
         A class and a factory are treated identically, because a class *is* a zero-argument
-        factory once its keyword arguments are applied. That is what lets a fluent chain --
-        ``lambda: AgentBuilder(...).build()`` -- be deferred as far as a class is.
+        factory once its keyword arguments are applied. That is what lets a fluent chain be
+        deferred as far as a class is.
+
+        An unbuilt ``AgentBuilder`` is the third case, and it is the only one handed a
+        configuration: ``AgentBuilder.build`` takes one, and what it must be given is the view
+        scoped to *this* agent (C5), so the model, prompt and metrics of a grouped agent are
+        read from its own section rather than from the root or from a neighbour's. That is the
+        whole of D6, and it is why this method takes ``config`` at all.
 
         Args:
             declaration: The recorded call to replay.
+            config: The application's configuration, scoped per declaration as needed.
 
         Returns:
             The component instance, already in the registry.
         """
         if declaration.is_built:
             instance = declaration.target
+        elif isinstance(declaration.target, AgentBuilder):
+            with _construction_scope(declaration.namespace):
+                instance = declaration.target.build(config.for_namespace(declaration.namespace), **declaration.kwargs)
         else:
             with _construction_scope(declaration.namespace):
                 instance = declaration.target(**declaration.kwargs)
@@ -969,7 +1002,7 @@ class AppBuilder:
     # Build
     # ------------------------------------------------------------------
 
-    def _construct_declarations(self) -> None:
+    def _construct_declarations(self, config: Config) -> None:
         """Replay every recorded declaration, in the order it was recorded.
 
         This is the whole of what deferred wiring costs: one pass, in call order, each entry
@@ -983,6 +1016,9 @@ class AppBuilder:
         so building it in the middle of the pass would interleave it into the registry's
         insertion order and shift the components declared after it.
 
+        Args:
+            config: The application's configuration, handed to the declarations that take one.
+
         Raises:
             ValueError: if the recorded order cannot be reproduced. See
                 :meth:`_check_declaration_order`.
@@ -990,7 +1026,7 @@ class AppBuilder:
         built: list[tuple[Declaration, Any]] = []
         for entry in self._declarations:
             if entry.kind != "cache":
-                built.append((entry, self._construct(entry)))
+                built.append((entry, self._construct(entry, config)))
 
         # After construction, not before: a class's priority is a property of the object, and
         # asking the class for it means reading a default argument and being wrong about every
@@ -1091,7 +1127,7 @@ class AppBuilder:
         # ran, so this is the first moment any component exists -- and every one of them is
         # created with the configuration already in place, rather than the other way round.
         Component.configure(resolved_config)
-        self._construct_declarations()
+        self._construct_declarations(resolved_config)
 
         registry: Registry = Component.shared_registry  # type: ignore[assignment]
 

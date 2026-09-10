@@ -11,6 +11,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from blueprint.agents.agent.agent_builder import AgentBuilder
 from blueprint.agents.app_builder import AppBuilder, Declaration
 from blueprint.agents.component.component import Component
 from blueprint.agents.component.namespace import namespace_scope
@@ -286,3 +287,54 @@ class TestTheDeclarationValueObject:
     def test_a_component_is_built(self, config: Config) -> None:
         Component.configure(config)
         assert Declaration(kind="service", target=OrderService(), name=None, namespace="", kwargs={}).is_built is True
+
+
+class TestAnUnbuiltAgentBuilder:
+    """D6: with_agent takes the builder itself, and build() hands it this agent's config view."""
+
+    def test_it_is_recorded_rather_than_refused(self, config: Config) -> None:
+        """An AgentBuilder is neither a Component nor callable, so _record has to know it."""
+        agent = AgentBuilder(runtime_name="orders").with_model_from_config()
+        builder = AppBuilder(config).with_agent(agent)
+        assert builder.declarations[0].target is agent
+
+    def test_it_is_not_built_by_the_with_call(self, config: Config) -> None:
+        agent = AgentBuilder(runtime_name="orders").with_model_from_config()
+        AppBuilder(config).with_agent(agent)
+        assert agent._ai_config is None
+
+    def test_build_hands_it_the_namespace_scoped_view(self, config: Config) -> None:
+        """The bug D6 removes: a lambda closes over whichever config was in scope where it was
+        written, which in a group is a neighbour's. The view is passed in instead."""
+        agent = AgentBuilder(runtime_name="orders")
+        seen: list[Config] = []
+        agent.build = lambda cfg=None, **kwargs: seen.append(cfg) or MagicMock()  # type: ignore[method-assign]
+
+        AppBuilder(config).with_agent(agent, namespace="orders").build()
+
+        assert len(seen) == 1
+        assert seen[0] is config.for_namespace("orders")
+
+    def test_a_root_agent_gets_the_loader_itself(self, config: Config) -> None:
+        """for_namespace("") returns the loader, so a single-agent app is unchanged."""
+        agent = AgentBuilder(runtime_name="orders")
+        seen: list[Config] = []
+        agent.build = lambda cfg=None, **kwargs: seen.append(cfg) or MagicMock()  # type: ignore[method-assign]
+
+        AppBuilder(config).with_agent(agent).build()
+
+        assert seen == [config]
+
+    def test_constructor_arguments_are_forwarded_to_build(self, config: Config) -> None:
+        seen: list[dict] = []
+        agent = AgentBuilder(runtime_name="orders")
+        agent.build = lambda cfg=None, **kwargs: seen.append(kwargs) or MagicMock()  # type: ignore[method-assign]
+
+        AppBuilder(config).with_agent(agent, retries=3).build()
+
+        assert seen == [{"retries": 3}]
+
+    def test_it_is_refused_by_the_other_with_methods(self, config: Config) -> None:
+        agent = AgentBuilder(runtime_name="orders")
+        with pytest.raises(TypeError, match="belongs in with_agent"):
+            AppBuilder(config).with_service(agent)  # type: ignore[arg-type]

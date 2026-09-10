@@ -131,9 +131,10 @@ def realize(builder: AppBuilder) -> AppBuilder:
     ``with_*()`` records rather than constructs, so a test asserting on the registry has to say
     when construction happens. ``build()`` would do it, but it also creates the actuator, the
     root API and a FastAPI application, and those components would drown the one or two the
-    test is about. This runs the same replay pass ``build()`` runs, on its own.
+    test is about. This runs the same replay pass ``build()`` runs, on its own, against the
+    configuration the builder was given.
     """
-    builder._construct_declarations()
+    builder._construct_declarations(builder._require_config())
     return builder
 
 

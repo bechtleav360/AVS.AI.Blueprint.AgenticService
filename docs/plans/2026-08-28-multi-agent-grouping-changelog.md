@@ -4147,6 +4147,93 @@ not create.
 
 ---
 
+### Phase 8b, step 2 -- `AgentBuilder` records too, and is built against its own agent's configuration
+
+**This fixes a live defect, not only a shape.** `AgentBuilder.__init__` required a `Config`, and
+`Component._shared_config` deliberately has no public read path (config rework step 2b). So in a
+`main.py` that only declares -- which is every grouped agent -- there was no configuration in
+scope to pass, and the factory form phase 8 documents,
+`lambda: AgentBuilder(config, runtime_name="orders").build()`, **could not be written at all**.
+`AgentBuilder` was unusable in exactly the deployment shape this feature exists for.
+
+**`agent/agent_builder.py`**
+
+- **`__init__(config: Config | None = None, ...)`.** `config` stays the first positional
+  parameter, so `AgentBuilder(config, runtime_name="x")` is untouched; it is now optional, which
+  is what makes an unbuilt builder declarable.
+- **`with_model_from_config` records.** It used to call `self._config.get_ai_config(...)` on the
+  spot, apply the `model_name` override and raise all three of its refusals. Now it sets
+  `_model_from_config` and `_model_name_override` and returns. The reading moved to a new
+  `_resolve_ai_config`, called from `build()`, which carries the same three refusals with the
+  same messages, naming the same runtime.
+- **`build(config: Config | None = None, **kwargs)`.** The single-use guard moved to the top,
+  ahead of the "model must be configured" check it used to follow -- with `_ai_config` now
+  resolved *inside* `build`, the old first check tested a field that is `None` on every call, so
+  the two had to be reordered and the model check rewritten to ask whether
+  `with_model_from_config()` was called rather than whether it left a result. Then
+  `_resolve_config`, `_resolve_ai_config`, and the AI client, prompt and metrics as before, all
+  reading the resolved configuration rather than `self._config` directly.
+- **`_resolve_config` -- and its precedence is the opposite of `AppBuilder`'s, deliberately.**
+  `build(config)` **wins** over `AgentBuilder(config)`. An `AppBuilder` is the application, so
+  nothing above it knows better and two configurations mean the author is confused -- step 1 made
+  that a refusal. An `AgentBuilder` sits *inside* an application, and what the application passes
+  is the view scoped to this agent's namespace (C5), which is the whole point of D6. A
+  constructor argument is a convenience for the standalone chain, so it yields. When the two
+  differ the choice is logged at DEBUG. At the root `for_namespace("")` returns the loader
+  itself, so for a single-agent application they are the same object and nothing is chosen.
+- **`_require_config`** raises when neither was given, naming both places one can be passed.
+  Not defaulted to `DEFAULT_SETTINGS_FILES` the way `AppBuilder.build()` is: an `AgentBuilder`
+  always sits inside an application that already has a configuration, so a missing one is a
+  wiring mistake rather than a case to guess a settings file for.
+- **`runtime_name`** is now a public property. The application names the agent in its logs and
+  its failures before the agent exists.
+- `get_model_settings()` reads through `_require_config()`, so it is unchanged for anyone who
+  constructed with a configuration and raises a named error for anyone who did not.
+
+**`app_builder.py`**
+
+- **`with_agent` accepts an unbuilt `AgentBuilder`** -- a class, an unbuilt builder, a factory,
+  or an instance (D6). `_record` had to learn it, because an `AgentBuilder` is neither a
+  `Component` nor callable and would have been refused by the `not callable(target)` branch. It
+  is accepted for `kind == "agent"` only; passed to any other `with_*` it is refused with a
+  message saying where it belongs.
+- **`_construct(declaration, config)`** gained the configuration and a third branch:
+
+      elif isinstance(declaration.target, AgentBuilder):
+          with _construction_scope(declaration.namespace):
+              instance = declaration.target.build(config.for_namespace(declaration.namespace), **declaration.kwargs)
+
+  That one line is D6: the model, prompt and metrics of a grouped agent are read from its own
+  configuration section rather than from the root or from a neighbour's. `_construct_declarations`
+  takes the configuration and passes it through; `build()` hands it the one it resolved.
+- `AgentRegistration.with_agent` and `_add` learned the same, and the docstring's `lambda`
+  example is replaced by the builder form. The factory form still works and is still the escape
+  hatch for anything a plain call cannot express -- but it is no longer what the documentation
+  recommends, because a lambda closes over whichever configuration was in scope where it was
+  written, which in a group is another agent's.
+- Importing `AgentBuilder` into `app_builder.py` introduces no cycle: `agent_builder.py` imports
+  the config package, the AI clients and `AgentRuntime`, and none of them import the builder.
+  Verified by import, not by reading.
+
+**Behavioural change:** the three model refusals move from `with_model_from_config()` to
+`build()`. An application that misconfigures its model now learns at build time rather than at
+declaration time. Nothing else about them changed -- same conditions, same messages, same runtime
+named.
+
+**Tests.** `tests/unit/agents/agent/test_agent_builder.py` gains `TestTheModelRefusalsMovedToBuild`
+(the three refusals, plus one asserting the message still names the runtime) and
+`TestWhereTheConfigurationComesFrom` (constructible without a config; `build(config)` supplies
+one; neither is refused with a message naming both places; `build`'s wins over the constructor's;
+`get_model_settings` without one is refused; `runtime_name` readable before building), and
+`TestWithModelFromConfig` now pins that it reads no configuration at all.
+`test_deferred_wiring.py` gains `TestAnUnbuiltAgentBuilder`: recorded rather than refused, not
+built by the `with_` call, handed the namespace-scoped view, handed the loader itself at the root,
+constructor arguments forwarded to `build`, and refused by the other `with_*` methods. The
+`realize()` helper passes the builder's configuration through the replay. 1979 unit tests pass,
+17 more than before this step.
+
+---
+
 ---
 
 ## Compatibility
