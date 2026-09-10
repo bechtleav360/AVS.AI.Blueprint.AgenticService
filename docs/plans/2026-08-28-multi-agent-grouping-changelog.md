@@ -20,8 +20,8 @@ platform of 100 agents pays the ~154 MB Python and library baseline 100 times. T
 **which agents share a process a deployment parameter rather than an architectural commitment.**
 
 Components gain an optional **namespace** (`""` by default, so nothing existing changes). A
-namespace owns its own handlers, agent runtime, REST routes, AI client, thread pool and broker
-connection, while genuinely shared infrastructure -- the port, the health endpoint, the caches --
+namespace owns its own handlers, agent runtime, REST routes, AI client, thread pool, caches and
+broker connection, while genuinely shared infrastructure -- the port and the health endpoint --
 stays single. Which namespaces a process hosts is resolved at startup from a group configuration,
 and Kubernetes runs one Deployment per group: a group of one gives today's process isolation, a
 group of twenty gives the shared-interpreter memory profile, and moving an agent between groups
@@ -3897,6 +3897,116 @@ existing agent from standalone to a group of one therefore moves its routes and 
 identity, which is a migration with consequences rather than a rename; phase 10 is where that gets
 written up for a project to follow.
 
+### The builder surface: one class, and the group's rules in the class that imposes them
+
+**No code changed. Two proposals written, and the spec and plan amended to match.** Recorded here
+because the decisions are the reviewable artefact, and because the next phase is their
+implementation.
+
+`docs/plans/2026-09-10-builder-unification.md` -- **phase 8b**, decided, not written.
+`docs/plans/2026-09-10-config-validation-unification.md` -- deliberately **not** part of this
+feature.
+
+**The problem, restated correctly.** Adding one `with_*` method today means editing four places:
+`AppBuilder`, `AgentRegistration`, `NamespaceBuilder`, and `AgentRegistration.apply`'s `appliers`
+dict. Three of those fail *silently* -- the capability is simply absent from that surface -- and
+nothing tells the next developer the four exist. The duplication looked like a style problem and
+is not: `AppBuilder.with_handler(H)` **constructs `H` immediately**, and a component constructed
+before a namespace exists belongs to the root for ever, so a second class had to exist to defer
+construction until a namespace was in force. `AgentRegistration` is that class, `NamespaceBuilder`
+is its block-form sugar, and `appliers` is the bridge. So the fix is not to share the methods but
+to remove the reason they diverged: an `AppBuilder` that **records** instead of constructing
+serves both shapes, and the other three have no purpose left. Four sites become one.
+
+**Collection is its own class.** An intermediate design put an `absorb(builder, namespace=...)`
+method on `AppBuilder`; the user's objection retired it -- an `AppBuilder` does not know it is
+being collected, because the collection happens elsewhere. So `AgentGroup` (new class, new module)
+takes named builders and one configuration and drives one wiring pass, `AppBuilder` keeps exactly
+one job, and `with_group` / `from_group` move off `AppBuilder` too. The refusals move with them,
+which is the better half of the change: the group's restrictions belong to the thing imposing
+them, so **standalone stays permissive and the collector enforces**. That is also the rule stated
+plainly -- standalone allows more; to join a group you accept the group's constraints.
+
+**Decisions, D1-D7 in the proposal:**
+
+- **Standalone knows nothing about namespaces.** `build()` wires at the root, and the agent's name
+  lives only in the group configuration. Consequence, stated rather than hidden: a standalone agent
+  moved into a group changes its queue group and durable once, on the first grouped deploy.
+- **Refusals at assembly, each named:** instances (their namespace and registry key were fixed
+  before the group existed), `AppBuilder(config)` (one process, one settings tree, one port), a
+  builder already built. Nothing loses a capability -- the factory form recovers the instance case.
+  No deprecation warnings: sec. 10 makes the standalone shape supported indefinitely, so warning
+  about it every startup would be crying wolf.
+- **A cache is private to the agent that declared it.** Names qualified per namespace, no root
+  fallback, no shared-cache opt-in. This finally implements what spec sec. 8 always said and only
+  half of which was built. It **deletes** `GroupConfig.cache_names` and `AgentScopedCache`:
+  separate stores make the isolation structural, so the prefixing lens has nothing left to prevent.
+- **A health checker's key carries its agent.** Two agents calling
+  `with_health_checker("db", ...)` currently collide in a dict and one disappears silently.
+  `(namespace, name)` is stored as data, the prefix is its rendering -- phase 9's
+  `readiness_policy = "critical"` has to attribute a failing checker to an agent, and recovering
+  that by splitting a string breaks the moment a name contains the separator.
+- **Group settings are defaults, and only defaults**; each agent's own `settings.toml` merges under
+  that agent's scope. So an agent may set any key for itself and can never change what another
+  agent or the process sees -- which closes the fragment-merge open point below rather than
+  answering it.
+- **`AgentBuilder` records too**, and this fixes a live defect rather than only changing a shape.
+  `AgentBuilder.__init__` requires a `Config`, and `Component._shared_config` deliberately has no
+  public read path -- so the factory form phase 8 documents,
+  `lambda: AgentBuilder(config, runtime_name="orders").build()`, **cannot be written at all** in a
+  declaration-only `main.py`. Passing the unbuilt builder to `with_agent` and calling
+  `agent.build(config.for_namespace(ns))` at wiring time removes the lambda and a second latent bug
+  with it: a lambda closes over whichever configuration was in scope where it was written, which in
+  a group is the wrong one.
+
+**Two behavioural changes worth knowing.** `configure_logging()` moves from `__init__` into
+`build()` -- with nothing constructed before `build()`, that is where it belongs. And registration
+order keeps its meaning, but an instance recorded *after* a class registers *before* it, which can
+flip equal-priority tie-breaking; `build()` knows both the recorded order and which entries were
+instances, so it raises on that combination instead of silently reordering.
+
+**Checked against the four Builder anti-patterns**, which was the user's question. Collect-then-wire
+is the pattern, not an abuse of it; what exists today is the smell. (1) Side effects during
+accumulation -- removed. (2) A silently single-use builder -- `build()` calls
+`Component.configure`, which refuses a second call and surfaces as someone else's error; it gets
+its own message. (3) Requiring the product's context in the constructor -- `config` moves to
+`build()`. (4) Replay drift -- mitigated by storing the *method name* and resolving it with
+`getattr`, plus a test asserting the declaration surface and the replay agree.
+
+**Deferred, and not to be touched during 8b:** configuration validation. Four mechanisms disagree
+about what a missing key means, and two findings are worth recording because they are not visible
+from reading the code:
+
+- **The three root validators cannot fail.** `must_exist=True` together with `default=` never
+  fires -- Dynaconf injects the default. Verified against the installed version:
+  `Validator("app_name", must_exist=True, default="agent_blueprint")` yields
+  `'agent_blueprint'`; drop the default and the same declaration raises. So the only condition
+  among the three that can actually fail is `is_type_of=int` on `app_port`, and an application with
+  no `settings.toml` starts and calls itself `agent_blueprint`. The defaults are defensible; the
+  code *claiming* `must_exist=True` is not, because the next genuinely required key gets copied
+  from it.
+- **The actuator's configuration branches are dead.** `Config.validate()` runs inside
+  `__init__` and raises, so a `Config` that exists has always passed and `_validation_errors` is
+  always empty -- making `actuator_api.py:95` (readiness 503 carrying the reasons) and `:149`
+  (liveness warning) unreachable. The readiness probe was written for a behaviour the process does
+  not have.
+
+**Amended in the spec:** sec. 2 (Registration -> Declaration), 4.1 (`AgentGroup`, no cache list),
+4.2 (deferred wiring normative, the refusal table, config resolution order, order semantics), 4.3
+(the ContextVar's owner), 5.3 (defaults-only group settings; process-scope keys raise), 8 (caches
+declared-only), 9 (startup sequence), 10 (three new compatibility rows), 11 (`main.py` and the
+optional `create_app`).
+
+**Amended in the plan:** phase 8b added between 8 and 9 with an eight-step breakdown, and it is
+before 9 deliberately because 9 needs D4's attribution data; phases 0 and 3 carry superseded
+banners rather than being deleted, because their ContextVar and `with_cache`-signature reasoning
+still stands; the migration path corrected from two file changes to **three** (`agents.toml` was
+missing) and its `main.py` rewritten; the dual-branch migration recipe under *File change summary*
+removed, since it contradicted the rejection stated 600 lines above it; `python -m
+blueprint.agents.orchestrator` corrected to `entrypoint`; the *not a separate orchestrator*
+argument reconciled with `AgentGroup`; cache and executor sharing rows corrected; testing
+expectations extended.
+
 ---
 
 ## Compatibility
@@ -4302,7 +4412,17 @@ stay keyword-only and last, or an existing `with_cache(False)` would silently be
     generated `CronJob` is the remaining silent-failure case -- the missing `event_bus` and the
     missing mode both fail at startup now, but a mode and a transport with nothing publishing
     does not. Validate is where it should be caught.
-- **The settings-fragment merge has two unanswered questions, both raised by step 3a.** Spec
+- ~~**The settings-fragment merge has two unanswered questions, both raised by step 3a.**~~
+  **Answered 2026-09-10 (D5), and by dissolving the questions rather than deciding them.** A
+  group's settings supply *defaults only*, and each agent's own `settings.toml` merges under that
+  agent's scope -- so a fragment and a root key never occupy the same slot and there is no
+  collision to report or refuse. The second sub-question therefore has no subject, and the first is
+  generalised: process-scope keys in a fragment (`app_port`, `event_bus`, `envvar_prefix`,
+  `nats_stream_name`) **raise**, from an explicit list, because scoped they are read by nothing and
+  reported by nothing. Implementation is phase 8b step 7. The original text follows, because the
+  probe in it is still the evidence that nothing merges fragments yet.
+
+  Spec
   sec. 5.3 requires each agent to keep writing plain top-level keys in its own `settings.toml` and
   the build to merge each fragment under that agent's scope, reporting collisions with a root key.
   Confirmed by probe that nothing does this yet: handing two fragments to
@@ -4391,7 +4511,11 @@ stay keyword-only and last, or an existing `with_cache(False)` would silently be
   migrates keys written before the prefix existed: an application upgrading with a persistent
   redis cache sees its old entries as absent, which is a cold cache rather than an error, but
   should be said in the migration guide (phase 10).
-- **The examples are not migrated to `AgentRegistration`, by decision (2026-09-08).** Asked
+- **The examples are not migrated, by decision (2026-09-08).** Note that phase 8b changes what
+  blocks them: `AgentRegistration` is deleted, and passing instances (`with_rest_api(MonitorApi())`)
+  stays legal standalone -- it is refused only when a builder is collected into a group. So the
+  examples keep working untouched, and converting them is only needed if they are to be *grouped*.
+  Asked
   whether to convert one project's `main.py` as proof, the user chose not to touch the examples
   part-way through the changes, and to revisit them when the integration tests are written --
   where two real example projects grouped into one process would be a better test of C1 and C5

@@ -2,7 +2,9 @@
 
 | | |
 |---|---|
-| **Status** | P0-P6 landed on `feature/multi-agent-namespaces`; the prerequisites are done. No phase (0-10) started. |
+| **Status** | P0-P6 and phases 0-8 landed on `feature/multi-agent-namespaces`. Next: **phase 8b**, then 9, then 10. |
+| **Amendment** | `docs/plans/2026-09-10-builder-unification.md` -- decided 2026-09-10. Phase 8b below is its work breakdown; phases 0 and 3 are superseded by it. |
+| **Deferred out** | `docs/plans/2026-09-10-config-validation-unification.md` -- configuration validation is not part of this feature and **must not** be touched during 8b. |
 | **Spec (normative)** | `docs/specs/2026-08-28-multi-agent-grouping.md` |
 | **What landed, and why** | `docs/plans/2026-08-28-multi-agent-grouping-changelog.md` -- read before resuming |
 
@@ -272,7 +274,8 @@ Root Registry  (namespace="")
 **No change (stays standalone):** developer does nothing — existing `main.py` and
 Dockerfile work as-is forever.
 
-**Opt in to multi-agent:** two file changes only.
+**Opt in to multi-agent:** three file changes. Earlier drafts of this plan said two and
+forgot `agents.toml`, which is required even for a group of one.
 
 `main.py` before:
 ```python
@@ -288,48 +291,74 @@ app = (
 ```
 Dockerfile before: `CMD uvicorn src.main:app --host 0.0.0.0 --port 8000`
 
-`main.py` after — **one declaration, no branches**:
+`main.py` after — **the same builder**, minus its `config` argument and minus the `.build()`:
 ```python
-from blueprint.agents import AgentRegistration
-
-registration = (
-    AgentRegistration()
+agent = (
+    AppBuilder()
     .with_service(OrderService)
     .with_handler(OrderValidationHandler)
     .with_handler(OrderEnrichmentHandler)
     .with_rest_api(OrderApi)
+    .with_cache()
 )
+
+def create_app():          # only if this agent is still to be served on its own
+    return agent.build()
 ```
 Dockerfile after: `CMD python -m blueprint.agents.entrypoint`
+
+`agents.toml` (third change): `[agents.order]` / `module = "agents.order.main:agent"`.
+
+Note what did *not* change: `with_cache()` stays exactly where it was, and so does every other
+`with_*` call. That is the point of the single builder surface — migration removes two things and
+adds nothing, because the declaration and the application builder are the same class (spec
+sec. 4.2).
+
+One declaration, three deployment shapes:
+
+| Shape | Command |
+|---|---|
+| Standalone, unmigrated | `uvicorn src.main:app` |
+| Standalone, migrated | `uvicorn src.main:create_app --factory --reload` |
+| Grouped (including a group of one) | `python -m blueprint.agents.entrypoint` |
 
 An earlier draft of this plan used a dual-branch `main.py` —
 `if __name__ == "__main__": AppBuilder(...)...run_app()` / `else: registration = ...`. That is
 **rejected**: it makes the developer write the component list twice and keep both copies in sync,
-and it exposes the existence of two worlds. Running a single agent is `asbs dev agents/order`,
-which wraps the registration as a group of one. No `AppBuilder`, no `Config`, no `run_app`, no
-`if __name__` in agent code (C6).
+and it exposes the existence of two worlds. `create_app` above is not that: it repeats no
+component, and it is optional.
 
-Because the module is imported into a shared runtime, it **must** contain only the registration —
+**The consequence to state plainly.** A migrated agent run in a group uses its group name, so its
+queue group and its JetStream durable change — standalone runs at the root and takes its identity
+from `app_name`. Moving from standalone into a group is therefore a consumer migration on the
+first grouped deploy, not a rename (C1, phase 5's migration note). Regrouping *afterwards* changes
+nothing, which is the property the whole feature is built for.
+
+Because the module is imported into a shared runtime, it **must** contain only the declaration —
 no client construction at import time, no module-level mutable state, no `logging.basicConfig()`.
 CI check: import each agent module, assert the registry is still empty and the root logger has no
 handlers.
 
-The global orchestrating `main.py` (no uvicorn, just a FastAPI app):
+A hand-written group `main.py`, for a project that wants one rather than the module entry
+point (no uvicorn, just a FastAPI app):
 ```python
-from blueprint.agents import AppBuilder, Config
-from order_agent.src.main import registration as order_reg
-from invoice_agent.src.main import registration as invoice_reg
+from blueprint.agents import AgentGroup, Config
+from order_agent.src.main import agent as order_agent
+from invoice_agent.src.main import agent as invoice_agent
 
 config = Config(settings_files=["settings.toml"])
 
 app = (
-    AppBuilder(config)
-    .with_cache("orders")
-    .with_namespace("order",   registration=order_reg)
-    .with_namespace("invoice", registration=invoice_reg)
+    AgentGroup(config)
+    .add("order", order_agent)
+    .add("invoice", invoice_agent)
     .build()
 )
 ```
+`AgentGroup` is a different class from `AppBuilder` on purpose: an `AppBuilder` never absorbs
+another builder and never learns it can be collected, so the group's refusals live in the class
+that imposes them (spec sec. 4.1). No cache is declared here — each agent declares its own, and
+gets only what it declared (spec sec. 8).
 
 ---
 
@@ -353,9 +382,9 @@ app = (
 | `EventPublishingService` | **Per-namespace** | Must publish on its own namespace's client, or outbound traffic is unattributable |
 | `EventProcessingService` | Shared (root) | Namespace passed per-call |
 | `ActuatorApi` | Shared (root) | One health endpoint |
-| `CacheService` | **Namespace-scoped by default** | Explicit opt-in for genuinely shared caches. A flat store lets two independently developed agents both call `get_cache("sessions")` and silently share it once grouped. Sync ops via `run_in_executor` + namespace executor |
+| `CacheService` | **Per-namespace, declared only** | An agent gets exactly the caches it passed to `with_cache`, and no others: names qualified per namespace, no root fallback, no shared-cache opt-in. A flat store lets two independently developed agents both call `get_cache("sessions")` and silently share it once grouped. Sync ops via `run_in_executor` + namespace executor |
 | `AIClientBase` | Per-namespace strongly recommended | Shared async HTTP pool causes one agent's LLM calls to starve another's |
-| `ThreadPoolExecutor` | Per-namespace | Provisioned by `with_namespace`; prevents blocking DiskCache/SQLite from stalling event loop of other namespaces |
+| `ThreadPoolExecutor` | Per-namespace | Provisioned during wiring, lazily on first `Component.executor` access; prevents blocking DiskCache/SQLite from stalling event loop of other namespaces |
 | `EventHandlerBase` | Per-namespace | Core routing unit |
 | `AgentRuntime` | Per-namespace | Each agent in its own namespace |
 | `RestApiBase` | Per-namespace | Routes prefixed `/api/{namespace}/` |
@@ -366,6 +395,12 @@ app = (
 ---
 
 ## Phase 0 — `run_app` utility + `AgentRegistration` (no breaking changes)
+
+> **Superseded in part by phase 8b.** `run_app` stands. `AgentRegistration` does not: phase 8b
+> deletes it, because an `AppBuilder` that records instead of constructing serves the same purpose
+> without a second class. The namespace-injection mechanism described below is unchanged — only its
+> owner moves, from `AgentRegistration._apply` to `AgentGroup`. Read this phase for the ContextVar
+> reasoning, not for the API.
 
 **Files:** `utils/utils.py`, `app_builder.py`, `__init__.py`
 
@@ -432,8 +467,8 @@ Export both `run_app` and `AgentRegistration` from `blueprint.agents.__init__`.
 - `add_executor(namespace: str, executor: ThreadPoolExecutor) -> None`.
 - `get_executor(namespace: str = "") -> ThreadPoolExecutor` — falls back to root `""` if
   the namespace has no executor; raises `ValueError` if root is also missing.
-- The root executor is provisioned in `AppBuilder.build()` (not in `with_namespace`) so
-  standalone apps always have one.
+- The root executor is provisioned in `AppBuilder.build()`, not while a declaration is being
+  collected, so standalone apps always have one.
 
 **Backwards compatibility:** All callers omitting `namespace` use `""` and see today's flat
 registry. Existing `registry.cache_service` access is unaffected.
@@ -458,6 +493,12 @@ registry. Existing `registry.cache_service` access is unaffected.
 ---
 
 ## Phase 3 — NamespaceBuilder and AppBuilder extension
+
+> **Superseded by phase 8b**, except for `with_cache`'s signature rule and the lazy-executor
+> decision, both of which stand. `NamespaceBuilder`, `with_namespace` and the `namespace=` keyword
+> are deleted there: they existed only because `with_handler` constructed its component
+> immediately, and deferred wiring removes that reason. The C5 scoped-config wiring described below
+> still happens, but at `AgentGroup` wiring time rather than in `with_namespace`.
 
 **File:** `app_builder.py`
 
@@ -635,13 +676,17 @@ same as today.
 Turns the group configuration into a running app. Everything here is additive; standalone
 `main.py` deployments are untouched.
 
-**Not a separate "orchestrator" component.** The split is resolution versus wiring, and the
-looping-over-agents half belongs in `AppBuilder` — it already reads config to make wiring
-decisions (`with_cache` picks a backend, `with_namespace` sizes an executor). What stays outside
-is the I/O: env reads, file reads, `sys.exit`, and knowledge of the agent repo's file layout.
-`AppBuilder` must remain a pure function of its call sequence so tests can construct exact
-compositions without controlling env or filesystem — the same layering mistake as putting retry
-logic in `EventHandlingBase` (see the event-client resilience decision record).
+**Not a separate "orchestrator" component.** The split is resolution versus wiring: the
+looping-over-agents half is builder work, and what stays outside it is the I/O — env reads, file
+reads, `sys.exit`, and knowledge of the agent repo's file layout. Wiring must remain a pure
+function of its call sequence so tests can construct exact compositions without controlling env or
+filesystem — the same layering mistake as putting retry logic in `EventHandlingBase` (see the
+event-client resilience decision record).
+
+Phase 8b moves that half from `AppBuilder` onto `AgentGroup`, which is **not** an orchestrator
+either: it is the wiring half, in a class of its own so that an `AppBuilder` never learns it can be
+collected and the group's refusals sit with the thing imposing them (spec sec. 4.1). Same layering,
+one fewer job per class.
 
 Avoid the name "orchestrator": it names the App-of-Apps supervisor process that this design
 rejected, and reusing it invites confusion with a component that deliberately does not exist.
@@ -676,7 +721,7 @@ baked into the image.
    `./deployment-groups.yaml`) plus `BLUEPRINT_GROUP` to pick the group. The path is
    configuration, not a constant, so one image serves a ConfigMap mount in Kubernetes, a bind
    mount in `docker run`, and the repo file in local dev. Falling back to the repo file is what
-   makes `python -m blueprint.agents.orchestrator` work with no cluster and no mount.
+   makes `python -m blueprint.agents.entrypoint` work with no cluster and no mount.
    `BLUEPRINT_GROUP` may be omitted when the file declares exactly one group. What gets mounted
    is the **resolved slice** for one group, not the full multi-group document.
 2. **Environment variables injected directly.** `BLUEPRINT_AGENTS=invoice,order,dunning` and
@@ -699,12 +744,14 @@ Entry point, in full:
 def main() -> None:
     config = Config(settings_files=["settings.toml"])
     group = GroupConfig.resolve(config)     # env + file, validated; the only I/O
-    app = AppBuilder(config).with_group(group).build()
+    app = AgentGroup(config).with_group(group).build()
     run_app(app, config)
 ```
 
-`AppBuilder.from_group(config)` collapses lines 2-3 for callers who want one call; `with_group`
-takes an in-memory `GroupConfig` and performs no I/O, so tests construct one literally.
+`AgentGroup.from_group(config)` collapses lines 2-3 for callers who want one call; `with_group`
+takes an in-memory `GroupConfig` and reads neither environment nor filesystem, so tests construct
+one literally. (As shipped this reads `AppBuilder(config).with_group(group)`; phase 8b moves the
+two group methods onto `AgentGroup` and nothing else about this phase changes.)
 
 Flow:
 1. `GroupConfig.resolve`: read the YAML at `BLUEPRINT_GROUP_CONFIG` if present, apply env-var
@@ -714,7 +761,8 @@ Flow:
    a readable message instead of a silently short-staffed pod.
 3. Resolve each name via `importlib.import_module` + `getattr`, **lazily and per group** — only
    the modules this group needs are imported, so cold start stays proportional to group size.
-4. `with_group` calls `with_namespace(agent, registration=reg)` per agent; `build()`; `run_app`.
+4. `with_group` records one declaration per agent (`add(name, builder)`); `build()` constructs
+   every component inside its own namespace scope; `run_app`.
 
 **Resolution must complete before the first `Component.__init__`,** because namespace injection
 happens through the ContextVar read during construction. No incremental resolution, no namespace
@@ -750,9 +798,72 @@ sets or hard tenant boundaries only — it does not change this format.
 **Deployment note (agent repo, not this repo):** when mounting a file, give the ConfigMap a
 content-hashed name (`finance-group-a1b2c3`) — kustomize's `configMapGenerator` default, or a
 Helm `checksum/config` annotation. A plain ConfigMap edit leaves the pod template unchanged, so
-nothing restarts and the orchestrator keeps running the group it resolved at startup. One
+nothing restarts and the running process keeps the group it resolved at startup. One
 ConfigMap per group, not one shared: a shared one rolls all twenty agents whenever any group
 changes.
+
+---
+
+## Phase 8b — Builder unification (before 9, because 9 depends on it)
+
+**Amendment:** `docs/plans/2026-09-10-builder-unification.md` carries the reasoning, the decisions
+D1-D7 and the refusal table. This section is the work breakdown only; where the two differ, that
+document is the argument and the spec is normative.
+
+**Files:** `app_builder.py`, new `agent_group.py`, `agent/agent_builder.py`, `group_config.py`,
+`entrypoint.py`, `component/registry.py`, `config/config.py`, `services/infrastructure/`
+(cache scoping), `io/api/actuators/` (per-agent `/cache/*`, health-checker keys)
+
+**Not numbered 11.** Phase 10 is documentation and must stay last, and this must precede phase 9:
+D4 makes a health checker's owning agent available *as data*, which is exactly what phase 9's
+`readiness_policy = "critical"` needs in order to attribute a failing checker to an agent.
+
+**Why now rather than never.** Adding one `with_*` method today means editing four places
+(`AppBuilder`, `AgentRegistration`, `NamespaceBuilder`, and `AgentRegistration.apply`'s `appliers`
+dict), and three of those fail *silently* — the capability is simply absent from that surface. The
+duplication is not stylistic: `AppBuilder.with_handler(H)` constructs `H` immediately, and a
+component constructed before a namespace exists belongs to the root for ever, so a second class had
+to exist to defer construction. Deferred wiring removes the reason they diverged, and the other
+three classes then have no purpose. Four sites become one.
+
+**Steps, each its own commit, reported before the next begins:**
+
+1. **`AppBuilder` records.** A `Declaration` value object; the five `with_*` store instead of
+   constructing; `build(config=None)` wires at the root. `configure_logging()` moves from
+   `__init__` into `build()` — with nothing constructed before `build()`, that is where logging
+   configuration belongs. A builder is single-use and says so, rather than surfacing
+   `Component.configure`'s "already set" error. Order semantics preserved: `build()` raises on an
+   instance recorded after a class at equal priority (spec sec. 4.2).
+2. **`AgentBuilder` records too.** `config` optional in `__init__`, accepted by `build(config)`.
+   This fixes a live defect, not just a shape: `AgentBuilder.__init__` requires a `Config` and
+   `Component._shared_config` has no public read path, so the factory form phase 8 documents
+   (`lambda: AgentBuilder(config, ...).build()`) **cannot be written** in a declaration-only
+   `main.py`. Wiring calls `agent.build(config.for_namespace(ns))`, which also removes a second
+   latent bug: a lambda closes over whichever config was in scope where it was written, which in a
+   group is the wrong one.
+3. **`AgentGroup`** in its own module: named builders in, one `FastAPI` out. Every refusal from
+   the spec's sec. 4.2 table, each naming the agent and the fix. `with_group` and `from_group`
+   move here from `AppBuilder`; `entrypoint.build_group_app` calls it.
+4. **Delete** `AgentRegistration`, `NamespaceBuilder`, `AppBuilder.with_namespace`, the
+   `namespace=` keyword on the five `with_*`, `AgentRegistration.apply` and the `appliers` dict.
+5. **Caches per agent (D3):** qualify names by namespace, `get_cache` resolves within the
+   declaring agent and raises otherwise, `/cache/*` becomes per-agent. Deletes
+   `GroupConfig.cache_names` and `AgentScopedCache` — separate stores make the isolation
+   structural, so the prefixing lens has nothing left to prevent. Knock-on: an agent with
+   `idempotency_enabled` must declare `with_cache()`, which its existing error message already
+   says.
+6. **Health-checker attribution (D4):** `(namespace, name)` recorded as data, the qualified key
+   its rendering. Root keeps the bare name, so an existing readiness payload does not change.
+7. **Settings fragments (D5):** group settings are defaults only; each agent's own `settings.toml`
+   merges under that agent's scope; a process-scope key in an agent fragment raises. This closes
+   the fragment-merge open point that has been outstanding since config-rework step 3a.
+8. **Docstrings and gates:** group behaviour stated on each `with_*` (the decision was RTFM, not
+   authoring-time validation); a test asserting the declaration surface and `AgentGroup`'s replay
+   agree, so the recorder cannot drift from the API it replays; the frozen compatibility suite
+   extended to pin the standalone shape (spec sec. 10.2).
+
+**Done when** an existing standalone `main.py` runs unchanged, the same file with two lines removed
+runs in a group, and adding a hypothetical `with_widget` requires exactly one edit.
 
 ---
 
@@ -782,6 +893,15 @@ grouping was paid for.
   (ready while at least one namespace is up).
 - Per-namespace degradation surfaces as a `blueprint_namespace_up{agent="..."}` gauge plus an
   ERROR-level event. Alerting decides who is woken; the probe decides only where traffic goes.
+- `readiness_policy = "critical"` needs to know which agent a failing health checker belongs to.
+  Phase 8b step 6 records that as `(namespace, name)` data, so read it from there rather than
+  splitting the qualified key on a separator — a name containing the separator would silently
+  attribute a failure to the wrong agent, which is a C7 violation dressed as a string bug.
+- The actuator's two configuration-error branches (`actuator_api.py:95`, `:149`) are **dead**:
+  `Config.validate()` raises during `__init__`, so no live `Config` ever carries validation
+  errors. Out of scope here — it belongs to
+  `docs/plans/2026-09-10-config-validation-unification.md`, which decides whether the fix is to
+  delete them or to make readiness able to report a bad configuration at all.
 
 **C4 — a degraded namespace stops consuming.** Readiness gates HTTP only; a not-ready pod still
 holds its NATS subscriptions and still consumes events, so for an event-driven agent readiness
@@ -832,8 +952,8 @@ hidden by API design — so they must be caught mechanically rather than documen
 **Files:** `docs/guides/multi-agent-setup.md` (new), `docs/guides/deployment.md` (rewrite),
 `agent_generator` CLI (`asbs setup`, `asbs create agent`, `asbs validate`)
 
-**Last on purpose.** Everything a migration guide would describe -- `AgentRegistration`, the
-group configuration, the entry point, the single image -- is built in phases 0, 2 and 8. A guide
+**Last on purpose.** Everything a migration guide would describe -- the single builder surface, the
+group configuration, the entry point, the single image -- is built in phases 0, 2, 8 and 8b. A guide
 written before them documents an API that does not exist, which is worse than no guide: a reader
 cannot tell which half is aspiration. So this phase adds no framework behaviour; it makes what the
 earlier phases built usable by someone who has only ever written a single-agent service.
@@ -848,10 +968,14 @@ it is a claim the reader can check.
 
 1. Scaffolding a fresh multi-agent repository -- what `asbs setup` produces and why one image
    serves every group.
-2. Migrating an existing single-agent project -- the two file changes from *Migration path for an
-   existing agent* above, and nothing else.
+2. Migrating an existing single-agent project -- the three file changes from *Migration path for
+   an existing agent* above (`main.py`, `Dockerfile`, `agents.toml`), and nothing else.
 3. What stays byte-identical and why: registry names, queue group, durable, telemetry
-   `service.name` (C1, C2). This is the section that decides whether anyone trusts the migration.
+   `service.name` (C1, C2) -- **for an agent left standalone**. This is the section that decides
+   whether anyone trusts the migration, so it must be equally explicit about the other half: an
+   agent moved *into a group* takes its identity from its agent name rather than `app_name`, so its
+   queue group, durable and route prefix change once, on the first grouped deploy. Regrouping after
+   that changes nothing. Say which of the two the reader is doing before showing either.
 4. The one decision to get right **before** migrating: the agent name becomes the queue group and
    part of the durable name, so renaming it afterwards is a consumer migration (sec. 7.7), and it
    must satisfy the namespace alphabet (C1) -- `""` or `[a-z][a-z0-9_]*`, no `-`.
@@ -882,7 +1006,10 @@ the guide alone that nothing broker-side changed.
 | File | Phase |
 |---|---|
 | `utils/utils.py` | 0 |
-| `app_builder.py` | 0 (`AgentRegistration`), 3 (`NamespaceBuilder` + executor provisioning), 6 |
+| `app_builder.py` | 0 (`AgentRegistration`), 3 (`NamespaceBuilder` + executor provisioning), 6, 8b (records instead of constructing; `AgentRegistration`, `NamespaceBuilder`, `with_namespace` and the `namespace=` keyword deleted) |
+| `agent_group.py` (new) | 8b (collection, and every group refusal) |
+| `agent/agent_builder.py` | 8b (records; `config` optional in `__init__`, accepted by `build`) |
+| `services/infrastructure/cache_service.py`, `io/api/actuators/` | 8b (per-agent caches and `/cache/*`; health-checker keys qualified) |
 | `__init__.py` | 0 |
 | `component/registry.py` | 1 (namespace storage, named caches, executor registry) |
 | `component/component.py` | 2 (`namespace` param, `executor` property) |
@@ -903,7 +1030,7 @@ the guide alone that nothing broker-side changed.
 | `io/telemetry/telemetry.py` | 9 (C2 — per-namespace providers + empty-namespace path) |
 | `io/api/actuators/actuator_api.py`, `io/api/actuators/health.py` | 9 (C3, C4, C7 — gauge and ERROR event on every removal-from-service path) |
 | `clients/io/nats_client.py`, `clients/io/dapr_client.py` | 9 (C7 — done-callbacks on detached tasks; `subscriptions_ready` drives the per-namespace gauge) |
-| `config/config.py` | 3 (C5 — `agent_scope` wiring via `with_namespace`), 8 (fragment merge) |
+| `config/config.py` | 3 (C5 — `agent_scope` wiring), 8 (fragment merge), 8b (group defaults + per-agent fragments; process-scope keys raise) |
 | `services/eventing/event_publishing_service.py` | P6 (per-namespace client) |
 
 **Scaffolding tracks the framework, every step.** `blueprint/agent_generator` is part of this
@@ -937,10 +1064,15 @@ queue group. A dev mode at `namespace=""` would give every developer URLs and in
 that differ from production. Consequently `namespace=""` is reserved for pre-migration agents;
 every newly scaffolded agent has a real namespace in every environment.
 
-**Per-agent migration (opt-in only):**
-- `main.py`: wrap builder in `if __name__ == "__main__": ... run_app(app, config)`,
-  add `else: registration = AgentRegistration()...`
-- `Dockerfile`: `CMD uvicorn src.main:app` → `CMD python src/main.py`
+**Per-agent migration (opt-in only)** — three changes, and no branches in `main.py`:
+- `main.py`: drop the `config` argument from `AppBuilder(...)` and drop the trailing `.build()`,
+  leaving `agent = AppBuilder()...`; add `def create_app(): return agent.build()` only if the agent
+  is still to be served on its own.
+- `Dockerfile`: `CMD uvicorn src.main:app` → `CMD python -m blueprint.agents.entrypoint`.
+- `agents.toml`: add the agent's entry, pointing at `main:agent`.
+
+The dual-branch recipe an earlier draft of this line described is rejected — see *Migration path
+for an existing agent* above and spec sec. 11.
 
 ## Testing expectations
 
@@ -948,9 +1080,19 @@ New test coverage required alongside the implementation:
 
 - **Registry:** namespace isolation (component in `"order"` not visible from `"invoice"`),
   two-level fallback resolution, named cache CRUD, executor registry add/get/fallback.
-- **`AppBuilder` / `NamespaceBuilder`:** `with_namespace` wires components into the
-  correct namespace; `AgentRegistration._apply` delegates all stored entries correctly;
-  ContextVar is reset after `_apply` (no namespace leak between calls).
+- **`AppBuilder` / `AgentGroup` (8b):** nothing is constructed or registered until `build()`;
+  `build()` wires at the root; `AgentGroup` wires each agent into the correct namespace and resets
+  the ContextVar after each (no namespace leak between agents); every refusal in spec sec. 4.2's
+  table raises and names the agent; a class, a factory and an instance all work standalone while
+  only the instance is refused in a group; an instance recorded after a class at equal priority
+  raises at `build()`; the declaration surface and `AgentGroup`'s replay agree, so the recorder
+  cannot drift from the API it replays.
+- **Per-agent caches (8b):** two agents both declaring `sessions` get separate stores; an agent
+  reading a cache it did not declare raises rather than falling back to root; `/cache/*` reports
+  only the calling agent's caches.
+- **Settings fragments (8b):** a key in an agent's own `settings.toml` resolves for that agent and
+  is invisible to every other; a group default is served to an agent that declares nothing; a
+  process-scope key in an agent fragment raises at startup.
 - **Handler chain:** namespace-scoped handler selection — handlers registered under
   namespace A are not invoked when processing events for namespace B.
 - **NATS:** per-namespace subscription closures capture and forward the correct namespace
