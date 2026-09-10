@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import tomllib
 from copy import copy
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,45 @@ environment directly (``clients/io/nats_client.py``), where no agent can follow.
 The list matters most once ``envvar_prefix`` can be disabled, because Dynaconf then absorbs the
 whole process environment -- ``BLUEPRINT_GROUP`` and ``POD_NAME`` included -- and this is what
 keeps them out of reach.
+"""
+
+
+PROCESS_SCOPE_KEYS = frozenset(
+    {
+        "app_port",
+        "app_host",
+        "app_workers",
+        "app_environment",
+        "envvar_prefix",
+        "event_bus",
+        "log_level",
+        "log_format",
+        "suppress_noisy_loggers",
+        "health_check_interval_seconds",
+        "dot_placeholder",
+        "nats_stream_name",
+    }
+)
+"""Keys that describe the *process*, and that an agent's own settings file therefore cannot set.
+
+One process binds one port, loads one environment section, reads its environment through one
+prefix, speaks one event bus and configures logging once, so all of those are read from the
+group's configuration and never from an agent's scope. A copy under ``[<agent>]`` would be read
+by nothing at all -- which is spec sec. 5.3's reason for refusing it, and it is why
+:meth:`Config.merge_agent_settings` drops these keys with a WARNING that names the agent, the
+key and the file rather than merging them where nothing will look.
+
+``nats_stream_name`` is the one entry whose reason is different: it *is* read through an agent's
+own view, so a scoped value would take effect. It is dropped anyway, because the stream is a
+server-side object shared with every other deployment on that broker -- an agent that quietly
+moved its group's events into a stream of its own would be a broker-side change made by editing
+a file in one agent's directory.
+
+Display metadata is deliberately **not** here. ``app_name``, ``app_version`` and
+``app_description`` are what a scaffolded project's settings file always contains, and a scoped
+``app_name`` is genuinely read -- the NATS queue group falls back to it, and so does the
+telemetry service name. Refusing them would mean an existing project could not be hosted as an
+agent without editing its settings file, which is exactly what grouping must not require.
 """
 
 
@@ -123,6 +163,11 @@ class Config:
         self._agent_scope = agent_scope
         self._is_view = False
         self._views: dict[str, Config] = {}
+        # Kept so that :meth:`merge_agent_settings` can recognise a file the process has already
+        # loaded as its own. An agent whose declaration module sits beside the group's settings
+        # file would otherwise have every root key merged under its scope a second time.
+        names = [settings_files] if isinstance(settings_files, str) else list(settings_files or [])
+        self._settings_files = tuple((self._root_path / name).resolve() for name in names if name)
 
         # First pass: load config to get envvar_prefix and app_environment.
         #
@@ -147,6 +192,10 @@ class Config:
                 envvar_prefix=self._envvar_prefix,
             )
         app_env = temp_settings.get("app_environment", "development")
+        # Kept for merge_agent_settings, which has to resolve an agent's fragment for the same
+        # environment the process loaded -- a fragment's [development] section is that agent's
+        # development section, not a table it happens to have called that.
+        self._environment = str(app_env)
         logger.info(
             "Loading configuration properties for environment: %s (environment overrides read from %s)",
             app_env,
@@ -412,6 +461,181 @@ class Config:
                 "written against its neighbours breaks when the group is changed."
             )
         return tuple(sorted(self._views))
+
+    def merge_agent_settings(self, namespace: str, path: str | Path) -> tuple[str, ...]:
+        """Merge one agent's own settings file under that agent's scope (spec sec. 5.3, D5).
+
+        An agent author writes plain keys in their own directory's ``settings.toml`` --
+        ``model_name = "..."``, or a ``[default]`` section, exactly as a standalone project's
+        file does -- and never ``[default.<agent>]``. This is what turns that file into the
+        agent's scope, so C5 resolves it and the author never learns that a scope exists. The
+        same file therefore serves the project standalone and as one agent of a group, which is
+        the whole requirement: only ``main.py`` may differ between the two.
+
+        **A fragment can only ever add to its own agent.** It is merged under ``[<namespace>]``
+        and nowhere else, so an agent cannot change what the process or a neighbour reads. There
+        is consequently no collision to report: a fragment key and a root key never occupy the
+        same slot, and a group's own value for a key is simply the default this agent's value
+        overrides.
+
+        **What is already in the tree wins.** A key the group's own settings file states under
+        ``[<agent>]``, or an environment override (``DYNACONF_<AGENT>__KEY``), is left alone and
+        the fragment fills in only what neither of them said. The deployment's word beats a file
+        baked into the image, and this is also what keeps an environment override from being
+        overwritten by a file read after it.
+
+        **Process-scope keys are dropped with a WARNING**, one per key, naming the agent, the
+        key, the file and the value the process actually uses. See :data:`PROCESS_SCOPE_KEYS`
+        for what counts and why -- and note that spec sec. 5.3 asks for a *raise* here. It is a
+        warning instead, deliberately: every example project in this repository declares
+        ``app_port`` and ``app_environment`` in its settings file, and three declare
+        ``log_level``, so raising would mean no existing project could be hosted as an agent
+        without first editing a file that is correct for its own standalone deployment. The
+        purpose of the MUST -- that the author can discover the value is inert -- is served by a
+        line that names the file and the key.
+
+        Args:
+            namespace: The agent the file belongs to. Never the root: the root's configuration is
+                the process's own settings files, which are loaded by ``__init__``.
+            path: The agent's settings file. It need not exist; an agent that ships none is
+                simply an agent with no settings of its own.
+
+        Returns:
+            The keys merged, sorted. Empty when the file is absent, holds nothing, or is one of
+            the process's own settings files.
+
+        Raises:
+            RuntimeError: if called on a view. A view is what agent code holds, and authoring
+                another agent's configuration through it is the same breach as reading one (C6).
+            ValueError: if ``namespace`` is empty.
+            ConfigError: if the file exists and cannot be read or parsed. Reported rather than
+                skipped: a file that is there was meant to be used.
+        """
+        if self._is_view:
+            raise RuntimeError(
+                f"The configuration view for namespace '{self._agent_scope}' was asked to merge settings for "
+                f"namespace '{namespace}'. A view resolves its own keys; the process's configuration is assembled "
+                "before any view exists."
+            )
+        if not namespace:
+            raise ValueError(
+                "merge_agent_settings() needs an agent's namespace. The root namespace's configuration is the "
+                "process's own settings files, which __init__ loads."
+            )
+
+        candidate = Path(path)
+        resolved = (self._root_path / candidate).resolve()
+        if resolved in self._settings_files:
+            logger.debug(
+                "Agent '%s' has no settings file of its own: %s is one of the process's own settings files",
+                namespace,
+                resolved,
+            )
+            return ()
+        if not resolved.is_file():
+            logger.debug("Agent '%s' ships no settings file (looked for %s)", namespace, resolved)
+            return ()
+
+        try:
+            document = tomllib.loads(resolved.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError) as exc:
+            raise ConfigError(f"The settings file of agent '{namespace}' ({resolved}) could not be read: {exc}") from exc
+
+        fragment = self._layer_fragment(document)
+        fragment = self._drop_process_scope_keys(namespace, resolved, fragment)
+        if not fragment:
+            logger.debug("The settings file of agent '%s' (%s) contributes nothing", namespace, resolved)
+            return ()
+
+        existing = self._settings.get(namespace)
+        merged = dict(existing.items()) if hasattr(existing, "items") else {}
+        added = self._fill_missing(merged, fragment)
+        self._settings[namespace] = merged
+        logger.info(
+            "Merged %d key(s) from %s under agent '%s': %s",
+            len(added),
+            resolved,
+            namespace,
+            ", ".join(added) or "none",
+        )
+        return added
+
+    def _layer_fragment(self, document: dict[str, Any]) -> dict[str, Any]:
+        """Flatten an agent's settings file the way Dynaconf flattens the process's own.
+
+        Three layers, lowest first: keys written at the top level, ``[default]``, and the
+        section for the environment in force. ``[global]`` is applied last, as Dynaconf applies
+        it. Section names are matched case-insensitively, again as Dynaconf matches them.
+
+        Resolved here rather than by handing the file to Dynaconf, and that is not a preference:
+        Dynaconf always reads ``DYNACONF_*`` from the environment and cannot be told not to, so
+        a Dynaconf-loaded fragment would pull process-wide environment overrides into this
+        agent's scope -- including the very keys :data:`PROCESS_SCOPE_KEYS` refuses, which would
+        then be reported against a file that does not contain them.
+
+        Args:
+            document: The parsed file.
+        """
+        sections = {str(key).lower(): value for key, value in document.items() if hasattr(value, "items")}
+        layered: dict[str, Any] = {key: value for key, value in document.items() if not hasattr(value, "items")}
+        for section in ("default", self._environment.lower(), "global"):
+            values = sections.get(section)
+            if values:
+                layered.update({str(key): value for key, value in values.items()})
+        # A table the file wrote at the top level is a value, not a section: [cache] beside
+        # [default] is this agent's cache configuration, and it is only the three names above
+        # that mean "an environment".
+        for name, values in sections.items():
+            if name not in ("default", self._environment.lower(), "global"):
+                layered.setdefault(name, values)
+        return layered
+
+    def _drop_process_scope_keys(self, namespace: str, path: Path, fragment: dict[str, Any]) -> dict[str, Any]:
+        """Return ``fragment`` without the keys an agent cannot set, warning about each.
+
+        The warning carries what the process uses instead, because "your value is not used" is
+        only actionable next to the value that is.
+        """
+        refused = PROCESS_SCOPE_KEYS | DEPLOYMENT_IDENTITY_KEYS
+        kept: dict[str, Any] = {}
+        for key, value in fragment.items():
+            if str(key).lower() not in refused:
+                kept[key] = value
+                continue
+            current = self._settings.get(str(key))
+            logger.warning(
+                "Agent '%s' sets '%s' in %s, and that is a process-wide setting: one process has one of it, so this "
+                "value (%r) is ignored and %s. Remove it from the agent's settings file, or set it in the group's.",
+                namespace,
+                key,
+                path,
+                value,
+                f"the group's own value ({current!r}) is used" if current is not None else "the group's settings do not set it",
+            )
+        return kept
+
+    @staticmethod
+    def _fill_missing(target: dict[str, Any], incoming: dict[str, Any], prefix: str = "") -> tuple[str, ...]:
+        """Add what ``incoming`` says and ``target`` does not, in place, and report what was added.
+
+        Recursive so that a fragment's ``[cache] cache_dir`` can join a group's
+        ``[default.<agent>.cache] size_limit`` instead of replacing the table or being dropped
+        by it. A leaf already present is never overwritten -- see the precedence rule on
+        :meth:`merge_agent_settings`.
+        """
+        added: list[str] = []
+        for key, value in incoming.items():
+            path = f"{prefix}{key}"
+            if key not in target:
+                target[key] = value
+                added.append(path)
+                continue
+            present = target[key]
+            if hasattr(present, "items") and hasattr(value, "items"):
+                nested = dict(present.items())
+                added.extend(Config._fill_missing(nested, dict(value.items()), prefix=f"{path}."))
+                target[key] = nested
+        return tuple(sorted(added))
 
     def resolved_settings(self, namespace: str = "") -> dict[str, Any]:
         """Return the configuration one namespace resolves, flattened as it would read it.

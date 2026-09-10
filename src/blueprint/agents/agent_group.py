@@ -24,7 +24,9 @@ Three things happen here and nowhere else:
 
 import importlib
 import logging
+import sys
 from collections.abc import Mapping
+from pathlib import Path
 
 from fastapi import FastAPI
 
@@ -52,7 +54,7 @@ class AgentGroup:
     gets a process to itself while still being deployed by the group mechanism.
     """
 
-    def __init__(self, name: str, agents: Mapping[str, AppBuilder]) -> None:
+    def __init__(self, name: str, agents: Mapping[str, AppBuilder], *, settings: Mapping[str, Path] | None = None) -> None:
         """Declare a group.
 
         Args:
@@ -63,6 +65,12 @@ class AgentGroup:
                 durable name, cache partition and telemetry service name. A mapping rather
                 than a list because two agents cannot share a name, and a mapping says so
                 structurally instead of needing a check.
+            settings: Each agent's own settings file, keyed by the same agent name.
+                :meth:`assemble` merges each one under that agent's scope (spec sec. 5.3), so an
+                agent keeps writing plain keys in its own directory and never learns that a scope
+                exists. :meth:`from_config` derives these from the declaration modules it
+                imports; a group constructed literally passes them, or passes none and every
+                agent's settings then come from the group's own file.
 
         Raises:
             ValueError: if an agent's name is not a legal namespace, or is the root.
@@ -78,6 +86,7 @@ class AgentGroup:
                     "Give the agent the name it is deployed under."
                 )
             self._agents[namespace] = builder
+        self._settings: dict[str, Path] = {name: Path(path) for name, path in (settings or {}).items()}
 
     @property
     def name(self) -> str:
@@ -88,6 +97,11 @@ class AgentGroup:
     def agents(self) -> Mapping[str, AppBuilder]:
         """The agents this group hosts, keyed by namespace, in declaration order."""
         return dict(self._agents)
+
+    @property
+    def settings(self) -> Mapping[str, Path]:
+        """Where each agent's own settings file is, for the agents that have one."""
+        return dict(self._settings)
 
     # ------------------------------------------------------------------
     # Resolution
@@ -143,13 +157,19 @@ class AgentGroup:
         logger.info("Resolving group '%s': %d agent(s)", group.name, len(group.agents))
 
         agents: dict[str, AppBuilder] = {}
+        settings: dict[str, Path] = {}
         for spec in group.agents:
             builder = cls._load_declaration(spec)
             if builder is None:
                 continue
             agents[spec.name] = builder
+            # Only for an agent that loaded: a skipped non-critical agent has no scope to merge
+            # anything into.
+            fragment = cls._settings_path(spec.module)
+            if fragment is not None:
+                settings[spec.name] = fragment
 
-        return cls(group.name, agents)
+        return cls(group.name, agents, settings=settings)
 
     @staticmethod
     def _load_declaration(spec: AgentSpec) -> AppBuilder | None:
@@ -197,6 +217,31 @@ class AgentGroup:
         return declaration
 
     @staticmethod
+    def _settings_path(module_spec: str) -> Path | None:
+        """Return where an agent's own settings file is: beside the module that declares it.
+
+        One rule, and it has to be one an author can see without reading this code: the
+        ``settings.toml`` in the same directory as the declaration module named in the agent
+        map. An agent is a directory of handlers, services and a declaration, and its settings
+        belong to that directory the same way.
+
+        Read from ``sys.modules`` rather than by importing again, because this runs only after
+        :meth:`_load_declaration` has imported the module -- so the answer is the file Python
+        actually loaded, not one guessed from a dotted path that may resolve differently.
+
+        Returns:
+            The path, or ``None`` for a module with no file at all -- a namespace package or one
+            built in memory, neither of which has a directory to ship settings in.
+        """
+        module_path = module_spec.partition(":")[0]
+        module = sys.modules.get(module_path)
+        file = getattr(module, "__file__", None)
+        if not file:
+            logger.debug("Module '%s' has no file, so the agent can ship no settings of its own", module_path)
+            return None
+        return Path(file).parent / "settings.toml"
+
+    @staticmethod
     def _skip_or_raise(spec: AgentSpec, reason: str, cause: BaseException | None = None) -> None:
         """Raise for a critical agent, or log and skip a non-critical one.
 
@@ -223,9 +268,15 @@ class AgentGroup:
         The refusals run before anything is replayed, so a group that cannot be honoured fails
         without half-populating a registry.
 
+        Each agent's own ``settings.toml`` is merged under that agent's scope first, which is
+        the one thing here that reads a file (spec sec. 5.3). It happens before the root builder
+        exists, because ``build()`` is where components read their configuration and a fragment
+        merged after that would have been read too late to matter.
+
         Args:
             config: The process's configuration. One tree for the whole group -- which is why
-                an agent that brought its own is refused below.
+                an agent that brought its own is refused below. The group's own settings are the
+                defaults; each agent's file supplies that agent's own values.
 
         Returns:
             The application.
@@ -233,11 +284,20 @@ class AgentGroup:
         Raises:
             ValueError: if an agent's declaration is one a group cannot honour. See
                 :meth:`_refuse_what_a_group_cannot_honour`.
+            ConfigError: if an agent ships a settings file that cannot be read.
         """
         logger.info("Assembling group '%s': %s", self._name, ", ".join(self._agents) or "no agents")
 
         for namespace, builder in self._agents.items():
             self._refuse_what_a_group_cannot_honour(namespace, builder)
+
+        # Before anything is constructed, and before the root builder adopts the configuration:
+        # every component reads its keys through its agent's scoped view during build(), so a
+        # fragment merged afterwards would be a file that was read too late to matter.
+        for namespace in self._agents:
+            path = self._settings.get(namespace)
+            if path is not None:
+                config.merge_agent_settings(namespace, path)
 
         root = AppBuilder(config)
         for namespace, builder in self._agents.items():

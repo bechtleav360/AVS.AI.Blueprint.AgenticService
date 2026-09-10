@@ -403,3 +403,91 @@ class TestTheBuilderKnowsNothingAboutGroups:
         """Collection is the collector's job. An AppBuilder never learns it can be collected."""
         assert not hasattr(AppBuilder, "with_group")
         assert not hasattr(AppBuilder, "from_group")
+
+
+def agent_settings(tmp_path: Path, body: str) -> Path:
+    """Write an agent's own settings file into a directory of its own, and return the path.
+
+    Not ``tmp_path`` itself: that is where the group's own settings file lives, and a fragment
+    that *is* one of the process's settings files is skipped rather than merged a second time.
+    """
+    directory = tmp_path / "agent"
+    directory.mkdir(exist_ok=True)
+    path = directory / "settings.toml"
+    path.write_text(f"{body}\n")
+    return path
+
+
+class ConfigReadingService(ServiceBase):
+    """A service that reads its configuration where a project's own service would: at construction."""
+
+    seen: dict[str, object] = {}
+
+    def __init__(self) -> None:
+        super().__init__()
+        ConfigReadingService.seen[self.namespace] = self.config.get("model_name")
+
+    async def on_startup(self) -> None:
+        pass
+
+    async def on_shutdown(self) -> None:
+        pass
+
+
+class TestEachAgentsOwnSettings:
+    """An agent's own ``settings.toml`` is merged under its scope at assembly (spec sec. 5.3, D5).
+
+    What the merge itself does is pinned down in
+    ``tests/unit/agents/config/test_agent_settings_fragments.py``; these cases are about the
+    group -- where the file is looked for, and that it is merged early enough to be read.
+    """
+
+    def test_the_file_is_looked_for_beside_the_declaration_module(self) -> None:
+        """One rule an author can see: the settings.toml in the agent's own directory."""
+        group = GroupConfig(name="finance", agents=(AgentSpec(name="order", module=f"{_THIS}:order_declaration"),))
+
+        resolved = AgentGroup.from_config(group)
+
+        assert resolved.settings["order"] == Path(__file__).parent / "settings.toml"
+
+    def test_an_agent_that_ships_none_is_simply_an_agent_without_settings(self, config: Config) -> None:
+        """This test package has no settings.toml, so the path resolves to nothing to merge."""
+        group = GroupConfig(name="finance", agents=(AgentSpec(name="order", module=f"{_THIS}:order_declaration"),))
+
+        AgentGroup.from_config(group).assemble(config)
+
+        assert service_names() == ["order_order_service"]
+
+    def test_a_fragment_is_merged_under_its_agents_scope(self, config: Config, tmp_path: Path) -> None:
+        fragment = agent_settings(tmp_path, 'model_name = "orders-own-model"')
+
+        AgentGroup("finance", {"order": order_declaration}, settings={"order": fragment}).assemble(config)
+
+        assert config.for_namespace("order").get("model_name") == "orders-own-model"
+
+    def test_it_is_merged_before_the_agents_components_are_built(self, config: Config, tmp_path: Path) -> None:
+        """A file merged after build() would have been read too late to matter."""
+        ConfigReadingService.seen = {}
+        fragment = agent_settings(tmp_path, 'model_name = "orders-own-model"')
+        declaration = AppBuilder().with_service(ConfigReadingService)
+
+        AgentGroup("finance", {"order": declaration}, settings={"order": fragment}).assemble(config)
+
+        assert ConfigReadingService.seen == {"order": "orders-own-model"}
+
+    def test_one_agents_file_does_not_reach_another(self, config: Config, tmp_path: Path) -> None:
+        ConfigReadingService.seen = {}
+        fragment = agent_settings(tmp_path, 'model_name = "orders-own-model"')
+        order = AppBuilder().with_service(ConfigReadingService)
+        billing = AppBuilder().with_service(BillingService)
+
+        AgentGroup("finance", {"order": order, "billing": billing}, settings={"order": fragment}).assemble(config)
+
+        assert config.for_namespace("billing").get("model_name") is None
+
+    def test_a_group_that_was_given_none_merges_nothing(self, config: Config) -> None:
+        group = AgentGroup("finance", {"order": order_declaration})
+
+        group.assemble(config)
+
+        assert group.settings == {}

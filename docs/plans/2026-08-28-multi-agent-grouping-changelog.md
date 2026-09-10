@@ -5096,6 +5096,147 @@ agent-group tests that asserted on the old dict now read `health_entries`.
 
 ---
 
+### Phase 8b, step 7 -- an agent's own settings file becomes that agent's scope
+
+**D5, spec sec. 5.3.** An agent author writes plain keys in their own directory's
+`settings.toml` -- `model_name = "..."`, or a `[default]` section, which is what every scaffolded
+project has -- and the build merges that file **under that agent's scope**. The author never
+learns that a scope exists, and the same file serves the project standalone and as one agent of a
+group. That is the requirement the whole feature rests on: only `main.py` may differ between the
+two.
+
+**`Config.merge_agent_settings(namespace, path)`** is the whole of it, and it is on the loader
+only -- calling it on a view raises, because authoring another agent's configuration through a
+view is the breach that reading one is (C6).
+
+    fragment = self._layer_fragment(document)
+    fragment = self._drop_process_scope_keys(namespace, resolved, fragment)
+    ...
+    existing = self._settings.get(namespace)
+    merged = dict(existing.items()) if hasattr(existing, "items") else {}
+    added = self._fill_missing(merged, fragment)
+    self._settings[namespace] = merged
+
+Writing a subsection into the loaded tree is all the "merge" a scope needs: probed first, and
+`for_namespace("orders").get("model_name")`, `_scoped_get("cache.cache_dir")` and
+`resolved_settings("orders")` all pick it up, because the tree is what they read and a view
+shares it by reference.
+
+**Precedence: what is already in the tree wins, and the fragment fills the gaps.**
+`_fill_missing` recurses so a fragment's `[cache] cache_dir` joins a group's
+`[default.<agent>.cache] size_limit` instead of replacing the table or being dropped by it. Two
+things this protects at once: a value the group's own settings state under `[<agent>]` -- the
+deployment named the agent, so it meant it, and a file baked into the image does not overrule it
+-- and an environment override (`DYNACONF_<AGENT>__KEY`), which Dynaconf has already put in the
+tree by the time this runs and which a file read afterwards must not clobber.
+
+**`_layer_fragment` resolves the file itself rather than handing it to Dynaconf**, and that is
+forced rather than chosen. Dynaconf always reads `DYNACONF_*` from the environment and cannot be
+told not to (`loaders/env_loader.py`, established in config rework step 3a), so a Dynaconf-loaded
+fragment would pull *process-wide* environment overrides into one agent's scope -- including the
+very keys the next paragraph refuses, which would then be reported against a file that does not
+contain them. So the file is read with `tomllib` and layered explicitly, lowest first: keys
+written at the top level, `[default]`, the section for the environment in force, then `[global]`,
+matching what Dynaconf does with the process's own file. A top-level table that is *not* one of
+those three names is a value, not an environment: `[cache]` beside `[default]` is this agent's
+cache configuration.
+
+**Process-scope keys are dropped, loudly** -- `PROCESS_SCOPE_KEYS` in `config.py`:
+
+    {"app_port", "app_host", "app_workers", "app_environment", "envvar_prefix", "event_bus",
+     "log_level", "log_format", "suppress_noisy_loggers", "health_check_interval_seconds",
+     "dot_placeholder", "nats_stream_name"}
+
+plus `DEPLOYMENT_IDENTITY_KEYS`, which `get()` refuses to answer at all. One process binds one
+port, loads one environment section, reads its environment through one prefix, speaks one event
+bus and configures logging once, so every one of those is read from the group's configuration and
+never from an agent's scope: a copy under `[<agent>]` would be read by nothing.
+`nats_stream_name` is the one entry whose reason differs -- it *is* read through an agent's own
+view, so a scoped value would take effect, and it is dropped because the stream is a server-side
+object shared with every other deployment on that broker.
+
+**Departure from the spec, argued: sec. 5.3 says such a key MUST raise; it warns instead.** The
+evidence is in this repository. Every one of the seven example projects declares `app_port` and
+`app_environment` in its `settings.toml`, and several declare `log_level` and `event_bus`:
+
+    [default]
+    app_name = "Order Event Pipeline"
+    app_port = 8000
+    app_environment = "development"
+    log_level = "INFO"
+    event_bus = "dapr"
+
+Raising would mean **no existing project could be hosted as an agent without first editing a file
+that is correct for its own standalone deployment** -- which contradicts the constraint the spec
+itself serves, and would fail a rollout over a key the file has every right to contain. The
+purpose of the MUST is that the author can discover the value is inert, and that is what the
+warning does, naming the agent, the key, the file and the value in force:
+
+    Agent 'orders' sets 'app_port' in /app/pkg/orders/settings.toml, and that is a process-wide
+    setting: one process has one of it, so this value (8000) is ignored and the group's own value
+    (8080) is used. Remove it from the agent's settings file, or set it in the group's.
+
+**Display metadata is deliberately not in the list.** `app_name`, `app_version` and
+`app_description` are in every scaffolded file, and a scoped `app_name` is genuinely read -- the
+NATS queue group falls back to it, and so does the telemetry service name -- so an agent naming
+itself is its own business.
+
+**Where the file is looked for: beside the module that declares the agent.**
+
+    module_path = module_spec.partition(":")[0]
+    module = sys.modules.get(module_path)
+    file = getattr(module, "__file__", None)
+    ...
+    return Path(file).parent / "settings.toml"
+
+One rule, and one an author can see without reading the framework: an agent is a directory of
+handlers, services and a declaration, and its settings belong to that directory the same way.
+Read from `sys.modules` rather than by importing again, so the answer is the file Python actually
+loaded rather than one guessed from a dotted path. `AgentGroup.from_config` records it per agent
+that loaded -- a skipped non-critical agent has no scope to merge into -- and
+`AgentGroup(name, agents, settings={...})` takes them directly, which is what the tests use.
+
+**`assemble` merges before the root builder exists:**
+
+    for namespace in self._agents:
+        path = self._settings.get(namespace)
+        if path is not None:
+            config.merge_agent_settings(namespace, path)
+
+    root = AppBuilder(config)
+
+Ordering is the load-bearing part: `build()` is where components are constructed and where each
+one reads its keys through its agent's view, so a fragment merged afterwards would be a file read
+too late to matter. A test pins it by having a service read `model_name` in its constructor.
+
+**One guard found by its own test.** A fragment path that resolves to one of the process's own
+settings files is skipped, with DEBUG naming it. Without it, an agent whose declaration module
+sits beside the group's `settings.toml` would have every root key merged under its scope a second
+time -- and every process-scope key reported against the group's own file. It fired immediately:
+the first version of the group tests wrote the fragment into `tmp_path`, which is where the
+fixture's own settings file lives, and the merge correctly did nothing.
+
+**Not done, deliberately:** `.secrets.toml` per agent. The spec names `settings.toml`, and an
+agent's secret belongs in the environment, where `DYNACONF_<AGENT>__KEY` already resolves per
+agent (verified during the config rework). One file, one rule.
+
+**Tests.** New `tests/unit/agents/config/test_agent_settings_fragments.py`, 38 cases in five
+classes: what an agent reads (a plain key, a `[default]` section, the environment section winning
+over it, another environment's section ignored, nested tables, a top-level table as a value, the
+root default still the fallback); isolation (the root and a neighbour unchanged, two agents
+declaring one key, a view refused, the root refused); precedence (the group's own value for the
+agent wins, the fragment fills the rest, a nested table merged key by key); process-scope keys
+(dropped, reported with the file and the value in force, an existing project's file hosted
+unchanged, every listed key parameterised, deployment identity dropped too); and files that are
+not there (absent, the process's own, empty, unparseable -> `ConfigError`).
+`test_agent_group.py` gained `TestEachAgentsOwnSettings`: where the file is looked for, an agent
+that ships none, a fragment merged under its scope, merged *before* the components are built, one
+agent's file not reaching another, and a group given none.
+
+2040 unit tests pass, zero failures.
+
+---
+
 ## Open points
 
 - **Phase 7's ambiguity error needs a spec amendment.** The plan asks `process_event` to raise
@@ -5153,8 +5294,12 @@ agent-group tests that asserted on the old dict now read `health_entries`.
   collision to report or refuse. The second sub-question therefore has no subject, and the first is
   generalised: process-scope keys in a fragment (`app_port`, `event_bus`, `envvar_prefix`,
   `nats_stream_name`) **raise**, from an explicit list, because scoped they are read by nothing and
-  reported by nothing. Implementation is phase 8b step 7. The original text follows, because the
-  probe in it is still the evidence that nothing merges fragments yet.
+  reported by nothing. **Implemented in phase 8b step 7** (`Config.merge_agent_settings`), with one departure: a
+  process-scope key in a fragment is **reported and ignored**, not raised, because every example
+  project declares `app_port` and `app_environment` in its settings file and raising would mean no
+  existing project could be hosted as an agent without editing it. Spec sec. 5.3's MUST should
+  become a MUST-report. The original text follows, because the probe in it is the evidence for
+  what the merge had to be built around.
 
   Spec
   sec. 5.3 requires each agent to keep writing plain top-level keys in its own `settings.toml` and
