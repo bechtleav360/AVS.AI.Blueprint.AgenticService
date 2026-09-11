@@ -132,7 +132,7 @@ class TestAddComponentRegistration:
         """Test adding service to empty AppBuilder."""
         content = "app = (\n    AppBuilder(config)\n    .build()\n)"
         result = add_component_registration_to_main(content, "MyService", "service")
-        assert ".with_service(MyService())" in result
+        assert ".with_service(MyService)" in result
         lines = result.split("\n")
         build_line = next(index for index, line in enumerate(lines) if ".build()" in line)
         service_line = next(index for index, line in enumerate(lines) if "with_service" in line)
@@ -142,7 +142,7 @@ class TestAddComponentRegistration:
         """Test adding handler re-orders the entire chain before API."""
         content = "app = (\n    AppBuilder(config)\n    .with_rest_api(MyApi())\n    .build()\n)"
         result = add_component_registration_to_main(content, "MyHandler", "handler")
-        assert ".with_handler(MyHandler())" in result
+        assert ".with_handler(MyHandler)" in result
         lines = result.split("\n")
         handler_line = next(index for index, line in enumerate(lines) if "with_handler" in line)
         api_line = next(index for index, line in enumerate(lines) if "with_rest_api" in line)
@@ -228,8 +228,8 @@ class TestAddComponentRegistration:
         content = add_component_registration_to_main(content, "SecondHandler", "handler")
 
         # Both should exist
-        assert "with_handler(FirstHandler())" in content
-        assert "with_handler(SecondHandler())" in content
+        assert "with_handler(FirstHandler)" in content
+        assert "with_handler(SecondHandler)" in content
 
         # Handlers should come before API
         lines = content.split("\n")

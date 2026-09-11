@@ -15,6 +15,7 @@ from ..utils.naming_utils import (
     normalize_component_name,
     add_import_to_main,
     add_component_registration_to_main,
+    insert_before_declaration,
     read_main_py,
     write_main_py,
 )
@@ -150,7 +151,7 @@ def create_handler(args: Namespace) -> None:
         auto_registered = True
         print("✓ Auto-registered in src/main.py")
         print(f"  - Added import: from src.handlers.{module_name} import {class_name}")
-        print(f"  - Added registration: .with_handler({class_name}())")
+        print(f"  - Added registration: .with_handler({class_name})")
 
     except (FileNotFoundError, ValueError) as e:
         logger.debug("Could not auto-register handler: %s", e)
@@ -167,7 +168,7 @@ def create_handler(args: Namespace) -> None:
     print(f"     from .{module_name} import {class_name}")
     if not auto_registered:
         print("  3. Add to src/main.py:")
-        print(f"     .with_handler({class_name}())")
+        print(f"     .with_handler({class_name})")
 
 
 def create_service(args: Namespace) -> None:
@@ -243,7 +244,7 @@ def create_service(args: Namespace) -> None:
         auto_registered = True
         print("✓ Auto-registered in src/main.py")
         print(f"  - Added import: from src.services.{module_name} import {class_name}")
-        print(f"  - Added registration: .with_service({class_name}())")
+        print(f"  - Added registration: .with_service({class_name})")
 
     except (FileNotFoundError, ValueError) as e:
         logger.debug("Could not auto-register service: %s", e)
@@ -260,7 +261,7 @@ def create_service(args: Namespace) -> None:
     print(f"     from .{module_name} import {class_name}")
     if not auto_registered:
         print("  3. Add to src/main.py:")
-        print(f"     .with_service({class_name}())")
+        print(f"     .with_service({class_name})")
 
 
 def create_api(args: Namespace) -> None:
@@ -487,7 +488,7 @@ class {class_name}(RestApiBase):
         print("✓ Auto-registered in src/main.py")
         print(f"  - Added import: from src.models.{models_module_name} import {request_class_name}, {response_class_name}")
         print(f"  - Added import: from src.api.{module_name} import {class_name}")
-        print(f"  - Added registration: .with_rest_api({class_name}())")
+        print(f"  - Added registration: .with_rest_api({class_name})")
 
     except (FileNotFoundError, ValueError) as e:
         logger.debug("Could not auto-register API: %s", e)
@@ -509,7 +510,7 @@ class {class_name}(RestApiBase):
         print("  6. Add to src/main.py:")
         print(f"     from src.models.{models_module_name} import {request_class_name}, {response_class_name}")
         print(f"     from src.api.{module_name} import {class_name}")
-        print(f"     .with_rest_api({class_name}())")
+        print(f"     .with_rest_api({class_name})")
     print("  6. View docs at http://localhost:8000/docs")
 
 
@@ -526,9 +527,10 @@ def create_agent(args: Namespace) -> None:
     """
 
     # Use naming utilities to normalize the agent name
-    class_name, snake_name, file_name = normalize_component_name(args.name, "agent")
-
-    module_name = file_name[:-3]  # Remove .py extension
+    # Only the names: unlike the other components, an agent runtime has no module of its own.
+    # It is a builder in main.py plus two prompt files, which is why nothing here writes a
+    # src/agents/ file and why the next steps no longer tell the reader to import one.
+    class_name, snake_name, _ = normalize_component_name(args.name, "agent")
 
     # Get project root and directories
     project_root = Path.cwd()
@@ -611,28 +613,28 @@ Provide a clear and actionable response."""
 
         agent_name = snake_name if snake_name.lower().endswith("agent") else snake_name + "_agent"
 
-        # Add agent variable declaration (before AppBuilder)
-        agent_var_declaration = f"""{agent_name}: AgentRuntime = (\n\tAgentBuilder(config=config, runtime_name="{agent_name}")
-        .with_model_from_config()
-        .with_system_prompt("{agent_name}_system")
-        .build(name="{agent_name}")\n)\n"""
+        # An unbuilt AgentBuilder, and no configuration. AppBuilder.build() calls
+        # agent.build(config.for_namespace(<this agent>)), so the model, prompt and metrics are
+        # read from this agent's own configuration view. Building it here instead would bind it
+        # to whatever configuration happened to be in scope at this line -- which, in a group,
+        # is a neighbour's.
+        agent_var_declaration = (
+            f"{agent_name} = (\n"
+            f'    AgentBuilder(runtime_name="{agent_name}")\n'
+            "    .with_model_from_config()\n"
+            f'    .with_system_prompt("{agent_name}_system")\n'
+            ")\n"
+        )
 
-        # Insert the agent variable before the 'app = (' line
-        lines = main_content.split("\n")
-        app_builder_idx = -1
-        for i, line in enumerate(lines):
-            if line.strip().startswith("app = ("):
-                app_builder_idx = i
-                break
+        if "from blueprint.agents.agent import AgentBuilder" not in main_content:
+            main_content = add_import_to_main(main_content, "from blueprint.agents.agent import AgentBuilder", "agent")
 
-        if app_builder_idx >= 0:
-            # Insert the agent variable declaration before the AppBuilder
-            lines.insert(app_builder_idx, agent_var_declaration)
-            main_content = "\n".join(lines)
+        main_content = insert_before_declaration(main_content, agent_var_declaration)
 
-        # Add component registration to AppBuilder
-        # For agents, pass the variable name as instantiation (e.g., document_analyzer_agent)
-        instantiation = f"{agent_name}"
+        # The name is given here rather than to AgentBuilder.build(): it is the registry key the
+        # services look the runtime up by (registry.get_agent("<agent_name>")), and AppBuilder
+        # qualifies it with the agent's namespace so two agents' runtimes cannot collide.
+        instantiation = f'{agent_name}, name="{agent_name}"'
         main_content = add_component_registration_to_main(main_content, agent_name, "agent", instantiation=instantiation)
 
         # Write updated main.py
@@ -640,9 +642,8 @@ Provide a clear and actionable response."""
 
         auto_registered = True
         print("✓ Auto-registered in src/main.py")
-        print(f"  - Added import: from src.agents.{module_name} import build_{agent_name}")
-        print(f"  - Added agent declaration: {agent_name}: AgentRuntime = build_{agent_name}(config)")
-        print(f"  - Added registration: .with_agent({agent_name})")
+        print(f"  - Added declaration: {agent_name} = (AgentBuilder(...))")
+        print(f'  - Added registration: .with_agent({agent_name}, name="{agent_name}")')
 
     except (FileNotFoundError, ValueError) as e:
         logger.debug("Could not auto-register agent: %s", e)
@@ -656,13 +657,15 @@ Provide a clear and actionable response."""
     print("\nNext steps:")
     print(f"  1. Edit {system_prompt_file} to refine the system prompt")
     print(f"  2. Edit {instruction_prompt_file} to add dynamic instruction templates")
-    print("  3. Add to src/agents/__init__.py:")
-    print(f"     from .{module_name} import build_{agent_name}")
     if not auto_registered:
-        print("  4. Add to src/main.py (before app = (...)):")
-        print(f"     {agent_name}: AgentRuntime = build_{agent_name}(config)")
-        print("  5. Add to src/main.py AppBuilder chain:")
-        print(f"     .with_agent({agent_name})")
+        # Only the declaration: this command writes prompts and settings, and registers the
+        # runtime in main.py. There is no module under src/agents/ for it to be imported from.
+        print("  3. Add to src/main.py, above the AppBuilder declaration:")
+        print(f'     {agent_name} = (AgentBuilder(runtime_name="{agent_name}")')
+        print("         .with_model_from_config()")
+        print(f'         .with_system_prompt("{agent_name}_system"))')
+        print("  4. Add to src/main.py AppBuilder chain:")
+        print(f'     .with_agent({agent_name}, name="{agent_name}")')
 
 
 def create_scheduler(args: Namespace) -> None:
@@ -762,7 +765,7 @@ class {class_name}(SchedulerBase):
         auto_registered = True
         print("✓ Auto-registered in src/main.py")
         print(f"  - Added import: from src.schedulers.{module_name} import {class_name}")
-        print(f"  - Added registration: .with_scheduler({class_name}())")
+        print(f"  - Added registration: .with_scheduler({class_name})")
 
     except (FileNotFoundError, ValueError) as e:
         logger.debug("Could not auto-register scheduler: %s", e)
@@ -779,5 +782,5 @@ class {class_name}(SchedulerBase):
     print(f"     from .{module_name} import {class_name}")
     if not auto_registered:
         print("  3. Add to src/main.py:")
-        print(f"     .with_scheduler({class_name}())")
+        print(f"     .with_scheduler({class_name})")
     print(f"\nCron expression: {args.cron}")

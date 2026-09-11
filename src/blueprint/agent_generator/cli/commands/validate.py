@@ -78,12 +78,12 @@ def run(args: Namespace) -> None:
     else:
         print("✓ Found src/main.py")
 
-        # Check if main.py uses AppBuilder
+        # Check if main.py uses AppBuilder. Nothing is checked about Config here: main.py is a
+        # declaration, and the configuration belongs to whatever builds it -- a main.py that
+        # mentions Config at all is the pre-declaration shape, not the expected one.
         content = main_file.read_text()
         if "AppBuilder" not in content:
             warnings.append("src/main.py does not appear to use AppBuilder")
-        if "Config" not in content:
-            warnings.append("src/main.py does not appear to use Config")
 
     # Check for component directories
     component_dirs = ["handlers", "services", "api", "models"]

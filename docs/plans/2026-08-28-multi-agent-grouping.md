@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | P0-P6, phases 0-8, the whole of 8b and **phase 9** landed on `feature/multi-agent-namespaces`. Next: phase 10. |
+| **Status** | P0-P6, phases 0-8, the whole of 8b, phase 9 and **phase 10 step 1** landed on `feature/multi-agent-namespaces`. Next: phase 10 step 2. |
 | **Amendment** | `docs/plans/2026-09-10-builder-unification.md` -- decided 2026-09-10. Phase 8b below is its work breakdown; phases 0 and 3 are superseded by it. Step 9 was added on 2026-09-10 and is not in that proposal's original breakdown. |
 | **Deferred out** | `docs/plans/2026-09-10-config-validation-unification.md` -- configuration validation is not part of this feature and **must not** be touched during 8b. |
 | **Spec (normative)** | `docs/specs/2026-08-28-multi-agent-grouping.md` |
@@ -1132,6 +1132,23 @@ guide will contradict it directly.
 **Done when** a developer holding a single-agent service can follow the guide to a grouped
 deployment without reading the spec, the plan, or this changelog -- and a reviewer can verify from
 the guide alone that nothing broker-side changed.
+
+**Steps, each its own commit, reported before the next begins.** The CLI comes before the guides:
+a guide written against a CLI that does not behave that way yet documents an API that does not
+exist, which is the same failure this phase was put last to avoid.
+
+1. **A scaffolded project is a group of one, in every environment.** `src/main.py` becomes a
+   declaration (`agent = AppBuilder()...`, classes rather than instances, an unbuilt
+   `AgentBuilder`), a generated `agents.toml` maps the agent name to it, the Dockerfile's command
+   becomes `python -m blueprint.agents.entrypoint` and bakes no group, and `asbs dev` serves the
+   group under the agents' real namespaces. `asbs create` follows the new shape, because it edits
+   the file the generator wrote. **Landed.**
+2. **`asbs validate` reports what a project must state before it can be grouped**, and closes the
+   scheduler gap from P5's open points: a project in `"event"` mode with nothing publishing its
+   tick is the remaining silent-failure case.
+3. **`docs/guides/multi-agent-setup.md`** -- the five sections listed above.
+4. **`docs/guides/deployment.md`** -- rewritten here, because the setup guide contradicts it
+   directly.
 
 ---
 

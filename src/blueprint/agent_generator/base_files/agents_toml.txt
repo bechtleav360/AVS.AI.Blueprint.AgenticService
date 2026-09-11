@@ -1,0 +1,18 @@
+# Which agents this image contains, and where each one's declaration lives.
+#
+# Baked into the image on purpose: adding or removing an agent is a rebuild anyway. Which of
+# these agents a given *process* runs is a separate decision, made by the deployment rather
+# than by the image -- set BLUEPRINT_AGENTS to a comma-separated list, or mount a group file
+# and name the group with BLUEPRINT_GROUP. Nothing here says which agents run together.
+#
+# The name in brackets is the agent's namespace, and it is the agent's identity everywhere
+# outside this file: the registry key prefix, the NATS queue group, part of the JetStream
+# durable name, the cache partition, the OpenTelemetry service.name and the REST route prefix
+# (/api/<name>). Renaming it after the first deploy is therefore a consumer migration, not a
+# rename. It must match [a-z][a-z0-9_]* -- lower case, no dashes.
+#
+# 'module' is "package.module:attribute", naming the AppBuilder that module assigns. An agent's
+# own settings.toml, if it has one, is read from the directory that module lives in.
+
+[agents.agent_namespace]
+module = "src.main:agent"
