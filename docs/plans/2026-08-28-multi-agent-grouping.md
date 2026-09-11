@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | P0-P6, phases 0-8, the whole of 8b, phase 9 and **phase 10 step 1** landed on `feature/multi-agent-namespaces`. Next: phase 10 step 2. |
+| **Status** | P0-P6, phases 0-8, the whole of 8b, phase 9 and **phase 10 steps 1-2** landed on `feature/multi-agent-namespaces`. Next: phase 10 step 3. |
 | **Amendment** | `docs/plans/2026-09-10-builder-unification.md` -- decided 2026-09-10. Phase 8b below is its work breakdown; phases 0 and 3 are superseded by it. Step 9 was added on 2026-09-10 and is not in that proposal's original breakdown. |
 | **Deferred out** | `docs/plans/2026-09-10-config-validation-unification.md` -- configuration validation is not part of this feature and **must not** be touched during 8b. |
 | **Spec (normative)** | `docs/specs/2026-08-28-multi-agent-grouping.md` |
@@ -1145,7 +1145,7 @@ exist, which is the same failure this phase was put last to avoid.
    the file the generator wrote. **Landed.**
 2. **`asbs validate` reports what a project must state before it can be grouped**, and closes the
    scheduler gap from P5's open points: a project in `"event"` mode with nothing publishing its
-   tick is the remaining silent-failure case.
+   tick is the remaining silent-failure case. **Landed.**
 3. **`docs/guides/multi-agent-setup.md`** -- the five sections listed above.
 4. **`docs/guides/deployment.md`** -- rewritten here, because the setup guide contradicts it
    directly.

@@ -6134,8 +6134,144 @@ the instance form and now pin the class form.
 
 ---
 
+### Phase 10, step 2 -- `asbs validate` says what a project has not said
+
+There is deliberately **no `asbs migrate`**: `main.py` is the developer's own declaration, and a
+tool that rewrites it either guesses at intent or fails on anything hand-edited. What replaces it
+is a checklist plus a `validate` that names what is missing, which is what this step builds.
+
+`validate` keeps its three grades and gains a fourth block feeding them. **Issues** mean the
+project will not start (exit 1), **warnings** mean it will start and something is missing,
+**notices** are a decision the framework must not make for the author. New `_group_findings`
+returns one list of each, and `run()` extends the existing three with them -- so the summary, the
+exit status and the output format are unchanged.
+
+#### The agent map, checked where the answer is a line in a terminal
+
+`_read_agent_map` checks the same shape `GroupConfig._read_agent_map` refuses to start on:
+
+```python
+        module = entry.get("module") if isinstance(entry, dict) else None
+        if not module or not isinstance(module, str):
+            issues.append(f"Agent '{name}' in {AGENT_MAP_FILE} has no 'module'. ...")
+            continue
+        if ":" not in module:
+            issues.append(... 'does not say which attribute to read. Write it as "package.module:attribute"')
+            continue
+        try:
+            validate_namespace(name)
+        except ValueError as exc:
+            issues.append(f"Agent '{name}' in {AGENT_MAP_FILE} cannot be a namespace: {exc}")
+```
+
+The name goes through the framework's own `validate_namespace` rather than a copy of the rule, for
+the reason the rule exists: a name repaired differently by the queue group, the durable, the cache
+partition and the telemetry resource is four names for one agent, and `order-eu` is refused here
+rather than in a crash-looping pod.
+
+`_declaration_issues` then resolves the module **against the filesystem, not by importing it**:
+`_module_file` tries `<path>.py` and `<path>/__init__.py`, and a regex asserts the module assigns
+the attribute the map names.
+
+```python
+    if not re.search(rf"^{re.escape(attribute)}\s*=", text, re.MULTILINE):
+        return [f"Agent '{name}' points at '{module}', but ... assigns no '{attribute}'. ..."]
+```
+
+Importing would run the module, which needs the project's dependencies installed and is a
+different failure from the one being looked for. What that costs is precision -- this reads text --
+and what it buys is a `validate` that works in a checkout.
+
+A project with **no** `agents.toml` gets a warning, not an issue, and the warning is the migration
+checklist: the three changes (declaration, Dockerfile command, map entry) and the sentence that
+the name chosen becomes the queue group and the route prefix, so changing it after the first
+deploy is a consumer migration. A project deployed on its own is not broken.
+
+#### Settings that would not survive being grouped
+
+`_settings_scope_warnings` reports the two things that go wrong when an agent moves in beside
+another, neither of which raises:
+
+- Its `settings.toml` is read from the directory its **declaration** lives in, so one written
+  anywhere else is merged into no scope at all -- every key it reads would come from the group's
+  shared file.
+- A process-scope key under one agent's scope is dropped with a warning at startup, because one
+  process binds one port, speaks one bus and loads one environment. The list is imported
+  (`PROCESS_SCOPE_KEYS`) rather than restated.
+
+Two exemptions, and both are about the same fact -- the process's own settings file is not a
+fragment. A project hosted **alone** is the process, so nothing is reported for it at all; and an
+agent declared at the project root in a group (`main:agent` rather than `src.main:agent`) has its
+settings file *at* the process's, which `Config.merge_agent_settings` recognises and leaves at the
+root:
+
+```python
+    fragment = source.parent / SETTINGS_FILE
+    if fragment == project_dir / SETTINGS_FILE:
+        return []
+```
+
+That second one was found by asking what `main:agent` -- the shape the plan's own migration bullet
+writes -- would do to the check.
+
+#### The scheduler gap, which is the reason this step existed
+
+From the changelog's open points: *"a mode and a transport with nothing publishing does not
+[fail]. Validate is where it should be caught."* `_scheduler_findings` covers the three states of a
+project with anything under `src/schedulers/`:
+
+- **No `scheduler_mode`** -> issue. It has no default because neither value is safe to inherit, so
+  `build()` fails; reported here only to report it earlier, with both values and what each costs.
+- **`"event"`** -> a notice that no timer runs, the tick must arrive on
+  `<agent>.scheduler.<scheduler name>` from an external `CronJob`, and **nothing in this project
+  generates one**. A notice rather than an issue because nothing here can tell whether the CronJob
+  exists -- the deployment knows, and it is outside this project. That is exactly why it is said:
+  a scheduler waiting for a tick nobody publishes reports itself healthy and never runs.
+  `event_bus` unset in that mode *is* an issue, because wiring raises at startup.
+- **`"in_process"` with no `.with_cache(` in `main.py`** -> a notice that every replica will run
+  every tick. Each tick is claimed in the agent's own cache so one replica runs it; with no cache
+  to claim in, the claim is a no-op.
+
+The crontab needs nothing here: P5 already validates it at startup in event mode
+(`validate_crontab`, called from `wire()`), which is where the declaration is.
+
+Two small shared helpers replaced duplicated code rather than adding any: `_load_settings` and
+`_declares` are what `_idempotency_notice` and `_declares_idempotency` were doing inline, and
+`_value_of` is `_declares` returning the value. All three treat a key set in *any* Dynaconf
+environment as set -- which environment is in force is a runtime decision this command cannot make,
+and the checks ask whether the author has decided something, not what today's value is.
+
+#### `docs/guides/cli-reference.md`
+
+Four sections were made wrong by step 1 and are corrected here rather than left to accumulate: the
+generated `main.py` (it claimed `app = AppBuilder(Config()).build()`, which was never what the
+generator wrote), `asbs validate`'s checks and output, `asbs dev`'s flags and what it serves, and
+every manual-registration example -- classes rather than instances, no `build()`, and the
+`AgentBuilder` left unbuilt with the reason. The auto-registration troubleshooting section now
+describes the shape the CLI actually looks for.
+
+**The rest of that file still needs reading against the code.** It documents `validate` checks that
+have never existed, and it is the last of the audit's fiction documents; it belongs with the guides
+in step 3.
+
+#### Tests
+
+`tests/unit/agent_generator/cli/commands/test_validate_group_gates.py` is new (21 cases) and drives
+`_group_findings` against real project trees in `tmp_path`: every malformed agent map, a package
+declaration as well as a module one, both settings exemptions, the fragment naming exactly the
+process-scope keys it declares and not the scoped ones, and each of the scheduler states. 2886 unit
+tests pass, zero failures.
+
+---
+
 ## Open points
 
+- **`docs/guides/cli-reference.md` still documents checks that have never existed.** Four of its
+  sections were corrected in phase 10 step 2, because step 1 made them wrong; the rest was already
+  fiction before either -- `asbs validate` checks named there ("All referenced components can be
+  imported", "No duplicate component names", "secrets.toml is not in .gitignore") have no
+  implementation, and its output format is invented. It is the last of the audit's fiction
+  documents and belongs with the guides in step 3.
 - **`asbs` crashes on a Windows console.** Every command prints check marks, warning signs and
   box-drawing characters (`setup.py`, `create.py`, `validate.py`), and on a console whose encoding
   is cp1252 -- the Windows default -- the first one raises `UnicodeEncodeError` mid-command, after
@@ -6224,10 +6360,12 @@ the instance form and now pin the class form.
     are simulated in one process against one `DiskCacheService` directory, which exercises the
     set-if-absent path but not file locking across genuinely separate processes, nor Redis under
     contention. Both belong on the broker/integration list below.
-  - **`asbs validate` says nothing about schedulers.** A project in `"event"` mode with no
-    generated `CronJob` is the remaining silent-failure case -- the missing `event_bus` and the
-    missing mode both fail at startup now, but a mode and a transport with nothing publishing
-    does not. Validate is where it should be caught.
+  - ~~**`asbs validate` says nothing about schedulers.**~~ **Done in phase 10 step 2.** A
+    project in `"event"` mode is now told that nothing here generates the `CronJob` that must
+    publish its tick, a missing mode and a missing `event_bus` are both reported before startup,
+    and `"in_process"` with no cache is told that every replica will run every tick. What stays
+    outside `validate`'s reach is whether the `CronJob` actually exists -- the deployment knows
+    that, and this project cannot -- which is why it is a notice rather than a gate.
 - ~~**The settings-fragment merge has two unanswered questions, both raised by step 3a.**~~
   **Answered 2026-09-10 (D5), and by dissolving the questions rather than deciding them.** A
   group's settings supply *defaults only*, and each agent's own `settings.toml` merges under that
