@@ -4,6 +4,13 @@
 **Companion (server contract):** bechtleav360/avs.ai.idac.service-sessions#196
 **Status:** spec r4 — supersedes r3 (server contract changed again; see below)
 
+**Erratum (#94):** r4 below specifies `agent_id` as a query parameter (`?agent_id=...`). The
+server contract (service-sessions#194/#203) actually reads it from the `X-Agent-Id` header —
+deliberately, to keep it out of access logs (service-sessions#198) — so every implementation
+following this spec as written got `422 Unprocessable Content`. Treat every `?agent_id=...`
+example below as `X-Agent-Id: ...` (header) instead; left unedited below as the historical
+record of what r4 actually specified.
+
 ## Goal
 
 Give `SessionKeyProvider` a working source for consumers whose session keys are generated fresh

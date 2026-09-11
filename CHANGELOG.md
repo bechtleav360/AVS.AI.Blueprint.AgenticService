@@ -1,6 +1,9 @@
 # Changelog
 ## [Unreleased]
 
+### Fixed
+- **`SessionKeyProvider`'s `"job"` source now sends `agent_id` as the `X-Agent-Id` header, not a query parameter** (#94). Since #76/#78 (0.7.0), `_get_from_job` sent `agent_id` via `params={"agent_id": ...}` on `GET /internal/jobs/{job_id}/session-key`, but the server (service-sessions#194/#203) reads it from `X-Agent-Id` specifically — deliberately, to keep it out of access logs (service-sessions#198). Every call to this endpoint therefore got `422 Unprocessable Content` ("X-Agent-Id header required"), and every job dispatched to a `session_key_source="job"` consumer silently never progressed past `pending` — root-caused investigating bechtleav360/avs.ai.project.vera#177. No behavior change for `env`/`config`/`vault`/`remote` sources.
+
 ### Added
 - **`AppBuilder.build()` now sources `docs_url`/`redoc_url`/`openapi_url` from config** (#191, defaults unchanged: `/docs`, `/redoc`, `/openapi.json`). Previously these were hardcoded at `FastAPI()` construction, so a consumer could not disable the built-in `/docs` route without mutating `app.router.routes` after the fact — fragile because it depends on FastAPI's internal route-registration shape (bechtleav360/avs.ai.idac.service-sessions#191). Set `docs_url = "@none"` (Dynaconf's `None` cast) in `settings.toml` to opt out before the route is ever registered. Set at the root of `settings.toml`, not under an `agent_scope` block (`Config._scoped_get()` falls back to the root value when a scoped lookup is `None`). Note FastAPI only registers `docs_url`/`redoc_url` when `openapi_url` is also set, so disabling `openapi_url` disables all three.
 
