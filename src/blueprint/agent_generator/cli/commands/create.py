@@ -594,7 +594,9 @@ Provide a clear and actionable response."""
             settings_models_section = f"[default.runtimes.{snake_name}.models]"
             if settings_models_section not in settings_content:
                 settings_content += f"\n{settings_models_section}\n"
-                settings_content += 'openai_reasoning_effort = "gpt-5-mini"\n'
+                # An effort level, not a model: the value was a copy of model_name, and the
+                # scaffolder's own settings writer has always written "low" here.
+                settings_content += 'openai_reasoning_effort = "low"\n'
                 settings_content += 'openai_reasoning_summary = "detailed"\n'
 
             settings_file.write_text(settings_content, encoding="utf-8")

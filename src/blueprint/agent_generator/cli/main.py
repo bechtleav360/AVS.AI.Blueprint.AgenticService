@@ -103,30 +103,6 @@ def main() -> None:
         help="Enable verbose logging",
     )
 
-    # Windsurf command
-    windsurf_parser = subparsers.add_parser(
-        "windsurf",
-        help="Generate Windsurf IDE integration files",
-        description="Create .windsurf/ directory with rules and workflows",
-    )
-    windsurf_parser.add_argument(
-        "output_dir",
-        nargs="?",
-        default=".",
-        help="Project root directory (default: current directory)",
-    )
-    windsurf_parser.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="Overwrite existing files",
-    )
-    windsurf_parser.add_argument(
-        "--verbose",
-        "-v",
-        action="store_true",
-        help="Enable verbose logging",
-    )
-
     # Validate command
     validate_parser = subparsers.add_parser(
         "validate",

@@ -357,8 +357,12 @@ class AgentGenerator:
             # Create settings.toml
             SettingsPartGenerator(self.config, self.template_dir, "").create_file(out)
 
-            # Create secrets.toml with API key placeholder
-            SecretsPartGenerator(self.config, self.template_dir, "").create_file()
+            # Create secrets.toml with API key placeholder, and the template it is copied from.
+            # Both into the project: create_file() with no argument writes relative to the current
+            # working directory, so `asbs setup` left the secrets file wherever it was run from and
+            # the project it scaffolded had none.
+            SecretsPartGenerator(self.config, self.template_dir, "").create_file(out)
+            SecretsPartGenerator(self.config, self.template_dir, "", example=True).create_file(out)
 
             # Create __init__ files with imports
             InitPartGenerator(self.config, self.template_dir, "src", out).create_file(out)

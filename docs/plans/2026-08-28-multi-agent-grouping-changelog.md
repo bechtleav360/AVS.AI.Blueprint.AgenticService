@@ -6264,14 +6264,104 @@ tests pass, zero failures.
 
 ---
 
+### Phase 10, step 3 -- the guide, and three defects that writing it found
+
+`docs/guides/multi-agent-setup.md` is new: how to run several agents in one process, and how to
+move an agent you already have into one. It is written to be followed without reading the spec, the
+plan or this changelog, and everything it claims about identity was read out of the code rather
+than out of the plan -- which is what turned up the defects below.
+
+**Its shape is the one the plan asked for**, and the split it insists on is the first thing in the
+document: an agent **left standalone** and an agent **moved into a group** are affected differently,
+and only one of them changes anything. Two tables, side by side, each with the eight identities that
+matter -- registry keys, queue group, JetStream durable, routes, OpenAPI tag, telemetry
+`service.name`, disk cache directory, Redis key prefix -- one column for the root namespace and one
+for an agent named `order`. Every value in them was read from the code that derives it
+(`NATSClient._resolve_queue_group`, `_durable_for`, `RestApiBase.route_prefix`,
+`qualified_component_name`, `qualified_entry_name`, `CacheBackendFactory.storage_name` and
+`TelemetryManager._configure_namespace`), because a migration guide nobody can check is worse than
+none.
+
+The other sections: what `asbs setup` writes and why one image serves every group; the three-file
+migration with the before/after `main.py` that removes two things and adds none; **the one decision
+to get right first** -- the agent name, what it becomes in six places, and why `-` is excluded from
+the alphabet (the durable separator, where `orders-eu`/`created` and `orders`/`eu-created` would
+name one consumer); the two configuration files and their different lifetimes, with the five
+`BLUEPRINT_*` variables; what regrouping does and does not change, and that agent code can observe
+none of it (C6); and a closing section on readiness policy, C7 attribution, per-agent schedulers and
+grouped Dapr's shared acknowledgement.
+
+**The cache is cold after the move**, and the guide says so plainly: the key layout changed twice
+during this work, so an application upgrading with a persistent Redis cache or a mounted disk cache
+does not find its old entries. Nothing errors. That was an open point asking to be written down
+here.
+
+#### Three defects the writing found
+
+- **`asbs setup` wrote `secrets.toml` into the working directory, not the project.**
+  `SecretsPartGenerator(...).create_file()` was called with no argument, and `create_file`'s
+  `output_path` defaults to `""` -- so the file landed wherever `asbs setup` happened to be run
+  from, while the command's own next-steps text said one had been created for you. Fixed by passing
+  `out`, and `secrets.toml.example` is now written beside it: the first is git-ignored and the
+  second is committed, so a scaffold that writes only the ignored one leaves nothing in the
+  repository for the next person to fill in. `SecretsPartGenerator` gained an `example=True`
+  keyword, which is the whole of the difference.
+- **`asbs create agent` wrote an effort level that was a model name.**
+  `openai_reasoning_effort = "gpt-5-mini"` in the generated `[default.runtimes.<agent>.models]`
+  section -- a copy of `model_name` one line above. The scaffolder's own settings writer
+  (`settings_part_generator.py`) has always written `"low"`, so the two disagreed; now they do not.
+- **`asbs windsurf` was an advertised command with no implementation.** The subparser was declared
+  in `cli/main.py`, `run()` had no branch for it, and there are no Windsurf resources to copy --
+  `assistant_integrations/` holds one `CLAUDE.md`. So the command printed the top-level help and
+  exited 1, which is what "Generate Windsurf IDE integration files" in `--help` promised. The
+  subparser is deleted; git history keeps it if it is ever written.
+
+#### `docs/guides/cli-reference.md`, read against the code
+
+Step 2 corrected the four sections step 1 had invalidated. This is the rest of it, and most of it
+was fiction before either step:
+
+- **`asbs setup`** listed `tests/`, `tests/unit/`, `tests/integration/` and `pyproject.toml` in the
+  generated structure. None of them is written. The real tree is listed instead -- including
+  `agents.toml`, `secrets.toml.example` and `.gitignore`, none of which appeared -- with a sentence
+  saying the packaging and test layout are the project's own. The three options
+  (`--output-dir`, `--overwrite`, `--verbose`) were undocumented.
+- **`asbs create agent`** was the worst of it: it described a module `src/agents/<name>_agent.py`
+  holding a `build_<name>_agent(config)` function, showed that function's source, and named the
+  prompt files and the settings section after the wrong string. The command writes **no module at
+  all** -- two prompt files, a settings section and a declaration in `main.py` -- and the runtime
+  name has `_agent` appended, so the files are `document_analyzer_agent_system.prompt` and the
+  section is `[default.runtimes.document_analyzer_agent]`. Verified by running the command.
+- **`asbs create api`** claimed one models file, `src/models/<name>_models.py`. It writes a models
+  *package*, `src/models/<name>/` with `dto.py`, `domain_models.py` and `mapper.py`, and the
+  generated API imports from `src.models.<name>.dto`.
+- **`asbs create handler`** documented `--priority` as defaulting to `0`; it is `10`, and the code
+  sample said `priority=0` as well.
+- **`--output-dir`** was undocumented on all four `create` commands.
+- **`asbs claude`** documented `create` and `update` subcommands that do not exist. It takes an
+  optional project directory plus `--overwrite` and `--verbose`, and it *copies* the framework's own
+  resources -- it generates nothing from the project, and does not update when `asbs create` runs.
+
+What remains in that file is now either true or an example, and the two claims that were structural
+rather than incidental -- that `asbs` generates project-specific Claude context, and that it
+scaffolds a test layout -- are gone rather than softened.
+
+#### Tests
+
+Two cases in `test_generated_project.py`: the secrets file and its template land in the project, and
+the ignore file covers the first without covering the second. 2890 unit tests pass, zero failures.
+
+---
+
 ## Open points
 
-- **`docs/guides/cli-reference.md` still documents checks that have never existed.** Four of its
-  sections were corrected in phase 10 step 2, because step 1 made them wrong; the rest was already
-  fiction before either -- `asbs validate` checks named there ("All referenced components can be
-  imported", "No duplicate component names", "secrets.toml is not in .gitignore") have no
-  implementation, and its output format is invented. It is the last of the audit's fiction
-  documents and belongs with the guides in step 3.
+- ~~**`docs/guides/cli-reference.md` still documents checks that have never existed.**~~ **Done in
+  phase 10 step 3.** Every command was read against the code: the generated project structure (it
+  listed a `tests/` tree and a `pyproject.toml` that are not written), `asbs create agent` (an
+  entire module and builder function that do not exist), `asbs create api`'s models file (it is a
+  package of three), `--priority`'s default, `--output-dir` on all four `create` commands, and
+  `asbs claude`'s `create`/`update` subcommands. Writing it found three defects, listed in that
+  step.
 - **`asbs` crashes on a Windows console.** Every command prints check marks, warning signs and
   box-drawing characters (`setup.py`, `create.py`, `validate.py`), and on a console whose encoding
   is cp1252 -- the Windows default -- the first one raises `UnicodeEncodeError` mid-command, after
@@ -6284,11 +6374,10 @@ tests pass, zero failures.
   `main.py` imports `from .handlers import ...`; `asbs create handler` appends
   `from src.handlers.order_placed_handler import OrderPlacedHandler`. Both resolve, so nothing
   fails -- but the two styles in one file are how a later refactor breaks one of them.
-- **The migration guide must carry the cache key layout change.** The cache key layout changed
-  twice (`AgentScopedCache`, then phase 8b step 5's per-agent stores), so an application upgrading
-  with a persistent Redis cache or a mounted disk cache sees its old entries as absent -- a cold
-  cache rather than an error. Recorded here again because phase 10 owns the guide and this is the
-  bullet most easily lost.
+- ~~**The migration guide must carry the cache key layout change.**~~ **Done in phase 10 step 3.**
+  `docs/guides/multi-agent-setup.md` says it under *The cache is cold after the move*, for both
+  hops, together with the surviving deployment constraint that an agent's disk cache is a
+  subdirectory of `cache.cache_dir` so a group still needs exactly one writable mount.
 - **Two spec amendments from phase 9, both because the spec's wording latches.** Spec C4 says a
   degraded namespace's transport client is *closed*. Implemented as a **pause** -- subscriptions
   drained, connection kept -- because a closed client reports itself unhealthy for ever, so the
