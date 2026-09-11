@@ -5392,6 +5392,96 @@ carries them.
 No production code changed; 2100 unit tests still pass. Parts 2 (the guard tests) and 3 (the
 documentation cleanup) follow as their own commits.
 
+### Phase 8b, step 9 part 2 -- the guards, and the four defects they found
+
+`tests/unit/agents/test_design_rules.py`: one section per rule from `AGENTS.md`, and **every
+failure message names the rule it enforces**, because someone who hits one of these has not made
+an ordinary mistake in a test -- they have crossed a design decision and need to read the
+decision. 565 cases, all of them cheap.
+
+| Guard | What it asserts |
+|---|---|
+| *Collect, then wire* | every `with_*` on `AppBuilder` **and** `AgentBuilder`, called reflectively: the registry is untouched, **no configuration is linked at all**, and the builder comes back for the next call |
+| *One declaration surface* | per `AppBuilder` method: one declaration recorded, `replay` reproducing it, the namespace taken from the scope in force, and the recorded `kind` having a `with_<kind>` to replay onto |
+| *A lookup never falls back across agents* | two agents' `sessions` caches kept apart, and no fallback to a neighbour, to the root, or from an unknown name to the default |
+| *A component never learns it is in a group* | the ambient namespace reaching a component nobody passed one to; no `get_known_namespaces` on `Registry`, `Component` or `Config`; and the two refusals a view gives (`cache_entries`, `for_namespace`) |
+| *A name is validated, never repaired* | five namespace entry points and the deployment route against seven illegal names, the cache alphabet at the `with_cache` call, and a legal name coming back unchanged |
+| *No public read path to the unscoped loader* | the public configuration surface is exactly `config`, `configure`, `has_config`; no public attribute *is* the loader; a namespaced component reads through its own view |
+| *Logging is configured by the application* | no logging configuration at import time anywhere under `src/`, and none in the framework outside `LoggingManager` |
+| *No diagnostics via print* | nothing in the framework prints except the two listed stderr writes, each of which must still write to stderr |
+| *References resolve* | every markdown link, every cited path in the documents that describe the tree as it stands, and every document cited by name |
+
+**The declaration-surface test moved here from `tests/unit/agents/app_builder/`** and was
+generalised: the collect-then-wire half now runs over `AgentBuilder` as well, which records fields
+rather than `Declaration` objects but is bound by the same rule -- `with_model_from_config` is the
+method that used to read configuration while accumulating, and that one read is what forced an
+agent to be built before its namespace existed. The stronger form of the assertion is that
+**nothing is configured at all** while declarations are recorded: a `with_*` that reads a key
+cannot pass it.
+
+**Four defects, found by the guards rather than by reading.** Two are production code:
+
+- **`clients/io/dapr_client.py` configured logging at import time.** Two `setLevel` calls on the
+  `httpx` and `httpcore` loggers at module level, so importing the Dapr client silenced those
+  loggers process-wide for an application that never asked. Both levels are already in
+  `LoggingManager._suppress_noisy_loggers`, which the `suppress_noisy_loggers` setting turns off
+  -- so the lines were duplication that also **overrode the application that had turned it off**.
+  Deleted; the setting is now the only thing that decides.
+- **`agent_generator/generator/generator.py` configured logging at import time**, and that one
+  had a visible symptom: `asbs setup` imports `AgentGenerator`, so the module-level `basicConfig`
+  ran first and installed a root handler, and `setup.py`'s own `basicConfig` -- the one that reads
+  `--verbose` -- then found the root already configured and **did nothing**. `asbs setup --verbose`
+  has not been verbose. Moved into `cli()`, which is an entry point and may configure logging;
+  the flag works again.
+
+Two are documentation, both of which the references guard found:
+
+- **`CHANGELOG.md`** linked `ServiceInfo` to `/src/blueprint/agents/models/status.py:8:0-25:5` --
+  an editor-pasted location, not a path. Rewritten as a citation.
+- **`tests/unit/agents/services/TESTS.md`** still listed
+  `infrastructure/test_agent_scoped_cache.py`, deleted with `AgentScopedCache` in step 5. Row
+  removed.
+
+**One finding is listed rather than fixed.** `README.md` links twice to a `LICENSE` file that has
+never been committed, while the README text and `pyproject.toml`'s classifier both say MIT.
+Writing a licence file is a legal artefact and a human decision, so it is in the guard's
+`KNOWN_GAPS` with that reason -- and a further case asserts every listed gap is **still** broken,
+since an allowlist that outlives its entries is how a guard stops guarding.
+
+**The evidence corrected the guard twice**, which is worth recording because both were premises
+that looked obviously right:
+
+- *A padded agent name is refused everywhere.* It is not, and should not be: the agent list is a
+  list, and both routes into it (`BLUEPRINT_AGENTS="orders, billing"`, or a YAML sequence) strip
+  each element before validating it. That is list parsing, not name repair -- the whitespace
+  belongs to the separator. The guard now uses `" Orders "` there instead, which is trimmed and
+  then still refused on the capital, so the trim cannot grow into a general repair.
+- *A document cited by name must exist, in every document.* Not in the records: a proposal names
+  the documents it intends to write (`docs/guides/multi-agent-setup.md`, phase 10's deliverable)
+  and the alternatives it rejected (`docs/concepts/design-rules.md`), and both would fail. So that
+  check skips `docs/plans`, `docs/specs`, `docs/superpowers` and `CHANGELOG.md`, whose **links**
+  are still checked. The citation that motivated the whole guard was in `CLAUDE.md`, which is not
+  a record.
+
+The reference guard's scope is stated in the file with its reasoning, since a check on prose has
+to say what it holds prose to: links are checked everywhere; path citations only in the documents
+that describe this repository as it stands -- not in the records, which correctly name deleted
+files, and not in the project-facing guides, whose `src/main.py` resolves in a generated project.
+`docs/adr/` and `CLAUDE.local.md` are not scanned at all: neither is part of the repository, and a
+guard has to give the same answer on every machine.
+
+**Every guard was verified by injection**: an import-time `setLevel` and a `print()` in
+`utils/utils.py`, a dead link, a dead path citation and a fictitious `NOTHING.md` in `AGENTS.md`, a
+root fallback in `Registry.get_cache`, and a construction inside `AppBuilder._record`. Each failed
+exactly one guard, with the rule in the message, and nothing else.
+
+`AGENTS.md` now cites the file -- part 1 deliberately did not, since it did not yet exist -- both
+under *Design rules* and beside the testing convention that requires a guard to state its rule.
+`tests/unit/agents/TESTS.md` gained the row; `tests/unit/agents/app_builder/TESTS.md` lost the one
+for the moved file.
+
+2625 unit tests pass, zero failures. Part 3, the documentation cleanup, follows.
+
 ---
 
 ## Open points
@@ -5593,4 +5683,9 @@ documentation cleanup) follow as their own commits.
   on by default in the generated settings.
 - **The two design questions in spec sec. 13** that change the shape rather than the parameters: 20
   or 100 agents, and whether the 4 GB host budget is real.
+- **There is no `LICENSE` file.** `README.md` links to one twice -- a badge and the closing line
+  -- and `pyproject.toml` carries the MIT classifier, but no licence text has ever been committed.
+  Found by step 9 part 2's reference guard and listed in its `KNOWN_GAPS`, because adding a
+  licence is a legal artefact and somebody's decision rather than a documentation fix. Whoever
+  settles it removes that entry, which a guard case then requires.
 - **#80** -- the failing example tests and the unenforced test split.

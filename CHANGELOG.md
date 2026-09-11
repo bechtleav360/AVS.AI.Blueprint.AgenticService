@@ -191,7 +191,7 @@ default_ttl = 3600                       # 1 hour default TTL
 
 ### Added
 - New `/info` actuator endpoint exposing app name, version, and all dependency versions.
-- [ServiceInfo](/src/blueprint/agents/models/status.py:8:0-25:5) model for structured `/info` responses.
+- `ServiceInfo` model (`src/blueprint/agents/models/status.py`) for structured `/info` responses.
 - Actuator links (`/info`, `/status/env`, `/status/llm`, `/status/build`) in root `/` metadata.
 - Supporting classes in component registry in addition to names
 - Fetching an unregistered component now throws an exception

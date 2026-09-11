@@ -83,6 +83,12 @@ result would silently loop the broker.
 
 ## Design rules
 
+Every rule below that a machine can check is checked by `tests/unit/agents/test_design_rules.py`,
+one section per rule, each failure message naming the rule it enforces. Prose alone has already
+failed here once: this file was cited by `CLAUDE.md` for months while it did not exist, so the
+guards -- including the one that checks that a cited file exists -- are what keep the rest of this
+document true.
+
 ### Construction and assembly
 
 **Collect, then wire.** A declaration API records; nothing is constructed, registered or
@@ -213,7 +219,9 @@ cannot be traced back to a commit.
   exercises what existing projects already do. **Never edit it to accommodate an API change**: if
   it needs editing, a break shipped, and the break is the finding.
 - **A guard test states the rule it enforces in its failure message.** Someone hitting it should
-  learn the rule from the failure, not from this file.
+  learn the rule from the failure, not from this file. The guards for the design rules above live
+  in `tests/unit/agents/test_design_rules.py`; a rule that is not mechanically checkable says so
+  there, so that its absence is not read as an oversight.
 
 ---
 
