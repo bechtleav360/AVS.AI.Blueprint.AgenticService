@@ -253,6 +253,10 @@ class TestGetSessionKeyJob:
 
     @respx.mock
     async def test_sends_agent_id_and_api_key(self) -> None:
+        # agent_id travels as the X-Agent-Id header, not a query param — matching the
+        # server's actual (and deliberate) contract: service-sessions' docstring for this
+        # route states agent_id must stay out of query strings so it stays out of access
+        # logs (service-sessions#194/#203/#198). See AVS.AI.Blueprint.AgenticService#94.
         job_id = uuid4()
         route = respx.get(f"{_JOB_REMOTE_URL}/internal/jobs/{job_id}/session-key").mock(
             return_value=httpx.Response(200, json={"session_key": "job-secret"})
@@ -260,7 +264,8 @@ class TestGetSessionKeyJob:
         provider = _make_job_provider(agent_id="agent-42", api_key="sekrit")
         await provider.get_session_key(uuid4(), job_id=job_id)
         request = route.calls.last.request
-        assert request.url.params["agent_id"] == "agent-42"
+        assert "agent_id" not in request.url.params
+        assert request.headers["X-Agent-Id"] == "agent-42"
         assert request.headers["X-Api-Key"] == "sekrit"
 
     @respx.mock

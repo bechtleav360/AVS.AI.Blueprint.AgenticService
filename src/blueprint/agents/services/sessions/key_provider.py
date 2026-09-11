@@ -203,15 +203,21 @@ class SessionKeyProvider(ServiceBase):
         # - AWS Secrets Manager
         raise NotImplementedError("Vault integration not yet implemented. Use session_key_source='env' or 'config' for now.")
 
-    async def _fetch_key_response(self, url: str, *, params: dict[str, str] | None = None) -> httpx.Response:
+    async def _fetch_key_response(self, url: str, *, params: dict[str, str] | None = None, agent_id: str | None = None) -> httpx.Response:
         """Shared request/auth mechanics for the remote key-vault and job-handoff endpoints.
 
         Returns the raw response so callers can apply their own status-code special-casing
         (the "job" source's 409 claim-conflict has no equivalent on the plain remote source)
         before calling ``raise_for_status()``.
         """
+        headers = {"X-Api-Key": self._api_key}
+        if agent_id:
+            # Header, not a query param: service-sessions' get_job_session_key deliberately
+            # reads X-Agent-Id, not the query string, to keep it out of access logs
+            # (service-sessions#194/#203/#198). See AVS.AI.Blueprint.AgenticService#94.
+            headers["X-Agent-Id"] = agent_id
         async with httpx.AsyncClient(timeout=10.0) as client:
-            return await client.get(url, params=params, headers={"X-Api-Key": self._api_key})
+            return await client.get(url, params=params, headers=headers)
 
     async def _get_from_remote(self, session_id: UUID | None) -> str:
         """Fetch session key from a remote key vault endpoint.
@@ -263,7 +269,7 @@ class SessionKeyProvider(ServiceBase):
             raise ValueError("sessions_service.agent_id not configured — required for session_key_source='job'")
 
         url = f"{self._remote_url}/internal/jobs/{job_id}/session-key"
-        response = await self._fetch_key_response(url, params={"agent_id": self._agent_id})
+        response = await self._fetch_key_response(url, agent_id=self._agent_id)
         if response.status_code == 409:
             raise SessionKeyClaimConflictError(f"job {job_id}'s session key was already claimed by a different agent")
         response.raise_for_status()  # 404 (expired/unknown) raises here
