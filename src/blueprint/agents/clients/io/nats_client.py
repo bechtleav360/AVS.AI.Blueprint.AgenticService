@@ -4,11 +4,10 @@ import asyncio
 import contextlib
 import json
 import logging
-import os
 import re
-import socket
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Any
 
 import nats
@@ -16,8 +15,11 @@ from nats.aio.client import Client as NatsClient
 from nats.js import api as js_api
 from nats.js.client import JetStreamContext
 from nats.js.errors import NotFoundError
+from opentelemetry.metrics import Counter
 
-from ...component.namespace import ROOT_LABEL, ROOT_NAMESPACE, display_segment
+from ...component.namespace import ROOT_LABEL, ROOT_NAMESPACE
+from ...deployment import deployment_group, pod_identity
+from ...io.telemetry.providers import agent_meter
 from ...models.api import ComponentHealth
 from ...models.errors import DeliveryDisposition, disposition_for
 from ...models.events import CloudEvent
@@ -25,55 +27,16 @@ from .io_client_base import IOClientBase, validate_subject_segment
 
 logger = logging.getLogger(__name__)
 
-UNGROUPED_LABEL = "<ungrouped>"
-"""Stands in for an unset ``BLUEPRINT_GROUP`` in a connection name, so its three positions stay filled.
+DEAD_LETTERED_COUNTER = "blueprint.events.dead_lettered"
+"""Events the framework gave up on, whether or not their payload was kept.
 
-Bracketed for the same reason as ``ROOT_LABEL``: ``display_segment`` strips brackets from every
-environment-supplied segment, so no real group can produce this string and "not deployed as part of
-a group" cannot be confused with a group that happens to be called ``ungrouped``.
+Dead-lettering was logged and counted nowhere, so "how many messages did we give up on today"
+could not be answered from metrics -- and a dead letter is the one delivery outcome that has
+no other trace in the running system: it is not a retry that eventually succeeds, and it is
+not an error a caller sees. ``reason`` separates a payload that was rejected as unprocessable
+from one whose redeliveries ran out, and ``kept`` says whether the payload survived, because a
+deployment with no dead-letter subject configured is losing them.
 """
-
-UNKNOWN_POD_LABEL = "<unknown-pod>"
-"""Stands in when neither the environment nor the host can say which pod this is."""
-
-
-def _deployment_group() -> str:
-    """Return the deployment group this process was started as, or a placeholder.
-
-    Read straight from the environment rather than through ``Config``: group composition
-    decides which agents get a ``Config`` at all, so it is resolved before Dynaconf exists
-    and carries the ``BLUEPRINT_`` prefix rather than Dynaconf's (spec sec. 5.1). The
-    group loader that will own this variable arrives with the group configuration; until
-    then an unset value simply means "not deployed as part of a group".
-
-    The group is deployment identity, so it belongs in the connection name and nowhere
-    near the queue group or the durable (C1).
-
-    Passed through ``display_segment`` because this value is owned by the deployment, not by
-    the framework: it keeps a group called ``a.b`` from turning a three-segment connection name
-    into four, and keeps any group from forging a placeholder.
-    """
-    return display_segment(os.environ.get("BLUEPRINT_GROUP", ""), UNGROUPED_LABEL)
-
-
-def _pod_identity() -> str:
-    """Return the replica this process runs in, for the connection name only.
-
-    ``POD_NAME`` is the Kubernetes downward-API convention and is preferred because a
-    deployment can set it explicitly; ``HOSTNAME`` is what the kubelet sets anyway and is
-    the pod name in practice; the host name covers plain Docker and local runs.
-
-    Sanitised on the same terms as the group: a host name is frequently an FQDN, and its dots
-    would otherwise split one segment into several.
-    """
-    for variable in ("POD_NAME", "HOSTNAME"):
-        value = os.environ.get(variable, "").strip()
-        if value:
-            return display_segment(value, UNKNOWN_POD_LABEL)
-    try:
-        return display_segment(socket.gethostname(), UNKNOWN_POD_LABEL)
-    except OSError:
-        return UNKNOWN_POD_LABEL
 
 
 @dataclass(frozen=True)
@@ -196,6 +159,21 @@ class NATSClient(IOClientBase):
     def subscriptions_ready(self) -> bool:
         """``True`` once all managed subscriptions are active."""
         return self._subscriptions_ready
+
+    @cached_property
+    def _dead_lettered(self) -> Counter:
+        """This agent's dead-letter counter, created on first use rather than at construction.
+
+        Cached rather than eager for the same reason ``Component.tracer`` is: a client is
+        constructed by ``build()``, and the per-agent meter providers do not exist until the
+        lifespan configures telemetry. An instrument created in ``__init__`` would be bound to
+        the no-op global meter for the life of the process.
+        """
+        return agent_meter(self.namespace, __name__).create_counter(
+            name=DEAD_LETTERED_COUNTER,
+            description="Events this agent gave up on after exhausting redelivery or rejecting the payload",
+            unit="{event}",
+        )
 
     @property
     def queue_group(self) -> str:
@@ -472,7 +450,7 @@ class NATSClient(IOClientBase):
         stored anywhere those two are resolved from.
         """
         namespace = self.namespace or ROOT_LABEL
-        return f"{namespace}.{_deployment_group()}.{_pod_identity()}"
+        return f"{namespace}.{deployment_group()}.{pod_identity()}"
 
     # ------------------------------------------------------------------
     # Connection
@@ -513,6 +491,53 @@ class NATSClient(IOClientBase):
         except Exception as e:
             logger.error("Failed to connect to NATS: %s", str(e))
             raise
+
+    async def pause_consumption(self) -> None:
+        """Drain this agent's subscriptions so its events redeliver elsewhere (C4).
+
+        Drained rather than unsubscribed, for the same reason shutdown drains: a drain stops
+        new deliveries while letting the ones already in the client's buffer reach their
+        handler and be acknowledged over the connection that delivered them. An unsubscribe
+        strands those, and every one of them redelivers.
+
+        The connection stays open. See :meth:`IOClientBase.pause_consumption` for why closing
+        it would make the pause permanent, and :meth:`health_check` for the other half of that.
+        """
+        if self._consumption_paused:
+            return
+        self._consumption_paused = True
+        self._subscriptions_ready = False
+        if self._nats_client is not None:
+            timeout = float(self.config.get("event_client_drain_timeout", 30.0))
+            deadline = asyncio.get_running_loop().time() + timeout
+            await self._drain_subscriptions(deadline)
+            await self._await_inflight(deadline)
+        logger.error(
+            "Agent '%s' stopped consuming: its subscriptions are drained while it is degraded, so its events "
+            "redeliver to a healthy replica",
+            self.namespace or ROOT_LABEL,
+        )
+
+    async def resume_consumption(self) -> None:
+        """Re-subscribe this agent's topics after its health checks pass again.
+
+        Nothing is retried here: a failure to re-subscribe leaves the client paused, and the
+        next health poll finds the agent healthy again and calls this again. That is the whole
+        retry, and it is bounded by the poll interval rather than by a loop of its own.
+        """
+        if not self._consumption_paused:
+            return
+        self._consumption_paused = False
+        if not self._subscriptions_managed or self._nats_client is None:
+            return
+        try:
+            await self._subscribe_all()
+        except Exception as exc:
+            self._consumption_paused = True
+            logger.error("Agent '%s' could not resume consuming: %s", self.namespace or ROOT_LABEL, exc, exc_info=True)
+            return
+        self._subscriptions_ready = True
+        logger.info("Agent '%s' resumed consuming: %d subscription(s) restored", self.namespace or ROOT_LABEL, len(self._subscriptions))
 
     async def close(self) -> None:
         """Stop consuming, let in-flight handlers finish, then close the connection.
@@ -642,9 +667,18 @@ class NATSClient(IOClientBase):
     # ------------------------------------------------------------------
 
     async def health_check(self) -> ComponentHealth:
-        """Return healthy only when connected and all managed subscriptions are active."""
+        """Return healthy only when connected and all managed subscriptions are active.
+
+        **A paused client reports healthy.** The pause is a consequence of the agent being
+        degraded (C4), not a cause of it, and the check that actually failed is still in the
+        readiness payload saying so. Reporting the pause as unhealthy would make it
+        self-sustaining: the agent could never be seen to recover, so consumption would never
+        resume, and a transient Redis outage would take the agent off its topics permanently.
+        """
         if not self._is_connected():
             return ComponentHealth(status="unhealthy", message="NATS client not connected")
+        if self._consumption_paused:
+            return ComponentHealth(status="healthy", message="connected; consumption paused while this agent is degraded")
         if self._subscriptions_managed and not self._subscriptions_ready:
             return ComponentHealth(status="unhealthy", message="connected but subscriptions not yet established")
         server_info = self._nats_client.connected_url  # type: ignore[union-attr]
@@ -674,11 +708,22 @@ class NATSClient(IOClientBase):
                 await asyncio.sleep(delay)
 
     def _on_retry_done(self, task: asyncio.Task[None]) -> None:
+        """Report a retry task that gave up, naming the agent whose transport it was (C7).
+
+        The agent is in the message because this is the one record that a namespace has
+        stopped consuming while the pod stays healthy: the task is detached, so nothing
+        awaits it, and without this the failure is a task exception nobody retrieves.
+        """
         if task.cancelled():
             return
         exc = task.exception()
         if exc is not None:
-            logger.error("NATSClient permanently failed to connect after exhausting retries: %s", exc, exc_info=exc)
+            logger.error(
+                "Agent '%s' permanently failed to connect to NATS after exhausting retries: %s",
+                self.namespace or ROOT_LABEL,
+                exc,
+                exc_info=exc,
+            )
 
     async def _connect_and_subscribe(self) -> None:
         await self.connect()
@@ -991,6 +1036,7 @@ class NATSClient(IOClientBase):
         reason = "deliveries-exhausted" if disposition is DeliveryDisposition.NAK else "terminal-failure"
 
         if not subject:
+            self._count_dead_letter(reason, kept=False)
             logger.warning(
                 "Dropping event %s from topic '%s' after %s delivery attempt(s) (%s): no dead-letter "
                 "subject is configured, so its payload is lost. Set 'nats_dead_letter_subject' to keep it.",
@@ -1012,6 +1058,7 @@ class NATSClient(IOClientBase):
         try:
             await self._nats_client.jetstream().publish(subject, msg.data, headers=headers)  # type: ignore[union-attr]
         except Exception as exc:
+            self._count_dead_letter(reason, kept=False)
             logger.error(
                 "Could not move event %s from topic '%s' to dead-letter subject '%s' (%s); its payload is lost",
                 event_id or "<undecodable>",
@@ -1021,6 +1068,7 @@ class NATSClient(IOClientBase):
             )
             return
 
+        self._count_dead_letter(reason, kept=True)
         logger.warning(
             "Moved event %s from topic '%s' to dead-letter subject '%s' after %s delivery attempt(s) (%s)",
             event_id or "<undecodable>",
@@ -1029,6 +1077,20 @@ class NATSClient(IOClientBase):
             delivered if delivered is not None else "an unknown number of",
             reason,
         )
+
+    def _count_dead_letter(self, reason: str, *, kept: bool) -> None:
+        """Record one event this agent gave up on.
+
+        Counted once per event, where the outcome is known, rather than once on entry: a
+        publish that fails has still lost the payload, and counting on entry and again on
+        failure would report two dead letters for one message.
+
+        Args:
+            reason: ``deliveries-exhausted`` or ``terminal-failure``.
+            kept: Whether the payload reached the dead-letter subject. ``False`` is what tells a
+                deployment with no subject configured that it is losing them.
+        """
+        self._dead_lettered.add(1, {"agent": self.namespace or ROOT_LABEL, "reason": reason, "kept": kept})
 
     # ------------------------------------------------------------------
     # Internal — reconnect callbacks
@@ -1041,6 +1103,12 @@ class NATSClient(IOClientBase):
     async def _on_reconnected(self) -> None:
         logger.info("NATSClient reconnected")
         if not self._subscriptions_managed:
+            return
+        if self._consumption_paused:
+            # A reconnect must not undo a pause. Without this the broker dropping and
+            # restoring the connection would silently resubscribe a degraded agent, and C4
+            # would hold only until the next network blip.
+            logger.info("Agent '%s' stays paused after the reconnect; it is still degraded", self.namespace or ROOT_LABEL)
             return
         if self._use_jetstream and self._topic_callbacks:
             # JetStream durable consumers do not survive reconnects; re-subscribe manually.

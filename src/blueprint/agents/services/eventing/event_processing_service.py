@@ -9,6 +9,7 @@ from opentelemetry import trace
 from ...component.component import traced
 from ...component.namespace import ROOT_LABEL, ROOT_NAMESPACE, namespace_of
 from ...handler.handler_chain import RUNTIME_NAME_CONTEXT_KEY, HandlerChain
+from ...io.telemetry.inflight import IN_FLIGHT
 from ...models import ProcessingResult, ProcessingStatus
 from ...models.events import GenericCloudEvent, HandlerResult, CloudEvent
 from ..service_base import ServiceBase
@@ -119,7 +120,12 @@ class EventProcessingService(ServiceBase):
 
         request_id = str(uuid4())
         context["request_id"] = request_id
-        trace.get_current_span().set_attribute("request_id", request_id)
+        span = trace.get_current_span()
+        span.set_attribute("request_id", request_id)
+        # The agent goes on the span as well as in the log line. A span that is still open when
+        # the process dies never reaches an exporter, so the resource that would have named its
+        # agent (C2) is never applied -- what is on the span itself is all a post-mortem has.
+        span.set_attribute("agent", namespace or ROOT_LABEL)
 
         # The caller's choice of runtime, put where the chain will look for it. This
         # parameter has existed since before there were agents to resolve and was only ever
@@ -148,7 +154,11 @@ class EventProcessingService(ServiceBase):
         event = self._unwrap_dapr_event(event)
 
         try:
-            handler_result: Any | HandlerResult | list[HandlerResult] | None = await self._chain_for(namespace).process(event, context)
+            # Counted around the chain, not around the transport: this is the one place both
+            # transports and the REST path pass through, so one measurement covers all three
+            # and it means "work this agent is doing" rather than "messages it has taken".
+            with IN_FLIGHT.track(namespace):
+                handler_result: Any | HandlerResult | list[HandlerResult] | None = await self._chain_for(namespace).process(event, context)
 
             handler_results: list[HandlerResult] = self._extract_handler_results(handler_result)
 

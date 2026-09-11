@@ -20,8 +20,9 @@ from collections.abc import Callable
 from opentelemetry import trace
 
 from ..config import Config
+from ..io.telemetry.providers import agent_tracer
 from ..utils import camel_to_snake
-from .namespace import ROOT_NAMESPACE, current_namespace, qualified_component_name, validate_namespace
+from .namespace import ROOT_LABEL, ROOT_NAMESPACE, current_namespace, qualified_component_name, validate_namespace
 
 if TYPE_CHECKING:
     from .registry import Registry
@@ -261,8 +262,21 @@ class Component(ABC, metaclass=_ComponentMeta):
 
     @cached_property
     def tracer(self) -> trace.Tracer:
-        """OTel tracer named after the concrete class."""
-        return trace.get_tracer(type(self).__qualname__)
+        """OTel tracer named after the concrete class, on **this agent's** provider (C2).
+
+        The provider decides the ``service.name`` a span is exported under, so a component of
+        agent ``orders`` must not record on the root's: its spans would arrive under the group's
+        service name, and a dashboard keyed on the agent would lose them the day the agent was
+        grouped. :func:`agent_tracer` resolves the namespace's provider and falls back to the
+        global one, which is what a root component and an application with telemetry disabled
+        both get.
+
+        Cached, and therefore resolved at first use rather than at construction -- which is the
+        only reason this works: components are constructed by ``build()``, and the providers do
+        not exist until the lifespan's ``configure_tracing`` call, which runs before anything
+        else in startup.
+        """
+        return agent_tracer(self._namespace, type(self).__qualname__)
 
     @abstractmethod
     async def on_startup(self) -> None:
@@ -310,6 +324,12 @@ def traced(*extract: str) -> Callable[..., Any]:
 
     Span name is auto-prefixed with the component's name:
         ``{self.name}.{method.__name__}``
+
+    Every span carries ``agent`` -- the namespace of the component the method belongs to, or
+    ``<root>``. The provider already stamps ``service.name`` on the resource, so this is
+    redundant for a span that reaches an exporter; it is not redundant for the failure C7 cares
+    about, where a span is *in flight* when the process dies and the only record of whose work
+    it was is what the span itself carries.
 
     Each name in ``extract`` refers to a parameter of the decorated method:
 
@@ -363,6 +383,7 @@ def traced(*extract: str) -> Callable[..., Any]:
                 span_name = f"{self.name}.{func.__name__}"
                 with self.tracer.start_as_current_span(span_name) as span:
                     if span.is_recording():
+                        span.set_attribute("agent", self._namespace or ROOT_LABEL)
                         _stamp_from_args(span, self, args, kwargs)
                     try:
                         return await func(self, *args, **kwargs)
@@ -378,6 +399,7 @@ def traced(*extract: str) -> Callable[..., Any]:
                 span_name = f"{self.name}.{func.__name__}"
                 with self.tracer.start_as_current_span(span_name) as span:
                     if span.is_recording():
+                        span.set_attribute("agent", self._namespace or ROOT_LABEL)
                         _stamp_from_args(span, self, args, kwargs)
                     try:
                         return func(self, *args, **kwargs)

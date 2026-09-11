@@ -19,6 +19,8 @@ from blueprint.agents.io.api.scheduling.scheduler import (
     validate_crontab,
 )
 from blueprint.agents.component.namespace import namespace_scope
+from blueprint.agents.io.telemetry.providers import reset_providers
+from blueprint.agents.models.events import GenericCloudEvent
 from blueprint.agents.services.infrastructure.cache_service import DiskCacheService
 
 _SCHEDULER_MODULE = "blueprint.agents.io.api.scheduling.scheduler"
@@ -583,3 +585,54 @@ class TestClaimedTick:
 
         assert scheduler.tick_call_count == 1
         mock_registry.cache_service.claim.assert_not_called()
+
+
+class TestTickFreshness:
+    """A tick that stops arriving looks like silence, so the age since the last one is a metric."""
+
+    @pytest.fixture
+    def scheduler(self, mock_config: MagicMock, mock_registry: MagicMock) -> SchedulerBase:
+        reset_providers()
+        return _CountingScheduler("*/5 * * * *")
+
+    def test_a_scheduler_that_has_never_ticked_reports_minus_one(self, scheduler: SchedulerBase) -> None:
+        """Distinct from a large age: a pod that has just started has missed nothing yet."""
+        assert scheduler._last_tick is None
+
+    async def test_a_tick_is_recorded(self, scheduler: SchedulerBase) -> None:
+        await scheduler.run_tick()
+        assert scheduler._last_tick is not None
+
+    async def test_a_failing_tick_is_still_recorded(self, scheduler: SchedulerBase) -> None:
+        """The gauge answers 'is this being driven'; a failing tick is a different alert."""
+        scheduler.failure = RuntimeError("boom")
+        with pytest.raises(RuntimeError):
+            await scheduler.run_tick()
+        assert scheduler._last_tick is not None
+
+    async def test_the_manual_trigger_counts_as_a_tick(self, scheduler: SchedulerBase) -> None:
+        await scheduler._trigger_tick()
+        assert scheduler.ticks == 1
+        assert scheduler._last_tick is not None
+
+    async def test_the_event_path_counts_as_a_tick(self, scheduler: SchedulerBase) -> None:
+        """Event mode is the case that needs this: a CronJob that stopped is invisible."""
+        handler = SchedulerTickHandler(scheduler, "orders.scheduler.counting_scheduler")
+        await handler.handle_event(GenericCloudEvent.model_construct(id="e", type="t", source="/s"), {})
+        assert scheduler.ticks == 1
+        assert scheduler._last_tick is not None
+
+
+class _CountingScheduler(SchedulerBase):
+    """A scheduler that records its ticks and can be made to fail."""
+
+    failure: Exception | None = None
+
+    def __init__(self, crontab: str) -> None:
+        super().__init__(crontab)
+        self.ticks = 0
+
+    async def tick(self) -> None:
+        self.ticks += 1
+        if self.failure is not None:
+            raise self.failure

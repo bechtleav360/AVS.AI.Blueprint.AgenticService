@@ -47,6 +47,41 @@ class IOClientBase(ClientBase, ABC):
             ValueError: if the namespace is not a legal namespace.
         """
         super().__init__(namespace=namespace)
+        self._consumption_paused = False
+
+    # ------------------------------------------------------------------
+    # C4 -- a degraded agent stops consuming
+    # ------------------------------------------------------------------
+
+    @property
+    def consumption_paused(self) -> bool:
+        """Whether this agent has been taken off its topics because it is degraded.
+
+        Readiness gates HTTP only: a pod removed from service rotation still holds its
+        subscriptions and still consumes, so for an event-driven agent the probe alone is
+        cosmetic (C4). This flag is what the transports and the Dapr fan-out read to stop
+        taking work while the agent cannot do it.
+        """
+        return self._consumption_paused
+
+    async def pause_consumption(self) -> None:
+        """Stop taking events for this agent, leaving the connection open.
+
+        **Paused, not closed.** Spec sec. 3's C4 describes this as closing the namespace's
+        client, and closing it would satisfy the letter of it -- but a closed client reports
+        itself unhealthy for ever, so the agent that triggered the pause could never be seen to
+        recover and the pause would be a one-way latch on a transient fault. Keeping the
+        connection also keeps publishing available, which matters because an agent that has
+        stopped consuming may still need to report that it has.
+
+        Overridden by a transport that can actually stop deliveries. The base implementation
+        records the state, which is what a push transport reads at its delivery edge.
+        """
+        self._consumption_paused = True
+
+    async def resume_consumption(self) -> None:
+        """Start taking events again after the agent's health checks pass once more."""
+        self._consumption_paused = False
 
 
 TOPIC_TRANSPORTS = ("dapr", "nats")

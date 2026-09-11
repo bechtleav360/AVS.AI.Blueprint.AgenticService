@@ -25,7 +25,7 @@ Three things happen here and nowhere else:
 import importlib
 import logging
 import sys
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -54,7 +54,14 @@ class AgentGroup:
     gets a process to itself while still being deployed by the group mechanism.
     """
 
-    def __init__(self, name: str, agents: Mapping[str, AppBuilder], *, settings: Mapping[str, Path] | None = None) -> None:
+    def __init__(
+        self,
+        name: str,
+        agents: Mapping[str, AppBuilder],
+        *,
+        settings: Mapping[str, Path] | None = None,
+        critical: Collection[str] | None = None,
+    ) -> None:
         """Declare a group.
 
         Args:
@@ -87,6 +94,7 @@ class AgentGroup:
                 )
             self._agents[namespace] = builder
         self._settings: dict[str, Path] = {name: Path(path) for name, path in (settings or {}).items()}
+        self._critical: frozenset[str] = frozenset(self._agents) if critical is None else frozenset(critical)
 
     @property
     def name(self) -> str:
@@ -102,6 +110,11 @@ class AgentGroup:
     def settings(self) -> Mapping[str, Path]:
         """Where each agent's own settings file is, for the agents that have one."""
         return dict(self._settings)
+
+    @property
+    def critical_agents(self) -> frozenset[str]:
+        """The agents this deployment cannot run without."""
+        return self._critical
 
     # ------------------------------------------------------------------
     # Resolution
@@ -158,18 +171,26 @@ class AgentGroup:
 
         agents: dict[str, AppBuilder] = {}
         settings: dict[str, Path] = {}
+        critical: set[str] = set()
         for spec in group.agents:
             builder = cls._load_declaration(spec)
             if builder is None:
                 continue
             agents[spec.name] = builder
+            if spec.critical:
+                # The same flag twice, deliberately. It decided above whether a failed import
+                # stops the process (spec sec. 9.1); here it decides whether this agent may
+                # take the pod out of service rotation (C3). Both ask whether the deployment
+                # can run without the agent, so a second flag would be a second answer to one
+                # question.
+                critical.add(spec.name)
             # Only for an agent that loaded: a skipped non-critical agent has no scope to merge
             # anything into.
             fragment = cls._settings_path(spec.module)
             if fragment is not None:
                 settings[spec.name] = fragment
 
-        return cls(group.name, agents, settings=settings)
+        return cls(group.name, agents, settings=settings, critical=critical)
 
     @staticmethod
     def _load_declaration(spec: AgentSpec) -> AppBuilder | None:
@@ -305,7 +326,7 @@ class AgentGroup:
             # still an agent this process hosts: build() wires one transport per hosted agent
             # and asks each one's own configuration whether it publishes, and neither of those
             # can be derived from a declaration list that may be empty.
-            root.host_agent(namespace)
+            root.host_agent(namespace, critical=namespace in self._critical)
             with namespace_scope(namespace):
                 for declaration in builder.declarations:
                     declaration.replay(root)

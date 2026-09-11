@@ -398,6 +398,46 @@ class TestResolve:
         assert isinstance(group, AgentGroup)
 
 
+class TestTheCriticalFlagReachesReadiness:
+    """One flag, two consequences: whether a failed load stops the process (spec sec. 9.1),
+    and whether that agent may take the pod out of service rotation (C3)."""
+
+    def test_from_config_keeps_the_flag(self, config: Config) -> None:
+        group = AgentGroup.from_config(
+            GroupConfig(
+                name="finance",
+                agents=(
+                    spec("order", "order_declaration"),
+                    spec("billing", "billing_declaration", critical=False),
+                ),
+            )
+        )
+
+        assert group.critical_agents == frozenset({"order"})
+
+    def test_assemble_hands_it_to_the_root_builder(self, config: Config) -> None:
+        group = AgentGroup(
+            "finance",
+            {"order": order_declaration, "billing": billing_declaration},
+            critical={"order"},
+        )
+
+        with patch.object(AppBuilder, "host_agent", autospec=True) as host_agent:
+            host_agent.side_effect = lambda self, namespace, critical=True: self._namespaces.append(namespace) or self
+            group.assemble(config)
+
+        assert [(call.args[1], call.kwargs["critical"]) for call in host_agent.call_args_list] == [
+            ("order", True),
+            ("billing", False),
+        ]
+
+    def test_a_group_written_by_hand_is_all_critical(self, config: Config) -> None:
+        """The same default GroupConfig applies, and what a single-agent application has always had."""
+        group = AgentGroup("finance", {"order": order_declaration, "billing": billing_declaration})
+
+        assert group.critical_agents == frozenset({"order", "billing"})
+
+
 class TestTheBuilderKnowsNothingAboutGroups:
     def test_app_builder_has_no_group_methods(self) -> None:
         """Collection is the collector's job. An AppBuilder never learns it can be collected."""

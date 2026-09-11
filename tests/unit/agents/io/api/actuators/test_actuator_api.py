@@ -11,6 +11,7 @@ from blueprint.agents.component.registry import Registry
 from blueprint.agents.config import Config
 from blueprint.agents.io.api.actuators.health.health_base import HealthCheckEntry
 from blueprint.agents.io.api.actuators.actuator_api import ActuatorApi
+from blueprint.agents.io.api.actuators.health.readiness_policy import ReadinessPolicy
 
 
 @pytest.fixture
@@ -145,7 +146,7 @@ class TestLifecycle:
         with patch("blueprint.agents.io.api.actuators.actuator_api.HealthCheckCache") as mock_cache_cls:
             mock_cache_cls.return_value.start = AsyncMock()
             await actuator_api.on_startup()
-        mock_cache_cls.assert_called_once_with(check_interval_seconds=60)
+        assert mock_cache_cls.call_args.kwargs["check_interval_seconds"] == 60
 
     async def test_on_startup_registers_pending_providers(self, actuator_api: ActuatorApi, mock_config: MagicMock) -> None:
         entry = HealthCheckEntry(name="db", namespace="", checker=MagicMock())
@@ -383,3 +384,46 @@ class TestRegisteringChecks:
         actuator_api.add_health_providers([entry])
 
         cache.set_health_entries.assert_called_once_with([entry])
+
+
+class TestTheReadinessPolicy:
+    """C3: which agents may take the pod out of service rotation, and who knows they exist."""
+
+    @staticmethod
+    def _actuator(mock_config: MagicMock, policy: object, namespaces: tuple[str, ...], critical: tuple[str, ...]) -> ActuatorApi:
+        mock_config.get.side_effect = lambda key, default=None: {"readiness_policy": policy}.get(key, default)
+        return ActuatorApi(namespaces, critical)
+
+    async def test_the_default_reproduces_todays_behaviour(self, mock_config: MagicMock, mock_registry: MagicMock) -> None:
+        mock_config.get.side_effect = lambda key, default=None: default
+        actuator = ActuatorApi()
+        with patch("blueprint.agents.io.api.actuators.actuator_api.HealthCheckCache") as cache_cls:
+            cache_cls.return_value.start = AsyncMock()
+            await actuator.on_startup()
+        assert cache_cls.call_args.kwargs["policy"] == ReadinessPolicy.ALL
+
+    async def test_a_configured_policy_reaches_the_cache(self, mock_config: MagicMock, mock_registry: MagicMock) -> None:
+        actuator = self._actuator(mock_config, "critical", ("", "orders"), ("orders",))
+        with patch("blueprint.agents.io.api.actuators.actuator_api.HealthCheckCache") as cache_cls:
+            cache_cls.return_value.start = AsyncMock()
+            await actuator.on_startup()
+        assert cache_cls.call_args.kwargs["policy"] == ReadinessPolicy.CRITICAL
+
+    async def test_an_unknown_policy_refuses_to_start(self, mock_config: MagicMock, mock_registry: MagicMock) -> None:
+        """Defaulting would remove a whole group from rotation the first time an agent wobbled."""
+        actuator = self._actuator(mock_config, "critcal", ("",), ())
+        with pytest.raises(ValueError, match="readiness_policy"):
+            await actuator.on_startup()
+
+    async def test_the_supervisor_knows_every_hosted_agent(self, mock_config: MagicMock, mock_registry: MagicMock) -> None:
+        actuator = self._actuator(mock_config, "all", ("", "orders", "billing"), ("orders",))
+        with patch("blueprint.agents.io.api.actuators.actuator_api.HealthCheckCache") as cache_cls:
+            cache_cls.return_value.start = AsyncMock()
+            await actuator.on_startup()
+        assert actuator.supervisor is not None
+        assert set(actuator.supervisor.status) == {"", "orders", "billing"}
+        assert actuator.supervisor.critical_namespaces == frozenset({"orders"})
+
+    def test_there_is_no_supervisor_before_startup(self, actuator_api: ActuatorApi) -> None:
+        """The gauges belong to per-agent providers, which the lifespan configures first."""
+        assert actuator_api.supervisor is None

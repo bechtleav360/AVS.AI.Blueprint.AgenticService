@@ -44,6 +44,15 @@ from .services.eventing.event_publishing_service import EventPublishingService
 from .services.sessions import SessionKeyProvider, SessionsApiClient
 from .services.infrastructure.cache_backend_factory import CacheBackendFactory
 from .config import DEFAULT_SETTINGS_FILES, Config, TelemetryManager
+from .io.telemetry.loop_watchdog import (
+    BLOCK_THRESHOLD_KEY,
+    DEFAULT_BLOCK_THRESHOLD_SECONDS,
+    DEFAULT_INTERVAL_SECONDS,
+    WATCHDOG_ENABLED_KEY,
+    WATCHDOG_INTERVAL_KEY,
+    LoopWatchdog,
+    configure_loop_debug,
+)
 from .utils import parse_bool
 
 _UNCONSTRUCTED_KINDS = frozenset({"cache", "health_checker"})
@@ -193,6 +202,9 @@ class AppBuilder:
         # special case in _build_rest_endpoints.
         self._lifecycle_components: list[Component] = []
         self._actuator_api: ActuatorApi | None = None
+        # Replaced in the lifespan when the environment wants one; the default instance is
+        # never started, so shutdown can stop it unconditionally.
+        self._loop_watchdog = LoopWatchdog()
         # Health checkers declared before build(), collected out of the declarations by the
         # replay pass. A dict rather than a list because the readiness payload is keyed on the
         # entry name, and a later declaration of the same name replaces an earlier one.
@@ -200,6 +212,9 @@ class AppBuilder:
         # Which agents this process hosts. See the 'namespaces' property for why the
         # builder is the thing that keeps the list rather than the registry.
         self._namespaces: list[str] = []
+        # Of those, the ones the deployment said it cannot run without. Read by the
+        # readiness probe under readiness_policy = 'critical' (C3).
+        self._critical_namespaces: list[str] = []
 
     # ------------------------------------------------------------------
     # Configuration
@@ -293,7 +308,7 @@ class AppBuilder:
     # Fluent registration API
     # ------------------------------------------------------------------
 
-    def host_agent(self, namespace: str) -> "AppBuilder":
+    def host_agent(self, namespace: str, *, critical: bool = True) -> "AppBuilder":
         """Record that this process serves ``namespace``, whether or not it declares anything.
 
         Not a ``with_*``: it declares no component. It states a fact about the *process*, and
@@ -309,6 +324,12 @@ class AppBuilder:
 
         Args:
             namespace: The agent's name.
+            critical: Whether the deployment can run without this agent. Carried through to the
+                readiness probe, where ``readiness_policy = "critical"`` lets only the flagged
+                agents take the pod out of service rotation (C3). The same flag the group
+                configuration uses to decide whether a failed import stops the process
+                (spec sec. 9.1), because it answers the same question -- and the default is the
+                same ``True``, so an unflagged agent gates readiness exactly as it does today.
 
         Returns:
             This builder.
@@ -328,8 +349,20 @@ class AppBuilder:
                 "the first and their components would merge into one registry namespace."
             )
         self._namespaces.append(agent)
-        logger.info("Hosting agent namespace '%s'", agent)
+        if critical:
+            self._critical_namespaces.append(agent)
+        logger.info("Hosting agent namespace '%s'%s", agent, "" if critical else " (not critical)")
         return self
+
+    @property
+    def critical_namespaces(self) -> tuple[str, ...]:
+        """The hosted agents that gate readiness under the ``critical`` policy.
+
+        A subset of :attr:`namespaces`. The root is not in it and does not need to be: it gates
+        readiness under every policy, because it holds the shared infrastructure the rest of the
+        process depends on.
+        """
+        return tuple(self._critical_namespaces)
 
     @property
     def namespaces(self) -> tuple[str, ...]:
@@ -690,8 +723,12 @@ class AppBuilder:
         written, and it travels with the checker as data -- so two agents may both declare
         ``"db"`` and appear as ``orders.db`` and ``billing.db`` instead of one of them vanishing
         into the other's dict slot. Two checks that would still share one entry are refused
-        rather than silently reduced to one. The readiness *policy* is unchanged: every check is
-        ANDed, so one agent's failing check takes the whole pod out of rotation.
+        rather than silently reduced to one. What a failing check then *does* is the
+        deployment's decision: ``readiness_policy`` (C3) decides whether one agent's failure
+        takes the whole pod out of rotation, and the default ``"all"`` says it does, which is
+        what a single-agent application has always done. Whatever the policy, a failing check
+        stops its agent consuming (C4) and is reported as ``blueprint.namespace.up = 0`` with
+        an ERROR event (C7) -- the policy decides where traffic goes, never who is woken.
 
         Args:
             name: What this checker is called within its agent. It appears in the readiness
@@ -886,8 +923,10 @@ class AppBuilder:
             if registry.get_io_clients(namespace=namespace):
                 EventPublishingService(namespace=namespace)
 
-        # 5. Create ActuatorApi and wire health checkers from all registered clients
-        self._actuator_api = ActuatorApi()
+        # 5. Create ActuatorApi and wire health checkers from all registered clients. It is
+        # told the composition because the readiness probe is per agent now (C3): which
+        # namespaces exist, and which of them the deployment cannot run without.
+        self._actuator_api = ActuatorApi(self.hosted_namespaces, self.critical_namespaces)
         # The client's *base* name, not its registry name: the registry name is already
         # qualified with '_' ('orders_nats_client'), and the entry composes its own rendering,
         # so passing the registry name would read 'orders.orders_nats_client'. A root client's
@@ -1142,18 +1181,112 @@ class AppBuilder:
     # Lifespan
     # ------------------------------------------------------------------
 
+    async def _start_component(self, kind: str, component: Any, label: str) -> None:
+        """Run one component's ``on_startup`` under spec sec. 9.1's failure policy.
+
+        A failure used to end the process whoever it belonged to, and in a single-agent process
+        that was right: there was one agent, and a half-started one is worse than none. In a
+        group it is the blast radius grouping is paid to remove -- one agent's Redis client
+        raising in ``on_startup`` would take nineteen working agents down with it.
+
+        So the ``critical`` flag decides, and it decides *before* anything is wired rather than
+        after the exception, because there is no partial build to unwind: one process, one
+        ``build()``. A critical agent's failure still propagates, which aborts the lifespan
+        before the port is bound, so Kubernetes crash-loops the pod with the traceback rather
+        than reporting a replica that is silently short a consumer. A non-critical agent's
+        failure marks that agent down and stops it consuming (C4, C7), and the rest start.
+
+        The root is always critical: it holds the shared infrastructure, and there is no
+        "rest of the process" to keep running without it.
+
+        Args:
+            kind: What sort of component this is, for the log line.
+            component: The component to start.
+            label: How to name it in the log line -- usually its registry name.
+
+        Raises:
+            Exception: whatever ``on_startup`` raised, when the component belongs to the root or
+                to a critical agent.
+        """
+        try:
+            await component.on_startup()
+        except Exception as exc:
+            namespace = namespace_of(component)
+            if not namespace or namespace in self._critical_namespaces:
+                logger.error("%s %s startup failed: %s", kind, label, exc, exc_info=True)
+                raise
+            logger.error(
+                "%s %s startup failed and agent '%s' is not critical, so the process starts without it: %s",
+                kind,
+                label,
+                namespace,
+                exc,
+                exc_info=True,
+            )
+            await self._mark_agent_down(namespace, f"its {kind.lower()} '{label}' failed to start: {exc}")
+            return
+        logger.info("%s %s startup completed", kind, label)
+
+    async def _start_loop_diagnostics(self, config: Config) -> None:
+        """Turn on asyncio debug mode, or start the watchdog, whichever this environment wants.
+
+        Never both. Debug mode already reports the blocking callback with its source location,
+        which is strictly better than the watchdog's "one of these agents was busy", so running
+        the watchdog as well would add a second, vaguer line about the same event.
+
+        Args:
+            config: The application's configuration.
+        """
+        development = str(config.get("app_environment", "development")) == "development"
+        if configure_loop_debug(config, development=development):
+            return
+        if not parse_bool(config.get(WATCHDOG_ENABLED_KEY, True), WATCHDOG_ENABLED_KEY):
+            logger.info("Event loop watchdog is disabled by configuration")
+            return
+        self._loop_watchdog = LoopWatchdog(
+            interval_seconds=float(config.get(WATCHDOG_INTERVAL_KEY, DEFAULT_INTERVAL_SECONDS)),
+            threshold_seconds=float(config.get(BLOCK_THRESHOLD_KEY, DEFAULT_BLOCK_THRESHOLD_SECONDS)),
+        )
+        await self._loop_watchdog.start()
+
+    async def _mark_agent_down(self, namespace: str, reason: str) -> None:
+        """Take one agent out of service for a failure no health check can see.
+
+        Latched, unlike a health-driven transition: the components of an agent whose
+        ``on_startup`` raised may well answer a health check perfectly while being unusable, so
+        an observed-health signal would put it straight back into service on the next poll.
+
+        Args:
+            namespace: The agent to take out of service.
+            reason: Why, for the ERROR event and the readiness payload.
+        """
+        supervisor = self._actuator_api.supervisor if self._actuator_api is not None else None
+        if supervisor is None:  # pragma: no cover - the actuator is started first
+            logger.error("Agent '%s' cannot be marked down: no supervisor is running. Reason was: %s", namespace, reason)
+            return
+        await supervisor.mark_down(namespace, reason)
+
     def _create_lifespan_manager(self) -> Any:
         @asynccontextmanager
         async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             """Application lifespan manager for startup and shutdown events."""
             registry: Registry = Component.shared_registry  # type: ignore[assignment]
+            resolved_config = self._require_config()
             logger.info("Starting up application components")
 
-            # Configure OpenTelemetry tracing
+            # Configure OpenTelemetry tracing, one identity per agent (C2). First in startup,
+            # because Component.tracer caches the provider it resolves on first use and every
+            # component's first traced call happens after this point.
             try:
-                self._telemetry_manager.configure_tracing()
+                self._telemetry_manager.configure_tracing(self.namespaces)
             except Exception as e:
                 logger.warning("Failed to configure OpenTelemetry: %s", e)
+
+            # A blocked event loop stalls every agent in the process at once and raises
+            # nothing, so it is the one group-wide failure the process can detect about itself
+            # (C7). Debug mode names the callback and is on in development; production gets the
+            # watchdog instead, which names the agents that had work in flight.
+            await self._start_loop_diagnostics(resolved_config)
 
             # ActuatorApi
             if self._actuator_api is not None:
@@ -1161,40 +1294,19 @@ class AppBuilder:
 
             # Clients (IO + AI) — config reading and lazy-connect preparation
             for client in registry.get_clients():
-                try:
-                    await client.on_startup()
-                    logger.info("Client %s startup completed", client.name)
-                except Exception as e:
-                    logger.error("Client %s startup failed: %s", client.name, e, exc_info=True)
-                    raise
+                await self._start_component("Client", client, client.name)
 
             # Services (includes EventProcessingService, EventPublishingService, user services)
             for service in registry.get_services():
-                try:
-                    await service.on_startup()
-                    logger.info("Service %s startup completed", service.name)
-                except Exception as e:
-                    logger.error("Service %s startup failed: %s", service.name, e, exc_info=True)
-                    raise
+                await self._start_component("Service", service, service.name)
 
             # Handlers
             for handler in registry.get_event_handler():
-                try:
-                    await handler.on_startup()
-                    logger.info("Handler %s startup completed", handler.name)
-                except Exception as e:
-                    logger.error("Handler %s startup failed: %s", handler.name, e, exc_info=True)
-                    raise
+                await self._start_component("Handler", handler, handler.name)
 
             # Agents
             for agent_name in registry.get_agents():
-                try:
-                    agent = registry.get_component(agent_name)
-                    await agent.on_startup()
-                    logger.info("Agent %s startup completed", agent_name)
-                except Exception as e:
-                    logger.error("Agent %s startup failed: %s", agent_name, e, exc_info=True)
-                    raise
+                await self._start_component("Agent", registry.get_component(agent_name), agent_name)
 
             # User REST APIs. Schedulers are excluded because SchedulerBase extends
             # RestApiBase for its trigger route, so every scheduler is in this list *and* in
@@ -1205,49 +1317,19 @@ class AppBuilder:
             # be stopped (#43). Their routers are still mounted from get_rest_apis() in
             # _build_rest_endpoints, which is where that inheritance is wanted.
             for rest_api in self._lifecycle_rest_apis(registry):
-                try:
-                    await rest_api.on_startup()
-                    logger.info("REST API %s startup completed", rest_api.name)
-                except Exception as e:
-                    logger.error("REST API %s startup failed: %s", rest_api.name, e, exc_info=True)
-                    raise
+                await self._start_component("REST API", rest_api, rest_api.name)
 
             # Schedulers
             for scheduler in registry.get_schedulers():
-                try:
-                    await scheduler.on_startup()
-                    logger.info("Scheduler %s startup completed", scheduler.name)
-                except Exception as e:
-                    logger.error("Scheduler %s startup failed: %s", scheduler.name, e, exc_info=True)
-                    raise
+                await self._start_component("Scheduler", scheduler, scheduler.name)
 
             # Eventing components (one Dapr / NATS endpoint per agent that consumes)
             for eventing_component in self._eventing_components:
-                try:
-                    await eventing_component.on_startup()
-                    logger.info("Eventing component for namespace '%s' startup completed", eventing_component.namespace or ROOT_LABEL)
-                except Exception as e:
-                    logger.error(
-                        "Eventing component for namespace '%s' startup failed: %s",
-                        eventing_component.namespace or ROOT_LABEL,
-                        e,
-                        exc_info=True,
-                    )
-                    raise
+                await self._start_component("Eventing component", eventing_component, eventing_component.namespace or ROOT_LABEL)
 
             # Routerless lifecycle components (e.g. SessionsBus).
             for lifecycle_component in self._lifecycle_components:
-                try:
-                    await lifecycle_component.on_startup()
-                    logger.info("Lifecycle component %s startup completed", type(lifecycle_component).__name__)
-                except Exception as e:
-                    logger.error(
-                        "Lifecycle component %s startup failed: %s",
-                        type(lifecycle_component).__name__,
-                        e,
-                        exc_info=True,
-                    )
-                    raise
+                await self._start_component("Lifecycle component", lifecycle_component, type(lifecycle_component).__name__)
 
             logger.info("Application startup completed")
             yield
@@ -1318,6 +1400,8 @@ class AppBuilder:
 
             if self._actuator_api is not None:
                 await self._actuator_api.on_shutdown()
+
+            await self._loop_watchdog.stop()
 
             # Last, and after every on_shutdown: a component may well run its final blocking
             # work there. The pools hold non-daemon threads, so leaving them running keeps the

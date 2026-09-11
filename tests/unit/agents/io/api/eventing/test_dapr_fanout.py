@@ -288,3 +288,41 @@ class TestReadinessIsPerAgent:
         """There is one per process, at the root, and that is structural rather than a default."""
         with pytest.raises(TypeError):
             DaprEventing(namespace="orders")  # type: ignore[call-arg]
+
+
+class TestADegradedAgentIsNotOffered:
+    """C4 under a push transport: the sidecar posts whatever the application thinks."""
+
+    @staticmethod
+    def _pause(namespace: str) -> DaprClient:
+        """Create that agent's client and pause it, as the supervisor would."""
+        with namespace_scope(namespace):
+            client = DaprClient()
+        client._consumption_paused = True
+        return client
+
+    async def test_a_paused_agent_is_skipped(self, config: Config, calls: list[str]) -> None:
+        endpoint = build_agents(orders=OrderHandler, billing=BillingHandler)
+        self._pause("orders")
+
+        await endpoint.publish("orders.created", event())
+
+        assert calls == ["billing"]
+
+    async def test_the_delivery_is_retried_rather_than_acknowledged(self, config: Config) -> None:
+        """Acknowledging would consume the event on behalf of an agent that never saw it."""
+        endpoint = build_agents(orders=OrderHandler)
+        self._pause("orders")
+
+        answer = await endpoint.publish("orders.created", event())
+
+        assert answer["status"] == "RETRY"
+        assert "degraded" in answer["reason"]
+
+    async def test_a_healthy_agent_is_unaffected(self, config: Config, calls: list[str]) -> None:
+        endpoint = build_agents(orders=OrderHandler)
+
+        answer = await endpoint.publish("orders.created", event())
+
+        assert answer == {"status": "SUCCESS"}
+        assert calls == ["orders"]

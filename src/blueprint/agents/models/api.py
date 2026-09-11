@@ -181,6 +181,30 @@ class ComponentHealth(BaseModel):
     )
 
 
+class NamespaceReadiness(BaseModel):
+    """One agent's contribution to the readiness verdict.
+
+    Present because ``readiness_policy`` makes the overall status no longer derivable from
+    ``components``: a pod can answer ``UP`` with a failing check on it, because the agent that
+    check belongs to was not flagged critical. Without this section an operator would see a
+    contradiction and no way to resolve it.
+    """
+
+    status: str = Field(
+        ...,
+        description="Whether every one of this agent's health checks passed.",
+        examples=["UP", "DOWN"],
+    )
+    critical: bool = Field(
+        ...,
+        description="Whether this agent gates readiness under the 'critical' policy.",
+    )
+    failing: list[str] = Field(
+        default_factory=list,
+        description="The entry keys of this agent's checks that are not healthy.",
+    )
+
+
 class ReadinessResponse(BaseModel):
     """Response for the readiness probe, including downstream components."""
 
@@ -192,6 +216,15 @@ class ReadinessResponse(BaseModel):
     components: dict[str, ComponentHealth] = Field(
         ...,
         description="Health status of individual components.",
+    )
+    policy: str = Field(
+        default="all",
+        description="The readiness policy in force, which decides how a degraded agent affects the overall status.",
+        examples=["all", "critical", "any"],
+    )
+    namespaces: dict[str, NamespaceReadiness] = Field(
+        default_factory=dict,
+        description="Per-agent health, keyed by agent name ('<root>' for the root namespace).",
     )
 
     model_config = ConfigDict(
@@ -207,6 +240,11 @@ class ReadinessResponse(BaseModel):
                         "status": "unhealthy",
                         "message": "Failed to connect to endpoint.",
                     },
+                },
+                "policy": "critical",
+                "namespaces": {
+                    "<root>": {"status": "UP", "critical": True, "failing": []},
+                    "orders": {"status": "DOWN", "critical": False, "failing": ["orders.cache"]},
                 },
             }
         }
