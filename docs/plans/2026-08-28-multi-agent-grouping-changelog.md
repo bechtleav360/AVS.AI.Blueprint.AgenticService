@@ -6353,8 +6353,94 @@ the ignore file covers the first without covering the second. 2890 unit tests pa
 
 ---
 
+### Phase 10, step 4 -- the deployment guide, rewritten against what now ships
+
+The plan's instruction was "rewritten here or removed", and the reason was that the guide shipped
+while contradicting the feature: it opened with a banner saying **more than one replica is not
+safe**, recommended `replicaCount: 1` and `autoscaling.enabled: false`, assumed one Deployment per
+agent, documented `CMD uvicorn src.main:app`, and said nothing about schedulers or duplicate
+consumption. Every one of those is now either false or superseded.
+
+**What the rewrite says instead**, and each of them is a thing P0-P5 or a phase actually built:
+
+- **A Deployment runs a group, not an agent.** One image, `agents.toml` baked in, the group injected
+  at container start; a group file as a ConfigMap mounted into every Deployment, each picking its
+  slice with `BLUEPRINT_GROUP`. Splitting an agent out is a second Deployment and an edit to the
+  file -- nothing is rebuilt and nothing broker-side changes.
+- **More than one replica is safe**, and the guide says *why* rather than asserting it: one queue
+  group so a message reaches one replica; every delivery acked, naked or termed, with the outcome
+  table; and deduplication for handlers that are not naturally repeatable. The two keys that decide
+  whether scaling helps are named -- `nats_ack_wait` must exceed p99 handler duration, and
+  `nats_max_ack_pending` (default 16) is the in-flight limit **across every replica sharing the
+  consumer**, which is usually why pod count does not buy throughput.
+- **The dedup TTL question is answered, not delegated.** Spec sec. 13 left the number to the
+  deployment; the guide gives the working: the redelivery window is
+  `nats_ack_wait * nats_max_deliver`, the defaults make that 1500 s, so `idempotency_ttl = 1800`
+  with headroom, and it rises whenever either factor does. Too short is the case dedup exists to
+  prevent; too long only costs cache entries. That closes an open point that had been waiting for
+  this document.
+- **Dead letters accumulate and nothing drains them.** Also an open point, also written here: the
+  default subject is `<queue group>.dead-letter`, the framework never reads it, and messages age out
+  with the stream's retention -- so a deployment that never drains it loses them silently. Decide who
+  reads it before going multi-replica; alert on `blueprint.events.dead_lettered`.
+- **Schedulers**, which the old guide listed only as a reason not to scale. Both modes, with what
+  each needs: `in_process` claims each tick in the agent's own cache, so it needs `.with_cache()` or
+  every replica runs every tick; `event` starts no timer and takes the tick as an event on
+  `<agent>.scheduler.<name>`, delivered through the queue group to exactly one replica. A worked
+  `CronJob` is included, with the warning that **nothing here generates it**, that its schedule must
+  be kept in step with the declared crontab by hand, and that a `CronJob` is at-least-once too.
+- **Probes, corrected.** The old guide documented three endpoints including `/health/detailed`,
+  which has never existed; it also showed `{"status": "ready"}` for a payload that is
+  `status`/`components`/`policy`/`namespaces`. Both fixed, with the `readiness_policy` table, the
+  reason liveness is never agent-dependent, and the `failureThreshold` that outlasts the broker's
+  own startup.
+- **Alerting on an agent rather than on the pod.** Grouping removes the pod restart that used to be
+  the alert, so `blueprint.namespace.up{agent}` is what to alert on -- including the case a probe
+  cannot see, an agent whose subscriptions have gone while the process stays healthy.
+- **Sizing a group.** Memory is the sum of the agents; three failure classes take a whole group down
+  and raise no catchable exception, so the blast radius rather than the happy path should decide
+  group size; and the blocked-event-loop detection, with both key names and why the two mechanisms
+  are never both on.
+
+**Corrected rather than dropped.** *Writable cache directory* stays -- `cache_backend_factory.py`
+and the generated Dockerfile both point at it by name -- but its closing claim was false: grouped
+agents were said to be "isolated by key prefix, not by directory", which phase 8b step 5 reversed.
+Each agent's cache is now a subdirectory (`<cache_dir>/orders.default`), the mount count is still
+one, and the section says so. It also gained the cold-cache warning for an upgrade.
+
+The `envvar_prefix` sections were accurate and are kept whole. What was wrong around them is the
+**key shapes**: the old examples used `DYNACONF_APP__PORT`, `DYNACONF_LLM__PROVIDER` and
+`DYNACONF_CACHE__TTL`, and only the last of those is nested. `app_port`, `log_level`, `event_bus`,
+`nats_url`, `model_provider`, `idempotency_enabled`, `scheduler_mode` and `readiness_policy` are
+flat; `cache.*` and `runtimes.<name>.*` are the sectioned ones. Getting it wrong is silent -- a
+nested `app.port` that nothing reads -- so the rule is stated next to the example.
+
+**One thing is deliberately still a warning.** Everything above is covered by unit tests against
+mocked transports and has not been exercised against a real broker. The guide says so at the top,
+in place of the banner it replaces: queue-group distribution, redelivery after `nats_ack_wait`,
+durable survival across reconnect and the shutdown drain are specified, implemented and unwatched.
+
+566 lines became 809.
+
+---
+
 ## Open points
 
+- **The generated `settings.toml` writes two sections nothing reads.** `[default.logging]`
+  (`level`, `format`) and `[default.observability]` (`otel_enabled`, `token_metrics_enabled`) are
+  sectioned, and the framework reads all four as **flat** keys -- `log_level`, `log_format`,
+  `otel_enabled`, `token_metrics_enabled`. Probed against a real `Config`: a settings file with
+  `[default.observability] otel_enabled = true` yields `get_observability_config().otel_enabled ==
+  False`, so a developer who turns telemetry on in the file scaffolded for them gets nothing and no
+  message. `base_files/settings.txt` is where it is written.
+- **`asbs create agent` writes `[default.runtimes.<agent>.models]`; the framework reads
+  `runtimes.<agent>.model_settings`.** The generator's own settings writer
+  (`settings_part_generator.py`) writes `.model_settings` correctly, so the two halves of the
+  scaffolder disagree and the block `asbs create agent` adds is inert. Found beside the
+  `openai_reasoning_effort` value fixed in step 3, in the same statement.
+- **`asbs` crashes on a Windows console** -- still open from step 1, and now the only thing standing
+  between the CLI and the ASCII rule. Every command prints check marks and box drawing; on a cp1252
+  console the first one raises `UnicodeEncodeError` mid-command, after files have been written.
 - ~~**`docs/guides/cli-reference.md` still documents checks that have never existed.**~~ **Done in
   phase 10 step 3.** Every command was read against the code: the generated project structure (it
   listed a `tests/` tree and a `pyproject.toml` that are not written), `asbs create agent` (an
