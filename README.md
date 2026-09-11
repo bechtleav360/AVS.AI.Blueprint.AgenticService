@@ -241,7 +241,7 @@ See the [Deployment Guide](docs/guides/deployment.md) for detailed instructions.
 - [Architecture](docs/concepts/architecture.md) -- Component model, registry, and lifecycle
 - [Event Processing](docs/concepts/event-processing.md) -- CloudEvents, handler chain, Dapr/NATS
 - [Configuration](docs/concepts/configuration.md) -- Settings, secrets, and environment variables
-- [Caching](docs/concepts/caching.md) -- Persistent disk cache with TTL and namespaces
+- [Caching](docs/concepts/caching.md) -- Disk and Redis caches, TTL, namespaces, and per-agent isolation
 - [Observability](docs/concepts/observability.md) -- OpenTelemetry tracing, metrics, and logging
 
 ### Component Guides

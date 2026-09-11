@@ -799,7 +799,7 @@ means the framework package, ``app_builder/test_app_builder.py`` means the unit 
 two trees are roots as well as the repository itself.
 """
 
-HISTORICAL_DOCUMENTS = ("docs/plans", "docs/specs", "docs/superpowers", "CHANGELOG.md")
+HISTORICAL_DOCUMENTS = ("docs/plans", "docs/specs", "CHANGELOG.md")
 """Documents that record what was decided and what was done, at the time it was done.
 
 They name files that have since been deleted, and proposals name files not yet written; both are

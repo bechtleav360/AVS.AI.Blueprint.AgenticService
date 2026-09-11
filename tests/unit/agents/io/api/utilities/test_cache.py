@@ -7,21 +7,33 @@ that are -- and both are asserted, because answering 503 for a mistyped name wou
 retry that can never succeed.
 """
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
+import fakeredis
 import pytest
 from fastapi import HTTPException
 
 from blueprint.agents.io.api.utilities.cache import CacheManagementApi
 from blueprint.agents.models.api import CacheEvictRequest
+from blueprint.agents.models.config import CacheConfig
+from blueprint.agents.services.infrastructure.cache_backend_factory import CacheBackendFactory
+from blueprint.agents.services.infrastructure.redis_cache_service import RedisCacheService
 
 STATS = {
     "size": 10,
     "cache_dir": "/tmp/cache",
-    "ttl_tracked_keys": 5,
     "size_limit": 1_000_000_000,
     "eviction_policy": "least-recently-used",
 }
+"""What a disk cache reports, as it reports it.
+
+It is the shape :meth:`DiskCacheService.get_stats` really returns, and
+:class:`TestTheStatsPayloadIsTheBackends` holds it to that against a real cache. It once carried
+a fifth key, ``ttl_tracked_keys``, that no backend has ever produced -- invented here, accepted
+by a ``MagicMock``, and required by ``CacheStatsResponse``, so the endpoint answered 500 while
+these tests passed.
+"""
 
 
 @pytest.fixture
@@ -111,6 +123,74 @@ class TestEvictCacheEntry:
     async def test_response_reports_all_when_no_namespace(self, cache_api_with_cache: CacheManagementApi) -> None:
         result = await cache_api_with_cache.evict_cache_entry(CacheEvictRequest())
         assert result["namespace"] == "all"
+
+
+class TestTheStatsPayloadIsTheBackends:
+    """Against real caches: the endpoint reports what its backend reports, and nothing else.
+
+    The routing cases above use doubles because what they pin down is *which* cache is reached.
+    The payload is a different question, and a double cannot answer it: a hand-written stats
+    dictionary is exactly what hid a 500 here for as long as the endpoint has existed. The two
+    backends report almost disjoint field sets -- a directory and an eviction policy against a
+    server version and a client count -- so both are constructed for real.
+    """
+
+    async def test_a_real_disk_cache_reports_its_own_fields(
+        self, cache_api: CacheManagementApi, mock_registry: MagicMock, tmp_path: Path
+    ) -> None:
+        cache = CacheBackendFactory.create(CacheConfig(cache_dir=str(tmp_path / "store")), enable_locking=False)
+        register(mock_registry, default=cache)
+
+        result = await cache_api.get_cache_stats()
+
+        assert set(result.model_dump(exclude_none=True)) == {"size", "cache_dir", "size_limit", "eviction_policy"}
+        assert result.eviction_policy == "least-recently-used"
+
+    async def test_a_real_redis_cache_reports_a_different_shape_entirely(
+        self, cache_api: CacheManagementApi, mock_registry: MagicMock
+    ) -> None:
+        """None of the disk backend's fields, seven of its own -- and the endpoint keeps them.
+
+        ``fakeredis`` answers every command the service issues except ``INFO``, which it does
+        not implement, so that one response is stubbed: the payload is still built by
+        ``RedisCacheService.get_stats`` from a server's answer, which is the part under test.
+        """
+        server_info = {"redis_version": "7.2.4", "connected_clients": 3, "used_memory_human": "1.2M", "uptime_in_seconds": 99}
+        cache = RedisCacheService.__new__(RedisCacheService)
+        cache._client = fakeredis.FakeRedis(decode_responses=True)
+        cache._client.info = lambda: server_info
+        cache._key_prefix = "orders.sessions"
+        cache._safe_redis_url = "redis://fake:6379/0"
+        register(mock_registry, default=cache)
+
+        result = await cache_api.get_cache_stats()
+
+        reported = result.model_dump(exclude_none=True)
+        assert reported["backend"] == "redis"
+        assert reported["key_prefix"] == "orders.sessions"
+        assert reported["redis_version"] == "7.2.4"
+        assert not {"size", "cache_dir", "size_limit", "eviction_policy"} & set(reported)
+        cache._client.close()
+
+    async def test_a_backend_that_cannot_report_answers_an_empty_payload(
+        self, cache_api: CacheManagementApi, mock_registry: MagicMock
+    ) -> None:
+        """``get_stats`` returns ``{}`` when its own call fails, and that is an answer, not a 500.
+
+        Here the Redis server does not implement ``INFO`` -- which is what ``fakeredis`` really
+        does, so nothing is stubbed. The cache itself is working; only the statistics call
+        failed, and an empty payload says so without taking the endpoint down with it.
+        """
+        cache = RedisCacheService.__new__(RedisCacheService)
+        cache._client = fakeredis.FakeRedis(decode_responses=True)
+        cache._key_prefix = ""
+        cache._safe_redis_url = "redis://fake:6379/0"
+        register(mock_registry, default=cache)
+
+        result = await cache_api.get_cache_stats()
+
+        assert result.model_dump(exclude_none=True) == {}
+        cache._client.close()
 
 
 class TestNamedCaches:

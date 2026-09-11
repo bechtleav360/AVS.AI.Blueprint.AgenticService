@@ -1,10 +1,19 @@
 # Caching
 
-Blueprint Agents includes a built-in persistent key-value cache backed by diskcache-rs. The cache provides fast local storage with TTL expiration, namespace isolation, and a management REST API.
+A cache in Blueprint Agents is a persistent key-value store that an application **declares** and
+the framework creates. It has TTL expiry, namespaces for partitioning keys, a readiness check, a
+small management API, and two interchangeable backends: a local disk store (the default) and Redis
+(for state shared between replicas).
 
-## Enabling the Cache
+This is the one document for the cache. It replaces four that overlapped and disagreed -- a cache
+architecture note, a system overview, a Redis getting-started guide, and an earlier version of
+this file; see the git history for those.
 
-Enable caching by calling `.with_cache()` on the `AppBuilder`:
+---
+
+## Declaring a cache
+
+`with_cache()` on the builder:
 
 ```python
 from blueprint.agents import AppBuilder, Config
@@ -20,328 +29,359 @@ app = (
 )
 ```
 
-Once enabled, the cache service is registered in the component registry and a management REST API is automatically mounted.
+Like every `with_*` call, this **records a declaration and constructs nothing**. The backend is
+chosen and the store opened by `build()`, which is also why a cache can be declared before any
+configuration exists.
 
-## Accessing the Cache
+### Several caches
 
-The cache is available through the component registry from `on_startup()` onward:
+Call it again with a name:
 
 ```python
-from blueprint.agents.handler.event_handler_base import EventHandlerBase
-from blueprint.agents.models.events import CloudEvent, HandlerResult
+AppBuilder(config).with_cache().with_cache(name="sessions").build()
+```
 
+Each name gets its own store -- its own directory on disk, its own key prefix on Redis -- and a
+component reads one back by name. There is deliberately **no fallback from an unknown name to the
+default**: asking for a cache that was not declared raises, rather than quietly handing over some
+other cache.
 
+| Call | Meaning |
+|---|---|
+| `with_cache()` | The default cache, named `default` |
+| `with_cache(name="sessions")` | A second cache called `sessions` |
+| `with_cache(False)` | Declares nothing; caching off |
+| `with_cache(True, False)` | The default cache with file locking disabled |
+
+`name` is keyword-only and comes last, which is a constraint rather than a style choice:
+`with_cache(False)` has always meant "no cache", and had `name` come first that call would have
+become a cache named `False` with caching silently switched *on*.
+
+---
+
+## Using a cache
+
+Resolve it in `on_startup`, never in `__init__` -- nothing is constructed until `build()` runs, so
+a collaborator may not exist yet while a component is being constructed.
+
+```python
 class DeduplicationHandler(EventHandlerBase):
-    priority = 1
-
     async def on_startup(self) -> None:
-        self.cache = self.registry.cache_service
+        self.cache = self.registry.get_cache("sessions")   # a named cache
+        self.default = self.registry.cache_service          # the default one
 
-    def can_handle_event(self, event: CloudEvent, context: dict[str, Any]) -> bool:
-        return event.type == "document.received"
-
-    async def handle_event(self, event: CloudEvent, context: dict[str, Any]) -> HandlerResult | None:
-        doc_id = event.subject
-
-        # Check if already processed
-        if await self.cache.get(doc_id, namespace="processed"):
-            return None  # Skip duplicate
-
-        # Mark as processed with a 1-hour TTL
-        await self.cache.set(doc_id, True, namespace="processed", ttl=3600)
-
-        return HandlerResult(
-            event_type="document.accepted",
-            data=event.data,
-        )
+    async def handle_event(self, event: GenericCloudEvent, context: dict) -> HandlerResult | None:
+        if self.cache.get(event.subject, namespace="processed"):
+            return None                                     # already seen
+        self.cache.set(event.subject, True, namespace="processed", ttl=3600)
+        return HandlerResult(event_type="document.accepted", data=event.data)
 ```
 
-## Cache Operations
+**The cache interface is synchronous.** `get`, `set` and the rest are ordinary methods; they are
+not awaited, even inside `async def`. Operations are sub-millisecond on both backends.
 
-### get(key, namespace)
+`self.registry` answers for the component's own agent, so `get_cache("sessions")` reaches this
+agent's `sessions` cache and cannot reach anyone else's.
 
-Retrieve a value by key within a namespace. Returns `None` if the key does not exist or has expired.
+### Operations
+
+| Method | What it does |
+|---|---|
+| `get(key, namespace="default")` | The value, or `None` if absent or expired |
+| `set(key, value, namespace="default", ttl=None)` | Store a value. `ttl` in seconds |
+| `delete(key, namespace="default")` | Remove one key; `True` if it was there |
+| `exists(key, namespace="default")` | Whether the key is present and unexpired |
+| `clear(namespace=None)` | Empty one namespace, or the whole cache |
+| `claim(key, value, namespace="default", ttl=None)` | Store **only if absent**; `True` if this caller stored it |
+| `hash(value)` | The key hash this cache would use |
+| `get_stats()` | Backend statistics (see the management API below) |
+| `list_namespaces()` | Namespaces currently holding entries |
+| `list_values(namespace="default", limit=100, offset=0)` | Iterate stored values, paginated |
+
+### `claim`: deciding which process does the work
+
+`exists` followed by `set` is not a lock. Two callers racing on the same key both pass the
+`exists` check before either `set` lands, and both then believe they hold it. `claim` is the
+set-if-absent primitive that closes the race -- `SET NX EX` on Redis, `add` on a lock-protected
+disk cache -- and it is what event deduplication and the scheduler tick use to pick one winner
+among several replicas.
 
 ```python
-value = await self.cache.get("user:12345", namespace="profiles")
-if value is None:
-    # Cache miss -- fetch from source
-    value = await self.fetch_profile(12345)
-    await self.cache.set("user:12345", value, namespace="profiles", ttl=900)
+if not self.cache.claim(event.id, "processing", namespace="dedup", ttl=600):
+    return None          # another replica got there first
 ```
 
-### set(key, value, namespace, ttl)
+### Keys and namespaces
 
-Store a value under a key. The `ttl` parameter specifies the time-to-live in seconds. If omitted, the `default_ttl` from configuration is used.
+A key may be a string, a list of strings, or a dictionary. Lists are sorted and dictionaries are
+key-sorted before hashing, so `["a", "b"]` and `["b", "a"]` are the same key, and so are
+`{"x": 1, "y": 2}` and `{"y": 2, "x": 1}`.
 
 ```python
-# Cache for 30 minutes
-await self.cache.set("result:abc", {"score": 0.95}, namespace="results", ttl=1800)
-
-# Cache using the default TTL from settings.toml
-await self.cache.set("result:def", {"score": 0.87}, namespace="results")
+params = {"model": "gpt-4o", "prompt": "Summarise this", "temperature": 0.3}
+answer = self.cache.get(params, namespace="llm_responses")
+if answer is None:
+    answer = self.call_llm(params)
+    self.cache.set(params, answer, namespace="llm_responses", ttl=7200)
 ```
 
-### delete(key, namespace)
+A **namespace** partitions keys *within one cache*. Two components can both write `doc:1` under
+different namespaces without colliding, and `clear(namespace=...)` invalidates one group without
+touching the others. The default namespace is `default`.
 
-Remove a specific key from a namespace.
+### TTL
 
-```python
-await self.cache.delete("user:12345", namespace="profiles")
-```
+Every write gets a TTL. When `ttl` is omitted the cache-wide `default_ttl` applies -- one hour
+unless configured otherwise -- on both backends. `default_ttl` is an integer, so **there is no way
+to configure "never expires"** through a settings file; pass a long `ttl` at the call instead.
 
-### clear(namespace)
+---
 
-Remove all entries in a namespace. Useful for bulk invalidation.
+## A cache belongs to the agent that declared it
 
-```python
-# Purge all cached search results
-await self.cache.clear(namespace="search_results")
-```
+When several agents share one process, a cache is private to the one that declared it. Two agents
+may both declare `sessions` and they get **separate stores**: separate directories on disk,
+separate key prefixes on Redis. A lookup never falls back to a neighbour's cache or to the root's,
+because two independently written agents both asking for `sessions` would otherwise share one
+store the moment they were grouped -- and only in production.
 
-## TTL and Automatic Expiration
+Nothing about this is visible in an agent's code. `self.registry.get_cache("sessions")` is what
+the author writes whether the agent runs alone or beside five others.
 
-Every cached entry can have an individual TTL (time-to-live) in seconds. Once the TTL elapses, the entry is no longer returned by `get()` and is eligible for eviction.
+Where the data goes:
 
-```python
-# Short-lived cache for rate limiting (60 seconds)
-await self.cache.set(f"rate:{client_ip}", request_count, namespace="rate_limit", ttl=60)
-
-# Long-lived cache for expensive computations (24 hours)
-await self.cache.set(embedding_key, vector, namespace="embeddings", ttl=86400)
-```
-
-If no TTL is provided, the `default_ttl` value from `[default.cache]` in `settings.toml` is applied.
-
-## Namespace Isolation
-
-Namespaces partition the cache into logical segments. Different components can use separate namespaces without risk of key collisions.
-
-```python
-# Handler uses one namespace
-await self.cache.set("doc:1", metadata, namespace="documents")
-
-# Service uses a different namespace
-await self.cache.set("doc:1", embedding, namespace="embeddings")
-
-# No collision -- these are independent entries
-```
-
-Namespaces also allow targeted invalidation. Clearing one namespace does not affect others.
-
-## Key Hashing for Complex Keys
-
-The cache supports complex keys such as lists, dictionaries, and tuples. These are automatically hashed to produce a stable string key.
-
-```python
-# Dictionary key -- automatically hashed
-query_params = {"model": "gpt-4o", "prompt": "Summarize this document", "temperature": 0.3}
-cached_response = await self.cache.get(query_params, namespace="llm_responses")
-
-if cached_response is None:
-    response = await self.call_llm(query_params)
-    await self.cache.set(query_params, response, namespace="llm_responses", ttl=7200)
-
-# List key -- also automatically hashed
-chunk_ids = ["chunk-a", "chunk-b", "chunk-c"]
-await self.cache.set(chunk_ids, merged_result, namespace="merged_chunks")
-```
-
-## Cache Management REST API
-
-When the cache is enabled, the framework automatically registers a REST API for cache inspection and management at `/api/cache`.
-
-### Endpoints
-
-| Method | Path | Description |
+| | Disk backend | Redis backend |
 |---|---|---|
-| `GET` | `/api/cache/{namespace}/{key}` | Retrieve a cached value |
-| `PUT` | `/api/cache/{namespace}/{key}` | Set a cached value (JSON body) |
-| `DELETE` | `/api/cache/{namespace}/{key}` | Delete a cached entry |
-| `DELETE` | `/api/cache/{namespace}` | Clear an entire namespace |
+| Standalone, default cache | `<cache_dir>` | keys under `<key_prefix>` |
+| Standalone, cache `sessions` | `<cache_dir>/sessions` | keys under `<key_prefix>:sessions` |
+| Agent `orders`, default cache | `<cache_dir>/orders.default` | keys under `<key_prefix>:orders.default` |
+| Agent `orders`, cache `sessions` | `<cache_dir>/orders.sessions` | keys under `<key_prefix>:orders.sessions` |
 
-### Example Usage
+A named store is a **subdirectory** of `cache_dir` rather than a sibling, because a deployment may
+mount its volume at `cache_dir` itself and nothing outside the mount can be created under
+`readOnlyRootFilesystem`. See *Writable Cache Directory* in
+[deployment.md](../guides/deployment.md).
 
-```bash
-# Retrieve a cached value
-curl http://localhost:8000/api/cache/profiles/user:12345
+A single-agent application is unaffected in every respect: same directory, same Redis keyspace,
+same registry names it always had.
 
-# Set a cached value with a TTL
-curl -X PUT http://localhost:8000/api/cache/results/query:abc \
-  -H "Content-Type: application/json" \
-  -d '{"value": {"score": 0.95}, "ttl": 1800}'
+> **Upgrading:** the key layout changed when caches became per-agent. An application upgrading
+> with a mounted disk cache or a persistent Redis sees its old entries as absent -- a cold cache,
+> not an error.
 
-# Delete a specific key
-curl -X DELETE http://localhost:8000/api/cache/profiles/user:12345
-
-# Clear all entries in a namespace
-curl -X DELETE http://localhost:8000/api/cache/search_results
-```
+---
 
 ## Configuration
 
-Cache settings are defined in `settings.toml` under the `[default.cache]` section:
+Under `[default.cache]` in `settings.toml`:
 
 ```toml
 [default.cache]
-cache_dir = "/tmp/blueprint-cache"
-size_limit = 1073741824              # Maximum cache size in bytes (1 GB)
-eviction_policy = "least-recently-used"  # Eviction strategy when size_limit is reached
-default_ttl = 3600                   # Default TTL in seconds (1 hour)
+cache_dir = ".cache/blueprint"
+size_limit = 1000000000                  # bytes
+eviction_policy = "least-recently-used"
+default_ttl = 3600                       # seconds
 ```
 
-### Configuration Fields
+| Field | Type | Default | Applies to |
+|---|---|---|---|
+| `backend` | `str` | `"disk"` | `"disk"` or `"redis"` |
+| `cache_dir` | `str` | `".cache/blueprint"` | disk |
+| `size_limit` | `int` | `1000000000` | disk |
+| `eviction_policy` | `str` | `"least-recently-used"` | disk |
+| `default_ttl` | `int` | `3600` | both |
+| `key_prefix` | `str` | `""` | redis |
+| `redis_url` | `str \| None` | `redis://localhost:6379/0` | redis |
+| `redis_password` | `str \| None` | `None` | redis -- read it from a secrets file |
+| `redis_db` | `int` | `0` | redis |
+| `redis_tls` | `bool` | `false` | redis |
+| `fallback_to_local` | `bool` | `false` | redis |
 
-| Field | Type | Description |
-|---|---|---|
-| `cache_dir` | `str` | Filesystem path where cache data is stored |
-| `size_limit` | `int` | Maximum total cache size in bytes |
-| `eviction_policy` | `str` | Strategy for removing entries when the cache is full |
-| `default_ttl` | `int` | Default time-to-live in seconds for entries without an explicit TTL |
+In a group each agent may configure its own cache under its own scope, so one agent can run on
+Redis beside a neighbour on disk:
 
-## Redis Backend
+```toml
+[default.cache]                 # what every agent gets unless it says otherwise
+backend = "disk"
 
-For deployments where multiple service instances need to share cache state (e.g. horizontal scaling, blue/green deployments, multi-pod Kubernetes setups), Blueprint Agents ships with an optional Redis backend. Cache reads and writes flow through a central Redis server so every replica sees the same data.
+[default.orders.cache]          # just the orders agent
+backend = "redis"
+redis_url = "redis://shared-redis:6379/0"
+key_prefix = "orders-api"
+```
 
-### Installation
+---
 
-The Redis client is an optional extra. Install it explicitly:
+## Backends
+
+### Disk (default)
+
+Backed by `diskcache-rs`, a Rust implementation of the diskcache format. Persists to
+`cache_dir`, survives restarts, and uses file-based locking so replicas sharing one mounted
+directory can read and write it safely. Nothing has to be installed and nothing has to be
+configured.
+
+### Redis
+
+For state shared across replicas -- horizontal scaling, blue/green, several pods behind one
+service. Install the extra:
 
 ```bash
 pip install 'avs-blueprint-agents[redis]'
 ```
 
-This pulls in `redis-py` with the `hiredis` parser for fast wire-protocol decoding. No code changes are required — the framework auto-selects the backend at startup based on `settings.toml`.
-
-### Configuration
-
-Switch backends by setting `backend = "redis"` and adding the connection fields:
-
-```toml
-[default.cache]
-backend = "redis"                         # "disk" (default) or "redis"
-default_ttl = 3600                        # Default TTL in seconds (used by both backends)
-key_prefix = "inventory-api"              # Prefix prepended to every cache key
-redis_url = "redis://localhost:6379/0"    # Connection URL (host, port, db)
-redis_password = "secret"                 # Optional password
-redis_db = 0                              # Database index (0–15 for default Redis)
-redis_tls = false                         # Set true for TLS (rediss://)
-fallback_to_local = false                 # If true: fall back to DiskCacheService when Redis is unreachable
-```
-
-### Field Reference
-
-| Field | Type | Description |
-|---|---|---|
-| `backend` | `str` | `"disk"` (default) or `"redis"`. Controls which cache implementation is instantiated. |
-| `key_prefix` | `str` | Global prefix prepended to every key in the form `{prefix}:{namespace}:{hash}`. Lets you safely share a single Redis database between multiple services without key collisions. Empty string disables prefixing. |
-| `redis_url` | `str` | Standard Redis URL (`redis://...` or `rediss://...` for TLS). Defaults to `redis://localhost:6379/0`. |
-| `redis_password` | `str \| None` | Password for Redis AUTH. Read this from a secrets file, never commit it. |
-| `redis_db` | `int` | Numeric database index. Default is `0`. |
-| `redis_tls` | `bool` | Enable TLS — equivalent to using `rediss://` in `redis_url`. |
-| `fallback_to_local` | `bool` | If `True`, the framework starts up with `DiskCacheService` when (a) the Redis extra is not installed or (b) the Redis server is unreachable on `on_startup()`. Useful for graceful degradation in non-production environments. |
-
-### Multi-Service Shared Redis
-
-When several microservices share one Redis cluster, set a unique `key_prefix` per service:
-
-```toml
-# Service A
-[default.cache]
-backend = "redis"
-key_prefix = "inventory-api"
-redis_url = "redis://shared-redis:6379/0"
-
-# Service B
-[default.cache]
-backend = "redis"
-key_prefix = "billing-api"
-redis_url = "redis://shared-redis:6379/0"
-```
-
-Each service's `clear()`, `list_namespaces()`, and `list_values()` calls only operate within its own prefix. `clear()` uses `SCAN` + `DELETE` (never `FLUSHDB`), so it never touches keys belonging to other services.
-
-### Graceful Degradation
-
-In development or non-critical environments, set `fallback_to_local = true` to keep the service running when Redis is unavailable:
+and switch backends in the settings file:
 
 ```toml
 [default.cache]
 backend = "redis"
 redis_url = "redis://localhost:6379/0"
-fallback_to_local = true
+key_prefix = "inventory-api"
 ```
 
-Behavior:
-- If the `redis` extra is not installed: factory returns a `DiskCacheService`.
-- If Redis is installed but unreachable on startup: `on_startup()` logs the failure and continues without raising.
+No code changes: `with_cache()` picks up the backend from configuration.
 
-In production, leave `fallback_to_local = false` so startup fails loudly when the cache backend is misconfigured.
+Every Redis key is `{key_prefix}:{namespace}:{sha256(key)}`, so several services can share one
+Redis database as long as each sets a distinct `key_prefix`. `clear()` uses `SCAN` + `DELETE`
+within the prefix and never `FLUSHDB`, so it cannot touch another service's keys.
 
-## File-Based Locking
+**Startup is a real connection.** `build()` pings Redis while creating the cache, so a
+`RedisCacheService` in the registry always means a Redis that answered. If the ping fails:
 
-The DiskCacheService uses file-based locking to ensure safe concurrent access across multiple processes or deployment replicas sharing the same `cache_dir`. This means multiple instances of the same service can safely read and write to a shared cache directory without corruption.
+- with `fallback_to_local = true`, the framework logs a warning and uses a disk cache instead --
+  a genuine backend swap, and the application runs on disk thereafter;
+- with `fallback_to_local = false` (the default), startup fails. In production that is what you
+  want: a pod that cannot reach its cache should crash-loop visibly rather than serve misses.
 
-```toml
-[default.cache]
-# Shared cache directory across replicas
-cache_dir = "/mnt/shared/blueprint-cache"
+The same applies when the `redis` extra is not installed at all.
+
+---
+
+## Readiness
+
+Every declared cache is added to the readiness probe, so a Redis outage takes the pod out of the
+service pool instead of letting it serve cache misses while looking healthy.
+
+| Cache | Readiness entry |
+|---|---|
+| The default cache | `cache` |
+| A cache named `sessions` | `cache:sessions` |
+| Agent `orders`, default cache | `orders.cache` |
+| Agent `orders`, cache `sessions` | `orders.cache:sessions` |
+
+`/health/ready` answers **503** with a diagnostic payload while any check is down; `/health/live`
+is unaffected, so Kubernetes removes the pod from the service pool without killing it. Recovery is
+automatic on the next health tick (`health_check_interval_seconds`, 30 seconds by default). For a
+disk cache the check is trivially up -- a local filesystem does not fail the way a network service
+does.
+
+---
+
+## The management API
+
+Declaring a cache mounts a small management API. A standalone application serves it at
+`/api/cache/*`; in a group each agent that declared a cache gets its own under
+`/api/<agent>/cache/*`, so one agent's endpoint cannot report another's keys.
+
+| Method | Path | Body / query | Answers |
+|---|---|---|---|
+| `GET` | `/api/cache/stats` | `?name=` | Backend statistics for one cache |
+| `GET` | `/api/cache/namespaces` | `?name=` | `{"namespaces": [...], "count": n}` |
+| `POST` | `/api/cache/evict` | `{"namespace": "ns"}` | Clears that namespace, or the whole cache when `namespace` is omitted |
+
+`?name=` selects which of the agent's caches to act on and defaults to `default`, so a request
+that names nothing reaches the cache a single-cache application has always had.
+
+```bash
+curl localhost:8000/api/cache/stats
+curl 'localhost:8000/api/cache/stats?name=sessions'
+curl localhost:8000/api/cache/namespaces
+curl -X POST localhost:8000/api/cache/evict -H 'Content-Type: application/json' -d '{"namespace": "profiles"}'
 ```
 
-## Complete Example
+Two failures, answered differently: **503** when the agent has no cache at all (it was built
+without one, which may change without a redeploy), and **404** for a name that is not among the
+ones it has -- a retry can never fix a typo. The 404 body lists the registered names, because
+nothing else does.
 
-```python
-from blueprint.agents import AppBuilder, Config
-from blueprint.agents.services.service_base import ServiceBase
-from blueprint.agents.handler.event_handler_base import EventHandlerBase
-from blueprint.agents.models.events import CloudEvent, HandlerResult
+**The statistics are the backend's own**, not a fixed schema. A disk cache reports its directory,
+entry count, size limit and eviction policy; Redis reports a server version, client count, memory
+and uptime. Fields the backend in use did not fill in are omitted.
 
-
-class EmbeddingService(ServiceBase):
-    async def on_startup(self) -> None:
-        self.cache = self.registry.cache_service
-        self.agent = self.registry.get_agent("embedder")
-
-    async def get_embedding(self, text: str) -> list[float]:
-        # Check cache first
-        cached = await self.cache.get(text, namespace="embeddings")
-        if cached is not None:
-            return cached
-
-        # Compute and cache
-        embedding = await self.agent.run(text)
-        await self.cache.set(text, embedding, namespace="embeddings", ttl=86400)
-        return embedding
-
-
-class DocumentHandler(EventHandlerBase):
-    priority = 10
-
-    async def on_startup(self) -> None:
-        self.embedding_svc = self.registry.get_service(EmbeddingService)
-
-    def can_handle_event(self, event: CloudEvent) -> bool:
-        return event.type == "document.received"
-
-    async def handle_event(self, event: CloudEvent) -> HandlerResult:
-        embedding = await self.embedding_svc.get_embedding(event.data["content"])
-        return HandlerResult(
-            event_type="document.embedded",
-            data={"doc_id": event.subject, "embedding": embedding},
-        )
-
-    def get_published_event_types(self) -> list[str]:
-        return ["document.embedded"]
-
-
-config = Config(settings_files=["settings.toml"])
-
-app = (
-    AppBuilder(config)
-    .with_service(EmbeddingService)
-    .with_handler(DocumentHandler)
-    .with_agent("embedder", EmbedderAgent)
-    .with_cache()
-    .build()
-)
+```jsonc
+// disk
+{"size": 4, "cache_dir": "/var/cache/blueprint", "size_limit": 1000000000, "eviction_policy": "least-recently-used"}
+// redis
+{"backend": "redis", "key_prefix": "orders-api", "redis_version": "7.2.4", "connected_clients": 3, ...}
 ```
+
+> `size` on the disk backend counts stored keys, and each cached value is stored with a parallel
+> TTL entry -- so a cache holding two values reports `size: 4`. `list_values` and
+> `list_namespaces` filter the TTL entries out; `size` does not.
+
+---
+
+## How it fits together
+
+The cache is a Strategy: calling code holds a `CacheService` and uses it through a fixed
+interface, and which implementation that is gets decided once, at build time, from configuration.
+
+```
+  settings.toml [default.cache] -- or [default.<agent>.cache] for one agent in a group
+            |
+            v
+  Config.get_cache_config()  ->  CacheConfig (pydantic)
+            |
+            v
+  CacheBackendFactory.create(config, name=..., namespace=...)
+            |                     |
+            |                     +-- isolates the store: a directory, or a Redis key prefix
+            v
+  DiskCacheService  or  RedisCacheService            (both are CacheService)
+            |
+            v
+  registry.add_cache(name, cache, namespace=...)     keyed on (agent, name)
+            |
+            v
+  self.registry.get_cache("sessions")  in any component of that agent
+```
+
+Two design points worth knowing:
+
+- **The factory isolates the store, not the caller.** How a backend separates two caches is
+  knowledge only that backend has -- the disk cache separates by directory, Redis by key prefix --
+  so a new backend answers that question in the method that creates it, and no caller has to.
+- **`key_prefix` and `namespace` are different tools.** `key_prefix` is configured once per
+  deployment and keeps whole services apart in a shared Redis. `namespace` is passed per call and
+  organises one cache's own keys. Both appear in every Redis key.
+
+A new backend means implementing `CacheService` and extending the factory. Nothing that uses a
+cache has to change.
+
+---
+
+## Where things live
+
+| Path | What |
+|---|---|
+| `services/infrastructure/cache_service.py` | `CacheService` (the interface) and `DiskCacheService` |
+| `services/infrastructure/redis_cache_service.py` | `RedisCacheService` |
+| `services/infrastructure/cache_backend_factory.py` | Backend selection and store isolation |
+| `io/api/utilities/cache.py` | The management API |
+| `io/api/actuators/health/cache_health.py` | The readiness check |
+| `models/config.py` | `CacheConfig` |
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `ImportError: Redis backend requires ...[redis]` | The extra is not installed | `pip install 'avs-blueprint-agents[redis]'` |
+| Logs show `DiskCacheService` with `backend = "redis"` set | The settings file is not the one being read, or the section is misspelt | Confirm `[default.cache]` and the `settings_files` path |
+| `No cache registered as 'sessions'` | That agent never declared it | Add `.with_cache(name="sessions")`; there is no fallback to the default |
+| Two replicas do not see each other's writes | Different `key_prefix` or `redis_url` | They must match exactly for replicas of one service |
+| Two services overwrite each other's keys | The same `key_prefix` for different services | Give each service its own |
+| An agent cannot see a cache its neighbour declared | Working as designed | Declare one in that agent too |
+| `/api/cache/stats` answers 503 | The application built no cache | `with_cache()` |
+| Entries vanished after an upgrade | The per-agent key layout changed | Expected once; the cache refills |

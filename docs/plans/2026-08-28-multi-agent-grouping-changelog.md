@@ -5482,6 +5482,102 @@ for the moved file.
 
 2625 unit tests pass, zero failures. Part 3, the documentation cleanup, follows.
 
+### Phase 8b, step 9 part 3 -- one home per document, and the 500 that documenting one found
+
+The audit behind step 9 listed four pieces of documentation debt. Two were real and are fixed, one
+had already been closed by part 1, and **one turned out to rest on a misreading** -- recorded here
+rather than quietly dropped, because an audit item that dissolves on inspection is worth the same
+sentence as one that holds.
+
+**`docs/superpowers/` is gone.** It held `plans/` and `specs/` mirroring `docs/plans` and
+`docs/specs` -- 3 files, 2079 lines, linked from nothing. They are ordinary plan and spec
+documents, so they were **moved** rather than deleted: `2026-04-01-component-naming-refactor.md`
+and `2026-07-06-sessions-agent-registration.md` into `docs/plans/`,
+`2026-07-06-sessions-agent-registration-design.md` into `docs/specs/`. The plan's one citation of
+its own spec was repointed; the only other links in the three files are same-document anchors.
+`test_design_rules.py` lost `docs/superpowers` from `HISTORICAL_DOCUMENTS`, which would otherwise
+have been a prefix matching nothing -- dead configuration in the guard that exists to catch dead
+pointers.
+
+**Four cache documents became one.** `docs/concepts/caching.md` (347),
+`docs/concepts/cache-system-overview.md` (232), `docs/concepts/cache-architecture.md` (181) and
+`docs/guides/caching-getting-started.md` (208) -- 968 lines, one of which `docs/README.md` linked
+-- are now a single 387-line `docs/concepts/caching.md`, the path both READMEs already pointed at.
+The other three are deleted; git history keeps them.
+
+It is a rewrite rather than a merge, because the linked one was wrong about nearly everything a
+reader would try:
+
+- **The REST API section documented four endpoints that have never existed**
+  (`GET`/`PUT`/`DELETE /api/cache/{namespace}/{key}`, `DELETE /api/cache/{namespace}`). The real
+  API is `GET /cache/stats`, `GET /cache/namespaces` and `POST /cache/evict`, each taking `?name=`.
+- **Every example awaited a synchronous method.** `CacheService.get`/`set`/`delete` are ordinary
+  `def`s; `await self.cache.get(...)` does not work and never did.
+- The closing example called `with_agent("embedder", EmbedderAgent)`, a signature that does not
+  exist.
+- Nothing mentioned per-agent caches, named caches, `claim`, or `/api/<agent>/cache/*`.
+- `caching-getting-started.md` documented `default_ttl = null` as "no expiry". `CacheConfig.default_ttl`
+  is an `int`, and TOML has no null: **there is no way to configure "never expires"**, and an
+  omitted `ttl` gets the 3600-second default on both backends.
+
+The new document states what the code does, verified against it: declaration and the
+`with_cache(False)` / `name=` shapes, the synchronous operations table, `claim` and the race it
+closes, key hashing, namespaces, TTL, per-agent isolation with the storage layout for both
+backends, the configuration table with per-agent `[default.<agent>.cache]`, the Redis startup ping
+and `fallback_to_local`, readiness entry names, the three real endpoints with their 503/404 split,
+a short design section, and troubleshooting.
+
+**`GET /cache/stats` answered 500, on both backends, for as long as it has existed.**
+`CacheStatsResponse` required five fields. `DiskCacheService.get_stats()` returns four of them --
+never `ttl_tracked_keys`, which **no backend has ever produced** -- so constructing the model
+raised `ValidationError`. `RedisCacheService.get_stats()` returns a different shape entirely
+(`backend`, `key_prefix`, `redis_version`, `connected_clients`, ...), so on Redis all five were
+missing. Confirmed by probe before anything was changed:
+
+```
+real get_stats() -> {'cache_dir': ..., 'size': 2, 'size_limit': 1000000000, 'eviction_policy': 'least-recently-used'}
+CacheStatsResponse RAISED: ValidationError -- ttl_tracked_keys: Field required
+```
+
+It was invisible because the endpoint's only test fed a hand-written dictionary through a
+`MagicMock` -- a dictionary that contained `ttl_tracked_keys`, invented to satisfy a model nothing
+satisfied. *Probe against real objects*, exactly.
+
+The fix says what was true all along: **the statistics are the backend's, not a fixed schema.**
+`CacheStatsResponse` keeps the disk backend's four fields as optional, allows extras so Redis's
+seven pass through, and the route carries `response_model_exclude_none=True` so each backend
+answers with its own fields and no nulls. `ttl_tracked_keys` is deleted, and so is
+`CacheEvictResponse`, which was referenced by nothing and described a shape (`success`,
+`evicted_keys`) that the evict endpoint does not return. The test now constructs a real
+`DiskCacheService` and a real `RedisCacheService` over `fakeredis`, and a third case pins the
+behaviour when a backend's own stats call fails: `get_stats` returns `{}` and the endpoint answers
+200 with an empty payload rather than taking itself down. End-to-end through a built application:
+
+```
+/api/cache/stats                -> 200 {'size': 0, 'cache_dir': '...', 'size_limit': 1000000000, 'eviction_policy': 'least-recently-used'}
+/api/cache/stats?name=sessions  -> 200 {'size': 0, 'cache_dir': '.../sessions', ...}
+/api/cache/stats?name=nope      -> 404 {'detail': "No cache registered as 'nope' for agent '<root>' (registered: default, sessions)"}
+```
+
+**The false quotation was already closed.** `docs/plans/2026-06-10-sessions-job-handler.md:122`
+attributes to `AGENTS.md` that versioning is handled by CI publishing and manual bumps are
+forbidden. Part 1 verified that against `.github/workflows/publish.yml` and wrote the rule into
+`AGENTS.md`, so the attribution now resolves. Nothing to change; checked, not assumed.
+
+**`docs/development-workflow.md` is not a dead pointer.** The audit called it "cited by this
+plan's own file summary and never written". It is not cited anywhere as existing: its three
+mentions are this plan's part 3 item, the changelog, and the plan's *Planned, not yet written*
+section, whose own preamble says "each is a deliverable, not an open question". So there is no
+reference to drop, and writing the end-to-end walkthrough now would pre-empt phase 10, which owns
+the narrative documentation. Left where it is. This is the same distinction the references guard
+draws by not holding a record to the tree as it stands -- and the audit item was, in effect, the
+guard's rejected premise in prose form.
+
+`README.md` and `docs/README.md` keep their one caching link, with descriptions that now say what
+the document covers.
+
+2620 unit tests pass, zero failures.
+
 ---
 
 ## Open points
@@ -5638,11 +5734,17 @@ for the moved file.
   migration -- **the key layout changed twice**, so an application upgrading with a persistent
   redis cache or a mounted disk cache sees its old entries as absent. A cold cache rather than
   an error, and it must be said in the migration guide (phase 10), for both hops.
-- **The cache documentation is wrong about the endpoints, and now about their paths too.**
-  `docs/concepts/caching.md` documents `GET`/`PUT /api/cache/{namespace}/{key}`, which have never
-  existed (the API is `stats`, `namespaces`, `evict`), and step 5 moved a grouped agent's routes
-  to `/api/<agent>/cache/*`. Left for step 9 part 3, which owns the four overlapping cache
-  documents; fixing one of them here would have been the fifth version of the same content.
+- ~~**The cache documentation is wrong about the endpoints**~~ -- **done in step 9 part 3.**
+  The four overlapping documents became one, rewritten against the code: the three real endpoints
+  with their `?name=` and their 503/404 split, the per-agent `/api/<agent>/cache/*` paths, and the
+  synchronous interface every old example awaited. Writing it turned up a 500 in
+  `GET /cache/stats`, fixed in the same commit.
+- **`size` in the cache statistics counts the TTL metadata entries.** The disk backend stores a
+  parallel `:ttl` entry beside every value, and `get_stats()["size"]` is the raw key count -- so a
+  cache holding two values reports `size: 4`, exactly double. `list_values` and `list_namespaces`
+  already filter those entries out; `size` does not. Documented as it is rather than changed,
+  because a reported metric is somebody's dashboard: the fix is to count filtered keys, and it
+  wants a decision rather than a drive-by.
 - **The examples are not migrated, by decision (2026-09-08).** Note that phase 8b changes what
   blocks them: `AgentRegistration` is deleted, and passing instances (`with_rest_api(MonitorApi())`)
   stays legal standalone -- it is refused only when a builder is collected into a group. So the
