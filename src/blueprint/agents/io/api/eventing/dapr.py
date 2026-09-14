@@ -252,6 +252,16 @@ class DaprEventing(EventHandlingBase):
         with_handlers = tuple(dict.fromkeys(namespace_of(handler) for handler in self.registry.get_event_handler()))
         return with_handlers or (ROOT_NAMESPACE,)
 
+    def _is_paused(self, namespace: str) -> bool:
+        """Whether ``namespace`` has been taken off its topics because it is degraded (C4).
+
+        Read from that agent's own client rather than from any process-wide register of
+        degraded agents: the client is the per-agent object the supervisor pauses, and asking
+        it keeps the two transports answering the same question from the same state. An agent
+        with no client cannot be paused, and is not.
+        """
+        return any(client.consumption_paused for client in self.registry.get_io_clients(namespace=namespace))
+
     @RestApiBase.post("/events/{topic}", tags=["dapr"])
     async def publish(self, topic: str, cloud_event: CloudEvent[Any]) -> dict[str, Any]:
         """Receive an event from the sidecar, offer it to every agent that wants it, and answer.
@@ -278,6 +288,22 @@ class DaprEventing(EventHandlingBase):
         reason: str | None = None
 
         for namespace in agents:
+            if self._is_paused(namespace):
+                # C4 under a push transport. NATS stops consuming by draining its
+                # subscriptions; the sidecar has no such notion -- it posts here whatever the
+                # application thinks -- so the equivalent is to nak without dispatching,
+                # which Dapr renders as RETRY and which redelivers the event to a replica
+                # whose agent is up.
+                dispositions.append(DeliveryDisposition.NAK)
+                if reason is None:
+                    reason = f"agent '{namespace or ROOT_LABEL}' is degraded and is not consuming"
+                logger.warning(
+                    "Event %s on topic '%s' was not offered to agent '%s': it is degraded and paused",
+                    cloud_event.id,
+                    topic,
+                    namespace or ROOT_LABEL,
+                )
+                continue
             try:
                 await self._process_cloud_event(cloud_event, {"dapr_topic": topic}, topic, namespace=namespace)
                 dispositions.append(DeliveryDisposition.ACK)

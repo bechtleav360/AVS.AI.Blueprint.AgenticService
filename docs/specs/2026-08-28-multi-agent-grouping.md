@@ -887,13 +887,13 @@ Two things an author still needs to know: their agent's name, and that handlers 
 - [ ] Two replicas of a two-agent group: each event processed exactly once per agent.
 - [ ] Durable and queue names byte-identical across two builds where the same agent sits in
       different groups (C1).
-- [ ] Spans from namespace `invoice` carry `service.name = "invoice"`; a `namespace=""` app keeps
+- [x] Spans from namespace `invoice` carry `service.name = "invoice"`; a `namespace=""` app keeps
       `otel_service_name` (C2).
-- [ ] A degraded namespace: liveness `UP`, readiness per policy, `blueprint_namespace_up = 0`,
+- [x] A degraded namespace: liveness `UP`, readiness per policy, `blueprint_namespace_up = 0`,
       that namespace's consumers stopped (C3, C4).
 - [ ] `<agent>.model_name` overrides root `model_name` for that namespace only (C5).
 - [ ] No supported API exposes group membership to agent code (C6).
-- [ ] Every path that stops a namespace serving emits an ERROR event and
+- [x] Every path that stops a namespace serving emits an ERROR event and
       `blueprint_namespace_up{agent} = 0` carrying that namespace's identity; a namespace whose
       subscriptions vanish while the process stays healthy is reported within one scrape interval
       (C7).

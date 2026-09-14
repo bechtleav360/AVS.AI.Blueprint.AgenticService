@@ -136,6 +136,22 @@ that constructs on behalf of a namespace it was handed uses the guarded form
 (`construction_scope`). *Failure:* replaying one agent's declarations resets every component of
 every agent back to the root, silently.
 
+**An agent's failure is attributed, whatever the pod does about it.** A degraded agent drives
+`blueprint.namespace.up = 0` and an ERROR event naming it, its group and its pod, independently of
+readiness. *Failure:* grouping removes the pod restart that used to be the alert, so nineteen
+agents go on answering while the twentieth has silently stopped and nothing says so. Guarded by
+`test_namespace_supervisor.py`.
+
+**Every detached task carries a done-callback that logs its exception with the agent.** A bare
+`create_task` or `ensure_future` is a violation. *Failure:* the exception surfaces as asyncio's
+"Task exception was never retrieved", at an unpredictable time and attributed to nobody. Guarded
+by `test_design_rules.py::TestEveryDetachedTaskIsWatched`.
+
+**The probe decides where traffic goes; it never decides who is woken.** `readiness_policy` may
+keep a degraded agent from taking the pod out of rotation; it never suppresses that agent's signal,
+and it never stops it being taken off its topics. *Failure:* a deployment that chose `critical` to
+avoid a noisy probe would also have switched off the alerting for the agents it stopped gating on.
+
 ### Names and values that leave the process
 
 **A name that crosses the process boundary is validated, never repaired.** Queue groups, JetStream

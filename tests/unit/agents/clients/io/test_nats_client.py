@@ -1483,7 +1483,7 @@ class TestNATSClientConnectionName:
     def test_falls_back_to_the_host_name(self, nats_client: NATSClient, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("POD_NAME", raising=False)
         monkeypatch.delenv("HOSTNAME", raising=False)
-        monkeypatch.setattr("blueprint.agents.clients.io.nats_client.socket.gethostname", lambda: "laptop")
+        monkeypatch.setattr("blueprint.agents.deployment.socket.gethostname", lambda: "laptop")
         assert nats_client._resolve_connection_name().endswith(".laptop")
 
     def test_unresolvable_host_still_yields_a_name(self, nats_client: NATSClient, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1493,7 +1493,7 @@ class TestNATSClientConnectionName:
         def _raise() -> str:
             raise OSError("no host name")
 
-        monkeypatch.setattr("blueprint.agents.clients.io.nats_client.socket.gethostname", _raise)
+        monkeypatch.setattr("blueprint.agents.deployment.socket.gethostname", _raise)
         assert nats_client._resolve_connection_name().endswith(".<unknown-pod>")
 
     def test_a_dotted_group_cannot_add_a_segment(self, nats_client: NATSClient, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1542,3 +1542,87 @@ class TestNATSClientConnectionName:
         assert client.queue_group == "orders"
         assert "group-b" not in client._durable_for("orders.created")
         assert "pod-99" not in client._durable_for("orders.created")
+
+
+class TestPausingADegradedAgent:
+    """C4: readiness gates HTTP only, so a degraded agent has to be taken off its topics."""
+
+    @pytest.fixture
+    def subscribed(self, nats_client: NATSClient, mock_nats_core: MagicMock) -> NATSClient:
+        """A connected client with one live subscription and one managed topic."""
+        nats_client._nats_client = mock_nats_core
+        nats_client._client = mock_nats_core
+        nats_client._subscriptions_managed = True
+        nats_client._subscriptions_ready = True
+        subscription = MagicMock()
+        subscription.drain = AsyncMock()
+        nats_client._subscriptions = [subscription]
+        nats_client._topic_callbacks = {"orders.created": AsyncMock()}
+        return nats_client
+
+    async def test_a_client_starts_unpaused(self, nats_client: NATSClient) -> None:
+        assert nats_client.consumption_paused is False
+
+    async def test_pausing_drains_the_subscriptions(self, subscribed: NATSClient) -> None:
+        """Drained, not unsubscribed: a queued message still reaches its handler and acks."""
+        subscription = subscribed._subscriptions[0]
+        await subscribed.pause_consumption()
+        subscription.drain.assert_awaited_once()
+        assert subscribed.consumption_paused is True
+        assert subscribed.subscriptions_ready is False
+
+    async def test_pausing_leaves_the_connection_open(self, subscribed: NATSClient, mock_nats_core: MagicMock) -> None:
+        """A closed client reports itself unhealthy for ever, so the pause could never lift."""
+        await subscribed.pause_consumption()
+        mock_nats_core.close.assert_not_called()
+        assert subscribed._nats_client is mock_nats_core
+
+    async def test_pausing_twice_drains_once(self, subscribed: NATSClient) -> None:
+        subscription = subscribed._subscriptions[0]
+        await subscribed.pause_consumption()
+        await subscribed.pause_consumption()
+        subscription.drain.assert_awaited_once()
+
+    async def test_the_pause_is_reported_with_its_agent(self, mock_config: MagicMock, caplog: pytest.LogCaptureFixture) -> None:
+        client = _namespaced_client(mock_config, "orders")
+        with caplog.at_level(logging.ERROR):
+            await client.pause_consumption()
+        assert "orders" in caplog.text
+        assert "stopped consuming" in caplog.text
+
+    async def test_a_paused_client_reports_healthy(self, subscribed: NATSClient) -> None:
+        """The pause is a consequence of degradation, not a cause; latching it would be permanent."""
+        await subscribed.pause_consumption()
+        result = await subscribed.health_check()
+        assert result.status == "healthy"
+        assert "paused" in (result.message or "")
+
+    async def test_resuming_resubscribes(self, subscribed: NATSClient) -> None:
+        await subscribed.pause_consumption()
+        with patch.object(subscribed, "_subscribe_all", new=AsyncMock()) as subscribe_all:
+            await subscribed.resume_consumption()
+        subscribe_all.assert_awaited_once()
+        assert subscribed.consumption_paused is False
+        assert subscribed.subscriptions_ready is True
+
+    async def test_resuming_one_that_was_not_paused_does_nothing(self, subscribed: NATSClient) -> None:
+        with patch.object(subscribed, "_subscribe_all", new=AsyncMock()) as subscribe_all:
+            await subscribed.resume_consumption()
+        subscribe_all.assert_not_awaited()
+
+    async def test_a_failed_resume_stays_paused(self, subscribed: NATSClient) -> None:
+        """The next health poll finds the agent healthy and calls this again; that is the retry."""
+        await subscribed.pause_consumption()
+        with patch.object(subscribed, "_subscribe_all", new=AsyncMock(side_effect=RuntimeError("no"))):
+            await subscribed.resume_consumption()
+        assert subscribed.consumption_paused is True
+        assert subscribed.subscriptions_ready is False
+
+    async def test_a_reconnect_does_not_undo_a_pause(self, subscribed: NATSClient) -> None:
+        """Otherwise C4 would hold only until the next network blip."""
+        subscribed._use_jetstream = True
+        await subscribed.pause_consumption()
+        with patch.object(subscribed, "_subscribe_all", new=AsyncMock()) as subscribe_all:
+            await subscribed._on_reconnected()
+        subscribe_all.assert_not_awaited()
+        assert subscribed.subscriptions_ready is False

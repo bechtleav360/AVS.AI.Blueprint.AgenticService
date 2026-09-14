@@ -736,6 +736,94 @@ class TestLoggingIsConfiguredByTheApplication:
         )
 
 
+def spawns_a_task(node: ast.Call) -> str | None:
+    """Name ``asyncio.create_task`` / ``ensure_future`` calls, and nothing else."""
+    if isinstance(node.func, ast.Attribute) and node.func.attr in {"create_task", "ensure_future"}:
+        return node.func.attr
+    return None
+
+
+def _assigned_name(statement: ast.stmt) -> str | None:
+    """Return the single name a statement assigns to, or ``None``.
+
+    Only the simple shapes a spawn is written in: ``task = create_task(...)`` and
+    ``self._task = create_task(...)``. Anything else is reported rather than guessed at.
+    """
+    if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
+        return None
+    target = statement.targets[0]
+    if isinstance(target, ast.Name):
+        return target.id
+    if isinstance(target, ast.Attribute):
+        return ast.unparse(target)
+    return None
+
+
+def _adds_a_done_callback(body: list[ast.stmt], index: int, name: str) -> bool:
+    """Whether one of the statements after ``index`` adds a done-callback to ``name``."""
+    for statement in body[index + 1 :]:
+        for node in ast.walk(statement):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "add_done_callback"
+                and ast.unparse(node.func.value) == name
+            ):
+                return True
+    return False
+
+
+def unwatched_spawns(path: Path) -> list[tuple[int, str]]:
+    """Return ``(line, source)`` for every detached task with no done-callback beside it."""
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    offenders: list[tuple[int, str]] = []
+    watched_lines: set[int] = set()
+
+    for holder in ast.walk(tree):
+        body = getattr(holder, "body", None)
+        if not isinstance(body, list):
+            continue
+        for index, statement in enumerate(body):
+            spawns = [node for node in ast.walk(statement) if isinstance(node, ast.Call) and spawns_a_task(node)]
+            if not spawns:
+                continue
+            name = _assigned_name(statement)
+            if name is not None and _adds_a_done_callback(body, index, name):
+                watched_lines.update(node.lineno for node in spawns)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and spawns_a_task(node) and node.lineno not in watched_lines:
+            offenders.append((node.lineno, ast.unparse(node)))
+    return offenders
+
+
+class TestEveryDetachedTaskIsWatched:
+    """**Every task the framework starts carries a done-callback that logs its exception.**
+
+    *Failure it prevents:* a detached task that raised holds its exception until it is garbage
+    collected, and what reaches the log is asyncio's own "Task exception was never retrieved" --
+    at an unpredictable time, with no agent on it. In a process per agent that was survivable
+    because the pod told you; in a group it is exactly the silent per-agent failure C7 exists to
+    remove, because nineteen agents go on answering while the twentieth has stopped.
+
+    The guard looks for a ``create_task`` / ``ensure_future`` whose result is assigned and then
+    given an ``add_done_callback`` in the same block. A spawn whose result is discarded outright
+    can never be watched, so it fails here too.
+    """
+
+    @pytest.mark.parametrize("path", python_files(FRAMEWORK), ids=lambda path: str(path.relative_to(REPO_ROOT)))
+    def test_no_task_is_started_and_forgotten(self, path: Path) -> None:
+        unwatched = unwatched_spawns(path)
+
+        assert not unwatched, (
+            f"{path.relative_to(REPO_ROOT)} starts a task with no done-callback: "
+            f"{', '.join(f'{source} on line {line}' for line, source in unwatched)}. Assign the task and call "
+            "add_done_callback with a handler that logs the exception and names the agent -- otherwise its failure "
+            "surfaces as asyncio's 'Task exception was never retrieved', at an unpredictable time and attributed to "
+            "nobody."
+        )
+
+
 class TestNoDiagnosticsViaPrint:
     """**No diagnostics via print.** The framework emits through a logger.
 
