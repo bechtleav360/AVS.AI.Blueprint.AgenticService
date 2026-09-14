@@ -7,6 +7,7 @@ import pytest
 
 from blueprint.agents.io.api.actuators.health.health_base import HealthCheckEntry
 from blueprint.agents.io.api.actuators.health.health_cache import HealthCheckCache
+from blueprint.agents.io.api.actuators.health.readiness_policy import ReadinessPolicy
 from blueprint.agents.models.api import ComponentHealth
 
 
@@ -197,3 +198,83 @@ class TestAnEntryIsAttributedToItsAgent:
 
     def test_the_root_agent_is_named_where_a_value_is_required(self) -> None:
         assert (_entry("db", "healthy").agent, _entry("db", "healthy", namespace="orders").agent) == ("<root>", "orders")
+
+
+class TestTheVerdictIsPerAgent:
+    """C3: the overall status is no longer a fold over every check, but a policy over agents."""
+
+    @staticmethod
+    def _supervisor(namespaces: list[str], critical: set[str]) -> MagicMock:
+        """A stand-in supervisor: the cache reads its namespaces and its critical set."""
+        supervisor = MagicMock()
+        supervisor.status = dict.fromkeys(namespaces, True)
+        supervisor.critical_namespaces = frozenset(critical)
+        supervisor.observe = AsyncMock()
+        return supervisor
+
+    @staticmethod
+    def _entries() -> list[HealthCheckEntry]:
+        return [
+            _entry("cache", "healthy", namespace="orders"),
+            _entry("cache", "unhealthy", "redis is gone", namespace="billing"),
+        ]
+
+    async def _run(self, policy: ReadinessPolicy, critical: set[str]) -> HealthCheckCache:
+        supervisor = self._supervisor(["", "orders", "billing"], critical)
+        cache = HealthCheckCache(policy=policy, supervisor=supervisor)
+        cache.set_health_entries(self._entries())
+        await cache._run_health_checks()
+        return cache
+
+    async def test_all_takes_the_pod_out_for_one_degraded_agent(self) -> None:
+        cache = await self._run(ReadinessPolicy.ALL, set())
+        assert (await cache.get_health_status()).status == "DOWN"
+
+    async def test_critical_keeps_the_pod_in_for_an_agent_nobody_flagged(self) -> None:
+        cache = await self._run(ReadinessPolicy.CRITICAL, {"orders"})
+        assert (await cache.get_health_status()).status == "UP"
+
+    async def test_the_payload_says_which_agent_is_down(self) -> None:
+        """A pod answering UP with a failing check in it has to explain itself."""
+        cache = await self._run(ReadinessPolicy.CRITICAL, {"orders"})
+        response = await cache.get_health_status()
+        assert response.policy == "critical"
+        assert response.namespaces["billing"].status == "DOWN"
+        assert response.namespaces["billing"].failing == ["billing.cache"]
+        assert response.namespaces["billing"].critical is False
+        assert response.namespaces["orders"].status == "UP"
+
+    async def test_the_root_is_always_reported_as_critical(self) -> None:
+        cache = await self._run(ReadinessPolicy.CRITICAL, {"orders"})
+        assert (await cache.get_health_status()).namespaces["<root>"].critical is True
+
+    async def test_an_agent_with_no_checks_is_still_in_the_payload(self) -> None:
+        """Leaving it out would make 'any' and 'critical' read a shorter list than the group has."""
+        supervisor = self._supervisor(["", "orders", "quiet"], set())
+        cache = HealthCheckCache(policy=ReadinessPolicy.ANY, supervisor=supervisor)
+        cache.set_health_entries([_entry("cache", "healthy", namespace="orders")])
+        await cache._run_health_checks()
+        assert (await cache.get_health_status()).namespaces["quiet"].status == "UP"
+
+    async def test_the_supervisor_is_told_every_agents_verdict(self) -> None:
+        """It is what emits the C7 signal and stops a degraded agent consuming."""
+        supervisor = self._supervisor(["", "orders", "billing"], set())
+        cache = HealthCheckCache(supervisor=supervisor)
+        cache.set_health_entries(self._entries())
+        await cache._run_health_checks()
+        supervisor.observe.assert_awaited_once_with({"": True, "orders": True, "billing": False})
+
+    async def test_the_agent_comes_from_the_entry_not_from_the_key(self) -> None:
+        """Splitting 'orders.cache:v2.sessions' on a dot attributes it to the wrong agent."""
+        supervisor = self._supervisor(["", "orders"], set())
+        cache = HealthCheckCache(supervisor=supervisor)
+        cache.set_health_entries([_entry("cache:v2.sessions", "unhealthy", "gone", namespace="orders")])
+        await cache._run_health_checks()
+        supervisor.observe.assert_awaited_once_with({"": True, "orders": False})
+
+    async def test_a_cache_with_no_supervisor_still_answers(self) -> None:
+        """Nothing about the caching behaviour depends on a metrics pipeline or a registry."""
+        cache = HealthCheckCache()
+        cache.set_health_entries(self._entries())
+        await cache._run_health_checks()
+        assert (await cache.get_health_status()).status == "DOWN"

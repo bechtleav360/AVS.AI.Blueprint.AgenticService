@@ -8,8 +8,11 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from .....models.api import ComponentHealth, ReadinessResponse
+from .....component.namespace import ROOT_LABEL
+from .....models.api import ComponentHealth, NamespaceReadiness, ReadinessResponse
 from .health_base import HealthCheckEntry
+from .namespace_supervisor import NamespaceSupervisor
+from .readiness_policy import ReadinessPolicy
 
 if TYPE_CHECKING:
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -39,18 +42,29 @@ class HealthCheckCache:
         self,
         check_interval_seconds: int = 30,
         initial_status: str = "UP",
+        *,
+        policy: ReadinessPolicy = ReadinessPolicy.ALL,
+        supervisor: NamespaceSupervisor | None = None,
     ) -> None:
         """Initialize the health check cache.
 
         Args:
             check_interval_seconds: How often to refresh health checks (default: 30s)
             initial_status: Initial status while first check runs (default: "UP")
+            policy: How a degraded agent affects the pod's readiness (C3). The default
+                reproduces what a single-agent application has always done.
+            supervisor: Told each agent's verdict after every poll, so it can emit the C7
+                signal and stop a degraded agent consuming (C4). Optional so that a test of the
+                caching behaviour needs no metrics pipeline and no registry.
         """
         self.check_interval_seconds = check_interval_seconds
         self._scheduler: AsyncIOScheduler | None = None
+        self._policy = policy
+        self._supervisor = supervisor
         self._cached_response: ReadinessResponse = ReadinessResponse(
             status=initial_status,
             components={},
+            policy=policy.value,
         )
         self._last_update: datetime = datetime.now()
         self._lock = asyncio.Lock()
@@ -147,14 +161,15 @@ class HealthCheckCache:
                     else:
                         components[entry.key] = result
 
-                # Determine overall status
-                all_healthy = all(component.status == "healthy" for component in components.values())
-                overall_status = "UP" if all_healthy else "DOWN"
+                namespace_status, namespaces = self._aggregate_by_agent(components)
+                overall_status = "UP" if self._policy.is_ready(namespace_status, self._critical_namespaces()) else "DOWN"
 
                 # Update cache
                 self._cached_response = ReadinessResponse(
                     status=overall_status,
                     components=components,
+                    policy=self._policy.value,
+                    namespaces=namespaces,
                 )
                 self._last_update = datetime.now()
 
@@ -164,8 +179,62 @@ class HealthCheckCache:
                     self._last_update.isoformat(),
                 )
 
+            # Outside the lock. The supervisor pauses and resumes transports, which awaits a
+            # drain that can take seconds; holding the readiness lock across it would make
+            # every probe during a pause wait for it, and a probe that times out is read as a
+            # failure of the pod rather than of the one agent that is actually degraded.
+            if self._supervisor is not None:
+                await self._supervisor.observe(namespace_status)
+
         except Exception as exc:  # pragma: no cover
             logger.error("Unexpected error during health check refresh: %s", exc, exc_info=True)
+
+    def _critical_namespaces(self) -> frozenset[str]:
+        """The agents that gate readiness under the ``critical`` policy, or none known."""
+        return self._supervisor.critical_namespaces if self._supervisor is not None else frozenset()
+
+    def _aggregate_by_agent(self, components: dict[str, ComponentHealth]) -> tuple[dict[str, bool], dict[str, NamespaceReadiness]]:
+        """Reduce the individual check results to one verdict per agent.
+
+        The agent comes from the entry, not from the key. ``HealthCheckEntry`` carries it as
+        data for exactly this reason: recovering it by splitting ``orders.cache:v2.sessions``
+        on a separator would attribute that check to an agent called ``orders`` only by luck,
+        and to the wrong agent as soon as a name contained the separator -- a C7 violation
+        dressed as a string bug.
+
+        Every supervised namespace appears in the result even when it registered no check at
+        all. An agent with nothing to check is up, and leaving it out would make ``any`` and
+        ``critical`` read a shorter list than the group actually has.
+
+        Args:
+            components: This poll's results, keyed by entry key.
+
+        Returns:
+            Whether each namespace passed, and the per-agent section of the readiness payload.
+        """
+        supervised = set(self._supervisor.status) if self._supervisor is not None else set()
+        failing: dict[str, list[str]] = {namespace: [] for namespace in supervised}
+
+        for entry in self._entries:
+            result = components.get(entry.key)
+            failing.setdefault(entry.namespace, [])
+            if result is not None and result.status != "healthy":
+                failing[entry.namespace].append(entry.key)
+
+        critical = self._critical_namespaces()
+        namespace_status = {namespace: not keys for namespace, keys in failing.items()}
+        namespaces = {
+            (namespace or ROOT_LABEL): NamespaceReadiness(
+                status="UP" if not keys else "DOWN",
+                # The root is shared infrastructure, so it gates readiness under every policy
+                # -- see ReadinessPolicy. Reporting it as critical is what makes the payload
+                # explain the verdict rather than contradict it.
+                critical=not namespace or namespace in critical,
+                failing=keys,
+            )
+            for namespace, keys in failing.items()
+        }
+        return namespace_status, namespaces
 
     def get_cache_age_seconds(self) -> float:
         """Get the age of the cached health status in seconds.

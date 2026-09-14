@@ -49,6 +49,7 @@ PROCESS_SCOPE_KEYS = frozenset(
         "log_format",
         "suppress_noisy_loggers",
         "health_check_interval_seconds",
+        "readiness_policy",
         "dot_placeholder",
         "nats_stream_name",
     }
@@ -56,8 +57,8 @@ PROCESS_SCOPE_KEYS = frozenset(
 """Keys that describe the *process*, and that an agent's own settings file therefore cannot set.
 
 One process binds one port, loads one environment section, reads its environment through one
-prefix, speaks one event bus and configures logging once, so all of those are read from the
-group's configuration and never from an agent's scope. A copy under ``[<agent>]`` would be read
+prefix, speaks one event bus, answers one readiness probe and configures logging once, so all of
+those are read from the group's configuration and never from an agent's scope. A copy under ``[<agent>]`` would be read
 by nothing at all -- which is spec sec. 5.3's reason for refusing it, and it is why
 :meth:`Config.merge_agent_settings` drops these keys with a WARNING that names the agent, the
 key and the file rather than merging them where nothing will look.

@@ -40,16 +40,20 @@ from __future__ import annotations
 import logging
 import time
 from abc import abstractmethod
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from opentelemetry.metrics import CallbackOptions, Observation
 
 from ....clients.io.io_client_base import TOPIC_TRANSPORTS, validate_subject_segment
 from ....component.component import traced
+from ....component.namespace import ROOT_LABEL
 from ....handler.event_handler_base import EventHandlerBase
 from ....models.events import GenericCloudEvent
+from ...telemetry.providers import agent_meter
 from ..rest_api_base import RestApiBase
 
 logger = logging.getLogger(__name__)
@@ -61,6 +65,19 @@ SCHEDULER_MODE_IN_PROCESS = "in_process"
 """An APScheduler timer inside every replica of the process."""
 
 SCHEDULER_MODES = (SCHEDULER_MODE_EVENT, SCHEDULER_MODE_IN_PROCESS)
+
+TICK_AGE_GAUGE = "blueprint.scheduler.tick_age_seconds"
+"""Seconds since this scheduler last ticked, or ``-1`` before its first tick.
+
+A tick is counted as an ordinary event, so a ``CronJob`` that stopped publishing looks like
+silence rather than a fault: nothing said "this scheduler has not ticked within two intervals".
+Event mode trades a duplicated tick for a possibly missing one, and only the second failure was
+invisible. The declared crontab is in the process and the last tick is knowable, so an alert can
+be written against this without the framework having to interpret a crontab.
+
+``-1`` rather than a large age before the first tick, so "never ticked" and "ticked a long time
+ago" are different values: a pod that has just started has not missed anything yet.
+"""
 
 TICK_CACHE_NAMESPACE = "scheduler_tick"
 """Cache namespace holding the per-tick claims, kept away from application data."""
@@ -184,7 +201,7 @@ class SchedulerTickHandler(EventHandlerBase):
         carries no ``event_type``, so nothing is published downstream.
         """
         logger.info("Scheduler '%s' ticking from event '%s' on topic '%s'", self._scheduler.name, event.id, self._topic)
-        await self._scheduler.tick()
+        await self._scheduler.run_tick()
         return {"status": "ticked", "scheduler": self._scheduler.name}
 
 
@@ -221,6 +238,8 @@ class SchedulerBase(RestApiBase):
         self._scheduler: AsyncIOScheduler | None = None
         self._started = False
         self._trigger_route_registered = False
+        # When this scheduler last ran its tick, for the freshness gauge. None until the first.
+        self._last_tick: float | None = None
 
     @abstractmethod
     async def tick(self) -> None:
@@ -442,6 +461,7 @@ class SchedulerBase(RestApiBase):
             logger.warning("Scheduler '%s' is already started; ignoring the repeated startup", self.name)
             return
         self._started = True
+        self._register_tick_gauge()
 
         # Normally already done by AppBuilder.build(); repeated here so a scheduler driven
         # without the builder still gets its handler and its route.
@@ -477,6 +497,44 @@ class SchedulerBase(RestApiBase):
                 self.name,
                 self._crontab,
             )
+
+    def _register_tick_gauge(self) -> None:
+        """Export how long it has been since this scheduler ticked.
+
+        Registered in ``on_startup`` rather than in the constructor, because the per-agent meter
+        providers do not exist until the lifespan configures telemetry -- an instrument created
+        at construction would be bound to the no-op global meter for the life of the process.
+
+        Both modes report it. In-process mode is where a stopped timer is already visible as a
+        missing pod; event mode is where it is not, because a ``CronJob`` that stopped publishing
+        leaves a perfectly healthy process ticking never.
+        """
+        name = self.name
+
+        def observe(_options: CallbackOptions) -> Iterable[Observation]:
+            age = -1.0 if self._last_tick is None else max(0.0, time.time() - self._last_tick)
+            return [Observation(age, {"scheduler": name, "agent": self.namespace or ROOT_LABEL, "mode": self.scheduler_mode})]
+
+        agent_meter(self.namespace, __name__).create_observable_gauge(
+            TICK_AGE_GAUGE,
+            callbacks=[observe],
+            description="Seconds since this scheduler last ticked; -1 before its first",
+            unit="s",
+        )
+
+    async def run_tick(self) -> None:
+        """Run the tick and record that it happened.
+
+        Every path that ticks goes through here -- the in-process timer once it has won its
+        slot, the event handler, and the manual trigger -- so the freshness gauge means "this
+        scheduler did its work", not "one particular mechanism fired".
+        """
+        try:
+            await self.tick()
+        finally:
+            # In `finally` because a tick that raised still happened: the gauge answers "is this
+            # scheduler being driven", and a failing tick is a different alert from a silent one.
+            self._last_tick = time.time()
 
     async def on_shutdown(self) -> None:
         """Shut down APScheduler, waiting for any running tick to finish."""
@@ -519,7 +577,7 @@ class SchedulerBase(RestApiBase):
         if not self._claim_tick_slot():
             logger.debug("Scheduler '%s' did not win this tick; another replica is running it", self.name)
             return
-        await self.tick()
+        await self.run_tick()
 
     def _claim_tick_slot(self) -> bool:
         """Claim the current tick slot, reporting whether this replica may run it.
@@ -558,5 +616,5 @@ class SchedulerBase(RestApiBase):
             Status dictionary confirming the trigger.
         """
         logger.info("Scheduler '%s' manually triggered via REST", self.name)
-        await self.tick()
+        await self.run_tick()
         return {"status": "triggered", "scheduler": self.name}

@@ -9,7 +9,7 @@ from typing import Any
 
 import httpx
 
-from ...component.namespace import ROOT_NAMESPACE
+from ...component.namespace import ROOT_LABEL, ROOT_NAMESPACE
 from ...models.api import ComponentHealth
 from ...models.events import CloudEvent
 from .io_client_base import IOClientBase
@@ -190,11 +190,17 @@ class DaprClient(IOClientBase):
                 await asyncio.sleep(delay)
 
     def _on_retry_done(self, task: asyncio.Task[None]) -> None:
+        """Report a retry task that gave up, naming the agent whose transport it was (C7)."""
         if task.cancelled():
             return
         exc = task.exception()
         if exc is not None:
-            logger.error("DaprClient permanently failed after exhausting retries: %s", exc, exc_info=exc)
+            logger.error(
+                "Agent '%s' permanently failed to reach its Dapr sidecar after exhausting retries: %s",
+                self.namespace or ROOT_LABEL,
+                exc,
+                exc_info=exc,
+            )
 
     async def _connect_and_subscribe(self) -> None:
         """Connect the HTTP client and verify the Dapr sidecar is reachable."""

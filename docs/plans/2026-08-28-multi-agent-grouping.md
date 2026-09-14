@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | P0-P6, phases 0-8 and **phase 8b step 1** landed on `feature/multi-agent-namespaces`. Next: 8b steps 2-9, then phase 9, then 10. |
+| **Status** | P0-P6, phases 0-8, the whole of 8b and **phase 9** landed on `feature/multi-agent-namespaces`. Next: phase 10. |
 | **Amendment** | `docs/plans/2026-09-10-builder-unification.md` -- decided 2026-09-10. Phase 8b below is its work breakdown; phases 0 and 3 are superseded by it. Step 9 was added on 2026-09-10 and is not in that proposal's original breakdown. |
 | **Deferred out** | `docs/plans/2026-09-10-config-validation-unification.md` -- configuration validation is not part of this feature and **must not** be touched during 8b. |
 | **Spec (normative)** | `docs/specs/2026-08-28-multi-agent-grouping.md` |

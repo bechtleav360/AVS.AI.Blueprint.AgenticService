@@ -16,7 +16,7 @@ from httpx_sse import ServerSentEvent, SSEError, aconnect_sse
 from opentelemetry import trace
 
 from ....component.component import Component
-from ....component.namespace import ROOT_NAMESPACE
+from ....component.namespace import ROOT_LABEL, ROOT_NAMESPACE
 from ....models.errors import InvalidEventError, RetryableHandlerError
 from ....models.events import GenericCloudEvent
 from ....models.sessions import JobNotification
@@ -112,6 +112,7 @@ class SessionsBus(Component, CloudEventProcessorMixin):
         self._semaphore = asyncio.Semaphore(self._max_concurrent_jobs)
         self._shutdown_event.clear()
         self._sse_task = asyncio.create_task(self._consume_sse_stream())
+        self._sse_task.add_done_callback(self._report_task_failure)
 
         logger.info(
             "SessionsBus connected: agent_id=%s, capabilities=%s, max_concurrent=%d",
@@ -263,6 +264,32 @@ class SessionsBus(Component, CloudEventProcessorMixin):
         task = asyncio.create_task(coro)
         self._inflight_tasks.add(task)
         task.add_done_callback(self._inflight_tasks.discard)
+        task.add_done_callback(self._report_task_failure)
+
+    def _report_task_failure(self, task: asyncio.Task[None]) -> None:
+        """Log an exception that ended a detached task, naming the agent it belonged to (C7).
+
+        Every task the framework starts carries one of these. Without it a task that raised
+        holds its exception until it is garbage-collected, and what reaches the log is asyncio's
+        own "Task exception was never retrieved" -- at an unpredictable time, with no agent on
+        it, and with nothing to say which of a group's agents stopped working. In a single
+        process per agent that was survivable because the pod told you; in a group it is
+        exactly the silent per-agent failure C7 exists to remove.
+
+        Args:
+            task: The finished task.
+        """
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is None:
+            return
+        logger.error(
+            "A background task of agent '%s' ended with an exception: %s",
+            self.namespace or ROOT_LABEL,
+            exc,
+            exc_info=exc,
+        )
 
     def _track_event_id(self, sse: ServerSentEvent) -> None:
         """Advance the resume cursor from a frame's ``id`` (server ids are monotonic ints)."""

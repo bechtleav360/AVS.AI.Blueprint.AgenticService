@@ -5580,8 +5580,416 @@ the document covers.
 
 ---
 
+### Phase 9 -- an agent's identity, and its failure, survive being grouped
+
+Phase 9 is the deployment-facing half of the namespace model. Everything before it made agents
+share a process correctly; this makes the sharing legible from outside. Grouping takes away three
+things a process per agent got for free -- a `service.name` that means one agent, a pod restart
+that named the failure, and a readiness probe with one subject -- and the four invariants here
+(C2, C3, C4, C7) put each of them back deliberately.
+
+#### C2 -- one telemetry identity per agent, and the root unchanged
+
+`io/telemetry/telemetry.py` configured one `TracerProvider` for the whole process, with
+`service.name` from `otel_service_name`. Setting that to the group would break every dashboard on
+the day of a regrouping; leaving it would attribute twenty agents' spans to one service.
+
+`TelemetryManager.configure_tracing(namespaces)` now builds **one provider pair per namespace**,
+through `_configure_namespace`:
+
+```python
+service_name = root_service_name if namespace == ROOT_NAMESPACE else namespace
+resource = Resource.create({"service.name": service_name, "deployment.group": group, "service.instance.id": pod})
+provider = TracerProvider(resource=resource)
+for processor in span_processors:
+    provider.add_span_processor(processor)
+readers = [PeriodicExportingMetricReader(exporter) for exporter in metric_exporters]
+register_providers(namespace, provider, MeterProvider(resource=resource, metric_readers=readers))
+```
+
+The root is always configured, first, and stays the global provider
+(`trace.set_tracer_provider(tracer_provider(ROOT_NAMESPACE))`), so every module-level
+`trace.get_tracer(...)` in the framework and in any library resolves as it always has -- which is
+what keeps a single-agent application's traces identical.
+
+The **same `BatchSpanProcessor` object** goes on every provider: a processor owns a queue and an
+export thread, and the resource travels on the span rather than on the processor, so a processor
+per agent would multiply both by the group size for nothing. Metric readers are the exception and
+each provider gets its own, because the SDK binds a reader's collect callback to the provider that
+registered it -- a shared reader would only ever collect from the last provider built. The
+exporter behind them is still one object.
+
+**`io/telemetry/providers.py` is new, and is a leaf.** It holds the two registers and
+`agent_tracer` / `agent_meter`, and imports nothing from this framework. That is not tidiness: a
+component reads its own agent's tracer, so with the register beside the manager, `component.py`
+imports the module that imports `Config`, which imports the manager, which imports
+`component.namespace` -- a cycle that was confirmed by building it and watching the import fail.
+It is also why a component holds no reference to the manager: the group's shape would then be
+reachable from the object graph, which is what C6 forbids.
+
+`Component.tracer` is the one seam that had to change:
+
+```python
+@cached_property
+def tracer(self) -> trace.Tracer:
+    return agent_tracer(self._namespace, type(self).__qualname__)
+```
+
+Cached, and therefore resolved at first *use* -- which is the only reason this works. Components
+are constructed by `build()`; the providers do not exist until the lifespan's `configure_tracing`
+call, which is now the first thing startup does, before the actuator and before any client.
+`agent_tracer` falls back to the global provider for a namespace nothing configured, so the call
+is safe unconditionally and no caller branches on whether telemetry is on.
+
+`traced()` additionally stamps `agent` on every span:
+
+```python
+if span.is_recording():
+    span.set_attribute("agent", self._namespace or ROOT_LABEL)
+```
+
+Redundant with the resource for a span that reaches an exporter, and not redundant at all for the
+failure C7 is about: a span still open when the process is killed never has a resource applied, so
+what the span itself carries is all a post-mortem has.
+
+**`deployment.py` is new**, holding `deployment_group()` and `pod_identity()` -- moved out of
+`nats_client.py`, which had them privately. Two subsystems now need the same two values, and two
+copies would be two answers to "which pod is this" the day one of them learned a new environment
+variable. `nats_client.py` imports them; its connection name is unchanged, and the two tests that
+patched `nats_client.socket.gethostname` now patch `deployment.socket.gethostname`.
+
+#### C3 -- readiness is a policy, and it is per agent
+
+`io/api/actuators/health/readiness_policy.py` is new: a `ReadinessPolicy` str-enum with `parse`
+and `is_ready`.
+
+```python
+def is_ready(self, namespace_status: Mapping[str, bool], critical_namespaces: Collection[str]) -> bool:
+    if not namespace_status.get(ROOT_NAMESPACE, True):
+        return False
+    agents = {ns: healthy for ns, healthy in namespace_status.items() if ns != ROOT_NAMESPACE}
+    if not agents:
+        return True
+    if self is ReadinessPolicy.ALL:
+        return all(agents.values())
+    if self is ReadinessPolicy.CRITICAL:
+        return all(healthy for ns, healthy in agents.items() if ns in critical_namespaces)
+    return any(agents.values())
+```
+
+Two decisions in that function are not in the spec's table. **The root gates under every policy**
+-- it holds the shared infrastructure, and in a single-agent application it is the whole
+application, so all three policies agree there and the key is safe to set in a settings file that
+a standalone project also reads. And **an unrecognised value raises** rather than defaulting: a
+misspelt `critcal` read as `all` would remove a whole group from rotation the first time a
+non-critical agent wobbled, with nothing to say the key had never taken effect.
+
+`HealthCheckCache` reduces the individual results to one verdict per agent before applying the
+policy. `_aggregate_by_agent` reads the agent **from the entry, never from the key** -- the reason
+`HealthCheckEntry` has carried it as data since step 6, because splitting
+`orders.cache:v2.sessions` on a separator attributes it correctly only by luck. Every supervised
+namespace appears even with no checks of its own, so `any` and `critical` do not read a shorter
+list than the group has.
+
+`ReadinessResponse` gained `policy` and `namespaces`, the latter a `NamespaceReadiness` per agent
+(`status`, `critical`, `failing`). It exists because the policy makes `status` no longer derivable
+from `components`: a pod can answer `UP` with a failing check in it, and without the per-agent
+section that reads as a contradiction with no way to resolve it. The `components` keys are
+untouched, so a single-agent payload is unchanged apart from the two added fields.
+
+The `critical` flag is plumbed from where it already was. `AgentSpec.critical` already decided
+whether a failed import stops the process (spec sec. 9.1); `AgentGroup.from_config` now also
+collects it, `AgentGroup.assemble` passes it to `root.host_agent(namespace, critical=...)`, and
+`build()` hands `ActuatorApi` the composition:
+
+```python
+self._actuator_api = ActuatorApi(self.hosted_namespaces, self.critical_namespaces)
+```
+
+One flag, twice, deliberately: both ask whether the deployment can run without that agent, so a
+second flag would be a second answer to one question. `readiness_policy` joins
+`PROCESS_SCOPE_KEYS` -- one pod, one readiness probe.
+
+#### C7 and C4 -- the failure is reported, and it has a consequence
+
+`io/api/actuators/health/namespace_supervisor.py` is new, and is where one piece of state becomes
+three things. `NamespaceSupervisor` is constructed by `ActuatorApi.on_startup` -- after telemetry,
+because it creates instruments -- with every hosted namespace and the critical set.
+
+**The signal.** One observable gauge per namespace, on that namespace's own meter, rather than one
+instrument with an `agent` attribute: the resource carries C2's identity and the resource belongs
+to the provider, so an instrument on the root's meter would report every agent's value under the
+group's `service.name`.
+
+```python
+def _observe_gauge(self, namespace: str, label: str) -> Callable[[CallbackOptions], Iterable[Observation]]:
+    def observe(_options: CallbackOptions) -> Iterable[Observation]:
+        return [Observation(1 if self._up.get(namespace, True) else 0, {"agent": label})]
+    return observe
+```
+
+`_set` acts only on **transitions**, and logs at ERROR with the deployment identity in the line:
+
+```python
+logger.error(
+    "Agent '%s' has stopped serving (group '%s', pod '%s'): %s",
+    namespace or ROOT_LABEL, self._group, self._pod, reason,
+)
+await self._pause_consumption(namespace)
+```
+
+Transitions rather than states, because an alert repeated every poll stops being read, and because
+the client is already paused.
+
+**The consequence (C4).** `IOClientBase` gained `consumption_paused`, `pause_consumption()` and
+`resume_consumption()`. `NATSClient` overrides them: pausing **drains** the subscriptions --
+already-queued messages reach their handler and acknowledge over the connection that delivered
+them, where an unsubscribe would strand every one of them -- and resuming calls `_subscribe_all()`.
+`_on_reconnected` returns early while paused, or the broker dropping and restoring a connection
+would silently resubscribe a degraded agent, and C4 would hold only until the next network blip.
+
+Under Dapr there is nothing client-side to unsubscribe: the sidecar posts to a fixed path whatever
+the application thinks. So `DaprEventing.publish` checks before dispatching:
+
+```python
+if self._is_paused(namespace):
+    dispositions.append(DeliveryDisposition.NAK)
+    ...
+    continue
+```
+
+which the fan-out renders as `RETRY`, redelivering to a replica whose agent is up. `_is_paused`
+reads that agent's own client rather than a process-wide register of degraded agents, so both
+transports answer the same question from the same state.
+
+**Two departures from the spec, both because the obvious reading latches.** Spec C4 says a
+degraded namespace's client is *closed*. A closed client reports itself unhealthy for ever, so the
+agent could never be seen to recover and a transient Redis outage would take it off its topics
+permanently -- the connection is therefore kept open, and only consumption stops. For the same
+reason `NATSClient.health_check` reports a **paused client as healthy**, with a message saying so:
+the pause is a consequence of degradation, not a cause of it, and the check that actually failed is
+still in the payload. Reporting it as unhealthy would make the pause self-sustaining.
+
+**Detached tasks.** `sessions_bus.py` gained `_report_task_failure`, added to both its
+`create_task` sites -- the SSE consumer, which had no callback at all, and `_spawn_tracked`, whose
+callback only discarded the task from a set. Both `_on_retry_done` implementations now name the
+agent. A bare `create_task` is now a guarded rule (below).
+
+**In-flight accounting.** `io/telemetry/inflight.py` is new: a per-agent count exported as an
+observable gauge, registered lazily on first sight of an agent because it is reached from the
+dispatch path and has no list of agents to iterate. `EventProcessingService.process_event` counts
+around the chain:
+
+```python
+with IN_FLIGHT.track(namespace):
+    handler_result = await self._chain_for(namespace).process(event, context)
+```
+
+Around the chain rather than at a transport edge, so one measurement covers NATS, Dapr and the REST
+dispatch path, and so it means "work this agent is doing" rather than "messages its client has
+taken". Its whole purpose is post-mortem: an OOM kill, a native crash and a blocked loop raise
+nothing catchable, so the only attribution available is what was emitted before the process died.
+
+#### Spec sec. 9.1 -- a failing `on_startup` no longer ends the group
+
+The lifespan re-raised every component's startup failure. In a single-agent process that was
+right; in a group it is the blast radius grouping is paid to remove. All eight startup loops now
+go through one helper:
+
+```python
+async def _start_component(self, kind: str, component: Any, label: str) -> None:
+    try:
+        await component.on_startup()
+    except Exception as exc:
+        namespace = namespace_of(component)
+        if not namespace or namespace in self._critical_namespaces:
+            logger.error("%s %s startup failed: %s", kind, label, exc, exc_info=True)
+            raise
+        logger.error("%s %s startup failed and agent '%s' is not critical, so the process starts without it: %s", ...)
+        await self._mark_agent_down(namespace, f"its {kind.lower()} '{label}' failed to start: {exc}")
+        return
+    logger.info("%s %s startup completed", kind, label)
+```
+
+A critical agent's failure still propagates, which aborts the lifespan **before the port is
+bound**, so Kubernetes crash-loops with the traceback rather than reporting a replica that is
+silently short a consumer. The root is always critical: there is no rest of the process without it.
+A non-critical agent's failure calls `supervisor.mark_down`, which **latches** -- unlike a
+health-driven transition, because the components of an agent whose `on_startup` raised can often
+still answer a health check while the agent is unusable, so an observed-health signal would put it
+back into service on the next poll.
+
+#### Dev-mode detection -- the blocked loop
+
+`io/telemetry/loop_watchdog.py` is new, and is two mechanisms that are never both on.
+`configure_loop_debug` turns on asyncio's debug mode -- which names the exact callback and its
+source -- and returns whether it did; development defaults to on, production to off, and
+`event_loop_debug` overrides either. When it returns `False`, `LoopWatchdog` starts instead:
+
+```python
+before = loop.time()
+await asyncio.sleep(self._interval)
+lag = loop.time() - before - self._interval
+if lag >= self._threshold:
+    self._report(lag)
+```
+
+The overshoot is time the loop could not run anything. It cannot name the culprit -- by the time it
+runs again the callback has returned -- so it names the agents that have work in flight, which is
+the set the culprit is in. That is the honest shape, and it is still the difference between "the
+pod was slow" and "one of these two agents blocked the loop for four seconds". Both are wired from
+`AppBuilder._start_loop_diagnostics`, immediately after telemetry and before the actuator.
+
+The other two rows of the plan's dev-mode table are already covered or belong elsewhere:
+module-level side effects are guarded by
+`test_design_rules.py::TestLoggingIsConfiguredByTheApplication`, which found two real ones in step
+9 part 2, and the non-idempotent-handler flag is `asbs validate`, which is P4's and phase 10's.
+
+#### The two event-accounting metrics this changelog assigned to phase 9
+
+Both were open points that said, in so many words, "it belongs with the telemetry work in phase
+9". Both are one instrument each, and both measure a failure whose only other trace is silence.
+
+**Dead-lettering was counted nowhere.** It was logged, so "how many messages did we give up on
+today" could not be answered from metrics -- and a dead letter is the one delivery outcome with no
+other trace in a running system: not a retry that eventually succeeds, not an error a caller sees.
+`NATSClient._count_dead_letter` records `blueprint.events.dead_lettered` with `agent`, `reason`
+(`deliveries-exhausted` or `terminal-failure`) and `kept`, the last of which is what tells a
+deployment with no `nats_dead_letter_subject` that it is losing payloads. Counted **once**, where
+the outcome is known -- counting on entry and again on a failed publish would report two dead
+letters for one message -- and the counter itself is a `cached_property` for the same reason
+`Component.tracer` is: an instrument created in `__init__` would be bound to the no-op global
+meter, because a client is constructed by `build()` and the providers do not exist until the
+lifespan.
+
+**Nothing observed a tick.** A tick is an ordinary event, so a `CronJob` that stopped publishing
+looked like silence rather than a fault. `SchedulerBase.run_tick` is new and is what all three
+tick paths now call -- the in-process timer once it has won its slot, `SchedulerTickHandler`, and
+the manual REST trigger -- so the gauge means "this scheduler did its work" rather than "one
+mechanism fired":
+
+```python
+async def run_tick(self) -> None:
+    try:
+        await self.tick()
+    finally:
+        self._last_tick = time.time()
+```
+
+The `finally` is deliberate: a tick that raised still happened, and "being driven and failing" is
+a different alert from "not being driven". `blueprint.scheduler.tick_age_seconds` reports the age,
+with `-1` before the first tick so that "never ticked" and "ticked a long time ago" are different
+values -- a pod that has just started has missed nothing. Registered in `on_startup`, after
+telemetry, and reported in both modes: in-process mode is where a stopped timer is already visible
+as a missing pod, event mode is where it is not.
+
+#### The guard, and the documents
+
+`test_design_rules.py::TestEveryDetachedTaskIsWatched` walks every framework module's AST for a
+`create_task` / `ensure_future` whose result is assigned and then given an `add_done_callback` in
+the same block; a spawn whose result is discarded outright can never be watched and fails too.
+Verified by deleting the callback added to `sessions_bus.py` above and watching it fail with the
+file and the line. `AGENTS.md` gained three rules with the failure each prevents: attribution
+independent of the probe, a done-callback on every detached task, and *the probe decides where
+traffic goes, never who is woken*.
+
+`docs/concepts/observability.md` was **rewritten against the code** rather than extended, on the
+same grounds as the caching document in step 9 part 3. It documented an endpoint that has never
+existed (`/health/detailed`), an import path that does not exist (`blueprint.agents.observability`),
+`@traced("some.span.name")` when the arguments are *parameter names to stamp*, and health checkers
+as bare callables when `HealthCheckerBase` is a class with an `async health_check() ->
+ComponentHealth`. Adding a readiness-policy section beside all that would have been worse than
+either. Two smaller fixes found the same way: `docs/guides/testing.md` asserted `{"status":
+"alive"}` and called `/health/detailed`, so its snippet could never have passed; and
+`AppBuilder.with_health_checker`'s *In a group* paragraph still said every check is ANDed, which
+phase 9 makes false.
+
+`docs/guides/deployment.md` also documents `/health/detailed`, and is **not** fixed here: phase 10
+owns its rewrite, and it needs more than an endpoint correction.
+
+#### Configuration added
+
+| Key | Default | Meaning |
+|---|---|---|
+| `readiness_policy` | `"all"` | `all` / `critical` / `any`. Process scope. |
+| `event_loop_debug` | on in development | asyncio debug mode, which names the blocking callback. |
+| `event_loop_slow_callback_seconds` | `0.2` | Debug mode's threshold. |
+| `event_loop_watchdog_enabled` | `true` | The production watchdog, used when debug mode is off. |
+| `event_loop_watchdog_interval_seconds` | `1.0` | How often it measures. |
+| `event_loop_block_threshold_seconds` | `1.0` | How much lag it reports. |
+
+#### Metrics added
+
+| Metric | Attributes |
+|---|---|
+| `blueprint.namespace.up` | `agent` |
+| `blueprint.namespace.inflight` | `agent` |
+| `blueprint.events.dead_lettered` | `agent`, `reason`, `kept` |
+| `blueprint.scheduler.tick_age_seconds` | `scheduler`, `agent`, `mode` |
+
+All four are recorded on the owning agent's meter provider, so each arrives with that agent's
+`service.name` resource as well as with its `agent` attribute.
+
+The spec writes the first of these as `blueprint_namespace_up{agent="..."}`, which is the
+Prometheus rendering of the OpenTelemetry name `blueprint.namespace.up` -- the instrument is
+named in OTel's dotted form and the exporter does the substitution. They are the same metric,
+not a drift.
+
+Three of spec sec. 12's acceptance criteria are ticked by this phase: per-namespace
+`service.name` with the root unchanged (C2), a degraded namespace under all of liveness /
+readiness / gauge / consumers (C3, C4), and every path that stops a namespace serving emitting
+both signals (C7). The detached-task criterion asks for "a test that fails a task in each
+background path"; what landed is an AST guard over every framework module, which is broader in
+coverage and weaker in behaviour -- it proves the callback is attached, not that it logs what it
+should -- so that box is left unticked.
+
+#### Tests
+
+`test_readiness_policy.py` (24 cases), `test_namespace_supervisor.py` (13),
+`test_inflight.py` (8), `test_loop_watchdog.py` (9) and
+`app_builder/test_startup_failure_policy.py` (9, driven through the real lifespan against real
+components) are new. `test_telemetry.py` gained a per-agent identity class, `test_health_cache.py`
+a per-agent verdict class, `test_nats_client.py` a pause/resume class, `test_dapr_fanout.py` a
+paused-agent class, `test_component.py` two span-attribution cases, `test_agent_group.py` a
+critical-flag class, `test_actuator_api.py` a readiness-policy class and `test_scheduler.py` a
+tick-freshness class.
+
+One existing case changed rather than being added to: `test_actuator_api.py`'s
+`test_on_startup_uses_configured_interval` asserted `assert_called_once_with(check_interval_seconds=60)`
+on `HealthCheckCache`, which now also takes a policy and a supervisor; it asserts on the one kwarg
+it is about instead.
+
+---
+
 ## Open points
 
+- **Two spec amendments from phase 9, both because the spec's wording latches.** Spec C4 says a
+  degraded namespace's transport client is *closed*. Implemented as a **pause** -- subscriptions
+  drained, connection kept -- because a closed client reports itself unhealthy for ever, so the
+  agent could never be seen to recover and a transient fault would take it off its topics
+  permanently. The same reasoning makes `NATSClient.health_check` report a paused client as
+  *healthy*, which is the second amendment: the pause is a consequence of degradation, not a cause
+  of it, and the check that actually failed is still in the payload. Sec. 3's C4 should say "stops
+  consuming" rather than "closes its client".
+- **Spec C2's shared `BatchSpanProcessor` holds; its shared metric reader cannot.** The
+  OpenTelemetry SDK binds a reader's collect callback to the provider that registered it, so a
+  reader shared across providers collects only from the last one built. Each provider therefore
+  has its own `PeriodicExportingMetricReader` over the one shared exporter -- one export thread per
+  agent for metrics, one for the whole process for spans. Worth stating in sec. 3's C2, which
+  currently says "all providers SHOULD share one exporter and one `BatchSpanProcessor`" and is
+  silent on readers.
+- **The readiness policy's treatment of the root is not in the spec.** The root gates readiness
+  under all three policies, because it holds the shared infrastructure and because a single-agent
+  application is *entirely* root -- so the key has to be a no-op there or it could not be set in a
+  settings file that standalone projects read. Sec. 3's C3 table should say so.
+- **The blocked-loop watchdog names candidates, not a culprit.** It measures the overshoot of a
+  known sleep, so by the time it runs the blocking callback has returned; it reports the agents
+  with work in flight, which is the set the culprit is in. asyncio's debug mode gives the exact
+  answer and is available in production behind `event_loop_debug`, at the cost of wrapping every
+  coroutine creation. There is no cheap way to have both.
+- **`readiness_policy = "any"` is implemented but has no acceptance criterion.** Spec sec. 12 lists
+  criteria for `all` and `critical` and none for `any`, and no example project or group file uses
+  it. It is the one of the three that has never been exercised against a real deployment.
 - **Phase 7's ambiguity error needs a spec amendment.** The plan asks `process_event` to raise
   when a handler declares no runtime and several are registered. It is implemented as a
   once-per-handler WARNING with nothing bound, because raising would fail every delivery in an
@@ -5689,11 +6097,10 @@ the document covers.
   which under JetStream means a durable's filter changes -- a migration, not a config change
   (sec. 7.7). The `topic=` override exists so an agent can opt out of the guess, but the default is
   what the generated `CronJob` will encode.
-- **Nothing observes a tick.** A tick is counted as an ordinary event, so a `CronJob` that stopped
-  publishing looks like silence, not a fault: no metric says "this scheduler has not ticked within
-  two intervals". The declared crontab is in the process and the last tick is knowable, so this is
-  cheap, and it belongs with the telemetry work in phase 9. Until it exists, event mode trades a
-  duplicated tick for a possibly missing one, and only the second failure is invisible.
+- ~~**Nothing observes a tick.**~~ **Done in phase 9.** `blueprint.scheduler.tick_age_seconds`
+  reports the age of the last tick, `-1` before the first, in both modes. What it does *not* do is
+  interpret the crontab: "two intervals" is an alerting expression written against the gauge, not
+  something the framework decides, because the framework has no view of what a missed tick costs.
 - **There is no generated README**, so the third surfacing channel spec sec. 7.4 asks for has
   nowhere to go. `asbs setup` writes a Dockerfile, settings, secrets and source, and the
   generated `CLAUDE.md` and `settings.toml` carry the idempotency note instead. If a README is
@@ -5721,9 +6128,8 @@ the document covers.
   stream's retention, so a deployment that never reads it will silently lose dead letters when the
   stream ages them out. Draining it is an operational task the framework does not do, and no
   guidance for it is written yet.
-- **Nothing observes dead-lettering.** It is logged, but there is no counter, so "how many messages
-  did we give up on today" cannot be answered from metrics. It belongs with the telemetry work in
-  phase 9, next to `blueprint.events.unhandled`.
+- ~~**Nothing observes dead-lettering.**~~ **Done in phase 9.** `blueprint.events.dead_lettered`,
+  with `reason` and `kept`, next to `blueprint.events.unhandled`.
 - ~~**Cache names are not namespace-scoped**~~ -- **done twice.** First by prefixing the
   partition (`AgentScopedCache`), then properly in phase 8b step 5, which keys the registry on
   `(namespace, name)` and gives each agent its own directory and Redis prefix; the lens is

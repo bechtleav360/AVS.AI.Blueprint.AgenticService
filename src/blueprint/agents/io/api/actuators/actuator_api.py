@@ -13,13 +13,17 @@ import httpx
 from fastapi import HTTPException, status
 from opentelemetry import trace
 
-from ....component.component import traced
+from ....component.component import Component, traced
+from ....component.namespace import ROOT_NAMESPACE
+from ....component.registry import Registry
 from ....config import Config
 from ....models.api import LivenessResponse, ReadinessResponse
 from ....models.status import BuildStatus, EnvironmentStatus, LLMStatus, ServiceInfo, VLLMInfo
 from .health.health_cache import HealthCheckCache
 from ..rest_api_base import RestApiBase
 from .health.health_base import HealthCheckEntry
+from .health.namespace_supervisor import NamespaceSupervisor
+from .health.readiness_policy import CONFIG_KEY as READINESS_POLICY_KEY, ReadinessPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -42,15 +46,39 @@ CONFIG_MASK = "***"
 class ActuatorApi(RestApiBase):
     """Encapsulates all actuator-related endpoints and logic."""
 
-    def __init__(self) -> None:
+    def __init__(self, namespaces: Sequence[str] = (ROOT_NAMESPACE,), critical_agents: Sequence[str] = ()) -> None:
+        """Create the actuator, told which agents this process serves.
+
+        Args:
+            namespaces: Every namespace the process serves, the root included. Needed before
+                the first health poll so that an agent with no checks of its own is still
+                supervised and still reports ``blueprint.namespace.up`` (C7).
+            critical_agents: The agents the group flagged critical, which is what
+                ``readiness_policy = "critical"`` reads (C3). The same flag that decides whether
+                a failed import stops the process (spec sec. 9.1), because it answers the same
+                question: can this deployment run without that agent.
+        """
         super().__init__(should_register=False)
         self._health_cache: HealthCheckCache | None = None
         self._health_entries: list[HealthCheckEntry] = []
+        self._namespaces: tuple[str, ...] = tuple(namespaces)
+        self._critical_agents: tuple[str, ...] = tuple(critical_agents)
+        self._supervisor: NamespaceSupervisor | None = None
 
     @property
     def health_entries(self) -> tuple[HealthCheckEntry, ...]:
         """Every check registered so far, in registration order."""
         return tuple(self._health_entries)
+
+    @property
+    def supervisor(self) -> NamespaceSupervisor | None:
+        """Who decides whether each agent is serving; ``None`` before ``on_startup``.
+
+        Public because the lifespan reaches it: spec sec. 9.1 requires a non-critical agent
+        whose ``on_startup`` raised to be marked down and to stop consuming, and that failure
+        happens outside any health check.
+        """
+        return self._supervisor
 
     def add_health_providers(self, providers: Sequence[HealthCheckEntry]) -> None:
         """Register health checks, adding to the ones already registered.
@@ -88,8 +116,33 @@ class ActuatorApi(RestApiBase):
             self._health_cache.set_health_entries(self._health_entries)
 
     async def on_startup(self) -> None:
-        """Start the health check cache."""
-        self._health_cache = HealthCheckCache(check_interval_seconds=self.config.get("health_check_interval_seconds", 30))
+        """Start the health check cache, under this deployment's readiness policy.
+
+        The supervisor is built here rather than in ``build()`` because it creates
+        OpenTelemetry instruments, and the per-agent providers those belong to (C2) do not
+        exist until the lifespan has configured telemetry -- which it does immediately before
+        this runs.
+
+        Raises:
+            ValueError: if ``readiness_policy`` names no policy. Refused rather than defaulted:
+                a misspelt value read as ``all`` would remove a whole group from rotation the
+                first time a non-critical agent wobbled, with nothing to say the key had not
+                taken effect.
+        """
+        policy = ReadinessPolicy.parse(self.config.get(READINESS_POLICY_KEY, ReadinessPolicy.ALL.value))
+        registry: Registry = Component.shared_registry  # type: ignore[assignment]
+        self._supervisor = NamespaceSupervisor(registry, self._namespaces, critical=self._critical_agents)
+        logger.info(
+            "Readiness policy '%s' over %d namespace(s); critical: %s",
+            policy.value,
+            len(self._namespaces),
+            ", ".join(self._critical_agents) or "none flagged",
+        )
+        self._health_cache = HealthCheckCache(
+            check_interval_seconds=self.config.get("health_check_interval_seconds", 30),
+            policy=policy,
+            supervisor=self._supervisor,
+        )
         if self._health_entries:
             self._health_cache.set_health_entries(self._health_entries)
         await self._health_cache.start()
@@ -148,7 +201,16 @@ class ActuatorApi(RestApiBase):
             # httpGet readiness probe (which only inspects the status code) sees
             # the failure and removes the pod from service rotation.
             if response.status != "UP":
-                logger.warning("Readiness probe failed: %s", response.components)
+                # The agents, not only the components: in a group the first question asked of a
+                # failing probe is whose failure took the pod out, and the payload's per-agent
+                # section is the only thing that answers it under a policy other than 'all'.
+                degraded = [name for name, agent in response.namespaces.items() if agent.status != "UP"]
+                logger.warning(
+                    "Readiness probe failed under policy '%s'; degraded agent(s): %s; components: %s",
+                    response.policy,
+                    ", ".join(degraded) or "none reported",
+                    response.components,
+                )
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail=response.model_dump(),

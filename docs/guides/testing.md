@@ -295,17 +295,20 @@ class TestAppIntegration:
     async def test_health_liveness(self, client):
         response = await client.get("/health/live")
         assert response.status_code == 200
-        assert response.json()["status"] == "alive"
+        assert response.json()["status"] == "UP"
 
     async def test_health_readiness(self, client):
+        # 503 when any check is unhealthy, and the body is the same shape either way.
         response = await client.get("/health/ready")
         assert response.status_code == 200
-
-    async def test_health_detailed(self, client):
-        response = await client.get("/health/detailed")
-        assert response.status_code == 200
         data = response.json()
+        assert data["status"] == "UP"
         assert "components" in data
+
+    async def test_readiness_reports_each_agent(self, client):
+        # One entry per agent the process hosts, "<root>" for a single-agent application.
+        response = await client.get("/health/ready")
+        assert response.json()["namespaces"]["<root>"]["status"] == "UP"
 ```
 
 ### Testing Endpoint Behavior

@@ -296,6 +296,23 @@ class TestTraced:
         attrs = dict(spans[0].attributes or {})
         assert attrs.get("topic") == "orders"
 
+    async def test_every_span_names_its_agent(self, span_exporter: InMemorySpanExporter) -> None:
+        """C7: a span in flight when the process dies never reaches an exporter, so the
+        resource that would have named its agent is never applied -- the span itself is all a
+        post-mortem has."""
+        with namespace_scope("orders"):
+            comp = _AsyncTracedComp()
+        await comp.my_action()
+
+        spans = span_exporter.get_finished_spans()
+        assert dict(spans[0].attributes or {}).get("agent") == "orders"
+
+    def test_a_root_component_names_the_root(self, span_exporter: InMemorySpanExporter) -> None:
+        _SyncTracedComp().my_sync_action()
+
+        spans = span_exporter.get_finished_spans()
+        assert dict(spans[0].attributes or {}).get("agent") == "<root>"
+
 
 # ---------------------------------------------------------------------------
 # traced() decorator — skips arg binding/stamping when span isn't recording

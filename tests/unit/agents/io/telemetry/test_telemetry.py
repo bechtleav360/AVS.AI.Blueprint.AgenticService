@@ -1,11 +1,27 @@
 """Unit tests for TelemetryManager and TracingContext."""
 
+from collections.abc import Iterator
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from blueprint.agents.io.telemetry.providers import agent_meter, agent_tracer, configured_namespaces, reset_providers, tracer_provider
 from blueprint.agents.io.telemetry.telemetry import TelemetryManager, TracingContext
 from blueprint.agents.models.config import ObservabilityConfig
+
+
+@pytest.fixture(autouse=True)
+def _forget_providers() -> Iterator[None]:
+    """Clear the per-namespace providers around every case.
+
+    They live in a module-level register, which is what lets a component reach its own without
+    holding the manager (C6). That makes them process state, so one case's providers would
+    otherwise satisfy the next case's assertions -- and ``configure_tracing`` skips a namespace
+    that already has one, so the second case would configure nothing at all.
+    """
+    reset_providers()
+    yield
+    reset_providers()
 
 
 @pytest.fixture
@@ -68,12 +84,86 @@ class TestConfigureTracing:
             patch("blueprint.agents.io.telemetry.telemetry.Resource"),
             patch("blueprint.agents.io.telemetry.telemetry.trace"),
             patch.object(telemetry_manager, "_build_exporters", return_value=[MagicMock()]),
+            patch.object(telemetry_manager, "_build_metric_exporters", return_value=[]),
             patch.object(telemetry_manager, "_setup_instrumentation"),
         ):
             mock_provider = MagicMock()
             mock_provider_cls.return_value = mock_provider
             telemetry_manager.configure_tracing()
         mock_provider_cls.assert_called_once()
+
+
+class TestOneIdentityPerAgent:
+    """C2: each agent gets its own providers, and the root keeps the one it always had."""
+
+    @pytest.fixture
+    def configure(self, telemetry_manager: TelemetryManager, mock_config: MagicMock, enabled_observability: ObservabilityConfig):
+        """Return a callable that configures telemetry for the given agents, exporting nothing."""
+
+        def _configure(*namespaces: str) -> None:
+            mock_config.get_observability_config.return_value = enabled_observability
+            with (
+                patch.object(telemetry_manager, "_build_exporters", return_value=[MagicMock()]),
+                patch.object(telemetry_manager, "_build_metric_exporters", return_value=[]),
+                patch.object(telemetry_manager, "_setup_instrumentation"),
+            ):
+                telemetry_manager.configure_tracing(namespaces)
+
+        return _configure
+
+    @staticmethod
+    def _attributes(namespace: str) -> dict[str, object]:
+        provider = tracer_provider(namespace)
+        assert provider is not None
+        return dict(provider.resource.attributes)
+
+    def test_the_root_is_configured_even_when_no_agent_is(self, configure) -> None:
+        configure()
+        assert configured_namespaces() == ("",)
+
+    def test_the_root_keeps_the_configured_service_name(self, configure) -> None:
+        configure("orders")
+        assert self._attributes("")["service.name"] == "test-service"
+
+    def test_an_agent_is_its_own_service(self, configure) -> None:
+        configure("orders", "billing")
+        assert self._attributes("orders")["service.name"] == "orders"
+        assert self._attributes("billing")["service.name"] == "billing"
+
+    def test_every_resource_carries_the_deployment(self, configure, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("BLUEPRINT_GROUP", "finance")
+        monkeypatch.setenv("POD_NAME", "pod-7")
+        configure("orders")
+        for namespace in ("", "orders"):
+            assert self._attributes(namespace)["deployment.group"] == "finance"
+            assert self._attributes(namespace)["service.instance.id"] == "pod-7"
+
+    def test_one_span_processor_serves_every_provider(self, configure) -> None:
+        """A processor per agent would be a queue and an export thread per agent."""
+        configure("orders", "billing")
+        processors = {id(tracer_provider(namespace)._active_span_processor) for namespace in ("", "orders", "billing")}
+        assert len(processors) == 3, "each provider has its own multi-processor wrapper"
+        underlying = {
+            id(processor)
+            for namespace in ("", "orders", "billing")
+            for processor in tracer_provider(namespace)._active_span_processor._span_processors
+        }
+        assert len(underlying) == 1
+
+    def test_a_tracer_comes_from_its_own_agents_provider(self, configure) -> None:
+        configure("orders")
+        assert agent_tracer("orders", "X") is not agent_tracer("", "X")
+
+    def test_an_unconfigured_agent_falls_back_rather_than_failing(self, configure) -> None:
+        configure("orders")
+        assert agent_tracer("nobody", "X") is not None
+        assert agent_meter("nobody", "X") is not None
+
+    def test_configuring_twice_does_not_replace_a_provider(self, configure) -> None:
+        configure("orders")
+        first = tracer_provider("orders")
+        configure("orders")
+        assert tracer_provider("orders") is first
 
 
 class TestBuildExporters:
