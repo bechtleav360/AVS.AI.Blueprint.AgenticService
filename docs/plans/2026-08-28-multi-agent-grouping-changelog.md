@@ -1430,6 +1430,379 @@ P6 is what makes the guide's central claim checkable rather than asserted: an ex
 keeps every registry key, queue group and durable name because the root namespace keeps them, and
 that is now enforced by tests.
 
+### Config rework, step 1 -- logging leaves `Config`, and `app_port` leaves the scope
+
+The two prerequisites for one `Config` per namespace (C5). Neither is a namespace feature; both are
+things that only work once, and therefore break the moment a process holds N of them.
+
+**`Config.__init__` no longer configures logging.** The call at the end of the constructor is gone;
+the body it called is now the public `Config.configure_logging()`, and `AppBuilder.__init__` makes
+the call before any `with_*()` runs, so components are constructed with the format already set.
+
+Two reasons, and the second is the one that forced it now. It is the application's decision, not
+the loader's -- a library that configures logging on construction takes the root logger from
+whatever imported it and cannot be silenced by the caller. And one `Config` per namespace means N
+constructions per process: each one built a fresh `LoggingManager`, whose `_configured` flag is
+per-instance and therefore never helped, so each re-attached the correlation and health-check
+filters, logged "Logging configured" again, and let the last namespace's `log_level` win. Verified
+before the change by constructing three scoped `Config`s in one process: three configuration lines.
+
+Existing projects are unaffected, because they all reach `AppBuilder`. What does change: code that
+builds a `Config` and never an `AppBuilder` -- a script, a test -- now gets Python's default
+logging until it calls `configure_logging()` itself, which is the correct behaviour for a library
+and is why the method is public rather than private.
+
+**`app_port` is a root key even when a `Config` is scoped.** The scoped validator required
+`<scope>.app_port` alongside `<scope>.app_name`. A group is one process behind one HTTP server, so
+only one port can ever be bound: requiring it per agent makes every agent declare a value that all
+but one of them cannot have. `app_name` stays scoped -- it is the agent's identity and reaches
+telemetry and the queue group -- while the port is validated at root with the same `default=8000`
+the unscoped path uses.
+
+**Tests.** 1361 unit tests pass (up from 1354). `TestLoggingIsTheApplicationsDecision` asserts that
+construction configures nothing, that `configure_logging()` does, that it passes the resolved
+settings, and that three constructions still configure nothing. `TestLoggingOwnership` asserts
+`AppBuilder` makes the call exactly once and that a later `with_*()` does not repeat it. The
+`app_port` test inverted from "missing scoped port raises" to two cases: a scoped config reads the
+root port, and falls back to 8000 when there is none.
+
+`config.py` remains on `black`'s pre-existing reformat list: the nested conditional in
+`_process_dynabox` is one of the places where `black` and `ruff-format` genuinely disagree -- unlike
+the `actuator_api.py` hunk, `ruff-format` rejects `black`'s version here -- so it was left as it is
+rather than picking a winner inside an unrelated change.
+
+### Config rework, step 2 -- one loaded tree, one view per namespace (C5)
+
+`Config` becomes the loader and the owner of the settings tree; each agent reads through a view of
+it. This is C5 ("each namespace **MUST** receive a `Config` with `agent_scope` set"), implemented
+without N loads and without giving each agent a window on its neighbours.
+
+**`Config.for_namespace(namespace)` returns a scoped view sharing the loaded tree.** The view is a
+shallow copy differing only in `_agent_scope`, so `for_namespace("orders").get("model_name")`
+resolves `orders.model_name` and falls back to the root `model_name`, while `nats_url` and the rest
+of the infrastructure keys stay shared. The files are parsed once per process, not once per agent:
+a test asserts `view._settings is config._settings`. Views are cached per namespace, so a component
+asking twice gets the same object.
+
+This cost almost nothing because every read already funnelled through one place: the nine typed
+getters call `self.get()` 25 times and never touch the tree directly, so scoping `get` scopes all
+of them. A test covers that rather than trusting it.
+
+`for_namespace("")` returns the object itself -- not an optimisation but the definition, since the
+root namespace *is* the unscoped configuration. Calling `for_namespace` **on a view raises**: a
+view is one agent's window, not a factory for other agents' windows, and allowing it would hand
+every namespace an unlogged route to its neighbours' keys.
+
+**`Component.config` returns the component's own view.** A root-namespace component gets the
+configuration object unchanged, so every existing application reads exactly what it read before;
+a namespaced one gets `shared_config.for_namespace(self._namespace)`. This is what makes the view
+more than an unused abstraction, and it is available now only because P6 put the namespace on
+`Component` itself.
+
+**The raw tree becomes an audited escape hatch.** `self.settings` was a public attribute; it is now
+a property over `self._settings` that logs on every access. The user asked for a hatch that logs
+rather than a wall, so isolation here is **audited, not enforced** -- and the docstring says so,
+because the difference matters to anyone relying on it. Enforcing it would mean making the tree
+unreachable, which breaks the actuator environment endpoint and any project reading a key the typed
+getters do not model.
+
+The level distinguishes the two cases, which is what keeps the audit useful rather than noisy: the
+loader is the application's own object and owns the tree, so its access is DEBUG; a **namespaced
+view** handing out the whole tree is an agent reading past its own subsection, so that is WARNING
+and names the namespace. An existing single-agent application therefore logs nothing new.
+
+**Deployment identity is refused, not returned as `None`.** New `DEPLOYMENT_IDENTITY_KEYS`
+(`blueprint_group`, `pod_name`, `hostname`) raises from `get()` with the reason: code that can read
+its group or pod can be written to depend on them, and regrouping then breaks it (C6). `None` would
+have read as "not configured" and sent the caller hunting for a missing setting. The check sits in
+`get()`, the single reader every typed getter funnels through, and it is case-insensitive. This is
+also the prerequisite for step 3: with `envvar_prefix` disabled Dynaconf absorbs the entire process
+environment -- `BLUEPRINT_GROUP` included -- and this is what keeps it out of reach.
+
+**Tests.** 1387 unit tests pass (up from 1361). New `test_namespace_views.py`: scoped resolution and
+root fallback, two agents disagreeing only where they override, the root being the object itself,
+caching, the shared tree, the view-of-a-view refusal, the typed getters being scoped, the C6
+refusals including case and the `default=` argument, and the audit -- a view warns and names itself,
+the loader does not, and the hatch still returns the whole tree. `TestConfigIsScopedToTheNamespace`
+covers the `Component` side.
+
+**Two test-fixture changes the production change forced, both worth noting.** Six `mock_config`
+fixtures are `MagicMock(spec=Config)`, so `for_namespace()` returned a *different* mock and any test
+asserting on `mock_config.get` for a namespaced component broke; they now set
+`config.for_namespace.return_value = config`, so the mock stands in for both the loader and its
+views. And `tests/unit/agents/agent/conftest.py` builds `AgentRuntime` with `object.__new__`,
+bypassing `Component.__init__`, so it now supplies `_namespace` the way it already supplied `_name`.
+The alternative -- making `Component.config` tolerate a missing `_namespace` via `getattr` -- was
+rejected deliberately: it would hide a real ordering bug in any subclass that reads configuration
+before calling `super().__init__()`, which is exactly the failure that should be loud.
+
+### Config rework, step 2b -- the loader stops being reachable from agent code
+
+Found by review immediately after step 2: the scoped view and its audit could be walked past. Every
+class in this framework is a `Component`, so `Component.shared_config` was in reach of every
+handler, service and client -- and it hands out the **unscoped loader**, so a read through it is
+neither namespaced nor logged.
+
+It was worse than a class-level name. `configure()` assigns through `cls`, so the value lands on the
+`Component` class itself, which *is* in the instance MRO: `self.shared_config` resolved too, which
+is the easiest thing to type and the least likely to look wrong. Probed rather than assumed -- all
+four of `self.shared_config`, `Component.shared_config`, `type(self).shared_config` and
+`type(self).config` returned the loader.
+
+**`shared_config` is now `_shared_config`, with no public read path at all.** The only route to
+configuration is the instance property `Component.config`, which returns the component's own view
+(C5) and logs any raw-tree read. Two small public additions on the metaclass replace what tests
+were using the attribute for: `has_config()` reports whether configuration has been injected without
+handing over the loader, and `reset_shared_state()` clears the process-wide state, which a suite
+building more than one application has to do between cases. 13 assignments and 3 reads across the
+suite moved onto them.
+
+**The metaclass `config` property is deleted, and it was the sharper trap.** It returned
+`cls._shared_config` -- the *unscoped loader* -- under the name that means *scoped view* on an
+instance, so `MyHandler.config` and `self.config` were two different things one character apart.
+Nothing used it: a grep for class-level `.config`/`.registry` access across `src/` and `tests/`
+found no hits, so it was dead code as well as a trap.
+
+**`shared_registry` deliberately stays public.** Hiding it protects nothing: looking up
+collaborators is the registry's whole purpose, every component already reaches it through the public
+instance property, and `AppBuilder` needs it before any component instance exists. A class-level
+property named `registry` was tried and reverted -- it collides with the instance property of the
+same name, and mypy resolves the instance one in preference to the metaclass one, so
+`Component.registry.cache_service` failed to type-check. The reverted attempt is recorded in the
+metaclass docstring so it is not retried.
+
+**Tests.** 1391 unit tests pass (up from 1387). `TestTheConfigLoaderIsNotReachable` asserts the
+class-level accessor is gone, that no instance answers to `shared_config`, and that `has_config()`
+and `reset_shared_state()` do their jobs. Three `Component.registry` class-level reads in
+`test_component.py` moved to `shared_registry`, since deleting the metaclass property is what made
+them resolve to the property object rather than the registry.
+
+`tests/integration/test_sessions_startup_resilience.py` keeps its pre-existing formatting: `black`
+wants to rewrite one assertion there and `ruff-format` rejects the result, so the file stays on the
+known-debt list rather than having a winner picked inside an unrelated change.
+
+### Config rework, step 3a -- the environment-variable prefix becomes the project's to choose
+
+Until now the only spelling an environment override could have was Dynaconf's own `DYNACONF_<KEY>`.
+That is a library's name in a deployment's interface: a chart for a platform hosting several
+Blueprint groups has no way to say which of them a variable is meant for, and an operator reading
+`DYNACONF_MODEL_NAME` cannot tell it belongs to this framework at all.
+
+**`envvar_prefix` is now a top-level key in the settings file, overridable in the environment by
+`BLUEPRINT_ENVVAR_PREFIX`.** Precedence is environment, then file, then `DYNACONF` -- so a project
+that declares nothing behaves exactly as before, which is the point: every existing chart keeps
+working untouched.
+
+**It is resolved in the first Dynaconf pass, not the second.** `Config.__init__` already had a
+bootstrap pass whose only job was to read `app_environment` before the real load. The prefix has to
+be known before the tree that uses it exists, so it is resolved there, from the files read through
+the default prefix -- the one spelling that is always available.
+
+**That pass then runs a second time whenever the resolved prefix is not the default.** Without it,
+`<PREFIX>_APP_ENVIRONMENT` would be invisible to the only read that consumes it: the main pass
+would load the `[development]` section while every other key honoured the override, and nothing
+would report the mismatch. The repeat is skipped entirely for the default prefix, so the common
+case still parses the files twice, not three times.
+
+**Four declarations are rejected rather than repaired**, each because the alternative is silent:
+
+- **A lowercase prefix.** Dynaconf does `prefix = prefix.upper()` before matching the environment
+  (`loaders/env_loader.py`), so a declared `myapp` looks for `MYAPP_<KEY>`. On Linux the
+  `myapp_<KEY>` that was actually exported is then never read, and nothing says so. Windows hides
+  the bug -- its environment is case-insensitive -- so this is exactly the defect that ships. The
+  alphabet is `[A-Z][A-Z0-9_]*`; commas are excluded too, because Dynaconf reads a comma-separated
+  prefix as a *list* of prefixes and one override spelling is enough.
+- **`BLUEPRINT` and `POD`.** Dynaconf strips the prefix to form the key, so `envvar_prefix =
+  "BLUEPRINT"` turns `BLUEPRINT_GROUP` into the readable key `group` -- and the C6 blocklist names
+  `blueprint_group`, not `group`. A prefix could therefore have quietly reopened the hole
+  `DEPLOYMENT_IDENTITY_KEYS` exists to close. The rejected set is *derived* from that blocklist
+  (`_ENVVAR_PREFIX_IDENTITY_COLLISIONS` takes the segment before the first underscore), so a new
+  identity variable closes its own hole without anyone remembering to.
+- **`envvar_prefix = true`**, which names no prefix, and any non-string.
+- **A prefix declared inside a section.** This is the mistake a developer will actually make:
+  putting it under `[default]` next to `app_name`. The resolving pass runs with
+  `environments=False`, so a section is one opaque value to it and the key inside is invisible --
+  and it has to run that way, because the prefix is what decides how `app_environment` is read.
+  Left there it would name no prefix, so *every* override relying on it would be ignored at once.
+  `_reject_sectioned_envvar_prefix` walks the bootstrap tree and raises naming the path it found
+  (`development.envvar_prefix`).
+
+**`envvar_prefix = false` disables the prefix**, and this is a footgun that ships documented rather
+than hidden. Dynaconf then absorbs the entire process environment: probed on this machine, 88 keys
+against a 5-key settings file, `PATH`, `BLUEPRINT_GROUP`, `POD_NAME` and every `*_API_KEY` in the
+shell among them. It is *safe* only because step 2 put `DEPLOYMENT_IDENTITY_KEYS` in front of
+`get()` -- with the prefix off, `BLUEPRINT_GROUP` lands in the tree as `blueprint_group`, which is
+the exact spelling the C6 blocklist refuses, and a test asserts that for all three identity keys.
+The environment spellings that mean off are `false`, `0`, `no` and the empty string, matching
+`parse_bool` rather than inventing a second boolean vocabulary. The guide recommends a short
+project prefix and describes what disabling it exposes.
+
+**One Dynaconf behaviour is worth stating because it is not optional.** `DYNACONF_*` is loaded
+whatever the prefix is, and cannot be turned off:
+
+```python
+if global_prefix is False or global_prefix.upper() != "DYNACONF":
+    load_from_env(obj, "DYNACONF", ...)
+```
+
+So declaring a prefix **adds** a spelling rather than replacing one, and because the custom prefix
+is loaded second it wins for the same key. Verified both ways. This is good for migration -- an old
+chart keeps working while a new one moves -- and bad for anyone who declares a prefix believing
+they have closed the `DYNACONF_` door. Both directions are tested and both are in the docstring.
+
+`Config.envvar_prefix` is a public read-only property, because "my variable is ignored" and "my
+variable is misspelled" are otherwise indistinguishable; the startup log now names the resolved
+prefix (or says the environment is read unprefixed). A namespace view shares it: the prefix is a
+property of the process, and `for_namespace` copies it with the rest of the loader.
+
+**Tests.** 1421 unit tests pass (up from 1391), 30 of them new in
+`tests/unit/agents/config/test_envvar_prefix.py`: resolution and precedence, the environment
+selected through the resolved prefix, `DYNACONF_` surviving alongside a custom prefix and losing to
+it, every rejection above, the four falsy spellings, and C6 still holding with the prefix disabled.
+An autouse fixture strips ambient `DYNACONF_*` from the environment, since the developer's own shell
+can otherwise satisfy or defeat the very lookup under test.
+
+`src/blueprint/agents/config/config.py` keeps its pre-existing `black` disagreement in
+`_process_dynabox`, which this change does not touch: it is on the known-debt list because
+`ruff-format` reverts what `black` wants there.
+
+### Config rework, step 3b -- the environment endpoint answers per agent, and reads the tree once
+
+`GET /status/env` flattened the whole settings tree into one dictionary. In a grouped process that
+is every co-hosted agent's configuration in one blob, with nothing saying which agent a key belongs
+to -- and worse, nothing saying what any agent actually *resolves*, because an agent reads its own
+subsection overlaid on the root keys and neither half alone is the answer.
+
+**`Config.resolved_settings(namespace)` builds the dictionary an agent reads.** Root keys, minus
+every other namespace's subsection, with this namespace's own subsection overlaid. `""` returns the
+whole tree, which is what the root namespace resolves -- so a single-agent application is
+unaffected. The overlay skips `None`, matching `_scoped_get`, where `None` at a scoped key means
+"not set" and falls back to the root while `""` and `[]` do not.
+
+Two bugs in the first version of that overlay, both caught by probing it against `get()` key by key
+rather than asserting it looked right:
+
+- **`as_dict()` upper-cases only the top level of the tree**, leaving a subsection's own keys as
+  written. So the overlay landed `app_name` *beside* `APP_NAME` instead of on it, and the resolved
+  dictionary reported the root value while `get()` answered the agent value. Fixed by upper-casing
+  the overlay key.
+- That also silently broke the `None`-versus-empty distinction: `billing`'s `model_name = ""`
+  resolved to the root `"root-model"` in the flattened dictionary and to `""` through `get()`. The
+  same fix covers it, and a test now asserts equality with `get()` for both agents key by key.
+
+**`Config.namespaces` lists the namespaces that have asked for a view**, sorted. That is group
+membership as configuration sees it, and it is the only reliable source: a namespace subsection and
+an ordinary nested table such as `[default.cache]` are indistinguishable in the tree, so the
+endpoint cannot discover agents by inspecting it.
+
+**Both are root-only, and raise on a view -- this is C6, not tidiness.** A view is what agent code
+holds (`Component.config` returns one for a namespaced component), so `namespaces` on a view is an
+agent asking who it is grouped with, and `resolved_settings("other")` on a view is an agent reading
+a neighbour's configuration. Both raise `RuntimeError` naming the namespace that asked, the same
+rule `for_namespace` already applies to itself. C6 is thereby enforced at the two new entry points
+rather than being left to the endpoint to respect.
+
+**`env_status` now returns three things instead of two.** `settings` is what the root resolves,
+`namespaces` carries one masked entry per agent, and `envvar_prefix` reports what step 3a resolved
+(`null` when the prefix is disabled -- unambiguous for a JSON consumer in a way `""` is not).
+`namespaces` is empty for every existing single-agent deployment, so the response is additive.
+
+**The per-namespace breakdown is masked exactly like the root tree.** It is a second copy of the
+same values, so `_sanitize_config` runs over each entry; a test asserts that no marker string from
+a secret in either the root or an agent section appears anywhere in the serialised response.
+
+**The raw tree is read once per request.** `env_status` read `config.settings` three times
+(`as_dict`, `current_env` for the log, `current_env` for the response) and `build_status` twice.
+`Config.settings` is the *audited* property added in step 2 -- every read logs -- so one operator
+request produced three records, and would produce a WARNING per read if the actuator ever holds a
+view. Both endpoints now take one reference and read fields off it, and a test asserts the property
+is touched exactly once per request. `build_status` also stopped reaching for `current_env` and
+`settings_files` as bare attributes, which is what made the endpoint depend on the shape of a
+Dynaconf object in two places instead of one.
+
+**An agent-scoped actuator reports only its own scope.** `ActuatorApi` is a root component by the
+plan's sharing table, so this is the branch that should never be taken -- but if it is, the
+endpoint must not call the two root-only methods and turn a status request into a 500. It falls back
+to the tree it holds and an empty breakdown.
+
+**Tests.** 1443 unit tests pass (up from 1421). 13 new in `test_namespace_views.py`
+(`TestResolvedSettings`, `TestNamespacesIsRootOnly`) and 9 in `test_actuator_api.py`
+(`TestEnvStatus`). The endpoint tests use a **real** `Config` rather than a `MagicMock`: what is
+under test is how the endpoint uses the real scoping and audit behaviour, and a mock would assert
+only which methods were called.
+
+`src/blueprint/agents/io/api/actuators/actuator_api.py` keeps a pre-existing `ruff-format`
+disagreement in `llm_status`, untouched by this change, and `config.py` keeps its pre-existing
+`black` one in `_process_dynabox`. The new fixture writes its settings text through a named local
+rather than a nested `write_text(textwrap.dedent(...))` call, because the two formatters disagree
+about that construct and neither has to win.
+
+### Phase 0, part 1 -- `run_app`, and the worker count it refuses
+
+First piece of phase 0. `run_app(app, config)` in `utils/utils.py`, exported from
+`blueprint.agents`, is the one line a project needs to become runnable by
+`python src/main.py`: host, port and log level come from the same settings tree as everything
+else instead of a uvicorn invocation duplicated in a Dockerfile, a compose file and a README.
+
+Development (`app_environment = "development"`) differs in exactly two ways -- the server logs at
+`debug`, and it runs one worker whatever the configuration says.
+
+**`reload` is never enabled, and that is not an omission.** Auto-reload requires uvicorn to import
+the application itself, so it needs an import string; it cannot restart an object that has already
+been built. The plan said this; the docstring now says it too, because "why does reload not work"
+is otherwise a question that gets answered by adding a broken parameter.
+
+**`app_workers > 1` raises instead of being passed through**, which is a departure from the plan's
+"workers from `app_workers` config (default 1)". Two independent reasons, and either alone settles
+it:
+
+- **uvicorn cannot honour it here.** With an application *object* rather than an import string,
+  `workers > 1` makes uvicorn log `You must pass the application as an import string to enable
+  'reload' or 'workers'` against its own logger and call `sys.exit` (`uvicorn/main.py:603-607`,
+  verified against uvicorn 0.52.4). So the plan's version produces a process that dies before
+  binding a port, with a message naming a setting the operator did not touch.
+- **It is the wrong shape for this framework even where it works.** Every uvicorn worker is a
+  separate process that builds the application again: N workers open N transport connections, join
+  the queue group N times, and start N in-process scheduler timers. Scaling is what replicas are
+  for, and the queue group (P1) and the per-tick claim (P5) are what make replicas correct. The
+  error message says this and names the alternative for anyone who wants it anyway.
+
+**The log level is translated, not validated.** The framework spells levels as `logging` does
+(`"INFO"`), uvicorn wants them lower-case and has one level `logging` does not (`"trace"`). An
+unrecognised value logs a warning and falls back to `"info"` rather than raising: this level
+decides only how uvicorn narrates itself, nothing outside the process can depend on it, and the
+application's own logging was already configured from the same key by `Config.configure_logging`.
+That is the other side of the P6 rule -- names that cross the process boundary are validated, and
+this one does not cross it.
+
+`DEFAULT_APP_HOST = "0.0.0.0"` carries a `# nosec B104`: bind-all is the only useful default
+inside a container, which cannot know the address of the interface its traffic arrives on. **Not
+verified locally** -- bandit is not installed in this working copy (see `CLAUDE.local.md`), so
+whether the marker satisfies the hook is unconfirmed.
+
+**No caller in this repository yet, deliberately.** The examples end at `app = builder.build()` and
+are served by the Dockerfile's `uvicorn src.main:app`, and phase 8 is what turns `main.py` into a
+declaration served by `python -m blueprint.agents.entrypoint` -- which is the caller this exists
+for. It is public API from today regardless, so it is usable rather than dormant.
+
+**Tests.** 1462 unit tests pass (up from 1443), 19 new in `tests/unit/agents/utils/test_run_app.py`:
+the arguments uvicorn is handed, the two development differences, the level translation and its
+fallback, `reload=False`, and the worker refusal -- including that it happens before `uvicorn.run`
+is called at all.
+
+### Not fixed, found while doing this: `app_environment` in `[default]` selects nothing
+
+The bootstrap pass runs with `environments=False`, so it sees only top-level keys -- `[default]`
+arrives as one opaque value. All five examples declare `app_environment` *inside* `[default]`, where
+that pass cannot read it, so it never selects an environment: it only lands in the loaded tree as a
+value that `config.get("app_environment")` returns. A project that adds a `[production]` section and
+sets `app_environment = "production"` under `[default]` gets `[development]` loaded and no warning.
+Only a top-level `app_environment`, or `DYNACONF_APP_ENVIRONMENT`, actually switches sections.
+
+Pre-existing and out of this step, and the fix is not obviously safe -- honouring the sectioned key
+would change which section an existing project loads. Left as a decision to take, not a defect to
+patch inside a config change.
+
 ### Deployment guide corrected (`2d80b63`)
 
 The guide recommended `replicaCount: 2`, an HPA, and `--set replicaCount=3` as ordinary scaling. It
@@ -1691,6 +2064,26 @@ stay keyword-only and last, or an existing `with_cache(False)` would silently be
     generated `CronJob` is the remaining silent-failure case -- the missing `event_bus` and the
     missing mode both fail at startup now, but a mode and a transport with nothing publishing
     does not. Validate is where it should be caught.
+- **The settings-fragment merge has two unanswered questions, both raised by step 3a.** Spec
+  sec. 5.3 requires each agent to keep writing plain top-level keys in its own `settings.toml` and
+  the build to merge each fragment under that agent's scope, reporting collisions with a root key.
+  Confirmed by probe that nothing does this yet: handing two fragments to
+  `Config(settings_files=[...])` merges them *flat*, so the last file silently wins -- two
+  fragments each declaring `model_name` at root end with `for_namespace("orders")` returning
+  billing's value. What the merge must decide, and the spec does not say:
+  - **A fragment declaring `envvar_prefix` must be rejected, not merged.** The prefix is
+    process-wide -- one group, one prefix -- and it is now a *top-level* key, which is exactly the
+    shape a fragment consists of. `_reject_sectioned_envvar_prefix` does not catch this: it looks
+    for the key nested inside a section, and a fragment's is at the top level where it looks
+    legitimate. Merged and scoped it would be silently inert; merged at root, whichever agent
+    happens to load last would decide how the whole group reads its environment.
+  - **Whether a fragment may override a shared infrastructure key at all.** Sec. 5.3 says a
+    collision between a fragment and a root key MUST be *reported*; it does not say whether it is
+    then refused. The two readings differ in practice: an agent overriding `model_name` is the
+    point of scoping, while an agent overriding `nats_url` or `app_port` breaks the group it is
+    hosted in -- and `app_port` is already root-only (config rework step 1), so at least one key
+    has to be refused rather than reported. The likely answer is a small set of group-owned keys
+    that a fragment may not carry, with everything else scoped.
 - **Two requirements this raised for later phases, now written into the spec.**
   `scheduler_mode` **must** resolve per namespace through C5 rather than once per process, or a
   group cannot host a pure-scheduler agent on `"in_process"` next to an event-driven agent on

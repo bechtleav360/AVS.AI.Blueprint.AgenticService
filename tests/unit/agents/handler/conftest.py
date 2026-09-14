@@ -40,13 +40,15 @@ def reset_component_state() -> Generator[None]:
         return_value=MagicMock(),
     ):
         yield
-    Component.shared_config = None
-    Component.shared_registry = None
+    Component.reset_shared_state()
 
 
 @pytest.fixture
 def mock_config() -> MagicMock:
     config = MagicMock(spec=Config)
+    # A namespaced component reads through Config.for_namespace(); the mock stands in for
+    # both the loader and its views, so a test controls one object rather than two.
+    config.for_namespace.return_value = config
     Component.configure(config)
     return config
 

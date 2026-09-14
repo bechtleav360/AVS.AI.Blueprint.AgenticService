@@ -9,7 +9,7 @@ Test coverage for `src/blueprint/agents/io/`.
 | File | Class under test | What is covered |
 |---|---|---|
 | `api/test_rest_api_base.py` | `RestApiBase` | HTTP verb decorators attach `_route`, `_wire_routes` registers routes, `_build_problem_details` RFC 7807 fields, `_resolve_status_title` |
-| `api/actuators/test_actuator_api.py` | `ActuatorApi` | `_sanitize_config` (flat + nested), `liveness_probe` always UP, `on_startup`/`on_shutdown` lifecycle |
+| `api/actuators/test_actuator_api.py` | `ActuatorApi` | `_sanitize_config` (flat + nested), `liveness_probe` always UP, `on_startup`/`on_shutdown` lifecycle, `env_status` per-namespace breakdown and masking, reported `envvar_prefix`, one audited tree read per request |
 | `api/actuators/health/test_client_health.py` | `ClientHealthChecker` | `connect()` called before `health_check()`, healthy/unhealthy/mixed aggregation, empty client list |
 | `api/actuators/health/test_health_cache.py` | `HealthCheckCache` | Initial state, provider updates, all-healthy→UP, one-unhealthy→DOWN, exception→unhealthy component, `get_cache_age_seconds`, `get_cache_info`, start/stop idempotency |
 | `api/actuators/health/test_sessions_health.py` | `SessionsServiceHealthChecker` | REST API reachable→UP, `RequestError`→DOWN with details, fresh heartbeat→UP, stale heartbeat→DOWN, no heartbeat→UP (unknown), `update_heartbeat` |

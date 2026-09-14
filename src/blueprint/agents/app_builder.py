@@ -62,6 +62,11 @@ class AppBuilder:
     """
 
     def __init__(self, config: Config) -> None:
+        # Logging is configured here rather than in Config.__init__: it is the application's
+        # decision, not the configuration loader's, and one Config per namespace would
+        # otherwise reconfigure the root logger once per agent. This runs before any
+        # with_*() call, so component construction is already logged with the right format.
+        config.configure_logging()
         self._config = config
         self._telemetry_manager = TelemetryManager()
         self._eventing_component: DaprEventing | NatsEventing | None = None

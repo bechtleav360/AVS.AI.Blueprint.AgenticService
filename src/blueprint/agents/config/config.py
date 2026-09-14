@@ -2,6 +2,9 @@
 
 import json
 import logging
+import os
+import re
+from copy import copy
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +20,67 @@ logger = logging.getLogger(__name__)
 
 class ConfigError(Exception):
     """Custom exception for configuration-related errors."""
+
+
+DEPLOYMENT_IDENTITY_KEYS = frozenset({"blueprint_group", "pod_name", "hostname"})
+"""Environment values describing *where* a process runs, and therefore not configuration.
+
+Kept unreadable through ``Config`` because C6 forbids any API reachable from agent code exposing
+the deployment group, its membership or its size: an agent that can read them can be written to
+depend on them, and regrouping then breaks it. Framework code that needs them reads the
+environment directly (``clients/io/nats_client.py``), where no agent can follow.
+
+The list matters most once ``envvar_prefix`` can be disabled, because Dynaconf then absorbs the
+whole process environment -- ``BLUEPRINT_GROUP`` and ``POD_NAME`` included -- and this is what
+keeps them out of reach.
+"""
+
+
+DEFAULT_ENVVAR_PREFIX = "DYNACONF"
+"""The prefix an environment override carries unless the project declares another one.
+
+Kept as Dynaconf's own default so no existing deployment changes: every ``DYNACONF_<KEY>`` in a
+Helm chart or ``docker run`` keeps resolving. It is also the one spelling that is *always*
+available -- Dynaconf loads ``DYNACONF_*`` in addition to any custom prefix and cannot be told
+not to (``loaders/env_loader.py``), so declaring a prefix **adds** a spelling rather than
+replacing this one. A custom prefix is loaded second and therefore wins for the same key.
+"""
+
+ENVVAR_PREFIX_OVERRIDE = "BLUEPRINT_ENVVAR_PREFIX"
+"""Environment variable that overrides the declared ``envvar_prefix``.
+
+The prefix cannot be overridden through Dynaconf, because it decides what Dynaconf reads: an
+operator who wants to change it has to be able to say so before the tree exists. Hence a
+framework-owned ``BLUEPRINT_`` variable read straight from the process environment, the same
+bootstrap channel the deployment group uses.
+"""
+
+_ENVVAR_PREFIX_ALPHABET = re.compile(r"^[A-Z][A-Z0-9_]*$")
+"""Uppercase only, and validated rather than repaired.
+
+Dynaconf upper-cases the prefix before matching the environment, so a declared ``myapp`` looks
+for ``MYAPP_<KEY>``: on Linux the ``myapp_<KEY>`` the author actually exported is ignored, with
+nothing to debug. The prefix crosses the process boundary -- a chart, a compose file and a
+``docker run`` all encode it -- so it is checked, never rewritten.
+
+Commas are excluded too: Dynaconf reads a comma-separated prefix as a *list* of prefixes, which
+is a second way to spell the same override and not something this framework needs.
+"""
+
+_ENVVAR_PREFIX_DISABLED = frozenset({"", "false", "0", "no"})
+"""Spellings that mean "no prefix at all", matching :func:`blueprint.agents.utils.parse_bool`.
+
+An environment variable carries text, so ``false`` has to mean what TOML's ``false`` means.
+"""
+
+_ENVVAR_PREFIX_IDENTITY_COLLISIONS = frozenset(key.split("_", 1)[0].upper() for key in DEPLOYMENT_IDENTITY_KEYS if "_" in key)
+"""Prefixes that would smuggle a deployment-identity variable past :data:`DEPLOYMENT_IDENTITY_KEYS`.
+
+Dynaconf strips the prefix to form the key, so ``envvar_prefix = "BLUEPRINT"`` turns
+``BLUEPRINT_GROUP`` into the readable key ``group`` -- and the C6 blocklist names
+``blueprint_group``, not ``group``. Derived from the blocklist rather than written out, so a new
+identity variable closes its own hole.
+"""
 
 
 class Config:
@@ -37,24 +101,57 @@ class Config:
         TOML files.
 
         Raw access via ``self.settings`` remains unscoped.
+
+        Which environment variables count as overrides is decided here too, before the tree is
+        built: see :meth:`_resolve_envvar_prefix`. The prefix is a property of the process, not
+        of a namespace, so a view built by :meth:`for_namespace` shares it.
         """
 
         self._validation_errors: list[str] = []
         self._root_path = Path(root_path) if root_path else Path.cwd()
         self._agent_scope = agent_scope
+        self._is_view = False
+        self._views: dict[str, Config] = {}
 
-        # First pass: load config to get app_environment
+        # First pass: load config to get envvar_prefix and app_environment.
+        #
+        # The prefix has to be known before the tree that uses it can be built, and it is declared
+        # in the same files -- so this pass reads them through Dynaconf's default prefix, the one
+        # spelling that is always available (see DEFAULT_ENVVAR_PREFIX).
         temp_settings = Dynaconf(
             settings_files=settings_files, environments=False, load_dotenv=False, merge_enabled=True, root_path=root_path
         )
+        self._envvar_prefix = self._resolve_envvar_prefix(temp_settings)
+        if self._envvar_prefix != DEFAULT_ENVVAR_PREFIX:
+            # Repeat the pass through the resolved prefix. Without this, `<PREFIX>_APP_ENVIRONMENT`
+            # is invisible to the only read that consumes it: the second pass would load the
+            # default environment's section while every other key honoured the override, and
+            # nothing would report the mismatch.
+            temp_settings = Dynaconf(
+                settings_files=settings_files,
+                environments=False,
+                load_dotenv=False,
+                merge_enabled=True,
+                root_path=root_path,
+                envvar_prefix=self._envvar_prefix,
+            )
         app_env = temp_settings.get("app_environment", "development")
-        logger.info("Loading configuration properties for environment: %s", app_env)
+        logger.info(
+            "Loading configuration properties for environment: %s (environment overrides read from %s)",
+            app_env,
+            f"{self._envvar_prefix}_*" if self._envvar_prefix else "the whole process environment, unprefixed",
+        )
 
-        # Validators differ when scoped: app_name/app_port must live under the scope.
+        # Validators differ when scoped: app_name is per agent, app_port is not.
+        #
+        # A group is one process behind one HTTP server, so only one port can be bound no
+        # matter how many agents share it. Requiring `<scope>.app_port` would make every
+        # agent declare a value that all but one of them cannot have, so the port stays a
+        # root key and is validated as one.
         if agent_scope:
             validators = [
                 Validator(f"{agent_scope}.app_name", must_exist=True),
-                Validator(f"{agent_scope}.app_port", must_exist=True, is_type_of=int),
+                Validator("app_port", must_exist=True, is_type_of=int, default=8000),
                 Validator("app_environment", must_exist=True, default="development"),
             ]
         else:
@@ -65,48 +162,316 @@ class Config:
             ]
 
         # Second pass: load with the correct environment
-        self.settings = Dynaconf(
+        self._settings = Dynaconf(
             settings_files=settings_files,
             environments=True,
             current_env=app_env,
             load_dotenv=False,
             merge_enabled=True,
             root_path=root_path,
+            envvar_prefix=self._envvar_prefix,
             validators=validators,
         )
 
         # Validate first. Dynaconf's lazy _setup() triggers validators on the
         # first attribute access, so this needs to run before any other access
-        # to self.settings to ensure ValidationError is converted to ConfigError
+        # to self._settings to ensure ValidationError is converted to ConfigError
         # by validate()'s exception handler.
         self.validate()
 
         # Replace DOT placeholders
-        dot_placeholder = self.settings.get("dot_placeholder", "")
+        dot_placeholder = self._settings.get("dot_placeholder", "")
         if dot_placeholder:
             # Process the entire settings object
-            processed = self._process_dynabox(self.settings, dot_placeholder, ".")
+            processed = self._process_dynabox(self._settings, dot_placeholder, ".")
             # Update settings with processed values
             for key, value in processed.items():
-                self.settings[key] = value
+                self._settings[key] = value
 
-        # Initialize logging after config is fully loaded
-        self._initialize_logging()
+    @staticmethod
+    def _resolve_envvar_prefix(bootstrap_settings: Any) -> str | bool:
+        """Decide which prefix environment overrides must carry, before the real tree is loaded.
+
+        Precedence, highest first: the :data:`ENVVAR_PREFIX_OVERRIDE` environment variable, the
+        ``envvar_prefix`` key in the settings files, then :data:`DEFAULT_ENVVAR_PREFIX`. An
+        unset prefix therefore behaves exactly as before this existed.
+
+        Args:
+            bootstrap_settings: The first-pass Dynaconf object, read through the default prefix.
+
+        Returns:
+            The prefix to hand Dynaconf, or ``False`` to read the environment unprefixed.
+
+        Raises:
+            ConfigError: if the declared value is not a usable prefix. Every rejection is a
+                mistake that would otherwise be silent -- an ignored override, or an identity
+                variable turned into a readable key.
+        """
+        raw: Any = os.environ.get(ENVVAR_PREFIX_OVERRIDE)
+        source = f"environment variable {ENVVAR_PREFIX_OVERRIDE}"
+        if raw is None:
+            raw = bootstrap_settings.get("envvar_prefix")
+            source = "key 'envvar_prefix' in the settings files"
+        if raw is None:
+            Config._reject_sectioned_envvar_prefix(bootstrap_settings)
+            return DEFAULT_ENVVAR_PREFIX
+
+        if isinstance(raw, bool):
+            if raw:
+                raise ConfigError(
+                    f"envvar_prefix ({source}) is true, which names no prefix. Use a string such as "
+                    f"'{DEFAULT_ENVVAR_PREFIX}', or false to read the environment with no prefix."
+                )
+            return False
+        if not isinstance(raw, str):
+            raise ConfigError(f"envvar_prefix ({source}) must be a string or false, got {raw!r}.")
+
+        candidate = raw.strip()
+        if candidate.lower() in _ENVVAR_PREFIX_DISABLED:
+            return False
+        if not _ENVVAR_PREFIX_ALPHABET.match(candidate):
+            raise ConfigError(
+                f"envvar_prefix ({source}) is {candidate!r}, which cannot be used as a prefix: it must match "
+                "[A-Z][A-Z0-9_]*. Dynaconf upper-cases the prefix before matching the environment, so a "
+                "lowercase prefix silently looks for the upper-cased spelling and the variable that was "
+                "actually exported is never read. Declare the prefix in the case it will be exported in, or "
+                "use false to read the environment with no prefix."
+            )
+        if candidate in _ENVVAR_PREFIX_IDENTITY_COLLISIONS:
+            raise ConfigError(
+                f"envvar_prefix ({source}) is {candidate!r}, which collides with deployment identity: Dynaconf "
+                f"strips the prefix to form the key, so {candidate}_<NAME> would become the readable key '<name>' "
+                "and bypass the C6 blocklist that keeps the deployment group and the pod out of reach of agent "
+                "code. Choose another prefix."
+            )
+        return candidate
+
+    @staticmethod
+    def _reject_sectioned_envvar_prefix(bootstrap_settings: Any) -> None:
+        """Fail if ``envvar_prefix`` was declared inside a section, where nothing can read it.
+
+        The prefix must be a **top-level** key. The pass that resolves it runs with
+        ``environments=False``, so a section such as ``[default]`` is still one opaque value to it
+        and the key inside is invisible -- and it has to run that way, because the prefix is what
+        decides how ``app_environment`` is read in the first place. A prefix cannot live in the
+        section that its own resolution selects.
+
+        The natural mistake is therefore to put it next to ``app_name`` under ``[default]``, where
+        it would do nothing at all. That is the failure this raises for: an ignored prefix means
+        every environment override is silently ignored with it.
+
+        Raises:
+            ConfigError: naming each section the key was found in.
+        """
+
+        def find(node: Any, path: str) -> list[str]:
+            if not hasattr(node, "items"):
+                return []
+            found = []
+            for key, value in node.items():
+                where = f"{path}.{key}".lstrip(".").lower()
+                if str(key).lower() == "envvar_prefix":
+                    found.append(where)
+                else:
+                    found.extend(find(value, where))
+            return found
+
+        sectioned = find(bootstrap_settings.as_dict(), "")
+        if sectioned:
+            raise ConfigError(
+                f"'envvar_prefix' is declared as {', '.join(sorted(sectioned))}, inside a section, where nothing "
+                "reads it: the prefix is resolved before any environment section is selected, so it must be a "
+                f"top-level key in the settings file (or set as {ENVVAR_PREFIX_OVERRIDE} in the environment). "
+                "Left where it is, it names no prefix and every environment override that relies on it is ignored."
+            )
+
+    @property
+    def envvar_prefix(self) -> str | bool:
+        """The prefix an environment override must carry, or ``False`` when none is required.
+
+        Read by the actuator environment endpoint and worth logging at startup: "my variable is
+        ignored" is otherwise indistinguishable from "my variable is misspelled".
+        """
+        return self._envvar_prefix
+
+    @property
+    def settings(self) -> Any:
+        """The raw, unscoped settings tree -- the deliberate escape hatch.
+
+        Everything a component should need is on ``get`` and the typed getters, which resolve
+        ``<namespace>.<key>`` before the root key. This property is what stays reachable when that
+        is not enough, and **every use of it is logged**, so reaching around a namespace view is
+        visible rather than merely discouraged.
+
+        Isolation between agents is therefore *audited, not enforced*. Enforcing it would mean
+        making the tree unreachable, which breaks the actuator environment endpoint and any project
+        reading a key the typed getters do not model. The trade is deliberate: a hatch that leaves
+        a trace beats a wall with a hole in it.
+
+        The level distinguishes the two cases. The loader is the application's own object and owns
+        the tree, so its access is DEBUG. A **namespaced view** handing out the whole tree is an
+        agent reading past its own subsection, which is the case worth seeing, so that is WARNING.
+        """
+        if self._is_view:
+            logger.warning(
+                "Namespace '%s' read the raw settings tree, which is not scoped to it: it can see every other "
+                "agent's configuration. Prefer get() or a typed getter, which resolve '%s.<key>' before the root key.",
+                self._agent_scope,
+                self._agent_scope,
+            )
+        else:
+            logger.debug("Raw settings tree read from the root configuration")
+        return self._settings
+
+    def for_namespace(self, namespace: str) -> "Config":
+        """Return a view of this configuration scoped to one agent (C5).
+
+        The view shares this object's loaded tree -- the files are parsed once per process, not
+        once per agent -- and differs only in which scope its lookups try first. So
+        ``for_namespace("orders").get("model_name")`` resolves ``orders.model_name`` and falls back
+        to the root ``model_name``, while infrastructure keys stay shared at the root.
+
+        Views are cached, so a component asking twice gets the same object.
+
+        Args:
+            namespace: The agent to scope to. ``""`` returns this object unchanged, because the
+                root namespace *is* the unscoped configuration.
+
+        Raises:
+            RuntimeError: if called on a view. A view is one agent's window on the configuration,
+                not a factory for other agents' windows -- allowing it would hand every namespace
+                an unlogged route to its neighbours' keys, which is exactly what ``settings``
+                exists to make visible.
+        """
+        if self._is_view:
+            raise RuntimeError(
+                f"Namespace '{self._agent_scope}' asked its own configuration view for a view of namespace "
+                f"'{namespace}'. Views are created from the application's configuration, not from another "
+                "agent's view."
+            )
+        if not namespace:
+            return self
+
+        cached = self._views.get(namespace)
+        if cached is not None:
+            return cached
+
+        view = copy(self)
+        view._agent_scope = namespace
+        view._is_view = True
+        view._views = {}
+        self._views[namespace] = view
+        return view
+
+    @property
+    def agent_scope(self) -> str | None:
+        """The namespace whose keys this object resolves first; ``None`` at the root."""
+        return self._agent_scope
+
+    @property
+    def is_view(self) -> bool:
+        """Whether this is a per-namespace view rather than the application's own configuration."""
+        return self._is_view
+
+    @property
+    def namespaces(self) -> tuple[str, ...]:
+        """The namespaces that have asked this configuration for their own view, sorted.
+
+        This is the group membership as *configuration* sees it -- a namespace appears once a
+        component in it has read :attr:`Component.config`. It exists for the operator-facing
+        environment endpoint, which otherwise has no way to say which agent a key belongs to.
+
+        Raises:
+            RuntimeError: if called on a view. C6 forbids agent code observing its grouping, and
+                a view is what agent code holds: an agent that can list its neighbours can be
+                written to depend on them, and regrouping then breaks it. The same rule that
+                makes :meth:`for_namespace` refuse to be called on a view.
+        """
+        if self._is_view:
+            raise RuntimeError(
+                f"Namespace '{self._agent_scope}' asked which other namespaces share its process. That is "
+                "deployment grouping, not configuration, and C6 keeps it out of reach of agent code: an agent "
+                "written against its neighbours breaks when the group is changed."
+            )
+        return tuple(sorted(self._views))
+
+    def resolved_settings(self, namespace: str = "") -> dict[str, Any]:
+        """Return the configuration one namespace resolves, flattened as it would read it.
+
+        The tree holds each agent's overrides in its own subsection, so no single dictionary in it
+        says what a given agent actually sees. This builds that dictionary the way :meth:`get`
+        would answer key by key: the root keys, minus every *other* namespace's subsection, with
+        this namespace's own subsection overlaid on top.
+
+        A key whose scoped value is ``None`` is left at its root value, matching
+        :meth:`_scoped_get` -- ``None`` there means "not set", not "set to nothing".
+
+        Args:
+            namespace: The agent to resolve for. ``""`` returns the whole tree, which is what the
+                root namespace resolves.
+
+        Returns:
+            A plain dictionary, keys as the settings tree spells them.
+
+        Raises:
+            RuntimeError: if called on a view, for the reason given on :attr:`namespaces` -- this
+                answers for an arbitrary namespace, so on a view it would be a route to a
+                neighbour's configuration.
+        """
+        if self._is_view:
+            raise RuntimeError(
+                f"Namespace '{self._agent_scope}' asked its own view to resolve configuration for namespace "
+                f"'{namespace}'. Views resolve their own keys through get(); they are not a window on another "
+                "agent's configuration."
+            )
+
+        tree: dict[str, Any] = dict(self._settings.as_dict())
+        if not namespace:
+            return tree
+
+        logger.debug("Resolving the flattened configuration of namespace '%s'", namespace)
+        others = {name.lower() for name in self._views} - {namespace.lower()}
+        own: Any = None
+        resolved: dict[str, Any] = {}
+        for key, value in tree.items():
+            lowered = str(key).lower()
+            if lowered == namespace.lower():
+                own = value
+            elif lowered not in others:
+                resolved[key] = value
+
+        if hasattr(own, "items"):
+            # as_dict() upper-cases the top level of the tree but leaves a subsection's own keys
+            # as written, so the overlay has to be upper-cased to land *on* the root key rather
+            # than beside it. Without this, a resolved dictionary reports the root value under
+            # APP_NAME and the agent value under app_name, and disagrees with what get() answers.
+            for key, value in own.items():
+                if value is not None:
+                    resolved[str(key).upper()] = value
+        return resolved
 
     def get_package_root(self) -> Path:
         """Return the root path where configuration files are located."""
 
         return self._root_path
 
-    def _initialize_logging(self) -> None:
-        """Initialize logging based on configuration.
+    def configure_logging(self) -> None:
+        """Configure the root logger from ``log_level``, ``log_format`` and ``suppress_noisy_loggers``.
 
-        Called automatically at the end of Config initialization.
-        Sets up logging with the configured log level and format from settings.
+        **Called by the application, not by this constructor.** Configuring logging is the
+        application's decision: a library that does it on import steals the root logger from
+        whatever imported it, and cannot be silenced by the caller. ``AppBuilder.__init__``
+        makes the call, so an existing ``main.py`` that builds an app is unaffected.
+
+        It also has to leave the constructor for the namespace work: one ``Config`` per
+        namespace means N constructions in one process, and each one re-ran this. It is
+        idempotent in the sense that matters -- ``LoggingManager`` only touches the root
+        logger when it has no handlers -- but it re-attached filters and logged
+        "Logging configured" once per namespace, and the last namespace's level won.
         """
-        log_level = self.settings.get("log_level", "INFO")
-        log_format = self.settings.get("log_format", "text")
-        suppress_noisy = self.settings.get("suppress_noisy_loggers", True)
+        log_level = self._settings.get("log_level", "INFO")
+        log_format = self._settings.get("log_format", "text")
+        suppress_noisy = self._settings.get("suppress_noisy_loggers", True)
 
         manager = LoggingManager()
         manager.configure(log_level=log_level, log_format=log_format, suppress_noisy_loggers=suppress_noisy)
@@ -192,20 +557,34 @@ class Config:
 
         When ``agent_scope`` is set, tries ``<scope>.<key>`` first; if missing or
         ``None``, falls back to ``<key>`` at root. When ``agent_scope`` is None,
-        behaves exactly like ``self.settings.get(key, default)``.
+        behaves exactly like a plain unscoped lookup in the tree.
 
         ``None`` from a scoped lookup is treated as "not set" so the root
         fallback fires. Empty containers (``[]``, ``{}``, ``""``) at the scoped
         key are returned as-is — only ``None`` triggers fallback.
         """
         if self._agent_scope:
-            scoped = self.settings.get(f"{self._agent_scope}.{key}")
+            scoped = self._settings.get(f"{self._agent_scope}.{key}")
             if scoped is not None:
                 return scoped
-        return self.settings.get(key, default)
+        return self._settings.get(key, default)
 
     def get(self, key: str, default: Any = None) -> Any:
-        """Get a configuration value, scope-aware when ``agent_scope`` is set."""
+        """Get a configuration value, scope-aware when ``agent_scope`` is set.
+
+        Raises:
+            ValueError: for a key in :data:`DEPLOYMENT_IDENTITY_KEYS`. Raised rather than answered
+                with ``None``, because ``None`` reads as "not configured" and would send the caller
+                hunting for a missing setting instead of telling them the value is deliberately out
+                of reach (C6). Every typed getter funnels through here, so one check covers them all.
+        """
+        if key.lower() in DEPLOYMENT_IDENTITY_KEYS:
+            raise ValueError(
+                f"'{key}' is deployment identity, not configuration, and is deliberately unreadable through "
+                "Config (C6): code that can read the group or the pod can be written to depend on them, and "
+                "moving the agent to another group then breaks it. Framework code reads these from the "
+                "environment directly."
+            )
 
         env_var = self._scoped_get(key, default)
         # Convert DynaBox to dict
@@ -430,7 +809,7 @@ class Config:
         """Validate the configuration."""
         self._validation_errors.clear()
         try:
-            self.settings.validators.validate()
+            self._settings.validators.validate()
             if not 1 <= self.get("app_port") <= 65535:
                 raise ConfigError(f"Invalid app port: {self.get('app_port')}")
 

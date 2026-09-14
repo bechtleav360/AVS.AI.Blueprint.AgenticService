@@ -123,21 +123,38 @@ class TestValidators:
                 agent_scope="foo",
             )
 
-    def test_missing_scoped_app_port_raises(self, write_settings: WriteSettings) -> None:
+    def test_scoped_config_needs_no_scoped_app_port(self, write_settings: WriteSettings) -> None:
+        """A group is one process behind one HTTP server, so the port cannot be per agent."""
+        settings_file = write_settings("""
+            [development]
+            app_environment = "development"
+            app_port = 8080
+
+            [development.foo]
+            app_name = "foo-app"
+            """)
+        config = Config(
+            settings_files=[str(settings_file)],
+            root_path=str(settings_file.parent),
+            agent_scope="foo",
+        )
+        assert config.get("app_name") == "foo-app"
+        assert config.get("app_port") == 8080
+
+    def test_scoped_config_falls_back_to_the_default_port(self, write_settings: WriteSettings) -> None:
         settings_file = write_settings("""
             [development]
             app_environment = "development"
 
             [development.foo]
             app_name = "foo-app"
-            # app_port intentionally missing
             """)
-        with pytest.raises(ConfigError):
-            Config(
-                settings_files=[str(settings_file)],
-                root_path=str(settings_file.parent),
-                agent_scope="foo",
-            )
+        config = Config(
+            settings_files=[str(settings_file)],
+            root_path=str(settings_file.parent),
+            agent_scope="foo",
+        )
+        assert config.get("app_port") == 8000
 
     def test_root_keys_not_required_when_scoped(self, write_settings: WriteSettings) -> None:
         # No root app_name / app_port; only scoped versions exist.

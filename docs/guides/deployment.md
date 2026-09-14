@@ -105,6 +105,59 @@ Nested settings use double underscores as separators. For example, `DYNACONF_LLM
 api_key = "sk-..."
 ```
 
+#### Choosing Your Own Prefix
+
+`DYNACONF_` is the default, not the only option. Declare `envvar_prefix` as a **top-level** key --
+above every section, because the prefix is resolved before any environment section is selected:
+
+```toml
+envvar_prefix = "ORDERS"
+
+[default]
+app_name = "orders"
+```
+
+```bash
+docker run -e ORDERS_MODEL_NAME="gpt-4" my-ai-service:latest
+```
+
+An operator can override the declared prefix without rebuilding the image, using the framework's
+own bootstrap variable:
+
+```bash
+docker run -e BLUEPRINT_ENVVAR_PREFIX="ORDERS" -e ORDERS_MODEL_NAME="gpt-4" my-ai-service:latest
+```
+
+Three rules the service enforces at startup, each failing loudly rather than being ignored:
+
+| Declaration | Result |
+|---|---|
+| `envvar_prefix = "orders"` | **Rejected.** Dynaconf upper-cases the prefix before matching, so the `orders_*` you export would never be read. Declare it in the case you will export it in. |
+| `envvar_prefix = "BLUEPRINT"` or `"POD"` | **Rejected.** Stripping the prefix would turn `BLUEPRINT_GROUP` into the key `group` and expose deployment identity to agent code. |
+| `envvar_prefix` inside `[default]` | **Rejected.** The prefix decides how the environment section is chosen, so it cannot live inside one. |
+
+`DYNACONF_*` keeps working whatever prefix you declare -- Dynaconf always loads it and cannot be
+told not to -- so an existing deployment can migrate one variable at a time. Where both spellings
+set the same key, the declared prefix wins.
+
+#### Turning the Prefix Off
+
+`envvar_prefix = false` (or `BLUEPRINT_ENVVAR_PREFIX=false`) makes every environment variable a
+setting, with no prefix at all:
+
+```bash
+docker run -e BLUEPRINT_ENVVAR_PREFIX=false -e MODEL_NAME="gpt-4" my-ai-service:latest
+```
+
+**This absorbs the whole process environment into your configuration** -- `PATH`, `HOSTNAME`, the
+service-discovery variables Kubernetes injects for every Service in the namespace, and any
+credential that happens to be exported. Measured on a development machine: 88 settings keys from a
+5-key settings file. Anything colliding with one of your key names silently replaces it.
+
+Prefer a short project prefix. Use `false` only for a container whose environment you fully control
+and deliberately want to pass through -- and read the startup log line, which states which prefix
+the process resolved.
+
 ---
 
 ## Kubernetes with Helm
