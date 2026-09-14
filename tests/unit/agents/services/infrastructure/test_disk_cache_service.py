@@ -244,3 +244,63 @@ class TestLifecycle:
     def test_context_manager_returns_self(self, tmp_path, mock_registry, mock_config) -> None:
         with DiskCacheService(cache_dir=str(tmp_path / "ctx-cache")) as svc:
             assert isinstance(svc, DiskCacheService)
+
+
+# ---------------------------------------------------------------------------
+# claim
+# ---------------------------------------------------------------------------
+
+
+class TestClaim:
+    """Set-if-absent, which `exists` then `set` cannot provide."""
+
+    def test_first_claim_succeeds(self, cache_service: DiskCacheService) -> None:
+        assert cache_service.claim("slot", {"by": "a"}) is True
+
+    def test_second_claim_on_the_same_key_fails(self, cache_service: DiskCacheService) -> None:
+        cache_service.claim("slot", {"by": "a"})
+        assert cache_service.claim("slot", {"by": "b"}) is False
+
+    def test_the_loser_does_not_overwrite_the_winner(self, cache_service: DiskCacheService) -> None:
+        cache_service.claim("slot", {"by": "a"})
+        cache_service.claim("slot", {"by": "b"})
+        assert cache_service.get("slot") == {"by": "a"}
+
+    def test_exactly_one_of_many_callers_wins(self, cache_service: DiskCacheService) -> None:
+        results = [cache_service.claim("slot", {"by": index}) for index in range(5)]
+        assert results.count(True) == 1
+
+    def test_different_keys_are_independent(self, cache_service: DiskCacheService) -> None:
+        assert cache_service.claim("slot-a", 1) is True
+        assert cache_service.claim("slot-b", 1) is True
+
+    def test_namespace_isolates_claims(self, cache_service: DiskCacheService) -> None:
+        assert cache_service.claim("slot", 1, namespace="ns-a") is True
+        assert cache_service.claim("slot", 1, namespace="ns-b") is True
+
+    def test_a_dict_key_claims_consistently(self, cache_service: DiskCacheService) -> None:
+        assert cache_service.claim({"scheduler": "nightly", "slot": "2026-09-04T03:00"}, 1) is True
+        assert cache_service.claim({"slot": "2026-09-04T03:00", "scheduler": "nightly"}, 1) is False
+
+    def test_ttl_is_recorded_so_the_entry_expires_for_readers(self, cache_service: DiskCacheService) -> None:
+        """diskcache-rs ignores its own expire argument, so the TTL metadata carries it."""
+        cache_service.claim("slot", 1, ttl=60)
+        with patch(f"{_TIME_MODULE}.time", return_value=9_999_999_999):
+            assert cache_service.exists("slot") is False
+
+    def test_a_logically_expired_claim_can_be_taken_over(self, cache_service: DiskCacheService) -> None:
+        cache_service.claim("slot", {"by": "a"}, ttl=60)
+        with patch(f"{_TIME_MODULE}.time", return_value=9_999_999_999):
+            assert cache_service.claim("slot", {"by": "b"}, ttl=60) is True
+        assert cache_service.get("slot") == {"by": "b"}
+
+    def test_a_claim_without_ttl_never_expires(self, cache_service: DiskCacheService) -> None:
+        cache_service.claim("slot", 1)
+        with patch(f"{_TIME_MODULE}.time", return_value=9_999_999_999):
+            assert cache_service.claim("slot", 2) is False
+
+    def test_an_unreachable_cache_fails_open(self, cache_service: DiskCacheService) -> None:
+        """The caller must still do its work when the cache cannot answer."""
+        with patch.object(cache_service, "_cache") as broken:
+            broken.add.side_effect = OSError("disk gone")
+            assert cache_service.claim("slot", 1) is True

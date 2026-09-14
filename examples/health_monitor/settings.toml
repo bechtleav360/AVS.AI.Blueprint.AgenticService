@@ -3,6 +3,9 @@ app_name = "Health Monitor"
 app_port = 8000
 app_environment = "development"
 log_level = "INFO"
+# Required: two schedulers are registered and this service has no event_bus, so its
+# ticks have to come from an in-process timer. Single replica by design.
+scheduler_mode = "in_process"
 
 [default.monitor]
 check_timeout_seconds = 10

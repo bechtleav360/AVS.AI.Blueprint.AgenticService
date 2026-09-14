@@ -12,3 +12,14 @@ class IOClientBase(ClientBase, ABC):
     Used by EventPublishingService and eventing endpoints to find the active
     transport client via the registry without matching AI clients.
     """
+
+
+TOPIC_TRANSPORTS = ("dapr", "nats")
+"""Values of ``event_bus`` that produce an :class:`IOClientBase`, and therefore carry topics.
+
+``"sessions"`` is not one of them: it wires ``SessionsApiClient`` (a service) and
+``SessionsBus``, which consumes SSE job notifications and never reads
+``get_subscribed_topics()``. Anything that needs to publish to a topic or subscribe to one --
+``EventPublishingService``, the eventing endpoints, an event-mode scheduler -- needs one of
+these two.
+"""
