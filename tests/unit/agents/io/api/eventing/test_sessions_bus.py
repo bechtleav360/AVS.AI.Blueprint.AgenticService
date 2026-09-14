@@ -329,7 +329,7 @@ class TestProcessJobNotification:
         assert call_kwargs["job_id"] == notification.job_id
         assert "Unexpected HTTP error" in call_kwargs["reason"]
 
-    @pytest.mark.parametrize("status_code", [500, 502, 503, 504, 408, 429])
+    @pytest.mark.parametrize("status_code", [500, 502, 503, 504, 408, 429, 401])
     async def test_retryable_http_error_leaves_job_pending_without_cancelling(
         self,
         started_sessions_bus: SessionsBus,
@@ -343,6 +343,11 @@ class TestProcessJobNotification:
         above). Cancelling here would turn a passing 503 into permanent job loss on
         every upstream deploy, strictly worse than #94's original "stuck pending"
         symptom the non-403 branch exists to fix.
+
+        401 belongs in this same bucket despite being a 4xx: it signals a missing or
+        invalid X-Api-Key, systemic across every job this agent handles rather than
+        specific to this one — and cancel_job would send that same bad key and 401 in
+        turn, so terminal-cancelling it wouldn't even take effect.
         """
         response_mock = MagicMock()
         response_mock.status_code = status_code

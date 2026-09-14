@@ -396,13 +396,22 @@ class SessionsBus(Component, CloudEventProcessorMixin):
                 status_code = e.response.status_code
                 if status_code == 403:
                     await self._retry_with_fresh_key(event, session_id, job_id, e, pipeline_id=notification.pipeline_id)
-                elif status_code >= 500 or status_code in (408, 429):
-                    # A transient upstream fault (service-sessions deploy/restart, LB blip,
-                    # rate limit) — not evidence the job itself is invalid. Treat exactly like
-                    # RetryableHandlerError: log and leave pending for redelivery to retry.
-                    # Canceling here would turn a passing 503 into permanent job loss on every
-                    # upstream deploy, which is strictly worse than #94's original "stuck
-                    # pending" symptom this whole except-block exists to fix.
+                elif status_code >= 500 or status_code in (401, 408, 429):
+                    # A transient or operator-fixable fault — not evidence the job itself is
+                    # invalid. 5xx/408/429 are the upstream-blip case (service-sessions
+                    # deploy/restart, LB blip, rate limit). 401 is a missing/invalid
+                    # X-Api-Key — systemic across every job this agent handles, not specific
+                    # to this one, and terminal-canceling it wouldn't even take effect:
+                    # cancel_job would send the same bad key, 401 in turn, and get swallowed
+                    # by _cancel_invalid_job's generic handler, leaving the job logged-and-
+                    # pending regardless — the terminal classification bought nothing and
+                    # misdescribed the failure on the way past. Treat all of these exactly
+                    # like RetryableHandlerError: log and leave pending for redelivery to
+                    # retry — an operator fixing the key or the upstream blip resolving both
+                    # make the job recoverable on the next delivery. Canceling here would
+                    # turn a passing 503 into permanent job loss on every upstream deploy,
+                    # strictly worse than #94's original "stuck pending" symptom this whole
+                    # except-block exists to fix.
                     logger.warning("Retryable upstream HTTP error for job %s: %s. Job remains pending.", job_id, e)
                 else:
                     # Must log here, not re-raise: a `raise` inside this except clause would
