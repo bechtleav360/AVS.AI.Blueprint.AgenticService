@@ -388,9 +388,17 @@ class SessionsBus(Component, CloudEventProcessorMixin):
                 logger.warning("Retryable error for job %s: %s. Job remains pending.", job_id, e)
 
             except httpx.HTTPStatusError as e:
-                if e.response.status_code != 403:
-                    raise
-                await self._retry_with_fresh_key(event, session_id, job_id, e, pipeline_id=notification.pipeline_id)
+                if e.response.status_code == 403:
+                    await self._retry_with_fresh_key(event, session_id, job_id, e, pipeline_id=notification.pipeline_id)
+                else:
+                    # Must log here, not re-raise: a `raise` inside this except clause would
+                    # propagate straight out of the try/except (peer `except Exception` below
+                    # is never consulted for it), and this coroutine only ever runs as a
+                    # fire-and-forget task (`_spawn_tracked`) whose result nothing awaits — an
+                    # escaping exception here is an unretrieved task exception, not a caller-
+                    # visible failure. Confirmed as the actual mechanism behind #94's silent
+                    # "job never progresses past pending" symptom.
+                    logger.exception("Unexpected HTTP error processing job %s: %s", job_id, e)
 
             except Exception as e:
                 logger.exception("Unexpected error processing job %s: %s", job_id, e)
@@ -447,12 +455,20 @@ class SessionsBus(Component, CloudEventProcessorMixin):
             await self._dispatch_cloud_event(event, context)
         except Exception as retry_error:
             logger.error("Retry failed for job %s: %s", job_id, retry_error)
-            # Report the original 403 in the reason (that is what the operator needs to see);
-            # chain from retry_error so the proximate failure is preserved in the traceback.
-            raise InvalidEventError(
-                status="invalid_session_key",
-                reason=f"Session key invalid: {original_error}",
-            ) from retry_error
+            # Cancel directly rather than raising InvalidEventError: this method is called
+            # from inside _process_job_notification's `except httpx.HTTPStatusError` clause,
+            # so a raise here would propagate straight out of that try/except (peer `except
+            # InvalidEventError` above it is never consulted) — the same unretrieved-task-
+            # exception trap the non-403 branch has. Report the original 403 in the reason
+            # (that is what the operator needs to see).
+            await self._cancel_invalid_job(
+                session_id,
+                job_id,
+                InvalidEventError(
+                    status="invalid_session_key",
+                    reason=f"Session key invalid: {original_error}",
+                ),
+            )
 
     def _convert_to_cloud_event(self, notification: JobNotification) -> GenericCloudEvent:
         """Convert a job notification to CloudEvent format.
