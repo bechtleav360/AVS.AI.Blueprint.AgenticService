@@ -2,7 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-See `AGENTS.md` for architecture, component patterns, and testing conventions shared across all AI assistants.
+See `AGENTS.md` for the architecture, the component patterns, the testing conventions and the **design rules** --
+each with the failure it prevents -- shared across all AI assistants and every human working here.
 
 ## Dev Commands
 

@@ -5326,6 +5326,260 @@ that covers the Dockerfile and `main.py` paths a unit test cannot reach.
 
 ---
 
+### Phase 8b, step 9 part 1 -- `AGENTS.md` exists
+
+`CLAUDE.md:5` has said *"See `AGENTS.md` for architecture, component patterns, and testing
+conventions shared across all AI assistants"* for months, and
+`git log --all --diff-filter=A -- AGENTS.md` returns nothing: the file was never written and
+later deleted, it was **cited into existence**. `docs/plans/2026-06-10-sessions-job-handler.md:122`
+goes further and quotes what it "states" about versioning. So this part adds no new home for
+documentation -- it turns a pointer that resolves nowhere into one that resolves.
+
+**What it contains**, in the order it is read:
+
+- **Where things are** -- one table for `src/blueprint/agents/`, module by module, and one
+  paragraph pointing at the prose in `docs/` for users. Every path in it was checked to exist.
+- **Component patterns** -- the six base classes and the five things every component of any of
+  them has in common (its constructor takes only what its author wrote; `self.registry`,
+  `self.config` and `self.executor` answer for its own agent; collaborators are resolved in
+  `on_startup`, not `__init__`; the lifecycle pair; what `should_register=False` is for), plus
+  the acknowledgement contract for handlers.
+- **Design rules**, in six groups, each rule stating the rule, the reason, and **the failure it
+  prevents**: construction and assembly (collect then wire; one declaration surface; single-use
+  builders; group policy belongs to the collector), namespaces and isolation (a component never
+  learns it is in a group; structural where it can be and audited where it cannot; no cross-agent
+  fallback; an omitted namespace on the root registry means every namespace; entering the root
+  scope is not a no-op), names that leave the process (validated never repaired; two components of
+  one class collide on the derived name; a check answerable at the call stays at the call),
+  declarations and defaults (an empty declaration means everything; a key whose absence changes
+  behaviour is required), configuration and logging (injected before any component exists, read
+  through the component's own view, no public read path to the loader; isolation audited not
+  enforced; a process-scope key cannot be set per agent; logging belongs to the application), and
+  versioning.
+- **Testing conventions** -- the unit/integration split and the `integration` marker, the
+  `TESTS.md` per package, probing against real objects, asserting on the observable thing rather
+  than on the call, what a test's docstring is for, that the frozen suite is frozen, and that a
+  guard test states its rule in its failure message.
+- **How the work is done** -- no unused code; probe rather than assume, and say which it was; the
+  spec wins on precedence, not on correctness; report the code, not the wrapper.
+
+**The failure line is the point.** A rule without the failure it prevents is advice, and advice
+gets argued away by the next person with a deadline. Most of these were bought with a defect --
+`namespace_scope("")` silently resetting every component to the root, a `MagicMock` registry
+hiding six ownership bugs, `must_exist=True` beside a `default=` passing while the key is unset --
+and the failure line is the receipt.
+
+**Two claims in it were wrong when written, and were fixed rather than softened.**
+
+- *"Every test package has a `TESTS.md`."* Ten of them do, all under `tests/unit/agents/`, but
+  the top level -- where `test_agent_group.py`, `test_group_config.py`, `test_entrypoint.py` and
+  the new frozen suite live -- had none, and `tests/unit/agent_generator/` and
+  `tests/integration/` still have none. So `tests/unit/agents/TESTS.md` was written as part of
+  this commit, and the rule now says what is true, exceptions included. A rule that is already
+  violated by the tree it governs is the same failure as a document cited into existence.
+- *"A `CHANGELOG.md` entry under the unreleased section."* The section is spelled `[Unreleased]`;
+  checked against the file.
+
+**The versioning quotation now resolves.** `.github/workflows/publish.yml` extracts the version
+from the git tag and rewrites `pyproject.toml` at build time, so the sessions plan's claim that
+"`AGENTS.md` states versioning is handled by CI publishing; manual bumps are forbidden" is true
+of the pipeline -- and is now stated in `AGENTS.md`, which is where that plan said to look. Part 3
+has one less thing to fix.
+
+`CLAUDE.md:5` was extended to name the design rules as well, since the file it points at now
+carries them.
+
+No production code changed; 2100 unit tests still pass. Parts 2 (the guard tests) and 3 (the
+documentation cleanup) follow as their own commits.
+
+### Phase 8b, step 9 part 2 -- the guards, and the four defects they found
+
+`tests/unit/agents/test_design_rules.py`: one section per rule from `AGENTS.md`, and **every
+failure message names the rule it enforces**, because someone who hits one of these has not made
+an ordinary mistake in a test -- they have crossed a design decision and need to read the
+decision. 565 cases, all of them cheap.
+
+| Guard | What it asserts |
+|---|---|
+| *Collect, then wire* | every `with_*` on `AppBuilder` **and** `AgentBuilder`, called reflectively: the registry is untouched, **no configuration is linked at all**, and the builder comes back for the next call |
+| *One declaration surface* | per `AppBuilder` method: one declaration recorded, `replay` reproducing it, the namespace taken from the scope in force, and the recorded `kind` having a `with_<kind>` to replay onto |
+| *A lookup never falls back across agents* | two agents' `sessions` caches kept apart, and no fallback to a neighbour, to the root, or from an unknown name to the default |
+| *A component never learns it is in a group* | the ambient namespace reaching a component nobody passed one to; no `get_known_namespaces` on `Registry`, `Component` or `Config`; and the two refusals a view gives (`cache_entries`, `for_namespace`) |
+| *A name is validated, never repaired* | five namespace entry points and the deployment route against seven illegal names, the cache alphabet at the `with_cache` call, and a legal name coming back unchanged |
+| *No public read path to the unscoped loader* | the public configuration surface is exactly `config`, `configure`, `has_config`; no public attribute *is* the loader; a namespaced component reads through its own view |
+| *Logging is configured by the application* | no logging configuration at import time anywhere under `src/`, and none in the framework outside `LoggingManager` |
+| *No diagnostics via print* | nothing in the framework prints except the two listed stderr writes, each of which must still write to stderr |
+| *References resolve* | every markdown link, every cited path in the documents that describe the tree as it stands, and every document cited by name |
+
+**The declaration-surface test moved here from `tests/unit/agents/app_builder/`** and was
+generalised: the collect-then-wire half now runs over `AgentBuilder` as well, which records fields
+rather than `Declaration` objects but is bound by the same rule -- `with_model_from_config` is the
+method that used to read configuration while accumulating, and that one read is what forced an
+agent to be built before its namespace existed. The stronger form of the assertion is that
+**nothing is configured at all** while declarations are recorded: a `with_*` that reads a key
+cannot pass it.
+
+**Four defects, found by the guards rather than by reading.** Two are production code:
+
+- **`clients/io/dapr_client.py` configured logging at import time.** Two `setLevel` calls on the
+  `httpx` and `httpcore` loggers at module level, so importing the Dapr client silenced those
+  loggers process-wide for an application that never asked. Both levels are already in
+  `LoggingManager._suppress_noisy_loggers`, which the `suppress_noisy_loggers` setting turns off
+  -- so the lines were duplication that also **overrode the application that had turned it off**.
+  Deleted; the setting is now the only thing that decides.
+- **`agent_generator/generator/generator.py` configured logging at import time**, and that one
+  had a visible symptom: `asbs setup` imports `AgentGenerator`, so the module-level `basicConfig`
+  ran first and installed a root handler, and `setup.py`'s own `basicConfig` -- the one that reads
+  `--verbose` -- then found the root already configured and **did nothing**. `asbs setup --verbose`
+  has not been verbose. Moved into `cli()`, which is an entry point and may configure logging;
+  the flag works again.
+
+Two are documentation, both of which the references guard found:
+
+- **`CHANGELOG.md`** linked `ServiceInfo` to `/src/blueprint/agents/models/status.py:8:0-25:5` --
+  an editor-pasted location, not a path. Rewritten as a citation.
+- **`tests/unit/agents/services/TESTS.md`** still listed
+  `infrastructure/test_agent_scoped_cache.py`, deleted with `AgentScopedCache` in step 5. Row
+  removed.
+
+**One finding is listed rather than fixed.** `README.md` links twice to a `LICENSE` file that has
+never been committed, while the README text and `pyproject.toml`'s classifier both say MIT.
+Writing a licence file is a legal artefact and a human decision, so it is in the guard's
+`KNOWN_GAPS` with that reason -- and a further case asserts every listed gap is **still** broken,
+since an allowlist that outlives its entries is how a guard stops guarding.
+
+**The evidence corrected the guard twice**, which is worth recording because both were premises
+that looked obviously right:
+
+- *A padded agent name is refused everywhere.* It is not, and should not be: the agent list is a
+  list, and both routes into it (`BLUEPRINT_AGENTS="orders, billing"`, or a YAML sequence) strip
+  each element before validating it. That is list parsing, not name repair -- the whitespace
+  belongs to the separator. The guard now uses `" Orders "` there instead, which is trimmed and
+  then still refused on the capital, so the trim cannot grow into a general repair.
+- *A document cited by name must exist, in every document.* Not in the records: a proposal names
+  the documents it intends to write (`docs/guides/multi-agent-setup.md`, phase 10's deliverable)
+  and the alternatives it rejected (`docs/concepts/design-rules.md`), and both would fail. So that
+  check skips `docs/plans`, `docs/specs`, `docs/superpowers` and `CHANGELOG.md`, whose **links**
+  are still checked. The citation that motivated the whole guard was in `CLAUDE.md`, which is not
+  a record.
+
+The reference guard's scope is stated in the file with its reasoning, since a check on prose has
+to say what it holds prose to: links are checked everywhere; path citations only in the documents
+that describe this repository as it stands -- not in the records, which correctly name deleted
+files, and not in the project-facing guides, whose `src/main.py` resolves in a generated project.
+`docs/adr/` and `CLAUDE.local.md` are not scanned at all: neither is part of the repository, and a
+guard has to give the same answer on every machine.
+
+**Every guard was verified by injection**: an import-time `setLevel` and a `print()` in
+`utils/utils.py`, a dead link, a dead path citation and a fictitious `NOTHING.md` in `AGENTS.md`, a
+root fallback in `Registry.get_cache`, and a construction inside `AppBuilder._record`. Each failed
+exactly one guard, with the rule in the message, and nothing else.
+
+`AGENTS.md` now cites the file -- part 1 deliberately did not, since it did not yet exist -- both
+under *Design rules* and beside the testing convention that requires a guard to state its rule.
+`tests/unit/agents/TESTS.md` gained the row; `tests/unit/agents/app_builder/TESTS.md` lost the one
+for the moved file.
+
+2625 unit tests pass, zero failures. Part 3, the documentation cleanup, follows.
+
+### Phase 8b, step 9 part 3 -- one home per document, and the 500 that documenting one found
+
+The audit behind step 9 listed four pieces of documentation debt. Two were real and are fixed, one
+had already been closed by part 1, and **one turned out to rest on a misreading** -- recorded here
+rather than quietly dropped, because an audit item that dissolves on inspection is worth the same
+sentence as one that holds.
+
+**`docs/superpowers/` is gone.** It held `plans/` and `specs/` mirroring `docs/plans` and
+`docs/specs` -- 3 files, 2079 lines, linked from nothing. They are ordinary plan and spec
+documents, so they were **moved** rather than deleted: `2026-04-01-component-naming-refactor.md`
+and `2026-07-06-sessions-agent-registration.md` into `docs/plans/`,
+`2026-07-06-sessions-agent-registration-design.md` into `docs/specs/`. The plan's one citation of
+its own spec was repointed; the only other links in the three files are same-document anchors.
+`test_design_rules.py` lost `docs/superpowers` from `HISTORICAL_DOCUMENTS`, which would otherwise
+have been a prefix matching nothing -- dead configuration in the guard that exists to catch dead
+pointers.
+
+**Four cache documents became one.** `docs/concepts/caching.md` (347),
+`docs/concepts/cache-system-overview.md` (232), `docs/concepts/cache-architecture.md` (181) and
+`docs/guides/caching-getting-started.md` (208) -- 968 lines, one of which `docs/README.md` linked
+-- are now a single 387-line `docs/concepts/caching.md`, the path both READMEs already pointed at.
+The other three are deleted; git history keeps them.
+
+It is a rewrite rather than a merge, because the linked one was wrong about nearly everything a
+reader would try:
+
+- **The REST API section documented four endpoints that have never existed**
+  (`GET`/`PUT`/`DELETE /api/cache/{namespace}/{key}`, `DELETE /api/cache/{namespace}`). The real
+  API is `GET /cache/stats`, `GET /cache/namespaces` and `POST /cache/evict`, each taking `?name=`.
+- **Every example awaited a synchronous method.** `CacheService.get`/`set`/`delete` are ordinary
+  `def`s; `await self.cache.get(...)` does not work and never did.
+- The closing example called `with_agent("embedder", EmbedderAgent)`, a signature that does not
+  exist.
+- Nothing mentioned per-agent caches, named caches, `claim`, or `/api/<agent>/cache/*`.
+- `caching-getting-started.md` documented `default_ttl = null` as "no expiry". `CacheConfig.default_ttl`
+  is an `int`, and TOML has no null: **there is no way to configure "never expires"**, and an
+  omitted `ttl` gets the 3600-second default on both backends.
+
+The new document states what the code does, verified against it: declaration and the
+`with_cache(False)` / `name=` shapes, the synchronous operations table, `claim` and the race it
+closes, key hashing, namespaces, TTL, per-agent isolation with the storage layout for both
+backends, the configuration table with per-agent `[default.<agent>.cache]`, the Redis startup ping
+and `fallback_to_local`, readiness entry names, the three real endpoints with their 503/404 split,
+a short design section, and troubleshooting.
+
+**`GET /cache/stats` answered 500, on both backends, for as long as it has existed.**
+`CacheStatsResponse` required five fields. `DiskCacheService.get_stats()` returns four of them --
+never `ttl_tracked_keys`, which **no backend has ever produced** -- so constructing the model
+raised `ValidationError`. `RedisCacheService.get_stats()` returns a different shape entirely
+(`backend`, `key_prefix`, `redis_version`, `connected_clients`, ...), so on Redis all five were
+missing. Confirmed by probe before anything was changed:
+
+```
+real get_stats() -> {'cache_dir': ..., 'size': 2, 'size_limit': 1000000000, 'eviction_policy': 'least-recently-used'}
+CacheStatsResponse RAISED: ValidationError -- ttl_tracked_keys: Field required
+```
+
+It was invisible because the endpoint's only test fed a hand-written dictionary through a
+`MagicMock` -- a dictionary that contained `ttl_tracked_keys`, invented to satisfy a model nothing
+satisfied. *Probe against real objects*, exactly.
+
+The fix says what was true all along: **the statistics are the backend's, not a fixed schema.**
+`CacheStatsResponse` keeps the disk backend's four fields as optional, allows extras so Redis's
+seven pass through, and the route carries `response_model_exclude_none=True` so each backend
+answers with its own fields and no nulls. `ttl_tracked_keys` is deleted, and so is
+`CacheEvictResponse`, which was referenced by nothing and described a shape (`success`,
+`evicted_keys`) that the evict endpoint does not return. The test now constructs a real
+`DiskCacheService` and a real `RedisCacheService` over `fakeredis`, and a third case pins the
+behaviour when a backend's own stats call fails: `get_stats` returns `{}` and the endpoint answers
+200 with an empty payload rather than taking itself down. End-to-end through a built application:
+
+```
+/api/cache/stats                -> 200 {'size': 0, 'cache_dir': '...', 'size_limit': 1000000000, 'eviction_policy': 'least-recently-used'}
+/api/cache/stats?name=sessions  -> 200 {'size': 0, 'cache_dir': '.../sessions', ...}
+/api/cache/stats?name=nope      -> 404 {'detail': "No cache registered as 'nope' for agent '<root>' (registered: default, sessions)"}
+```
+
+**The false quotation was already closed.** `docs/plans/2026-06-10-sessions-job-handler.md:122`
+attributes to `AGENTS.md` that versioning is handled by CI publishing and manual bumps are
+forbidden. Part 1 verified that against `.github/workflows/publish.yml` and wrote the rule into
+`AGENTS.md`, so the attribution now resolves. Nothing to change; checked, not assumed.
+
+**`docs/development-workflow.md` is not a dead pointer.** The audit called it "cited by this
+plan's own file summary and never written". It is not cited anywhere as existing: its three
+mentions are this plan's part 3 item, the changelog, and the plan's *Planned, not yet written*
+section, whose own preamble says "each is a deliverable, not an open question". So there is no
+reference to drop, and writing the end-to-end walkthrough now would pre-empt phase 10, which owns
+the narrative documentation. Left where it is. This is the same distinction the references guard
+draws by not holding a record to the tree as it stands -- and the audit item was, in effect, the
+guard's rejected premise in prose form.
+
+`README.md` and `docs/README.md` keep their one caching link, with descriptions that now say what
+the document covers.
+
+2620 unit tests pass, zero failures.
+
+---
+
 ## Open points
 
 - **Phase 7's ambiguity error needs a spec amendment.** The plan asks `process_event` to raise
@@ -5480,11 +5734,17 @@ that covers the Dockerfile and `main.py` paths a unit test cannot reach.
   migration -- **the key layout changed twice**, so an application upgrading with a persistent
   redis cache or a mounted disk cache sees its old entries as absent. A cold cache rather than
   an error, and it must be said in the migration guide (phase 10), for both hops.
-- **The cache documentation is wrong about the endpoints, and now about their paths too.**
-  `docs/concepts/caching.md` documents `GET`/`PUT /api/cache/{namespace}/{key}`, which have never
-  existed (the API is `stats`, `namespaces`, `evict`), and step 5 moved a grouped agent's routes
-  to `/api/<agent>/cache/*`. Left for step 9 part 3, which owns the four overlapping cache
-  documents; fixing one of them here would have been the fifth version of the same content.
+- ~~**The cache documentation is wrong about the endpoints**~~ -- **done in step 9 part 3.**
+  The four overlapping documents became one, rewritten against the code: the three real endpoints
+  with their `?name=` and their 503/404 split, the per-agent `/api/<agent>/cache/*` paths, and the
+  synchronous interface every old example awaited. Writing it turned up a 500 in
+  `GET /cache/stats`, fixed in the same commit.
+- **`size` in the cache statistics counts the TTL metadata entries.** The disk backend stores a
+  parallel `:ttl` entry beside every value, and `get_stats()["size"]` is the raw key count -- so a
+  cache holding two values reports `size: 4`, exactly double. `list_values` and `list_namespaces`
+  already filter those entries out; `size` does not. Documented as it is rather than changed,
+  because a reported metric is somebody's dashboard: the fix is to count filtered keys, and it
+  wants a decision rather than a drive-by.
 - **The examples are not migrated, by decision (2026-09-08).** Note that phase 8b changes what
   blocks them: `AgentRegistration` is deleted, and passing instances (`with_rest_api(MonitorApi())`)
   stays legal standalone -- it is refused only when a builder is collected into a group. So the
@@ -5525,4 +5785,9 @@ that covers the Dockerfile and `main.py` paths a unit test cannot reach.
   on by default in the generated settings.
 - **The two design questions in spec sec. 13** that change the shape rather than the parameters: 20
   or 100 agents, and whether the 4 GB host budget is real.
+- **There is no `LICENSE` file.** `README.md` links to one twice -- a badge and the closing line
+  -- and `pyproject.toml` carries the MIT classifier, but no licence text has ever been committed.
+  Found by step 9 part 2's reference guard and listed in its `KNOWN_GAPS`, because adding a
+  licence is a legal artefact and somebody's decision rather than a documentation fix. Whoever
+  settles it removes that entry, which a guard case then requires.
 - **#80** -- the failing example tests and the unenforced test split.

@@ -67,9 +67,20 @@ class CacheManagementApi(RestApiBase):
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    @RestApiBase.get("/cache/stats", response_model=CacheStatsResponse, tags=["cache"], summary="Get cache statistics.")
+    @RestApiBase.get(
+        "/cache/stats",
+        response_model=CacheStatsResponse,
+        response_model_exclude_none=True,
+        tags=["cache"],
+        summary="Get cache statistics.",
+    )
     async def get_cache_stats(self, name: str = DEFAULT_CACHE_NAME) -> CacheStatsResponse:
-        """Get statistics for one cache."""
+        """Get statistics for one cache, in whatever shape its backend reports.
+
+        ``exclude_none`` because the model's named fields are the disk backend's: a Redis cache
+        fills none of them and would otherwise answer four nulls alongside the seven fields it
+        did report.
+        """
         stats = self._cache(name).get_stats()
         return CacheStatsResponse(**stats)
 

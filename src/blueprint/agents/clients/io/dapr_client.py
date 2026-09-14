@@ -16,10 +16,6 @@ from .io_client_base import IOClientBase
 
 logger = logging.getLogger(__name__)
 
-# Suppress httpx and httpcore INFO logs during health checks
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
-
 
 class DaprClient(IOClientBase):
     """Dapr client for publishing CloudEvents via Dapr pub/sub.

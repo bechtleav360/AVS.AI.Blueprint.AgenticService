@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12+, httpx / httpx-sse, pydantic v2, pytest (async), OpenTelemetry. Line length 140. Quality gate: `black`, `ruff`, `mypy`.
 
-**Spec:** `docs/superpowers/specs/2026-07-06-sessions-agent-registration-design.md`. Closes #45 and #44.
+**Spec:** `docs/specs/2026-07-06-sessions-agent-registration-design.md`. Closes #45 and #44.
 
 **Branch:** work on `feature/sessions-agent-registration` (already created). **All commits end with the repo's standard trailer** (`Co-Authored-By: Claude Opus 4.8 (1M context) …` + `Claude-Session: …`) — append it to every commit message; it is omitted from the command examples below only for brevity.
 
