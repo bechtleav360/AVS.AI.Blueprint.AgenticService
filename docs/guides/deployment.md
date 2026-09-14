@@ -2,6 +2,24 @@
 
 This guide covers packaging, deploying, and operating Blueprint Agents applications in production environments using Docker, Kubernetes, and Helm.
 
+> **Running more than one replica is not safe in the current release.** Three defects make
+> horizontal scaling incorrect rather than merely inefficient:
+>
+> - **Every replica processes every message.** Core NATS subscriptions are created without a queue
+>   group (`clients/io/nats_client.py`), and JetStream is off by default (`nats_use_jetstream`), so
+>   two replicas silently double every side effect and every inference bill.
+> - **JetStream messages are never acknowledged.** Subscriptions use `manual_ack=True` and no
+>   `msg.ack()` call exists anywhere, so every event redelivers until `max_deliver` — already
+>   true at a single replica.
+> - **Every replica runs its own scheduler.** `SchedulerBase` starts an `AsyncIOScheduler` per
+>   process with no leader election, so each cron tick fires once per replica.
+>
+> Until these are fixed, deploy one replica with `autoscaling.enabled: false`. The HPA example
+> below shows the chart's shape; it is not a recommendation. Required behaviour is specified in
+> `docs/specs/2026-08-28-multi-agent-grouping.md`, sec. 7.1, 7.2 and 7.5; the fixes are P1, P2 and
+> P5 in `docs/plans/2026-08-28-multi-agent-grouping.md`. This guide also assumes one Deployment
+> per agent, and will be rewritten when group-based deployment lands.
+
 ---
 
 ## Docker
@@ -103,7 +121,7 @@ helm/
 ### values.yaml
 
 ```yaml
-replicaCount: 2
+replicaCount: 1  # multi-replica is unsafe in this release; see the warning at the top
 
 image:
   repository: myregistry.azurecr.io/my-ai-service
@@ -256,7 +274,7 @@ helm install my-ai-service ./helm \
 helm install my-ai-service ./helm \
     --namespace ai-services \
     --set image.tag="v1.2.3" \
-    --set replicaCount=3
+    --set replicaCount=1        # see the warning at the top: more than one is unsafe in this release
 
 # Upgrade an existing release
 helm upgrade my-ai-service ./helm \
@@ -385,6 +403,10 @@ This means environment variables always take precedence over file-based configur
 ## Scaling Considerations
 
 ### Horizontal Pod Autoscaling
+
+Leave autoscaling disabled in the current release — see the warning at the top of this guide.
+Scaling past one replica multiplies event processing, acknowledgement loss and cron ticks
+rather than throughput.
 
 Enable automatic scaling based on CPU utilization:
 
