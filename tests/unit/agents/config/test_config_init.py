@@ -1,6 +1,7 @@
 """Unit tests for Config initialisation and low-level accessors."""
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
 
 from blueprint.agents.config import Config
@@ -55,6 +56,28 @@ class TestConfigInit:
         """)
         config = Config(settings_files=[str(settings_file)], root_path=str(settings_file.parent))
         assert config.get("my_key") == "value"
+
+
+class TestLoggingIsTheApplicationsDecision:
+    """Config loads configuration; it does not touch the root logger (see configure_logging)."""
+
+    def test_construction_does_not_configure_logging(self, base_settings_file: Path, mock_logging_configure: MagicMock) -> None:
+        Config(settings_files=[str(base_settings_file)], root_path=str(base_settings_file.parent))
+        mock_logging_configure.return_value.configure.assert_not_called()
+
+    def test_configure_logging_configures_on_request(self, base_config: Config, mock_logging_configure: MagicMock) -> None:
+        base_config.configure_logging()
+        mock_logging_configure.return_value.configure.assert_called_once()
+
+    def test_configure_logging_passes_the_resolved_settings(self, base_config: Config, mock_logging_configure: MagicMock) -> None:
+        base_config.configure_logging()
+        assert mock_logging_configure.return_value.configure.call_args.kwargs["log_level"] == base_config.settings.get("log_level", "INFO")
+
+    def test_two_configs_configure_nothing_between_them(self, base_settings_file: Path, mock_logging_configure: MagicMock) -> None:
+        """One Config per namespace is the point of this move: N constructions, zero reconfigurations."""
+        for _ in range(3):
+            Config(settings_files=[str(base_settings_file)], root_path=str(base_settings_file.parent))
+        mock_logging_configure.return_value.configure.assert_not_called()
 
 
 class TestProcessDynabox:

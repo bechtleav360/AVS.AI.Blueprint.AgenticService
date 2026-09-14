@@ -162,20 +162,58 @@ class ActuatorApi(RestApiBase):
         "/status/env", response_model=EnvironmentStatus, tags=["Status"], summary="Returns a snapshot of the current configuration."
     )
     async def env_status(self) -> EnvironmentStatus:
-        """Expose the current configuration state (with secrets masked)."""
+        """Expose the current configuration state (with secrets masked).
+
+        In a grouped process the settings tree holds every co-hosted agent's configuration, and
+        flattened into one dictionary it says nothing about which agent a key belongs to. So the
+        response separates them: ``settings`` is what the root namespace resolves, and
+        ``namespaces`` carries one entry per agent -- each one flattened the way that agent reads
+        it, root keys included, so a value inherited from the root is visible where it is used
+        rather than only where it is declared.
+
+        ``envvar_prefix`` is reported because an override that is ignored and an override that is
+        misspelled look identical from outside the process.
+        """
 
         config = self._ensure_config()
-        try:
-            raw_config = config.settings.as_dict()
-        except AttributeError:  # pragma: no cover - defensive
-            raw_config = {}
 
-        logger.info("Returning environment status for env %s", config.settings.current_env)
+        # One read of the raw tree per request, not one per field. Config.settings is audited
+        # (it logs every raw-tree access), so re-reading it for current_env and again for the
+        # log line turned a single operator request into three records.
+        settings = config.settings
+        environment = getattr(settings, "current_env", "unknown")
+
+        namespaces: dict[str, dict[str, Any]] = {}
+        if config.is_view:
+            # An agent-scoped actuator reports its own scope and nothing else: resolving for
+            # another namespace is refused on a view (C6), and listing neighbours is the thing
+            # C6 exists to prevent.
+            raw_config = self._as_dict(settings)
+        else:
+            raw_config = config.resolved_settings()
+            namespaces = {name: self._sanitize_config(config.resolved_settings(name)) for name in config.namespaces}
+
+        logger.info(
+            "Returning environment status for env %s (%d namespace(s), overrides read from %s)",
+            environment,
+            len(namespaces),
+            f"{config.envvar_prefix}_*" if config.envvar_prefix else "the whole process environment, unprefixed",
+        )
 
         return EnvironmentStatus(
-            environment=config.settings.current_env,
+            environment=environment,
+            envvar_prefix=config.envvar_prefix if isinstance(config.envvar_prefix, str) else None,
             settings=self._sanitize_config(raw_config),
+            namespaces=namespaces,
         )
+
+    @staticmethod
+    def _as_dict(settings: Any) -> dict[str, Any]:
+        """Return the settings tree as a plain dictionary, or ``{}`` if it cannot be read."""
+        try:
+            return dict(settings.as_dict())
+        except AttributeError:  # pragma: no cover - defensive
+            return {}
 
     @RestApiBase.get("/status/llm", response_model=LLMStatus, tags=["Status"], summary="Returns AI provider configuration and diagnostics.")
     async def llm_status(self) -> LLMStatus:
@@ -240,13 +278,17 @@ class ActuatorApi(RestApiBase):
 
         logger.info("Returning build status for service %s", config.get("app_name"))
 
+        # One read of the audited raw tree, as in env_status: current_env and settings_files
+        # are two fields of the same object, not two reasons to reach past the scoped getters.
+        settings = config.settings
+
         return BuildStatus(
             app_name=config.get("app_name"),
             app_version=config.get("app_version", "unknown"),
-            environment=config.settings.current_env,
+            environment=getattr(settings, "current_env", "unknown"),
             python_version=platform.python_version(),
             platform=platform.platform(),
-            settings_files=list(config.settings.settings_files or []),
+            settings_files=list(getattr(settings, "settings_files", None) or []),
             build_commit=os.getenv("BUILD_COMMIT", "unknown"),
             build_timestamp=os.getenv("BUILD_TIMESTAMP", "unknown"),
         )

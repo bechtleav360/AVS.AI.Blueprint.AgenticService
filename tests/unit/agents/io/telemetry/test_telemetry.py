@@ -41,7 +41,7 @@ class TestConfigureTracing:
     def test_raises_when_config_is_none(self, telemetry_manager: TelemetryManager) -> None:
         from blueprint.agents.component.component import Component
 
-        Component.shared_config = None
+        Component.reset_shared_state()
         with pytest.raises((ValueError, RuntimeError)):
             telemetry_manager.configure_tracing()
 

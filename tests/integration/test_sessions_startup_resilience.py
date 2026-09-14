@@ -54,11 +54,9 @@ class _NullHandler(EventHandlerBase):
 
 @pytest.fixture(autouse=True)
 def _reset_component_state():
-    Component.shared_config = None
-    Component.shared_registry = None
+    Component.reset_shared_state()
     yield
-    Component.shared_config = None
-    Component.shared_registry = None
+    Component.reset_shared_state()
 
 
 # Not marked @pytest.mark.integration — this test is fully offline (it deliberately

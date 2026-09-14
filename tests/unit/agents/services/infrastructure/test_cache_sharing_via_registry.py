@@ -77,8 +77,7 @@ class ReaderService(ServiceBase):
 def reset_component_state() -> Generator[None]:
     """Reset Component class-level state between tests so each test starts fresh."""
     yield
-    Component.shared_config = None
-    Component.shared_registry = None
+    Component.reset_shared_state()
 
 
 @pytest.fixture
