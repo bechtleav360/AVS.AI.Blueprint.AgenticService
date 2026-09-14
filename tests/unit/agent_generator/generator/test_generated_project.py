@@ -160,6 +160,22 @@ class TestTheAgentMap:
             sys.path[:] = saved_path
 
 
+class TestWhatTheProjectShips:
+    """Files the project needs that are not code."""
+
+    def test_the_secrets_file_and_its_template_land_in_the_project(self, project: Path) -> None:
+        """create_file() with no argument writes relative to the working directory, so the
+        secrets file used to be left wherever `asbs setup` was run from."""
+        assert (project / "secrets.toml").is_file()
+        assert (project / "secrets.toml.example").is_file()
+
+    def test_the_secrets_file_is_git_ignored_and_the_template_is_not(self, project: Path) -> None:
+        ignored = (project / ".gitignore").read_text(encoding="utf-8")
+
+        assert "secrets.toml" in ignored
+        assert "secrets.toml.example" not in ignored
+
+
 class TestTheImage:
     """The Dockerfile runs the framework's entry point, and bakes no group."""
 
