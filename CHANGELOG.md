@@ -1,8 +1,191 @@
 # Changelog
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-14
+
+**Multi-agent grouping.** How many agents share a process becomes a *deployment* parameter rather
+than an architectural commitment. An agent's code is identical whether it runs alone or beside
+nineteen others; only what starts the process differs. A standalone agent is unaffected by almost
+all of this — see **Breaking** for the exceptions, which are listed in the order you are likely to
+hit them.
+
+Full migration path, including the one decision to get right before the first deploy:
+[`docs/guides/multi-agent-setup.md`](docs/guides/multi-agent-setup.md). The normative spec is
+`docs/specs/2026-08-28-multi-agent-grouping.md`.
+
 ### Added
-- **`SessionKeyProvider` gains a `"job"` source** (#76). `env`/`config` only ever supported one static key for every session, which cannot work for consumers whose session keys are generated fresh per session and actually validated (encryption enforced) — the gap live-reproduced as `ValueError: Environment variable SESSION_KEY not set` immediately after a job dispatch (bechtleav360/avs.ai.project.pida#385). `source = "job"` fetches the key via `GET {session_key_remote_url}/internal/jobs/{job_id}/session-key?agent_id=<this agent's own id>` (bechtleav360/avs.ai.idac.service-sessions#194 Finding 2 / #196), threading a new optional `job_id` parameter through `get_session_key` from `SessionsBus`'s three call sites. A 409 (job already claimed by a different `agent_id`) raises the new `SessionKeyClaimConflictError`, distinct from the 404/`httpx.HTTPStatusError` case. `env`/`config`/`vault`/`remote` sources are unaffected.
+
+- **Agent grouping.** `agents.toml` names the agents an image contains and the module each
+  declaration lives in; `BLUEPRINT_AGENTS`, or `BLUEPRINT_GROUP` plus a mounted
+  `BLUEPRINT_GROUP_CONFIG` file, decides which of them a given process runs;
+  `python -m blueprint.agents.entrypoint` resolves, builds and serves them. Each hosted agent owns
+  its handlers, agent runtime, REST routes (`/api/<agent>`), AI client, thread pool, caches and
+  broker connection; the port, the health endpoint and the process are shared.
+  `BLUEPRINT_CRITICAL_AGENTS` says which agents failing should fail the process.
+- **Agents in one process are isolated, and the barrier is enforced rather than conventional.** An
+  agent resolves its own components, caches and configuration plus the root's shared ones. Reaching
+  a neighbour by its registry key, by an explicit `namespace=` on a view, by a dotted configuration
+  key, or by sharing one declaration's mutable argument between two agents is refused or reported
+  absent. `Config.settings` remains the documented escape hatch and logs a WARNING naming the agent.
+- **An agent's identity is stable across regrouping** (spec C1): its NATS queue group, JetStream
+  durable, cache partition, OpenTelemetry `service.name`, registry prefix and REST prefix all derive
+  from the agent's own name and never from the group or the pod.
+- **Per-agent observability.** `service.name` per agent, `blueprint_namespace_up{agent}`, a
+  readiness entry and health checks attributed per agent, `blueprint.scheduler.tick_age_seconds`,
+  `blueprint.events.dead_lettered`, `blueprint.events.unhandled` and `blueprint.events.duplicate`.
+- **`SessionKeyProvider` gains a `"job"` source** (#76). `env`/`config` only ever supported one
+  static key for every session, which cannot work for consumers whose session keys are generated
+  fresh per session and actually validated (encryption enforced) — the gap live-reproduced as
+  `ValueError: Environment variable SESSION_KEY not set` immediately after a job dispatch
+  (bechtleav360/avs.ai.project.pida#385). `source = "job"` fetches the key via
+  `GET {session_key_remote_url}/internal/jobs/{job_id}/session-key?agent_id=<this agent's own id>`
+  (bechtleav360/avs.ai.idac.service-sessions#194 Finding 2 / #196), threading a new optional
+  `job_id` parameter through `get_session_key` from `SessionsBus`'s three call sites. A 409 (job
+  already claimed by a different `agent_id`) raises the new `SessionKeyClaimConflictError`, distinct
+  from the 404/`httpx.HTTPStatusError` case. `env`/`config`/`vault`/`remote` sources are unaffected.
+- **`CacheService.claim`** — set-if-absent, atomic on both backends (`add` on disk, `SET NX EX` on
+  Redis). This is the compare-and-set primitive the deduplication work flagged as missing.
+- **Named caches.** `with_cache(name=...)`, `/cache/*` endpoints take `?name=`, and `/readiness`
+  gains a `cache:<name>` entry per named cache.
+- **Opt-in event deduplication** — `idempotency_enabled` and a required `idempotency_ttl`. Off by
+  default; a failed dispatch releases its claim so the nak's redelivery still runs.
+- **`nats_publish_mode`** (`"core"` / `"jetstream"`) separates publishing from durable consumption,
+  with `nats_publish_subjects` for subjects not already in `event_publishing.topic_mapping`. Unset,
+  it follows `nats_use_jetstream`, so nothing existing changes.
+- **`run_app`**, so a project can serve itself from its own settings.
+- **Scaffolding**: `asbs setup` now writes `agents.toml`, a `pyproject.toml` and two tests, so
+  `asbs setup` → `pytest` → `asbs validate` closes; `asbs validate` reports what a project has not
+  said about grouping and about idempotency; the CLI no longer crashes on a Windows console.
+- New config keys: `event_client_drain_timeout`, `dapr_pubsub_name`,
+  `dapr_declarative_subscriptions`, `idempotency_enabled`, `idempotency_ttl`, `scheduler_mode`,
+  `event_publishing_enabled`, `nats_publish_mode`, `nats_publish_subjects`. All default to current
+  behaviour except `scheduler_mode`, which is required — see below.
+- `pyyaml>=6.0` is now a declared dependency (it reads the group file). Already present in every
+  environment via `uvicorn[standard]`, so no installed set changes.
+
+### Breaking
+
+1. **`scheduler_mode` is required.** A project that registers a scheduler and does not set it fails
+   at `build()`, with an error naming both values and what each costs. `"in_process"` reproduces
+   today's behaviour exactly and is the no-op migration; `"event"` is the one that fixes #73.
+   Defaulting the key would either keep firing a timer per replica or silently stop ticking a
+   service with no broker, and neither is safe to inherit.
+2. **A subject-unsafe `app_name` or `nats_queue_group` now fails at startup** instead of being
+   rewritten or reaching the broker. `app_name = "Health Monitor"` with an event-mode scheduler used
+   to derive `Health_Monitor.scheduler.<name>`; the rewrite was invisible to whoever wrote the
+   `CronJob`, so the symptom was a tick that never arrived. Rename to a subject-safe value, or pass
+   `topic=` explicitly.
+3. **A scoped `Config`'s dotted key no longer resolves against the whole tree.** `_scoped_get` used
+   to fall back from `<scope>.<key>` to the raw key, and since an agent's section is
+   `[default.<agent>]`, that let one agent read another's settings. The fallback is now an allowlist
+   of the four prefixes the framework itself owns (`cache`, `event_publishing`, `runtimes`,
+   `runtime`). A project reading its *own custom* nested key through a scoped view now gets an error
+   naming the rule; flat keys and `Config.settings` are unaffected.
+4. **A registry view that names another agent is refused.** `get_component(..., namespace="other")`
+   and `get_cache(..., namespace="other")` raise on a scoped view. Every in-framework caller passes
+   its own namespace or holds the application registry, so nothing internal is affected.
+5. **A scoped `Config`'s telemetry `service.name` is the agent's name.** Affects a project using
+   `Config(agent_scope=...)`, which has shipped since April. A repo with `foo.app_name = "Foo
+   Service"` and no `foo.otel_service_name` sees `service.name` change from `Foo Service` to `foo`.
+   Migration is one line: set `<scope>.otel_service_name` to whatever the dashboards key on. A
+   project that passes no `agent_scope` is unaffected.
+6. **Cache keys moved, twice.** A cache is now private to the agent that declared it, keyed on
+   `(namespace, name)` with its own subdirectory and Redis prefix. An application upgrading with a
+   persistent Redis cache or a mounted disk cache sees its old entries as **absent** — a cold cache,
+   not an error. A group still needs exactly one writable mount, since an agent's store is a
+   subdirectory of `cache.cache_dir`. If any cache entry is load-bearing rather than an
+   optimisation, migrate it deliberately.
+7. **Four declaration surfaces are deleted**: `AgentRegistration`, `RegisteredComponent`,
+   `NamespaceBuilder`, and `AppBuilder.with_namespace` / `with_registration`. `AppBuilder` is the one
+   declaration surface; `AgentGroup` collects named declarations into a process. Passing an
+   already-built component instance (`with_service(MyService())`) still works for a single standalone
+   agent and is refused in a group — pass the class, or a zero-argument factory.
+8. **`ClientBase.subscribe` changed from `(topic, callback)` to `(topic_callbacks)`**, and
+   `EventHandlingBase.subscribe` and `POST /nats/subscribe/{topic}` are removed. This affects
+   third-party transport implementations; both in-repo clients are updated.
+9. **On grouped Dapr, one delivery is fanned out in-process to every agent that declared the
+   topic, and the single acknowledgement the sidecar receives is their combination** — so a retry
+   asked for by one agent redelivers to all of them. The sidecar fetches the subscription document
+   from one fixed path, which is why there is one endpoint at the root that routes rather than one
+   document per agent. Set `idempotency_enabled` for grouped Dapr, or keep handlers
+   repeat-tolerant. Single-agent Dapr and NATS are both unaffected.
+10. **`Registry.update_component_name` refuses a name that is already taken** instead of overwriting
+    it. Anything relying on the overwrite was losing a component silently.
+11. **`asbs setup` now scaffolds `.secrets.toml`**, the name `DEFAULT_SETTINGS_FILES` actually loads;
+    it used to write `secrets.toml`, which nothing read. This is a change to the *scaffolder* only —
+    the framework's file list is untouched, so no existing deployment changes. `asbs validate`
+    reports an undotted file as the rename it needs. An already-scaffolded project should rename its
+    file.
+
+### Fixed
+
+- **`/status/env` no longer returns credentials in clear** (#91). Config masking matched whole keys
+  only, so anything with a prefix or suffix around the secret word came back readable. Present since
+  `4e6421b`, unrelated to grouping. An agent-scoped actuator also now reports its own scope rather
+  than the whole tree.
+- **Dapr declared topics actually subscribe** (#81). `GET /dapr/subscribe` served nothing usable and
+  answered 422 to the sidecar. A project that overrides `get_subscribed_topics()` will see Dapr
+  behaviour change by design — declared topics went from subscribing to nothing to subscribing.
+- **Resilient broker startup and subscription readiness** (#28). Connection and subscription setup
+  run asynchronously with background retry, `/health/live` succeeds while retrying,
+  `/health/ready` stays unhealthy until subscriptions are established, and NATS and Dapr behave
+  consistently. Configurable via `event_client_max_retries` and `event_client_retry_delay`.
+- **Schedulers no longer fire duplicate cron ticks under multiple replicas or workers** (#73).
+  `scheduler_mode = "event"` delivers the tick as an ordinary event, so the queue group picks one
+  replica; `"in_process"` claims each tick in the shared cache so one replica runs it.
+- **Schedulers no longer start twice** (#43), on both causes: a second `build()` pass no longer
+  starts a second timer, and `SchedulerBase` sitting in the REST-API lifespan loop as well as the
+  scheduler loop no longer creates two `AsyncIOScheduler` instances per scheduler. The manual
+  trigger route is now registered before `include_router` copies it, so it is actually served.
+- **`AgentBuilder` no longer needs a `Config` at construction and builds no model during `__init__`**
+  (#4). The AI client and model are resolved in `build()`, against the agent's own configuration view.
+- **The unit/integration test split is enforced** (#80). `tests/integration/` was not run by CI and
+  sat at 28 failures asserting on examples that had been removed.
+- **A handler's published result is no longer silently lost under JetStream.** The client declared
+  no publishable subjects, so `js.publish` waited for an acknowledgement no stream would send, timed
+  out, and was swallowed as a WARNING while a Core NATS listener still saw the message. Found
+  against a real broker.
+- **`AgentRuntime` is constructed with its name and registered like every other component.** It
+  registered itself under the bare name, so two agents in a group sharing a runtime name collided on
+  one registry key. This also made a freshly scaffolded project fail to start with
+  `TypeError: AgentRuntime.__init__() missing 1 required positional argument: 'name'`.
+- **A scaffolded project starts, tests and validates.** Its settings file wrote `[default.logging]`
+  and `[default.observability]` tables the framework never reads; `asbs create agent` wrote
+  `[default.runtimes.<agent>.models]` where the framework reads `model_settings`; `asbs create` wrote
+  absolute imports into files using relative ones; `asbs create handler` could die mid-command on a
+  Windows console leaving the project half-edited; and `asbs setup` printed
+  `pip install -e .` without writing a `pyproject.toml`.
+- **`token_metrics_enabled` is actually read.** `get_observability_config()` never passed it, so the
+  per-call token and latency metrics stayed on however the key was set.
+- **`GET /cache/stats` no longer returns 500**, and the four overlapping cache documents are one,
+  rewritten against the code.
+- **Five bundled examples declared an `app_name` the broker refuses**; `webhook_relay` was broken
+  outright. All renamed, and a test now holds every example's `app_name` to the subject alphabet.
+- Events that match no handler are counted rather than flagged, acknowledged rather than redelivered
+  to `max_deliver`; a critical error drops on Dapr and terms on NATS; an unparseable body drops
+  instead of answering 422; in-flight handlers drain before the connection closes; JetStream
+  consumers share load via a deliver group; and what the framework gives up on is republished to
+  `<queue group>.dead-letter` before being termed.
+
+### Known issues
+
+- **#89 is still open and this release does not fix it.** `Config` passes `current_env=` to Dynaconf
+  where the environment selector is `env=`, so the resolved environment is never actually loaded and
+  the log line reports a name that was never applied. The configuration layer was substantially
+  reworked here and this defect survived it.
+- Generating the `CronJob` for `scheduler_mode = "event"` is deliberately deferred, so the publisher
+  must be written by hand.
+- No CI gate enforces that an environment's group declaration covers the in-image agent map;
+  `asbs validate` reports it locally.
+- The memory number this feature exists to produce — marginal RSS per additional hosted agent — has
+  not been measured (#32, #35, #36).
+- **#75** (supervisord multi-agent-per-host vs. Kubernetes per-agent Pod) is materially answered by
+  the spec: grouping makes the choice a deployment parameter and Kubernetes runs one Deployment per
+  group. The ADR the issue asks for is still outstanding.
+- Dead letters accumulate on `<queue group>.dead-letter` with no consumer; draining it is an
+  operational task the framework does not perform.
+- `size` in the cache statistics counts TTL metadata entries, so a cache holding two values reports
+  `4`. Documented as-is rather than changed, because a reported metric is somebody's dashboard.
 
 ## [0.6.4] - 2026-07-29
 
