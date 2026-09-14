@@ -17,6 +17,7 @@ Blueprint Agents gives you a component-based toolkit for building intelligent mi
 - **Event-Driven Processing** -- CloudEvents v1.0 with chain-of-responsibility handlers, Dapr and NATS pub/sub support
 - **LLM Integration** -- AI agents powered by [Pydantic AI](https://ai.pydantic.dev/) with structured outputs, tool calling, and multi-model support (OpenAI, vLLM)
 - **Built-in Observability** -- OpenTelemetry tracing, metrics, and structured logging out of the box
+- **Multi-Agent Grouping** -- Run one agent per process, or host several in one process, as a *deployment* choice: the agent's code is identical either way
 - **CLI Scaffolding** -- Generate complete project structures and individual components with the `asbs` CLI
 - **Deployment Ready** -- Docker, Kubernetes with Helm charts, health checks, and CI/CD patterns included
 
@@ -37,7 +38,13 @@ pip install -e .
 asbs dev
 ```
 
-Your service is now running at `http://localhost:8000` with interactive API docs at `/docs`.
+Your service is now running at `http://localhost:8000` with interactive API docs at `/docs`,
+and this agent's routes under `/api/my-agent`.
+
+`asbs setup` writes your project's `main.py` as a **declaration** -- an `AppBuilder` that is never built --
+plus an `agents.toml` naming it. That is what lets the same project run on its own and be hosted
+alongside other agents without changing a line. See
+[Running one agent, or several](#running-one-agent-or-several).
 
 ---
 
@@ -93,23 +100,29 @@ pip install -e ".[dev]"
 Blueprint Agents uses five composable component types, wired together with the `AppBuilder`:
 
 ```python
-from blueprint.agents import AppBuilder, AgentBuilder, Config
+from blueprint.agents import AppBuilder
 
 from src.handlers.order_handler import OrderHandler
 from src.services.order_service import OrderService
 from src.api.routes import OrderApi
 
-config = Config(settings_files=["settings.toml", "secrets.toml"])
-
-app = (
-    AppBuilder(config)
+agent = (
+    AppBuilder()
     .with_handler(OrderHandler)
     .with_service(OrderService)
-    .with_rest_api(OrderApi())
+    .with_rest_api(OrderApi)
     .with_cache()
-    .build()
 )
 ```
+
+Two things about that chain are worth knowing up front:
+
+- **Nothing is constructed yet.** Every `with_*` call records a declaration; `build()` constructs
+  it. Leaving `build()` out is what lets the deployment decide the configuration and the namespace
+  each component is built in.
+- **Pass classes, not instances.** `with_rest_api(OrderApi)` rather than `with_rest_api(OrderApi())`.
+  An instance created on the `with_*` line exists before any namespace does, so it belongs to the
+  process root for ever. Instances still work for a single standalone agent; a group refuses them.
 
 ### The Five Components
 
@@ -131,6 +144,71 @@ on_startup()   -->  Resolve dependencies, connect to external services
 [running]      -->  Process events, handle requests, run tasks
 on_shutdown()  -->  Clean up resources, close connections
 ```
+
+---
+
+## Running one agent, or several
+
+**How many agents share a process is a deployment parameter, not an architectural commitment.**
+The declaration in your project's `main.py` is the same either way; only what starts the
+process differs.
+
+| Shape | What starts it |
+|---|---|
+| Standalone, a module-level `app` you built yourself | `uvicorn src.main:app` |
+| Standalone, a declaration built by a factory | `uvicorn src.main:create_app --factory` |
+| Hosted -- one agent, or twenty | `python -m blueprint.agents.entrypoint` |
+
+### Standalone
+
+Unchanged, and still fully supported. Build the declaration yourself and serve it:
+
+```python
+config = Config(settings_files=["settings.toml", ".secrets.toml"])
+app = agent.build(config)          # the declaration from "How It Works"
+```
+
+A standalone agent runs at the **root namespace**: its registry names, REST paths (`/api/...`),
+NATS queue group, JetStream durable and OpenTelemetry `service.name` are exactly what they were
+before this existed. Nothing reads `agents.toml` unless you run the entry point.
+
+### Hosted in a group
+
+Name each agent and the module its declaration lives in, in `agents.toml`:
+
+```toml
+[agents.orders]
+module = "src.main:agent"
+
+[agents.billing]
+module = "billing.main:agent"
+```
+
+The image contains those agents; the **deployment** decides which of them a given process runs:
+
+```bash
+docker run -e BLUEPRINT_AGENTS=orders,billing my-image      # both in one process
+docker run -e BLUEPRINT_AGENTS=orders my-image              # a group of one
+```
+
+Each hosted agent gets its own handlers, agent runtime, REST routes, AI client, thread pool,
+caches and broker connection. The port, the health endpoint and the process are shared. Agents in
+one process are **isolated**: an agent resolves its own components, caches and configuration and
+the root's shared ones, and the framework refuses any attempt to reach a neighbour's.
+
+A group of one gives today's process isolation; a group of twenty gives the shared-interpreter
+memory profile. Moving an agent between groups changes neither its broker-side consumer identity
+nor its telemetry identity.
+
+> **The agent's name in `agents.toml` is its identity everywhere else** -- registry prefix, NATS
+> queue group, part of the JetStream durable, cache partition, OpenTelemetry `service.name` and
+> the REST prefix `/api/<name>`. Renaming it after the first deploy is a consumer migration, not a
+> rename. Choose it before you ship.
+
+Other group settings: `BLUEPRINT_GROUP_CONFIG` and `BLUEPRINT_GROUP` select a named group from a
+mounted file, and `BLUEPRINT_CRITICAL_AGENTS` says which agents failing should fail the process.
+See the [Multi-Agent Setup guide](docs/guides/multi-agent-setup.md) for the full reference and the
+migration path for an existing single-agent project.
 
 ---
 
@@ -172,7 +250,7 @@ cache_dir = ".cache/my-agent"
 default_ttl = 3600
 ```
 
-**secrets.toml** (never commit this file):
+**.secrets.toml** (never commit this file):
 
 ```toml
 [default.runtimes.my_agent]
@@ -236,6 +314,7 @@ See the [Deployment Guide](docs/guides/deployment.md) for detailed instructions.
 
 ### Getting Started
 - [Getting Started Guide](docs/getting-started.md) -- Installation, first project, and walkthrough
+- [Multi-Agent Setup](docs/guides/multi-agent-setup.md) -- Running several agents in one process, and migrating an existing one into a group
 
 ### Core Concepts
 - [Architecture](docs/concepts/architecture.md) -- Component model, registry, and lifecycle
