@@ -6,6 +6,7 @@ import platform
 from importlib import metadata
 from importlib.metadata import PackageNotFoundError
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from fastapi import HTTPException, status
@@ -20,6 +21,21 @@ from ..rest_api_base import RestApiBase
 from .health.health_base import HealthCheckerBase
 
 logger = logging.getLogger(__name__)
+
+SECRET_KEY_MARKERS = ("key", "secret", "token", "password", "passwd", "pwd", "credential", "auth", "private", "salt")
+"""Substrings that make a configuration key too dangerous to return over HTTP.
+
+Matched as substrings, not whole keys, because the keys that actually carry secrets in this
+framework are compound: ``openai_api_key``, ``nats_password``, ``azure_client_secret``. A
+whole-key match sees none of them.
+
+Deliberately over-broad. A key such as ``api_key_header`` or ``cache_key_prefix`` is masked
+although it holds nothing sensitive, which costs a line of diagnostics; the opposite error
+publishes a credential to anything that can reach the actuator.
+"""
+
+CONFIG_MASK = "***"
+"""What a masked value is replaced with. Presence stays visible; the value does not."""
 
 
 class ActuatorApi(RestApiBase):
@@ -170,9 +186,7 @@ class ActuatorApi(RestApiBase):
         ai_config_dict = (
             ai_config_model.model_dump()
             if hasattr(ai_config_model, "model_dump")
-            else ai_config_model.dict()
-            if hasattr(ai_config_model, "dict")
-            else {}
+            else ai_config_model.dict() if hasattr(ai_config_model, "dict") else {}
         )
         ai_config = self._sanitize_config(ai_config_dict)
 
@@ -238,18 +252,68 @@ class ActuatorApi(RestApiBase):
         )
 
     def _sanitize_config(self, data: dict[str, Any]) -> dict[str, Any]:
-        """Mask sensitive keys in configuration dictionaries."""
+        """Return ``data`` with everything that could be a credential masked.
 
-        sensitive = {"api_key", "secret", "token", "password"}
-        sanitized: dict[str, Any] = {}
-        for key, value in data.items():
-            if key.lower() in sensitive:
-                sanitized[key] = "***"
-            elif isinstance(value, dict):
-                sanitized[key] = self._sanitize_config(value)
-            else:
-                sanitized[key] = value
-        return sanitized
+        This endpoint publishes configuration over HTTP, so the bias is towards masking: a
+        false positive loses a line of diagnostics, a false negative publishes a secret.
+
+        Three rules, in order:
+
+        1. A key containing any of :data:`SECRET_KEY_MARKERS` is masked, whatever its value.
+        2. A string value that parses as a URL carrying userinfo has that userinfo stripped,
+           whatever its key -- ``redis://user:pass@host`` under a key called ``nats_url``
+           names nothing sensitive but carries a password.
+        3. Booleans pass through even under a matching key. A flag cannot carry a credential,
+           and ``auth_enabled`` is exactly the kind of value someone reads this endpoint for.
+
+        Dictionaries and lists are walked, because a masked key is worthless if the same
+        secret sits one level down in a list of provider entries.
+        """
+        return {key: self._sanitize_value(key, value) for key, value in data.items()}
+
+    def _sanitize_value(self, key: str, value: Any) -> Any:
+        """Apply the rules in :meth:`_sanitize_config` to one key/value pair."""
+        if isinstance(value, dict):
+            return self._sanitize_config(value)
+        if isinstance(value, (list, tuple)):
+            return [self._sanitize_value(key, item) for item in value]
+        if isinstance(value, bool):
+            return value
+        if self._is_secret_key(key):
+            return CONFIG_MASK
+        if isinstance(value, str):
+            return self._strip_url_userinfo(value)
+        return value
+
+    @staticmethod
+    def _is_secret_key(key: str) -> bool:
+        """Return whether a configuration key may carry a credential."""
+        lowered = key.lower()
+        return any(marker in lowered for marker in SECRET_KEY_MARKERS)
+
+    @staticmethod
+    def _strip_url_userinfo(value: str) -> str:
+        """Return ``value`` with ``user:password@`` removed if it is a URL that carries it.
+
+        Unlike ``_sanitize_redis_url``, which is handed a value already known to be a Redis
+        URL and returns a placeholder when it cannot parse it, this is handed *every* string
+        in the configuration. So anything that does not parse as a URL with userinfo is
+        returned unchanged -- most configuration values are not URLs, and replacing them with
+        a placeholder would empty the endpoint.
+        """
+        if "@" not in value or "//" not in value:
+            return value
+        try:
+            parts = urlsplit(value)
+        except ValueError:
+            return CONFIG_MASK
+        if not parts.username and not parts.password:
+            return value
+        host = parts.hostname or ""
+        if ":" in host:
+            host = f"[{host}]"
+        netloc = f"{host}:{parts.port}" if parts.port is not None else host
+        return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
 
     def _ensure_config(self) -> Config:
         if not self.config:

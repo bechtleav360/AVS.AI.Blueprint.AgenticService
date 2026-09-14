@@ -147,7 +147,7 @@ The multi-agent work breakdown lived as a 900-line section inside `CLAUDE.md`. I
 configuration, transport topology, event delivery, caches, startup, backwards compatibility,
 acceptance criteria, open questions) and
 `docs/plans/2026-08-28-multi-agent-grouping.md` (the phased breakdown: prerequisites P0-P6 and
-phases 0-9). `CLAUDE.md` keeps pointers plus the list of paths that require reading the spec first.
+phases 0-10). `CLAUDE.md` keeps pointers plus the list of paths that require reading the spec first.
 
 **Motivation.** `CLAUDE.md` is loaded into every session, so a 900-line plan costs context on every
 task regardless of relevance, and it cannot be reviewed the way a document under `docs/` can. The
@@ -1365,6 +1365,70 @@ group and pod; C1 gains the namespace alphabet and both exclusions with their re
 rewritten for you* section and the corrected placeholder spellings. C1 also gains the
 validate-never-repair rule for boundary-crossing names, the two permitted exceptions, and the
 requirement that the namespace gate live in `Component.__init__`.
+
+### `/status/env` stopped returning credentials (#91)
+
+Found auditing configuration handling for the config rework, and **pre-existing on `main` and
+`develop`** -- introduced in `4e6421b`, unrelated to this feature. Filed as #91 and fixed here
+because the grouped-process work makes the same endpoint cross-agent.
+
+`ActuatorApi._sanitize_config` masked a key only when the whole key equalled one of four words
+(`api_key`, `secret`, `token`, `password`), so every compound key this framework actually uses was
+returned in clear by `GET /status/env`: `openai_api_key`, `nats_password`, `azure_client_secret`,
+any `*_token`. Lists were not walked either, so a list of provider entries was returned verbatim,
+and a URL carrying inline credentials passed through because its key names nothing sensitive.
+
+`_sanitize_config` now delegates per pair to `_sanitize_value`, and the rules are stated in order:
+
+- `SECRET_KEY_MARKERS` is matched as a **substring** of the lowercased key (`key`, `secret`,
+  `token`, `password`, `passwd`, `pwd`, `credential`, `auth`, `private`, `salt`). Deliberately
+  over-broad -- `api_key_header` is masked although it holds nothing -- because a lost diagnostic
+  line is cheaper than a published credential, and the docstring says so.
+- Dicts **and lists** are walked.
+- `_strip_url_userinfo` removes `user:password@` from any string that parses as a URL carrying
+  userinfo, whatever its key, so `redis://admin:pw@cache:6379/0` under `redis_url` becomes
+  `redis://cache:6379/0` and stays diagnostic instead of becoming `***`. It returns non-URLs
+  unchanged -- unlike `_sanitize_redis_url`, which is handed a value already known to be a Redis
+  URL and can safely fall back to a placeholder. The docstring records why the two differ, so they
+  are not unified wrongly.
+- Booleans pass through even under a matching key: a flag cannot carry a credential, and
+  `auth_enabled` is what someone reads this endpoint for.
+
+**Tests.** 17 new cases: ten compound keys as a parametrised set, secrets inside a list of dicts
+and inside a list of strings, URL userinfo stripped under an innocuous key, a URL without userinfo
+left alone, IPv6 brackets preserved, a boolean passing through, and a plain string containing `@`
+left alone. 1354 unit tests pass.
+
+One unrelated formatting fix rode along: the nested conditional in `llm_status` was the one hunk
+`black` wanted to rewrite in this file, and `ruff-format` accepts its version, so the file is now
+clean under both formatters.
+
+### Phase 10 added to the plan -- migration and setup documentation, last
+
+Recorded on the user's prompt so it is not rediscovered later. No code: it adds a phase to
+`docs/plans/2026-08-28-multi-agent-grouping.md` after Phase 9, and moves the phase range to 0-10 in
+the plan's status line, `CLAUDE.md` and this changelog's header.
+
+**Why last rather than now.** Everything a migration guide would describe -- `AgentRegistration`,
+group configuration, the entry point, the single image -- is built in phases 0, 2 and 8. Written
+before them, a guide documents an API that does not exist, and a reader cannot tell which half is
+aspiration. The plan already carries the migration *design* (*Migration path for an existing
+agent*); what Phase 10 adds is the part a developer can read and run.
+
+**What it covers:** a new `docs/guides/multi-agent-setup.md` (scaffolding a group; migrating a
+single-agent project; the section listing what stays byte-identical and why, which is what decides
+whether anyone trusts the migration; and the one decision to make before migrating, since the agent
+name becomes the queue group and part of the durable); `asbs setup` / `asbs create agent` /
+`asbs validate` support; and the rewrite of `docs/guides/deployment.md`, which ships today and
+contradicts this design.
+
+**One deliberate omission, stated in the phase:** there is no `asbs migrate` command. `main.py` is
+the developer's own declaration, so a rewriter either guesses at intent or breaks on hand edits; a
+checklist plus a `validate` that names what is missing is the honest shape.
+
+P6 is what makes the guide's central claim checkable rather than asserted: an existing project
+keeps every registry key, queue group and durable name because the root namespace keeps them, and
+that is now enforced by tests.
 
 ### Deployment guide corrected (`2d80b63`)
 
