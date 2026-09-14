@@ -30,4 +30,9 @@ jobs:
         run: mypy src
 
       - name: Run unit tests
+        env:
+          # Lets test_session_key_contract.py's live-upstream-drift check reach
+          # service-sessions (a private repo); it skips gracefully if this repo's
+          # GITHUB_TOKEN doesn't have cross-repo read (org policy, not this token).
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python -m pytest tests/unit -v --tb=short
