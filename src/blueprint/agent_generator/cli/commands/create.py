@@ -699,34 +699,44 @@ class {class_name}(SchedulerBase):
     """Scheduler for {snake_name.replace("_scheduler", "")} operations."""
 
     def __init__(self) -> None:
-        """Initialize the scheduler.
+        """Declare the schedule.
 
-        Args:
-            name: Component name for registry (optional)
-            crontab: Cron expression for scheduling
+        The crontab is declared here in both scheduler modes, and 'scheduler_mode' in
+        settings.toml decides what calls tick(). It is required and has no default: with
+        'event' nothing in this process keeps time -- the tick arrives as an event on this
+        scheduler's own topic, published by an external CronJob generated from this
+        declaration, and 'event_bus' has to be set. With 'in_process' an APScheduler timer
+        runs here, which is right for local development and un-orchestrated Docker but
+        fires once per replica.
         """
         super().__init__(crontab="{args.cron}")
 
     async def on_startup(self) -> None:
-        """Initialize the scheduler."""
+        """Resolve dependencies, then let the base class wire the scheduler."""
 
         # TODO: Get services from registry
         # Example: self._service = self.registry.get_service(MyService)
 
+        # Required. The base class starts the timer (in_process mode), wires the tick
+        # handler (event mode) and registers the manual trigger route. Drop this call
+        # and the scheduler is registered but never runs.
+        await super().on_startup()
+
     async def on_shutdown(self) -> None:
         """Cleanup when shutting down."""
 
+        await super().on_shutdown()
+
     async def tick(self) -> None:
-        """Execute scheduled task."""
+        """Execute scheduled task.
 
-        try:
-            # TODO: Implement your scheduled task here
-            # Example: await self._service.do_work()
+        Let exceptions out. In event mode the transport edge decides the delivery
+        disposition from them; catching and logging one here acknowledges the tick as
+        successful work.
+        """
 
-
-        except Exception as e:
-            logger.exception("Error during %s scheduler tick: %s", __name__, e)
-            raise
+        # TODO: Implement your scheduled task here
+        # Example: await self._service.do_work()
 '''
 
     output_file.write_text(code)

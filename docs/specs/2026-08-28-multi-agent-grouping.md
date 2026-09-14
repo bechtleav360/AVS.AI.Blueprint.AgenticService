@@ -265,7 +265,8 @@ changing them triggers a rolling update on their own.
 | `nats_dead_letter_subject` | `<queue group>.dead-letter` | Where a message the framework gives up on is republished. Derived from the agent's identity, as the queue group is (C1). `""` disables it and loses those payloads. **MUST NOT** be a wildcard or a subject the same namespace consumes. |
 | `idempotency_enabled` | `false` | Opt-in dedup. See sec. 7.4. |
 | `idempotency_ttl` | -- | Dedup window. |
-| `scheduler_mode` | `"event"` | `"event"` or `"in_process"`. See sec. 7.5. |
+| `scheduler_mode` | -- (**required** with a scheduler) | `"event"` or `"in_process"`. Deliberately without a default; per namespace. See sec. 7.5. |
+| `event_publishing_enabled` | `false` | Opt into publishing without consuming. Requires `event_bus`. See sec. 7.5. |
 
 ### 5.3 Settings authoring
 
@@ -323,6 +324,13 @@ checked before a large rollout only where the cap is issued externally per accou
 broker, or an operator-mode account whose JWT carries a `conn` limit set by someone else. No such
 authentication is currently wired: `nats.connect()` is called with URL and reconnect parameters
 only (`clients/io/nats_client.py:93`).
+
+A namespace that neither subscribes to anything nor publishes anything **MUST NOT** be given a
+client. A pure-scheduler agent on `scheduler_mode = "in_process"` that does not opt into publishing
+(sec. 7.5) is that case: a connection for it is a socket, a readiness dependency and a `/connz`
+entry for traffic that does not exist, and it would put a pod on a broker that the agent's own
+deployment may have no access to. The cost argument above justifies a connection *per namespace
+that uses one*; it does not justify one per namespace that does not.
 
 Connection name **MUST** be `f"{namespace}.{group}.{pod}"`, and **MUST NOT** feed C1 naming.
 
@@ -445,7 +453,22 @@ Two modes, selected by `scheduler_mode`:
 | Mode | Behaviour |
 |---|---|
 | `"event"` | **Default.** No in-process timer. An external scheduler (Kubernetes `CronJob`) publishes an event; the agent handles it through its normal event path. |
-| `"in_process"` | `AsyncIOScheduler` gated by a NATS KV or cache-backed leader lease. For un-orchestrated Docker and local development. |
+| `"in_process"` | `AsyncIOScheduler` in every replica, with each tick claimed in the shared cache so one replica runs it. For un-orchestrated Docker and local development. |
+
+`scheduler_mode` **MUST NOT** have a default: registering a scheduler without it **MUST** fail
+before the port is bound. Neither value is safe to inherit. `"in_process"` is the defect of #73 --
+one timer per replica, multiplied by every grouped agent in the pod -- and `"event"` needs a
+publisher and a transport that a service whose only job is periodic work may not have, so
+defaulting to it silences that service instead. Which value is correct depends on the deployment
+rather than the code: whether a broker is reachable, whether more than one replica runs, whether an
+orchestrator exists at all. The author therefore states it, exactly as sec. 7.4 requires for
+`idempotency_ttl`. `"event"` **MUST** additionally fail unless `event_bus` names a transport that
+carries topics, since a scheduler subscribed to nothing never ticks and reports no fault.
+
+`scheduler_mode` **MUST** resolve per namespace through C5, not once per process. A group may host
+a pure-scheduler agent that has to run `"in_process"` alongside an event-driven agent on `"event"`,
+and one process-wide value cannot express that -- which is exactly the deployment freedom grouping
+exists to provide.
 
 In `"event"` mode the framework **MUST NOT** start a timer, and the tick **MUST** be delivered as
 an ordinary namespaced event, so the queue group already guarantees single execution across
@@ -457,14 +480,62 @@ The schedule **MUST** remain declared in agent code, and the `CronJob` **MUST** 
 that declaration -- the same generation path as manifests from `deployment-groups.yaml`. Hand-authored
 schedules let code expect a tick nobody scheduled.
 
+That generation path **MUST NOT** import a project's `src/main.py`. The declaration is reachable
+without it: configure from the project's settings and import the modules that define the
+schedulers. Generation **SHOULD** happen where the registrations are authored, and anything the
+generator cannot observe -- a registration-time rename, a scheduler needing constructor arguments
+-- **MUST** be reported rather than guessed at.
+
+Because manifests belong to a deployment group rather than to a single project once one image
+serves the platform (sec. 6, and the entrypoint model), the generator's input **SHOULD** be the
+group's agent map rather than one project's source tree.
+
+Independently of the manifest, the declared crontab **MUST** be validated in `"event"` mode. That
+mode builds no `CronTrigger`, so nothing else parses the expression, and an invalid one otherwise
+presents as a scheduler that reports itself healthy and never ticks. It **MUST** be the five
+standard cron fields: an external scheduler reads those, and apscheduler's extensions -- a leading
+seconds field in particular -- are not portable to one.
+
+**In-process coordination is a per-tick claim, not a leader lease.** An earlier form of this
+section called for a NATS KV or cache-backed leader lease. A slot claim satisfies the same
+requirement and is preferred, because it removes rather than answers the failover question: every
+replica's timer fires, each tries to store a marker keyed on `(scheduler, minute)` in the shared
+cache, and the one that stores it runs the tick. Nothing is elected and nothing is held, so there
+is no renewal task to schedule (and therefore none to leak, C7), no lease left behind by a replica
+that dies holding one, and no takeover bound to specify -- the next slot is claimed from scratch by
+whoever is alive.
+
+The claim **MUST** use a set-if-absent primitive rather than a read followed by a write:
+`CacheService.claim`. Two replicas racing on an `exists`-then-`set` pair both pass the check and
+both tick, which is the failure this mechanism exists to prevent.
+
+The key **MUST** be derived from the scheduled slot rather than from the scheduler alone. Cron
+granularity is one minute, so replicas firing for the same scheduled time derive the same key and
+the next scheduled time derives a different one -- which is what keeps set-if-absent sufficient.
+Replicas whose clocks differ enough to straddle a minute boundary derive different slots and both
+tick; sec. 7.4 covers that, as it covers every other repeat.
+
+With no cache registered there is nothing to claim with. The timer **MUST** still run -- the mode
+exists for local development, where requiring a cache would be gratuitous -- and startup **MUST**
+warn that ticks are uncoordinated, naming both remedies.
+
 Neither mode is exactly-once: `CronJob` is at-least-once (controller restart, missed
-`startingDeadlineSeconds`), and a lease can briefly have two holders if it expires mid-tick.
-Sec. 7.4 therefore applies in both modes. `concurrencyPolicy: Forbid` **SHOULD** be set, and
+`startingDeadlineSeconds`), and a claim fails open when the cache is unreachable, so every replica
+ticks. Sec. 7.4 therefore applies in both modes. `concurrencyPolicy: Forbid` **SHOULD** be set, and
 `CronJob` `timeZone` **MUST** be reconciled with apscheduler's timezone handling so the two modes
 do not diverge.
 
-Note #43 -- schedulers being started twice *within* one process by two `build()` passes -- is a
-distinct defect. Both touch scheduler startup and **SHOULD** be fixed together.
+**Publishing and consuming are separate decisions.** A scheduler that emits a result event is a
+legitimate shape and **MUST NOT** require the agent to consume anything: an application that opts
+into publishing gets a transport client and no subscription, and its `event_bus` is what says a
+broker exists. Publishing **MUST** stay opt-in, because a project that wants only a timer may have
+no broker access at all, and a client created on its behalf becomes a readiness dependency on
+infrastructure it does not run.
+
+Note #43 -- schedulers being started twice *within* one process -- is a distinct defect with two
+causes, and both **MUST** be fixed: two `build()` passes driving the lifespan hooks twice, and
+`SchedulerBase` extending `RestApiBase` for its trigger route, which puts every scheduler in the
+REST-API lifespan loop *and* the scheduler loop within a single pass.
 
 ### 7.6 Topic subscription scope
 
@@ -696,8 +767,20 @@ Two things an author still needs to know: their agent's name, and that handlers 
 - [ ] The CI gate fails when an environment's group declaration omits an agent present in the
       in-image agent map (sec. 13).
 - [ ] Cron fires once across three replicas in both `scheduler_mode` values (#73).
+- [ ] `CacheService.claim` is set-if-absent on both backends: of N concurrent callers on one key
+      exactly one is told it stored the value (sec. 7.5).
+- [ ] An `"in_process"` scheduler with no cache still ticks, and warns at startup that its ticks
+      are uncoordinated (sec. 7.5).
 - [ ] `scheduler_mode = "event"` starts no timer, and the generated `CronJob` matches the schedule
       declared in agent code.
+- [ ] A registered scheduler with no `scheduler_mode` fails before the port is bound, and so does
+      `"event"` with no topic-carrying `event_bus` (sec. 7.5).
+- [ ] Two namespaces in one group resolve different `scheduler_mode` values, and only the
+      `"in_process"` one starts a timer (sec. 7.5, C5).
+- [ ] A pure-scheduler namespace that neither subscribes nor publishes is given no transport client
+      (sec. 6), and one that opts into publishing is given a client and no subscription (sec. 7.5).
+- [ ] A scheduler's `on_startup` and `on_shutdown` each run exactly once per lifespan, asserted
+      against both lifespan loops a `SchedulerBase` appears in (#43).
 - [ ] An event that matches no handler is acknowledged, not redelivered: the transport edge
       behaves identically for `PROCESSED` and `NO_HANDLER_FOUND` (sec. 7.2).
 - [ ] The same outcome yields the same disposition on both transports -- `CriticalHandlerError`
@@ -741,10 +824,14 @@ Two things an author still needs to know: their agent's name, and that handlers 
 - Earlier design context assumed "20+ agents"; #32 targets **100 agents in 4 GB**. Grouping
   heuristics, connection totals and executor budgets all change materially at 100. Which figure
   is the design target?
-- **For `scheduler_mode = "in_process"`, is true failover required** (a dead leader taken over
-  within a bound), or is "one designated instance runs it, others no-op" enough? The cheap
-  ordinal-check answer does not work under a Deployment, which has no stable ordinal, so a lease
-  is likely needed either way.
+- **Do the services running schedulers today have `event_bus` configured?** It decides how much
+  weight the `"in_process"` lease carries. If some have no broker at all they are permanently
+  `"in_process"`, and the lease stops being a development convenience and becomes the only thing
+  standing between them and duplicated ticks.
+- **Does the deployment path regenerate manifests from the build?** If it does, the generated
+  `CronJob` arrives with the upgrade and `"event"` costs an existing service nothing. If manifests
+  are hand-maintained, the generator emits a file someone has to notice and apply, which is where a
+  tick quietly stops.
 - **Who owns the subject taxonomy?** Pushing selection into the subject (sec. 7.7) only works if
   publishers encode the discriminator, and the publishers are other services. `topic_mapping` lets
   the framework enforce symmetry once a scheme exists, but it cannot invent the token order.

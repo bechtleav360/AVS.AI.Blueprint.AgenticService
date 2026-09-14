@@ -466,3 +466,186 @@ class TestBuildAppMetadata:
         _, kwargs = all_build_mocks.fastapi.call_args
         assert kwargs["version"] == "0.0.0"
         assert kwargs["description"] == ""
+
+
+# ---------------------------------------------------------------------------
+# build -- scheduler wiring (P5)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildSchedulerWiring:
+    """build() must wire the schedulers before it decides on a transport.
+
+    A scheduler in event mode has no in-process timer: its tick arrives as an event. If
+    its tick handler is not registered by the time build() checks for handlers, an
+    application whose only event consumer is a scheduler gets no transport at all and can
+    never be ticked.
+    """
+
+    def _config(self, build_config: MagicMock, **values: object) -> None:
+        build_config.get.side_effect = lambda key, default=None: values.get(key, default)
+
+    def test_event_mode_scheduler_is_wired_before_the_transport_decision(
+        self,
+        builder_for_build: AppBuilder,
+        mock_registry: MagicMock,
+        all_build_mocks: types.SimpleNamespace,
+        build_config: MagicMock,
+    ) -> None:
+        wire_empty_registry(mock_registry)
+        scheduler = MagicMock()
+        mock_registry.get_schedulers.return_value = [scheduler]
+        # The tick handler wire() registers is what makes get_event_handler() non-empty.
+        mock_registry.get_event_handler.side_effect = lambda: [MagicMock()] if scheduler.wire.called else []
+        self._config(build_config, event_bus="nats")
+
+        builder_for_build.build()
+
+        scheduler.wire.assert_called_once()
+        all_build_mocks.nats_client.assert_called_once()
+        all_build_mocks.nats_eventing.assert_called_once()
+
+    def test_in_process_scheduler_alone_creates_no_transport(
+        self,
+        builder_for_build: AppBuilder,
+        mock_registry: MagicMock,
+        all_build_mocks: types.SimpleNamespace,
+        build_config: MagicMock,
+    ) -> None:
+        wire_empty_registry(mock_registry)
+        scheduler = MagicMock()
+        scheduler.wire.return_value = None
+        mock_registry.get_schedulers.return_value = [scheduler]
+        self._config(build_config, event_bus="nats")
+
+        builder_for_build.build()
+
+        scheduler.wire.assert_called_once()
+        all_build_mocks.nats_client.assert_not_called()
+        all_build_mocks.nats_eventing.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# build -- publishing without consuming
+# ---------------------------------------------------------------------------
+
+
+class TestBuildPublishOnly:
+    """Publishing and consuming are separate decisions.
+
+    An application that only emits events -- a scheduler reporting what it did, a REST API
+    handing work on -- needs a transport client but must not be subscribed to anything. The
+    opt-in exists because publishing needs broker access a scheduler-only project may not
+    have, so no client is created unless it is asked for.
+    """
+
+    def _config(self, build_config: MagicMock, **values: object) -> None:
+        build_config.get.side_effect = lambda key, default=None: values.get(key, default)
+
+    def test_no_client_without_the_opt_in(
+        self,
+        builder_for_build: AppBuilder,
+        mock_registry: MagicMock,
+        all_build_mocks: types.SimpleNamespace,
+        build_config: MagicMock,
+    ) -> None:
+        wire_empty_registry(mock_registry)
+        self._config(build_config, event_bus="nats")
+
+        builder_for_build.build()
+
+        all_build_mocks.nats_client.assert_not_called()
+        all_build_mocks.epubs.assert_not_called()
+
+    def test_opt_in_creates_a_client_but_subscribes_to_nothing(
+        self,
+        builder_for_build: AppBuilder,
+        mock_registry: MagicMock,
+        all_build_mocks: types.SimpleNamespace,
+        build_config: MagicMock,
+    ) -> None:
+        wire_empty_registry(mock_registry)
+        mock_registry.get_io_clients.return_value = [MagicMock()]
+        self._config(build_config, event_bus="nats", event_publishing_enabled=True)
+
+        builder_for_build.build()
+
+        all_build_mocks.nats_client.assert_called_once()
+        all_build_mocks.nats_eventing.assert_not_called()
+        all_build_mocks.eps.assert_not_called()
+        all_build_mocks.epubs.assert_called_once()
+        assert builder_for_build._eventing_component is None
+
+    def test_opt_in_accepts_the_string_an_environment_variable_delivers(
+        self,
+        builder_for_build: AppBuilder,
+        mock_registry: MagicMock,
+        all_build_mocks: types.SimpleNamespace,
+        build_config: MagicMock,
+    ) -> None:
+        wire_empty_registry(mock_registry)
+        self._config(build_config, event_bus="dapr", event_publishing_enabled="true")
+
+        builder_for_build.build()
+
+        all_build_mocks.dapr_client.assert_called_once()
+        all_build_mocks.dapr_eventing.assert_not_called()
+
+    def test_opt_in_without_a_transport_raises(
+        self,
+        builder_for_build: AppBuilder,
+        mock_registry: MagicMock,
+        all_build_mocks: types.SimpleNamespace,
+        build_config: MagicMock,
+    ) -> None:
+        wire_empty_registry(mock_registry)
+        self._config(build_config, event_publishing_enabled=True)
+
+        with pytest.raises(ValueError, match="event_publishing_enabled"):
+            builder_for_build.build()
+
+    def test_opt_in_with_sessions_raises(
+        self,
+        builder_for_build: AppBuilder,
+        mock_registry: MagicMock,
+        all_build_mocks: types.SimpleNamespace,
+        build_config: MagicMock,
+    ) -> None:
+        """SessionsBus carries no topics, so it cannot publish one."""
+        wire_empty_registry(mock_registry)
+        self._config(build_config, event_bus="sessions", event_publishing_enabled=True)
+
+        with pytest.raises(ValueError, match="event_bus"):
+            builder_for_build.build()
+
+    def test_non_boolean_opt_in_raises(
+        self,
+        builder_for_build: AppBuilder,
+        mock_registry: MagicMock,
+        all_build_mocks: types.SimpleNamespace,
+        build_config: MagicMock,
+    ) -> None:
+        wire_empty_registry(mock_registry)
+        self._config(build_config, event_bus="nats", event_publishing_enabled="maybe")
+
+        with pytest.raises(ValueError, match="must be a boolean"):
+            builder_for_build.build()
+
+    def test_consuming_still_publishes_without_the_opt_in(
+        self,
+        builder_for_build: AppBuilder,
+        mock_registry: MagicMock,
+        all_build_mocks: types.SimpleNamespace,
+        build_config: MagicMock,
+    ) -> None:
+        """A handler returning a HandlerResult has always published through the same client."""
+        wire_empty_registry(mock_registry)
+        mock_registry.get_event_handler.return_value = [MagicMock()]
+        mock_registry.get_io_clients.return_value = [MagicMock()]
+        self._config(build_config, event_bus="nats")
+
+        builder_for_build.build()
+
+        all_build_mocks.nats_eventing.assert_called_once()
+        all_build_mocks.eps.assert_called_once()
+        all_build_mocks.epubs.assert_called_once()

@@ -14,6 +14,20 @@ model_base_url = "https://avs-vllm.q14.net/v1"
 # idempotency_enabled = true
 # idempotency_ttl = 1500
 
+# Required as soon as a scheduler is registered -- it has no default, because neither
+# value is safe to inherit. "event" starts no in-process timer: the tick arrives as an
+# event on <app_name>.scheduler.<scheduler_name>, published by an external CronJob, so
+# exactly one replica runs it -- and it needs event_bus set. "in_process" runs an
+# APScheduler timer in the process and claims each tick in the cache so one replica
+# runs it; it is right for local development and plain Docker, and it needs
+# .with_cache() or every replica runs every tick.
+scheduler_mode = "in_process"
+
+# Set this to publish events without consuming any -- a scheduler that reports what
+# it did, for instance. A handler already implies a client, so only publish-only
+# applications need it. Needs event_bus, and subscribes to nothing.
+# event_publishing_enabled = true
+
 [default.logging]
 level = "DEBUG"
 format = "json"
