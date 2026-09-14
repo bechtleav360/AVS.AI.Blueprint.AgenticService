@@ -270,9 +270,7 @@ class TestProcessJobNotification:
             notification.session_id, job_id=notification.job_id
         )
 
-    async def test_403_retry_failure_cancels_job_not_raises(
-        self, started_sessions_bus: SessionsBus, notification: JobNotification
-    ) -> None:
+    async def test_403_retry_failure_cancels_job_not_raises(self, started_sessions_bus: SessionsBus, notification: JobNotification) -> None:
         """A failed 403-retry must not escape as a raised exception (#94 follow-up).
 
         Raising here from inside `except httpx.HTTPStatusError` would propagate straight
