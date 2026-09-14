@@ -373,6 +373,11 @@ class SessionsBus(Component, CloudEventProcessorMixin):
 
             event = self._convert_to_cloud_event(notification)
 
+            # Tracked across the whole try block (not just the happy path) so a cancel
+            # triggered below can reuse an already-obtained key instead of blindly
+            # repeating the fetch — including when that repeat would hit the exact
+            # same failure the original error came from (review, PR #95, finding 1).
+            session_key: str | None = None
             try:
                 session_key = await self._require_key_provider().get_session_key(session_id, job_id=job_id)
                 context = self._build_context(session_id, job_id, session_key, pipeline_id=notification.pipeline_id)
@@ -382,7 +387,7 @@ class SessionsBus(Component, CloudEventProcessorMixin):
                     logger.warning("No handler found for job type %s (job_id=%s)", job_type, job_id)
 
             except InvalidEventError as e:
-                await self._cancel_invalid_job(session_id, job_id, e)
+                await self._cancel_invalid_job(session_id, job_id, e, session_key=session_key)
 
             except RetryableHandlerError as e:
                 logger.warning("Retryable error for job %s: %s. Job remains pending.", job_id, e)
@@ -403,11 +408,15 @@ class SessionsBus(Component, CloudEventProcessorMixin):
                     # HTTP error from the key fetch (404 unknown/expired job, 422 malformed,
                     # 5xx) is not something a later SSE reconnect or retry will resolve on its
                     # own — leaving the job pending forever just hides the failure one layer
-                    # deeper than before this fix (review, PR #95).
+                    # deeper than before this fix (review, PR #95). `session_key` is still None
+                    # here when *this very error* came from the get_session_key call above
+                    # (rather than from dispatch) — _cancel_invalid_job handles that case
+                    # explicitly rather than repeating the same failing fetch.
                     await self._cancel_invalid_job(
                         session_id,
                         job_id,
                         InvalidEventError(status="upstream_http_error", reason=f"Unexpected HTTP error: {e}"),
+                        session_key=session_key,
                     )
 
             except Exception as e:
@@ -433,10 +442,36 @@ class SessionsBus(Component, CloudEventProcessorMixin):
             "pipeline_id": pipeline_id,
         }
 
-    async def _cancel_invalid_job(self, session_id: UUID, job_id: UUID, error: InvalidEventError) -> None:
+    async def _cancel_invalid_job(self, session_id: UUID, job_id: UUID, error: InvalidEventError, session_key: str | None = None) -> None:
+        """Cancel *job_id*, reusing *session_key* if the caller already has one.
+
+        Re-fetching unconditionally (the pre-fix behavior) meant that when the
+        triggering error was itself a `get_session_key` failure, this method
+        repeated that exact same call and hit the exact same failure — silently,
+        under the generic `except Exception` below, indistinguishable from an
+        ordinary transient cancel failure (review, PR #95, finding 1; reproduced
+        against #94's own originating case: a 422 from the job-scoped key-fetch).
+        When no key is available at all — this call *is* that origin case, not
+        just a caller that skipped passing one — service-sessions' cancel endpoint
+        requires a real `X-Session-Key` (confirmed against
+        avs.ai.idac.service-sessions' `cancel_job` route), so there is no way to
+        authenticate a cancel here without a server-side change out of this
+        client's scope. That's logged at `critical`, not the routine `error` level
+        below, because it means the job is stuck at `pending` with no remaining
+        remediation path in this pass, not just this one attempt failing.
+        """
         logger.error("Invalid job %s: %s. Cancelling.", job_id, error)
+        if session_key is None:
+            try:
+                session_key = await self._require_key_provider().get_session_key(session_id, job_id=job_id)
+            except Exception as key_error:
+                logger.critical(
+                    "Cannot cancel job %s: no session key could be obtained (%s). Job will remain pending indefinitely.",
+                    job_id,
+                    key_error,
+                )
+                return
         try:
-            session_key = await self._require_key_provider().get_session_key(session_id, job_id=job_id)
             await self._require_api_client().cancel_job(
                 session_id=session_id,
                 job_id=job_id,
@@ -459,6 +494,10 @@ class SessionsBus(Component, CloudEventProcessorMixin):
         logger.warning("Stale session key for session %s; refreshing and retrying", session_id)
         key_provider = self._require_key_provider()
         key_provider.invalidate_cache(session_id)
+        # Tracked across the try block for the same reason as _process_job_notification's
+        # own `session_key` local: lets the cancel fallback below reuse it instead of
+        # repeating a fetch that may have been the retry's own point of failure.
+        session_key: str | None = None
         try:
             session_key = await key_provider.get_session_key(session_id, job_id=job_id)
             context = self._build_context(session_id, job_id, session_key, pipeline_id=pipeline_id)
@@ -478,6 +517,7 @@ class SessionsBus(Component, CloudEventProcessorMixin):
                     status="invalid_session_key",
                     reason=f"Session key invalid: {original_error}",
                 ),
+                session_key=session_key,
             )
 
     def _convert_to_cloud_event(self, notification: JobNotification) -> GenericCloudEvent:

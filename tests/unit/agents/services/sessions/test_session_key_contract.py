@@ -14,15 +14,20 @@ pin — because it has no external dependency (pure ``respx``, same as the rest 
 ``test_key_provider.py``) and ``ci.yml`` only ever runs ``pytest tests/unit``; a copy under
 ``tests/integration/`` would never actually execute in CI (review, PR #95).
 
-Pinned from ``bechtleav360/avs.ai.idac.service-sessions`` @ ``d5ee98f0dd29679ca52db753d2481858ae5cc509``,
-``docs/openapi.yaml``, path ``/internal/jobs/{job_id}/session-key``, from two distinct parts of
-the spec: ``X-Agent-Id`` is a route-level ``parameters`` entry; ``X-Api-Key`` is not a
+Pinned from ``bechtleav360/avs.ai.idac.service-sessions``, ``docs/openapi.yaml``, path
+``/internal/jobs/{job_id}/session-key``, from two distinct parts of the spec:
+``X-Agent-Id`` is a route-level ``parameters`` entry; ``X-Api-Key`` is not a
 ``parameters`` entry at all — it's the global `ApiKey` `securitySchemes` entry
 (`type: apiKey, in: header, name: X-Api-Key`), applied via `security: [ApiKey: []]` both
 globally and on this route (review, PR #95: the previous version of this pin listed both
 under one `parameters` list, which misrepresented where `X-Api-Key` actually comes from).
-Refresh `_PINNED_PARAMETERS`/`_PINNED_SECURITY_HEADER` (and the commit SHA above) if either
-part of the upstream contract changes.
+Refresh `_PINNED_PARAMETERS`/`_PINNED_SECURITY_HEADER` if either part of the upstream
+contract changes — `test_pin_matches_live_upstream_spec` fails loudly when it does.
+
+``test_pin_matches_live_upstream_spec`` fetches upstream's `develop` branch HEAD, not a
+frozen commit (review, PR #95, finding 3): a pin to an immutable SHA can never observe a
+contract change made *after* that commit, so it would stay green forever regardless of
+real drift — inert by construction, the opposite of what its own docstring claimed.
 """
 
 from __future__ import annotations
@@ -40,7 +45,7 @@ from cachetools import TTLCache
 from blueprint.agents.services.sessions.key_provider import SessionKeyProvider
 
 _UPSTREAM_REPO = "bechtleav360/avs.ai.idac.service-sessions"
-_UPSTREAM_SHA = "d5ee98f0dd29679ca52db753d2481858ae5cc509"
+_UPSTREAM_REF = "develop"  # moving target, deliberately — see module docstring
 _UPSTREAM_PATH = "docs/openapi.yaml"
 _UPSTREAM_ROUTE = "/internal/jobs/{job_id}/session-key"
 
@@ -62,7 +67,7 @@ def _required_headers() -> set[str]:
 
 
 def _fetch_upstream_spec() -> dict[str, Any] | None:
-    """Fetch the pinned commit's `openapi.yaml` from GitHub, or `None` if unreachable.
+    """Fetch `openapi.yaml` from upstream's `develop` HEAD, or `None` if unreachable.
 
     service-sessions is a private repo, so this needs a token with read access — uses
     `GITHUB_TOKEN`/`GH_TOKEN` from the environment if set (Actions always provides
@@ -76,7 +81,7 @@ def _fetch_upstream_spec() -> dict[str, Any] | None:
     headers = {"Accept": "application/vnd.github.raw+json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    url = f"https://api.github.com/repos/{_UPSTREAM_REPO}/contents/{_UPSTREAM_PATH}?ref={_UPSTREAM_SHA}"
+    url = f"https://api.github.com/repos/{_UPSTREAM_REPO}/contents/{_UPSTREAM_PATH}?ref={_UPSTREAM_REF}"
     try:
         response = httpx.get(url, headers=headers, timeout=10.0)
         response.raise_for_status()
@@ -123,12 +128,17 @@ class TestSessionKeyJobFetchMatchesPublishedContract:
         # shape #94 hit.
         assert not dict(request.url.params), f"contract declares no query params, request sent: {dict(request.url.params)}"
 
+    @pytest.mark.contract
     def test_pin_matches_live_upstream_spec(self) -> None:
         """Catches the drift direction the tests above can't: service-sessions changing
         its published contract without this pin being updated to match (review, PR #95
         — the hand-copied pin alone only ever catches *this client* drifting from itself).
         Skips, rather than fails, when the upstream spec can't be reached (see
         `_fetch_upstream_spec`) — a mismatch is a real failure; unreachable infra isn't.
+
+        Marked `contract` (review, PR #95, finding 4) so `ci.yml` can scope the
+        `GITHUB_TOKEN` it needs to just this test instead of handing it to the entire
+        `tests/unit` suite for one guard.
         """
         spec = _fetch_upstream_spec()
         if spec is None:
