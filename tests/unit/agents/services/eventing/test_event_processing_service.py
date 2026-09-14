@@ -1,6 +1,6 @@
 """Unit tests for EventProcessingService."""
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -120,11 +120,23 @@ class TestUnwrapDaprEvent:
 
 
 class TestLifecycle:
-    async def test_on_startup_is_noop(self, event_processing_service: EventProcessingService) -> None:
+    async def test_on_startup_starts_the_handler_chain(self, event_processing_service: EventProcessingService) -> None:
+        chain = MagicMock()
+        chain.on_startup = AsyncMock()
+        event_processing_service._handler_chain = chain
+
         await event_processing_service.on_startup()
 
-    async def test_on_shutdown_is_noop(self, event_processing_service: EventProcessingService) -> None:
+        chain.on_startup.assert_awaited_once()
+
+    async def test_on_shutdown_stops_the_handler_chain(self, event_processing_service: EventProcessingService) -> None:
+        chain = MagicMock()
+        chain.on_shutdown = AsyncMock()
+        event_processing_service._handler_chain = chain
+
         await event_processing_service.on_shutdown()
+
+        chain.on_shutdown.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

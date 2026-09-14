@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from blueprint.agents.handler.handler_chain import DUPLICATE_CONTEXT_KEY
 from blueprint.agents.io.api.eventing.dapr import DaprEventing
 from blueprint.agents.models.events import CloudEvent
 from blueprint.agents.models.result import ProcessingResult
@@ -230,3 +231,75 @@ class TestUnhandledEventAccounting:
             await dapr_eventing._process_cloud_event(cloud_event, {}, f"topic.{index}")
 
         assert len(dapr_eventing.__dict__) == before
+
+
+# ---------------------------------------------------------------------------
+# Duplicate accounting (P4, spec sec. 7.4)
+# ---------------------------------------------------------------------------
+
+
+class TestDuplicateAccounting:
+    """A deduplicated event reaches the edge looking unmatched; it must not be counted as one."""
+
+    @staticmethod
+    def _flagging_process_event(result: ProcessingResult) -> AsyncMock:
+        """Stand in for the handler chain marking the context as a duplicate."""
+
+        async def _process_event(event, context, *args, **kwargs):
+            context[DUPLICATE_CONTEXT_KEY] = True
+            return result
+
+        return AsyncMock(side_effect=_process_event)
+
+    async def test_duplicate_is_counted_as_a_duplicate_not_as_unhandled(
+        self,
+        dapr_eventing: DaprEventing,
+        mock_registry: MagicMock,
+        cloud_event: CloudEvent,
+        unhandled_result: ProcessingResult,
+    ) -> None:
+        mock_registry.get_service.return_value.process_event = self._flagging_process_event(unhandled_result)
+        mock_registry.correlation_context.set.return_value = MagicMock()
+
+        with (
+            patch("blueprint.agents.io.api.eventing.event_handling_base._DUPLICATE_EVENTS") as duplicates,
+            patch("blueprint.agents.io.api.eventing.event_handling_base._UNHANDLED_EVENTS") as unhandled,
+        ):
+            await dapr_eventing.handle_event("orders", cloud_event)
+
+        duplicates.add.assert_called_once_with(1, {"namespace": "", "topic": "orders"})
+        unhandled.add.assert_not_called()
+
+    async def test_duplicate_still_acknowledges(
+        self,
+        dapr_eventing: DaprEventing,
+        mock_registry: MagicMock,
+        cloud_event: CloudEvent,
+        unhandled_result: ProcessingResult,
+    ) -> None:
+        """Redelivering a duplicate forever would be the one thing worse than processing it twice."""
+        mock_registry.get_service.return_value.process_event = self._flagging_process_event(unhandled_result)
+        mock_registry.correlation_context.set.return_value = MagicMock()
+
+        result = await dapr_eventing.handle_event("orders", cloud_event)
+
+        assert result == {"status": "SUCCESS"}
+
+    async def test_unmatched_event_is_still_counted_as_unhandled(
+        self,
+        dapr_eventing: DaprEventing,
+        mock_registry: MagicMock,
+        cloud_event: CloudEvent,
+        unhandled_result: ProcessingResult,
+    ) -> None:
+        mock_registry.get_service.return_value.process_event = AsyncMock(return_value=unhandled_result)
+        mock_registry.correlation_context.set.return_value = MagicMock()
+
+        with (
+            patch("blueprint.agents.io.api.eventing.event_handling_base._DUPLICATE_EVENTS") as duplicates,
+            patch("blueprint.agents.io.api.eventing.event_handling_base._UNHANDLED_EVENTS") as unhandled,
+        ):
+            await dapr_eventing.handle_event("orders", cloud_event)
+
+        unhandled.add.assert_called_once_with(1, {"namespace": "", "topic": "orders"})
+        duplicates.add.assert_not_called()
