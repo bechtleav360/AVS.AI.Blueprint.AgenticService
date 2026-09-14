@@ -883,57 +883,108 @@ Two things an author still needs to know: their agent's name, and that handlers 
 
 ## 12. Acceptance criteria
 
-- [ ] Two agents in one process; an event on a topic both subscribe to reaches both, once each.
-- [ ] Two replicas of a two-agent group: each event processed exactly once per agent.
-- [ ] Durable and queue names byte-identical across two builds where the same agent sits in
-      different groups (C1).
+Status on `feature/multi-agent-namespaces`, 2026-09-14. A ticked box names what holds it. `[~]`
+means the behaviour is built and covered by unit tests against a mocked transport, while the
+criterion as written asks for something only a real broker shows -- those have tests waiting in
+`tests/integration/` and are tracked in `docs/plans/2026-09-11-broker-integration-tests.md`. An
+unticked box is not done, and says why.
+
+### Met
+
+- [x] Durable and queue names byte-identical across two builds where the same agent sits in
+      different groups (C1) -- `TestConsumerIdentityIgnoresTheDeployment`,
+      `tests/unit/agents/clients/io/test_nats_client.py`.
 - [x] Spans from namespace `invoice` carry `service.name = "invoice"`; a `namespace=""` app keeps
       `otel_service_name` (C2).
 - [x] A degraded namespace: liveness `UP`, readiness per policy, `blueprint_namespace_up = 0`,
       that namespace's consumers stopped (C3, C4).
-- [ ] `<agent>.model_name` overrides root `model_name` for that namespace only (C5).
-- [ ] No supported API exposes group membership to agent code (C6).
+- [x] `<agent>.model_name` overrides root `model_name` for that namespace only (C5) --
+      `tests/unit/agents/config/test_namespace_views.py`: `orders` reads its own, `billing` falls
+      back to the root, and the two differ.
+- [x] No supported API exposes group membership to agent code (C6) --
+      `tests/unit/agents/test_agent_isolation.py` and `test_a_view_cannot_list_its_neighbours`.
 - [x] Every path that stops a namespace serving emits an ERROR event and
       `blueprint_namespace_up{agent} = 0` carrying that namespace's identity; a namespace whose
       subscriptions vanish while the process stays healthy is reported within one scrape interval
       (C7).
+- [x] File-only, env-only and combined resolution produce identical groups; env overrides the file
+      key by key -- `tests/unit/agents/test_group_config.py`: `TestFromTheGroupFile`,
+      `TestFromTheEnvironmentAlone`, `TestPrecedence`.
+- [x] `CacheService.claim` is set-if-absent on both backends: of N concurrent callers on one key
+      exactly one is told it stored the value (sec. 7.5) -- `TestClaim` in both
+      `test_disk_cache_service.py` and `test_redis_cache_service.py`.
+- [x] An `"in_process"` scheduler with no cache still ticks, and warns at startup that its ticks
+      are uncoordinated (sec. 7.5) -- `test_without_a_cache_every_replica_ticks` and
+      `test_in_process_mode_without_a_cache_says_every_replica_runs_every_tick`.
+- [x] A registered scheduler with no `scheduler_mode` fails before the port is bound, and so does
+      `"event"` with no topic-carrying `event_bus` (sec. 7.5).
+- [x] Two namespaces in one group resolve different `scheduler_mode` values, and only the
+      `"in_process"` one starts a timer (sec. 7.5, C5).
+- [x] A pure-scheduler namespace that neither subscribes nor publishes is given no transport client
+      (sec. 6), and one that opts into publishing is given a client and no subscription (sec. 7.5)
+      -- `test_an_agent_that_neither_consumes_nor_publishes_gets_no_client` and
+      `test_a_publish_only_agent_gets_a_client_and_no_endpoint`.
+- [x] A scheduler's `on_startup` and `on_shutdown` each run exactly once per lifespan, asserted
+      against both lifespan loops a `SchedulerBase` appears in (#43) --
+      `test_repeated_startup_starts_no_second_timer`.
+- [x] An event that matches no handler is acknowledged, not redelivered: the transport edge
+      behaves identically for `PROCESSED` and `NO_HANDLER_FOUND` (sec. 7.2) --
+      `test_no_handler_found_still_acks`.
+- [x] The same outcome yields the same disposition on both transports -- `CriticalHandlerError`
+      drops on Dapr and terms on NATS, and a payload that fails to parse never naks (sec. 7.2) --
+      `test_critical_error_returns_drop`, `test_critical_error_terms`,
+      `test_invalid_event_error_terms`.
+- [x] A handler declaring no topics and no event types is still evaluated for every event its
+      namespace receives (sec. 7.7) --
+      `test_a_handler_that_declares_nothing_is_a_candidate_for_everything`.
+- [x] Frozen compat suite and generated-project smoke test both green (sec. 10.2) --
+      `tests/unit/agents/test_frozen_compatibility.py` and
+      `tests/unit/agent_generator/generator/test_generated_project.py`.
+- [x] Idempotency off by default, with the requirement surfaced at scaffold time and in
+      `asbs validate` -- `test_dedup_is_off_by_default`, plus the `DECIDE:` comment in the
+      scaffolded handler and the notice `asbs validate` prints.
+
+### Built, awaiting a real broker
+
+- [~] Two agents in one process; an event on a topic both subscribe to reaches both, once each.
+      Per-agent subscription and the Dapr in-process fan-out are unit-tested;
+      `tests/integration/test_grouped_agents.py` is the version that settles it.
+- [~] Two replicas of a two-agent group: each event processed exactly once per agent. Whether a
+      queue group merges overlapping subscriptions is the broker's behaviour, not ours.
+- [~] Cron fires once across three replicas in both `scheduler_mode` values (#73). The claim is
+      atomic on both cache backends by unit test; three real replicas contending is not.
+
+### Not done
+
 - [ ] No framework-created task is detached without a done-callback that logs exceptions with the
       namespace attached; asserted by a test that fails a task in each background path (C7).
-- [ ] File-only, env-only and combined resolution produce identical groups; env overrides the file
-      key by key.
+      Done-callbacks are on the NATS, Dapr and sessions paths and individually tested; the
+      *exhaustive* test the criterion asks for -- one that fails a task in every background path
+      -- does not exist, so nothing stops the next path being added without one.
 - [ ] The CI gate fails when an environment's group declaration omits an agent present in the
-      in-image agent map (sec. 13).
-- [ ] Cron fires once across three replicas in both `scheduler_mode` values (#73).
-- [ ] `CacheService.claim` is set-if-absent on both backends: of N concurrent callers on one key
-      exactly one is told it stored the value (sec. 7.5).
-- [ ] An `"in_process"` scheduler with no cache still ticks, and warns at startup that its ticks
-      are uncoordinated (sec. 7.5).
+      in-image agent map (sec. 13). `asbs validate` reports it locally; no CI gate enforces it.
 - [ ] `scheduler_mode = "event"` starts no timer, and the generated `CronJob` matches the schedule
-      declared in agent code.
-- [ ] A registered scheduler with no `scheduler_mode` fails before the port is bound, and so does
-      `"event"` with no topic-carrying `event_bus` (sec. 7.5).
-- [ ] Two namespaces in one group resolve different `scheduler_mode` values, and only the
-      `"in_process"` one starts a timer (sec. 7.5, C5).
-- [ ] A pure-scheduler namespace that neither subscribes nor publishes is given no transport client
-      (sec. 6), and one that opts into publishing is given a client and no subscription (sec. 7.5).
-- [ ] A scheduler's `on_startup` and `on_shutdown` each run exactly once per lifespan, asserted
-      against both lifespan loops a `SchedulerBase` appears in (#43).
-- [ ] An event that matches no handler is acknowledged, not redelivered: the transport edge
-      behaves identically for `PROCESSED` and `NO_HANDLER_FOUND` (sec. 7.2).
-- [ ] The same outcome yields the same disposition on both transports -- `CriticalHandlerError`
-      drops on Dapr and terms on NATS, and a payload that fails to parse never naks (sec. 7.2).
-- [ ] A handler declaring no topics and no event types is still evaluated for every event its
-      namespace receives (sec. 7.7).
-- [ ] A namespace's derived `filter_subjects` is never narrower than its declared topics unioned
-      with `nats_subscriptions` (sec. 7.7).
+      declared in agent code. The first half holds (`test_event_mode_starts_no_timer`); manifest
+      generation was deliberately deferred and the renderer written for it was removed rather than
+      carried as dead code, so the second half has nothing to check yet.
 - [ ] Unhandled events per (namespace, topic) and namespaces-per-subject fan-out are both exposed,
       neither reported as a fault and neither keeping per-topic state (sec. 7.2, sec. 7.7).
-- [ ] Frozen compat suite and generated-project smoke test both green (sec. 10.2).
-- [ ] Idempotency off by default, with the requirement surfaced at scaffold time and in
-      `asbs validate`.
-- [ ] Marginal RSS per additional idle namespace measured and published, reusing #36's benchmark
-      harness. #32 measures ~6 MB per forked child with shared libraries; a namespace should be
-      materially below that, and this number is what retires the lazy-agent idea for good.
+      `blueprint.events.unhandled` carries (namespace, topic); the namespaces-per-subject fan-out
+      gauge is not implemented.
+- [ ] Marginal RSS per additional idle namespace measured and published, reusing #36's
+      benchmark harness. #32 measures ~6 MB per forked child with shared libraries; a
+      namespace should be materially below that, and this number is what retires the
+      lazy-agent idea for good. No benchmark harness exists yet, so the number this feature
+      exists to produce has not been measured.
+
+### Superseded
+
+- A namespace's derived `filter_subjects` is never narrower than its declared topics unioned with
+  `nats_subscriptions`. The design moved: each agent owns its own durable filtering on its own
+  subjects, which is what makes a per-namespace `filter_subjects` set unnecessary
+  (`nats_client.py`). Recorded rather than deleted, because this spec is normative and a change
+  of approach belongs on it.
+
 
 ---
 
