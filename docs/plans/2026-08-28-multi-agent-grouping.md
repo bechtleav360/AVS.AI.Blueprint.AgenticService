@@ -2,8 +2,9 @@
 
 | | |
 |---|---|
-| **Status** | not started -- no phase implemented |
+| **Status** | P0, P1 and P2 landed on `feature/multi-agent-namespaces`; P3 is next. No phase (0-9) started. |
 | **Spec (normative)** | `docs/specs/2026-08-28-multi-agent-grouping.md` |
+| **What landed, and why** | `docs/plans/2026-08-28-multi-agent-grouping-changelog.md` -- read before resuming |
 
 This is the phased work breakdown. The spec is normative: it carries the MUST/SHOULD requirements,
 the API surface, the config reference and the acceptance criteria, and where the two documents
@@ -65,14 +66,25 @@ of this work, ahead of everything else in this list, because the rest of it sits
 
 Three gaps to close while landing it, none of which the original PR addressed:
 
-- **No shutdown drain.** `close()` cancels the retry task and unsubscribes under
-  `contextlib.suppress(Exception)`, so in-flight handlers lose their acknowledgement on every
-  deploy — duplicates on the next start are certain, not merely possible. Drain in-flight work
-  before unsubscribing, bounded by a timeout.
-- **The `except Exception` swallow in `message_handler` must not survive the port** (see P2).
-- **`DaprEventing` registers a callback map with `DaprClient` while delivery still arrives on
-  `POST /events/{topic}`,** so that callback appears unused for delivery and exists only to drive
-  readiness. Settle its role or remove it.
+- ~~**No shutdown drain.**~~ **Done.** `close()` now drains subscriptions, waits for in-flight
+  handlers, and only then closes the connection, bounded by `event_client_drain_timeout`
+  (default 30 s). The order matters: an acknowledgement travels over the delivering connection, so
+  closing first stranded it and made duplicates certain on every deploy.
+- **Partly done: the `except Exception` swallow in `message_handler`.** The boundary now
+  separates an undecodable payload from a failed dispatch, logs each once with the topic and
+  event id, and keeps the two failures distinguishable for the dispositions P2 assigns them
+  (term vs nak). It still *catches* both, because a broker callback must not raise into the
+  library and because nothing yet decides what to do with a failure. Remaining, and listed
+  under P2: stop `_process_event` in `io/api/eventing/nats.py` swallowing the classified
+  handler errors, and stop `_process_cloud_event` logging *and* re-raising them, so the
+  transport boundary becomes the single place that both sees and handles failure.
+- ~~**`DaprEventing` registers a callback map that Dapr delivery does not use.**~~ **Done**, and it
+  turned out to hide a live bug (issue #81): the discovery endpoint the sidecar fetches took a
+  required `topic` query parameter, so `GET /dapr/subscribe` answered 422 and no handler
+  declaration ever reached Dapr. The endpoint now renders `get_subscribed_topics()` as the
+  sidecar's subscription document, so one declaration drives both transports. The callback map is
+  kept deliberately — it is what starts the client's sidecar-reachability retry and feeds
+  `subscriptions_ready`, and removing it would silently disable readiness gating.
 
 **P1 — Core NATS subscriptions have no queue group.** `clients/io/nats_client.py:250` calls
 `client.subscribe(topic, cb=...)` with no `queue=`. JetStream is off by default
@@ -121,9 +133,28 @@ Work items:
 - Configure `max_deliver` and a dead-letter destination (with P3), since nak on an unexpected
   exception otherwise redelivers forever.
 
-**P3 — Consumer tuning is not configurable.** Expose `ack_wait` (must exceed p99 handler
-duration, or long LLM work is redelivered to another replica mid-flight) and `max_ack_pending`
-(the real cross-replica concurrency cap).
+~~**P3 — Consumer tuning is not configurable.**~~ **Done.** `ack_wait`, `max_ack_pending`,
+`max_deliver` and a dead-letter subject are configurable and are set on an explicitly constructed
+`ConsumerConfig`, which the client creates through `add_consumer` and binds with `subscribe_bind`.
+The two items deferred into P3 landed with it:
+
+- **`max_deliver` and a dead-letter destination** (from P2). The nak on the last delivery the
+  broker permits is now rendered as a dead letter plus a term, so a message the framework gives up
+  on keeps its payload instead of expiring silently out of the consumer.
+- **A deliver group on the JetStream durable** (from P1). `nats-py` rejects a queue subscription
+  whose durable name differs from the queue name, so the queue group could not reach `js.subscribe`;
+  it is now `deliver_group` on the consumer config, bound with `subscribe_bind`, and JetStream is no
+  longer single-subscriber.
+
+Three defects had to be fixed to get there, none of them visible from the P3 description:
+
+- The stream was created per topic as `f"{topic}.>"`, which does not cover `topic` itself, so an
+  explicitly created consumer filtering that subject could not be bound at all. Provisioning now
+  happens once per connect with the union of every subscribed subject plus the dead-letter subject.
+- Every `add_stream` call after the first hit "stream name already in use" and was logged as a
+  warning, so with more than one topic only the first was ever captured by the stream.
+- The derived durable name `f"{topic}-durable"` is illegal for any dotted subject -- NATS allows no
+  `.`, `*`, `>` or whitespace in a consumer name -- which is every idiomatic NATS subject.
 
 **P4 — Idempotency, flagged not enforced.** Competing consumers make at-least-once permanent, and
 ack loss makes duplicate delivery *certain* rather than possible: a handler that finishes 60s of
@@ -806,7 +837,7 @@ hidden by API design — so they must be caught mechanically rather than documen
 | `io/api/eventing/cloud_event_processor_mixin.py` | 5 |
 | `io/api/eventing/event_handling_base.py` | P2 (ack parity in `handle_event`), 5 |
 | `clients/client_base.py` | P0 (`subscribe(topic_callbacks)` abstract) |
-| `clients/io/nats_client.py` | P0 (managed subscribe, retry, reconnect, drain), P1-P3 (queue group, ack/nak/term, consumer tuning), 5 (durable naming) |
+| `clients/io/nats_client.py` | P0 (managed subscribe, retry, reconnect, drain), P1-P3 (queue group, ack/nak/term, consumer tuning, dead letters) -- **done**; 5 (durable naming) |
 | `clients/io/dapr_client.py` | P0 (same lifecycle, mirrored) |
 | `io/api/eventing/dapr.py` | P2 (ack parity: `NO_HANDLER_FOUND` → SUCCESS, `CriticalHandlerError` → DROP) |
 | `handler/event_handler_base.py` | 7 |
@@ -819,7 +850,21 @@ hidden by API design — so they must be caught mechanically rather than documen
 | `config/config.py` | 3 (C5 — `agent_scope` wiring via `with_namespace`), 8 (fragment merge) |
 | `services/eventing/event_publishing_service.py` | P6 (per-namespace client) |
 
-**Scaffolding changes (`blueprint/agent_generator`)** — none of this exists yet:
+**Scaffolding tracks the framework, every step.** `blueprint/agent_generator` is part of this
+feature's surface, not a follow-up to it. Any change that adds a config key, alters what a
+generated `settings.toml` must contain, changes what `main.py` or the `Dockerfile` looks like, or
+changes the meaning of a key a generated project already writes, carries a matching
+`agent_generator` change in the same step — templates under `base_files/`, the CLI commands, and
+the generated `claude_docs/CLAUDE.md`. A generated project that no longer matches the framework it
+generates against is a defect, and it is invisible from the framework's own tests.
+
+Known outstanding item from P1: `app_name` now determines the NATS queue group, so it is broker
+consumer identity rather than a display name. The generator writes it (`settings_part_generator.py`)
+and documents it (`claude_docs/CLAUDE.md`), and neither says so; `nats_queue_group` appears in
+neither. The fallback literal `"generated-agent"` in `cli/commands/create.py` is also now a
+collision source between projects that hit it.
+
+**Scaffolding changes (`blueprint/agent_generator`)** -- none of this exists yet:
 
 | Piece | Change |
 |---|---|
@@ -963,6 +1008,25 @@ open question.
   whether it can be closed.
 - An earlier implementation of P0 exists on `feature/event_handler_retries`. Reconciling it with
   what lands here is its author's call, and deliberately out of scope for this plan.
+
+**Test environment**
+- **Local NATS and Dapr, exercised as real integration tests.** Every prerequisite and phase here is
+  covered by unit tests against mocked transports, which cannot show queue-group distribution,
+  redelivery after `ack_wait`, durable survival across a reconnect, or a sidecar fetching the
+  subscription document. Once the feature is implemented, stand both brokers up locally (a compose
+  file plus a CI job) and cover what only a real broker exhibits:
+  - queue-group distribution: N replicas, each event handled once (P1);
+  - ack, nak and term, and that a handled message is not redelivered (P2);
+  - `ack_wait` expiry redelivering to another replica mid-handler (P3);
+  - JetStream durables surviving a reconnect, and the ack-retry-on-reconnect spike (P0, P2);
+  - `close()` acknowledging in-flight work before exit (P0);
+  - `filter_subjects` applied to a durable that already exists — in place, or delete-and-recreate,
+    which is the migration question spec sec. 7.7 raises;
+  - the Dapr sidecar fetching `GET /dapr/subscribe` and delivering to `POST /events/{topic}`,
+    including the SUCCESS/RETRY/DROP mapping.
+
+  Blocked on the unit/integration split in #80: `tests/integration/` is not run by CI at all today,
+  so integration tests added now would be invisible.
 
 **Engineering spikes**
 - **Ack-retry-on-reconnect.** Belongs in P0's `_on_reconnected`. Capture the acknowledgement reply subject and re-send after a

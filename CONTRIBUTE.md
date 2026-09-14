@@ -206,16 +206,34 @@ mypy src/
 black src/ tests/ && ruff check src/ tests/ && mypy src/
 ```
 
-## Pre-commit & Pre-push Hooks
+## Commit Messages
 
-Set up both commit and push hooks:
+Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/): a subject line
+of `<type>(<scope>): <description>`, where the type is one of `feat`, `fix`, `docs`, `style`,
+`refactor`, `perf`, `test`, `build`, `ci`, `chore` or `revert`. The commitizen hook configured in
+`.pre-commit-config.yaml` checks this at the `commit-msg` stage, so it only runs if you install
+that stage (see below).
+
+```
+fix(eventing): join a queue group on Core NATS subscriptions
+
+Without queue= every replica received every message, so two replicas
+doubled every side effect.
+```
+
+## Pre-commit, Commit-msg & Pre-push Hooks
+
+Install all three hook stages -- `pre-commit install` on its own installs only the first, which
+leaves the commit-message check inactive:
 
 ```bash
 pre-commit install
+pre-commit install --hook-type commit-msg
 pre-commit install --hook-type pre-push
 ```
 
 - **Pre-commit** runs linting and formatting checks on staged files before each commit.
+- **Commit-msg** validates the commit message against Conventional Commits.
 - **Pre-push** runs the unit test suite before pushing, so CI won't fail on basic issues.
 
 ## Troubleshooting

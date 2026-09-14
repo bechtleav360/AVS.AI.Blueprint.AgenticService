@@ -38,7 +38,7 @@ class VLLMClient(AIClientBase):
             await self._client.close()
             self._client = None
 
-    async def subscribe(self, topic: str, callback: Callable[[CloudEvent[Any]], Awaitable[None]]) -> None:
+    async def subscribe(self, topic_callbacks: dict[str, Callable[[CloudEvent[Any]], Awaitable[None]]]) -> None:
         logger.warning("VLLM client does not support subscriptions")
 
     async def publish(self, topic: str, event: CloudEvent[Any], routing_key: str | None = None) -> None:
