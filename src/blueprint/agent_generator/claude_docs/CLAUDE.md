@@ -89,6 +89,7 @@ class OrderHandler(EventHandlerBase):
 ```
 
 - Return `None` → pass to next handler. Return `HandlerResult` → publish event, stop chain.
+- **Delivery is at-least-once.** The same event can reach `handle_event` more than once (lost ack, pod restart, rolling deploy). Either make the method safe to repeat, or set `idempotency_enabled = true` **and** `idempotency_ttl = <seconds>` in `settings.toml` -- the framework then skips an event whose id and source it has already dispatched, within that window. Off by default on purpose: only you know whether replaying your side effects is acceptable.
 - **`self.extract_payload(event, ModelType)`** — validates `event.data` against a Pydantic model and returns a typed instance. Raises `InvalidEventError` if data is missing or invalid (the framework handles this automatically).
 
 ### Service
@@ -212,6 +213,10 @@ event_bus = "dapr"
 model_provider = "openai"
 model_name = "gpt-4"
 model_max_tokens = 2000
+
+# Event deduplication -- off by default, both keys required to switch it on.
+# idempotency_enabled = true
+# idempotency_ttl = 1500          # seconds; must outlast the broker redelivery window
 
 [default.runtimes.my_agent]     # Per-agent overrides
 model_name = "gpt-4-turbo"

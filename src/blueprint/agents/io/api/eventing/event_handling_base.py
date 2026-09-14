@@ -9,6 +9,7 @@ from typing import Any
 from opentelemetry import metrics
 
 from ....component.component import traced
+from ....handler.handler_chain import DUPLICATE_CONTEXT_KEY
 from ....models import ProcessingResult, ProcessingStatus
 from ....models.errors import DeliveryDisposition
 from ....models.events import CloudEvent
@@ -21,6 +22,12 @@ logger = logging.getLogger(__name__)
 _UNHANDLED_EVENTS = metrics.get_meter(__name__).create_counter(
     name="blueprint.events.unhandled",
     description="Events a namespace received and found nothing to do with",
+    unit="{event}",
+)
+
+_DUPLICATE_EVENTS = metrics.get_meter(__name__).create_counter(
+    name="blueprint.events.duplicate",
+    description="Events a namespace recognised as already processed and did not dispatch",
     unit="{event}",
 )
 
@@ -85,13 +92,23 @@ class EventHandlingBase(RestApiBase, CloudEventProcessorMixin, ABC):
         URL path under Dapr, and remembering each distinct value would let a caller grow this
         process's memory.
 
+        A dispatch the chain skipped as a duplicate is counted apart from both (spec
+        sec. 7.4). It reaches here looking exactly like an unmatched event -- no handler
+        ran, so no result came back -- but the two say opposite things about the
+        subscription: an unmatched event is one this namespace had no use for, while a
+        duplicate is one it did use, once. Counting them together would make a redelivery
+        storm read as a namespace subscribed too broadly.
+
         ``topic`` is passed separately from ``context`` because each transport spells its
         own key there (``nats_topic``, ``dapr_topic``), and those keys reach user handlers,
         so they cannot be unified without breaking them.
         """
         logger.debug("Processing CloudEvent: %s", cloud_event.id)
         processing_result = await self._dispatch_cloud_event(cloud_event, context)
-        if processing_result.status is ProcessingStatus.NO_HANDLER_FOUND:
+        if context.get(DUPLICATE_CONTEXT_KEY):
+            _DUPLICATE_EVENTS.add(1, {"namespace": self.ROOT_NAMESPACE, "topic": topic})
+            logger.debug("Event %s on topic '%s' was already processed", cloud_event.id, topic)
+        elif processing_result.status is ProcessingStatus.NO_HANDLER_FOUND:
             _UNHANDLED_EVENTS.add(1, {"namespace": self.ROOT_NAMESPACE, "topic": topic})
             logger.debug("No handler had work for event %s on topic '%s'", cloud_event.id, topic)
         return processing_result
