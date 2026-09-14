@@ -383,21 +383,51 @@ class Registry:
             raise ValueError(f"component must be an instance of {self._component_class}")
 
         if name in self._components:
-            raise ValueError(f"Component with name {name} already exists")
+            existing = type(self._components[name]).__name__
+            agent = namespace_of(component) or ROOT_LABEL
+            raise ValueError(
+                f"Component name '{name}' is already taken by a {existing}, so {type(component).__name__} in namespace "
+                f"'{agent}' cannot register under it. Registry names have to be unique across the whole process: they "
+                "are what identifies a component in logs, spans and health entries, and two components sharing one "
+                "name cannot be told apart afterwards. A name is qualified with its namespace automatically, so this "
+                "is either two components of one class in one agent, or two explicit names that collide -- pass a "
+                "distinct 'name=' to one of them."
+            )
 
         logger.info("Adding component: %s to registry", name)
         self._components[name] = component
 
     def update_component_name(self, old_name: str, new_name: str) -> None:
-        """Update the name of a component in the registry.
+        """Rename a registered component, refusing to take a name that is in use.
+
+        The refusal is the point. This used to be ``self._components[new_name] = pop(old_name)``,
+        which **silently dropped** whatever was registered under ``new_name`` -- so renaming one
+        component onto another's name removed the other from the registry entirely, and the only
+        symptom was a collaborator that could no longer be found. Two components asking for one
+        name has to surface where it happens.
 
         Args:
-            old_name: The old name of the component
-            new_name: The new name of the component
+            old_name: The name the component is currently registered under.
+            new_name: The name to move it to, already namespace-qualified by the caller.
+
+        Raises:
+            ValueError: if nothing is registered under ``old_name``, or if ``new_name`` is
+                already taken by a different component.
         """
 
         if old_name not in self._components:
             raise ValueError(f"Component with name {old_name} does not exist")
+
+        if new_name == old_name:
+            return
+
+        if new_name in self._components:
+            existing = type(self._components[new_name]).__name__
+            raise ValueError(
+                f"Cannot rename '{old_name}' to '{new_name}': that name is already taken by a {existing}. Registry "
+                "names identify a component in logs, spans and health entries, so the rename would have left two "
+                "components indistinguishable -- and the one already there unreachable. Choose another name."
+            )
 
         logger.info("Updating component name from %s to %s", old_name, new_name)
         self._components[new_name] = self._components.pop(old_name)

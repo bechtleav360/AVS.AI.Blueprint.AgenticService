@@ -3541,16 +3541,397 @@ registered names in the message; and the default hook returning `None`.
 **Verified not vacuous:** with the `_bind_runtime` call removed, 14 of the 18 fail -- the four
 that survive are the ones asserting that *nothing* is bound.
 
+### An ambiguous name fails at startup, wherever it comes from
+
+Raised by the user against phase 7's open point, and the reason given is the right frame for it:
+a registry name is what appears in every log line, span and health entry, so **two components
+that share one -- or one whose name does not say which agent it belongs to -- cannot be told
+apart when someone is reading the logs.** That has to fail while the process is starting, not be
+disambiguated silently or, worse, resolved by dropping one of them.
+
+Four paths could produce an ambiguous name. All four are closed.
+
+**1. An explicit `name=` reached `Component` verbatim.** The derived name was qualified with the
+namespace; an explicit one was not:
+
+```python
+-        self._name = name or qualified_component_name(self._namespace, camel_to_snake(self.__class__.__name__))
++        self._name = qualified_component_name(self._namespace, name or camel_to_snake(self.__class__.__name__))
+```
+
+So `AgentRuntime(name="planner")` built inside `namespace_scope("orders")` registered as
+`planner`. The log line said `planner` and nothing about which agent's, and a second agent's
+`planner` collided on the key. `AppBuilder._register` had been compensating by qualifying after
+construction; it now assigns the bare name and lets the setter do it, so the rule lives in one
+place instead of two.
+
+**2. `Component.name`'s setter took the new name verbatim** -- the same hole, reachable by any
+component doing `self.name = "..."`. It qualifies now.
+
+**3. `Registry.update_component_name` silently dropped whatever held the target name.** It was:
+
+```python
+        self._components[new_name] = self._components.pop(old_name)
+```
+
+Renaming one component onto another's name **removed the other from the registry**, and the only
+symptom was a collaborator that could no longer be found -- no error, no log. It now refuses,
+naming what is there; renaming to the name a component already has is a no-op rather than a
+failure, which is what makes the qualifying setter safe to call twice.
+
+**4. `AppBuilder.with_namespace` deduplicated a repeated agent name.** Declaring `orders` twice
+quietly merged two agents' components into one namespace:
+
+```python
+        if namespace in self._namespaces:
+            raise ValueError(
+                f"Namespace '{namespace}' is already hosted by this process, so it cannot be declared again. Two "
+                "agents cannot share a name: the name is what identifies an agent in every log line, span, queue "
+                "group, durable and cache partition, ..."
+            )
+```
+
+The agent name is the strongest case of the user's point: it reaches the queue group, the
+JetStream durable and the cache partition as well as the logs, so two agents under one name are
+indistinguishable to the broker too. The message names the legitimate case it might be mistaken
+for -- one agent assembled from several parts -- and says to compose those into a single
+`AgentRegistration` instead.
+
+**`qualified_component_name` is deliberately *not* idempotent**, and finding out why was the one
+surprise here. Skipping the prefix when a name already appears to carry it looks like a safeguard
+against `orders_orders_db`; it is worse than the problem. A base name can legitimately begin with
+the namespace -- `BillingHandler` in namespace `billing` derives `billing_handler` -- and such a
+component would then register *unqualified*, which is exactly the ambiguity being removed. It was
+implemented that way first and a test caught it. "Already prefixed" is not decidable from the
+string, so it is not guessed; the docstring says so, and there is a test for the
+`BillingHandler`-in-`billing` case. The cost is that a caller who qualifies a name itself gets it
+qualified twice -- redundant, still unambiguous, and no framework code does it.
+
+**The duplicate-name error now says what to do.** `add_component`'s message was `Component with
+name X already exists`, which in a group does not say whose or why:
+
+```python
+                f"Component name '{name}' is already taken by a {existing}, so {type(component).__name__} in namespace "
+                f"'{agent}' cannot register under it. Registry names have to be unique across the whole process: they "
+                "are what identifies a component in logs, spans and health entries, and two components sharing one "
+                "name cannot be told apart afterwards. A name is qualified with its namespace automatically, so this "
+                "is either two components of one class in one agent, or two explicit names that collide -- pass a "
+                "distinct 'name=' to one of them."
+```
+
+Tests: `tests/unit/agents/component/test_name_uniqueness.py`, 16 cases -- a directly constructed
+component qualified, two agents each holding a `planner`, the root keeping the bare name, a
+rename qualified and a root rename unchanged; the `BillingHandler`-in-`billing` case and the
+qualifier being a plain prefix; two components of one class in one agent colliding, two explicit
+names colliding, the message naming the agent and the fix, and a root component not colliding
+with an agent's; renaming onto a taken name refused with the other component still registered
+afterwards, renaming to the same name and to a component's own qualified name both no-ops, and
+renaming from an unregistered name still raising. `test_namespace_builder.py`'s dedupe test became
+two refusal tests.
+
+### One name per agent: the name given in code, with `app_name` as the fallback
+
+Raised by the user, whose premise was worth checking first: the namespace is **not** derived from
+`app_name`. It never was -- an agent's name comes from `with_namespace("orders")` in code, and
+config supplies nothing. But the instinct behind the question was right, because config was
+supplying a *second* name for the same agent, and two of the places that read it were wrong.
+
+The rule now, stated once: **the name given in code is the agent's identity; `app_name` is used
+only when no name was given, and is otherwise a display string for the process.**
+
+**1. An agent no longer has to restate its name in config.** `Config(agent_scope=...)` carried
+`Validator(f"{agent_scope}.app_name", must_exist=True)`, so every agent in a group had to declare
+an `app_name` of its own -- a second name, free to disagree with the first. The same agent could
+be `orders` in the registry, the queue group, the durable and the cache partition, and
+`Order Processing` in a dashboard. The validator is gone. `app_name` stays a root key for the
+OpenAPI title, `/info` and `/status/build`, and an agent may still set one *for display* without
+it touching identity.
+
+**2. Telemetry identity was the display name, which breaks C2.** `otel_service_name` defaulted to
+`app_name`, so an agent's `service.name` was whatever `app_name` said:
+
+```python
+    def _resolve_service_name(self) -> str:
+        if self._agent_scope:
+            scoped = self._settings.get(f"{self._agent_scope}.otel_service_name")
+            return str(scoped) if scoped else self._agent_scope
+        return str(self.get("otel_service_name", self.get("app_name", "agent-service")))
+```
+
+A scoped view answers with its own `otel_service_name` if the agent set one, and otherwise with
+the **namespace**. Note what it deliberately does *not* do: fall back to the root's
+`otel_service_name`. That is the one place a scoped read must not, because inheriting it would
+give every agent in a group the same `service.name` -- and then regrouping moves work between
+agents that no dashboard can tell apart, which is the whole of what C2 forbids. The root view
+keeps the old chain exactly, so a single-agent application's dashboards do not move.
+
+**3. A namespaced scheduler derived its tick subject from `app_name`.** This was a live defect
+left behind by a placeholder:
+
+```python
+-        # ROOT_NAMESPACE is still "" for every component; phase 2 is what gives this a value.
+-        identity = ROOT_NAMESPACE or str(self.config.get("app_name", "") or "").strip()
++        identity = self.namespace or str(self.config.get("app_name", "") or "").strip()
+```
+
+`ROOT_NAMESPACE` is the module constant `""`, so the expression was *always* `app_name`. The
+comment says phase 2 would give it a value -- phase 2 landed, `self.namespace` has one, and
+nothing came back to this line. The consequence: two agents in a group each with a `nightly`
+scheduler derived the same tick subject and would have consumed each other's ticks, and moving an
+agent between groups could change the subject its external `CronJob` publishes to, which is
+exactly what C1 forbids. The `source` string on the next line had the same inversion, so the
+error message named the wrong key. Both fixed, with two regression tests that fail against the old
+expression.
+
+Everything else that reads `app_name` was already right and is untouched: the NATS queue group
+(`if self.namespace: return self.namespace`, then `nats_queue_group`, then `app_name`), and the
+display readers.
+
+**Which of these are breaking, precisely.** The `otel_service_name` change is, and it is listed as
+*Breaking change 2* under *Compatibility*: `Config(agent_scope=...)` is not new -- it landed in
+April and is on `develop` -- so a repo already using it sees its `service.name` change. The
+dropped validator is a loosening: configuration that was valid stays valid. The scheduler subject
+is **not** breaking for anything deployed, because a scheduler can only have a namespace if it was
+built inside a `namespace_scope`, which is branch-new; the *Compatibility* bullet says so rather
+than claiming a break that cannot happen.
+
+Tests: `tests/unit/agents/config/test_agent_identity.py`, 8 cases -- an agent's service name being
+its own name, an agent overriding it for itself, the root's override *not* leaking into an agent,
+a single-agent application still reading `app_name`, an explicit root override still winning at
+the root, the default when there is neither, and `app_name` staying readable and settable for
+display without touching identity. Two cases added to `test_scheduler.py` for the namespaced tick
+subject, and `test_agent_scope.py`'s "missing scoped app_name raises" became "an agent does not
+have to restate its name".
+
+**Not touched, deliberately:** `black --check` still fails on `config/config.py`, and did at HEAD too -- it is one of the files `CLAUDE.local.md` documents as
+disputed between `black` and `ruff format`. `black` reformatted a pre-existing ternary there when
+run over the changed files; that reformat was reverted, because accepting it would have started
+the ping-pong the two formatters play over that file.
+
+### Phase 8 -- the group becomes a running process
+
+Everything before this made a group *possible*; nothing made one *start*. This is the phase that
+turns a deployment decision into a process: which agents run here arrives at container start,
+and the code that reads it is the only code allowed to.
+
+Three commits, split along the one line the plan is emphatic about -- **resolution versus
+wiring**. Environment reads, file reads and `sys.exit` stay out of `AppBuilder`, so it remains a
+pure function of its call sequence and a test can state an exact composition without controlling
+the environment or the filesystem.
+
+#### `GroupConfig` and its resolution (`d00ca03`)
+
+Two files, and their different lifetimes are the reason there are two rather than one:
+
+- **`agents.toml`** says which agents this *image* contains and where their declarations live.
+  It changes only when an agent is added or removed -- a rebuild anyway -- so it is baked in.
+- **`deployment-groups.yaml`** says which of them *this process* runs. Never baked in, since one
+  image serves every group, so it arrives as a mount or is replaced entirely by environment
+  variables.
+
+`GroupConfig.resolve` is the only member that reads either, plus the environment:
+
+```python
+        declared = cls._read_group_file(env, root)
+        name, agent_names, critical_names, cache_names = cls._apply_env_overrides(env, declared)
+        ...
+        agent_map = cls._read_agent_map(env, root)
+        agents = cls._resolve_agents(agent_names, critical_names, agent_map, name)
+```
+
+**Environment overrides the file key by key** (spec sec. 5.1), so a Deployment changes the agent
+list without restating the group's name or its caches, and each resolved value is logged with the
+source it came from -- "which agents did this pod actually start" being the first question asked
+of a group that misbehaves.
+
+One rule the spec does not state and the tests forced out: **when `BLUEPRINT_AGENTS` supplies the
+group and `BLUEPRINT_GROUP` names none, the file is not read at all.** That is the `docker run`
+and CI shape from sec. 5.1, and reading the file anyway made an unrelated multi-group file in the
+image *ambiguous* -- for nothing, because with no group named no slice of it applies and the only
+value it would have contributed is already overridden.
+
+**Every way of getting a group wrong is a startup failure**, because the alternative is a pod
+that passes its probes with a queue nobody is consuming: an agent the image does not contain, an
+agent named twice, a name that cannot be a namespace, an unknown group, a malformed or
+`groups`-less file, a missing or malformed agent map. Each message names what it found and what it
+expected. `critical` defaults to `True` for the reason sec. 9.1 gives -- a group short one
+consumer is worse than no pod -- and a *non*-critical agent missing from the map is skipped with
+an ERROR instead, since that flag is the deployment saying it would rather run the rest.
+
+Two details worth their lines. `AgentSpec.name` is put through `validate_namespace`, because it
+*becomes* a namespace: rejecting it here names the group file, while letting it through would
+surface as a validation error from inside some component's constructor. And PyYAML is imported
+inside the parse rather than at module scope -- it is not a declared dependency of this package,
+it arrives with `uvicorn[standard]`, so a module-level import would break importing *anything*
+from the package in an installation that trimmed it. See *Open points*.
+
+#### `with_group` and `from_group` (`71dfbb1`)
+
+```python
+        for spec in group.agents:
+            registration = self._load_registration(spec)
+            if registration is None:
+                continue
+            self.with_namespace(spec.name, registration=registration)
+
+        for cache_name in group.cache_names:
+            self.with_cache(name=cache_name)
+```
+
+The caches are the group's rather than any agent's, because a cache is process-wide (spec
+sec. 8) -- so phase 3 part 2's `with_cache(name=...)` is what the group's `cache_names` feed.
+
+Importing an agent's module is the one thing here that reaches outside, and it is deliberately on
+this side of the resolution/wiring line: it is driven entirely by the `module` strings the group
+carries, so a test points them at test modules and controls neither environment nor filesystem to
+do it. Imports happen **per group**, so cold start is proportional to the agents this process
+hosts rather than to the agents the image contains.
+
+`_load_registration` catches **every** exception from the import, not `ImportError` alone:
+importing a module runs it, and an agent whose declaration raises at import is exactly as
+unloadable as one whose module is absent. It also refuses an attribute that is not an
+`AgentRegistration`, and a `module` string that is not `package.module:attribute` -- both of which
+would otherwise fail later and further away.
+
+A critical agent that cannot be loaded raises `GroupConfigError`; a non-critical one is skipped
+with an ERROR and the rest of the group still starts. The flag is read *before* the agent is
+wired rather than after an exception, because there is no partial build to unwind: one process,
+one `build()`.
+
+#### The entry point (`029f287`)
+
+`python -m blueprint.agents.entrypoint`, and it exists to hold the three things `AppBuilder` must
+not: reading the environment, reading files, and exiting.
+
+```python
+def build(*, environ: dict[str, str] | None = None) -> tuple[FastAPI, Config]:
+    config = Config(settings_files=DEFAULT_SETTINGS_FILES)
+    group = GroupConfig.resolve(config, environ=environ)
+    app = AppBuilder(config).with_group(group).build()
+    return app, config
+```
+
+Split from `main` so the whole startup path is testable without a server and without
+`sys.exit`: everything that can fail happens in `build`, and `main` only decides what to do about
+it. `main` returns a status rather than exiting, so a test asserts on the status; the
+`__main__` guard is what turns it into an exit.
+
+**Why it catches rather than lets the exception out.** A group that cannot be resolved must stop
+the process *before the port is bound* (spec sec. 9.1), so Kubernetes crash-loops with a readable
+message instead of reporting a healthy replica that is silently short a consumer. An uncaught
+exception also exits non-zero, but buries the one line an operator needs under a traceback of
+framework internals. The reason is `print`ed to stderr *as well as* logged, because logging is
+configured by `AppBuilder` -- which has not run yet when resolution fails.
+
+A project keeps its own `main.py` if it wants: a standalone deployment is untouched, and
+`uvicorn src.main:app` works exactly as before.
+
+#### Not in this phase, and why
+
+- **The settings-fragment merge.** The plan lists it here; the changelog's *Open points* has
+  carried it since config rework step 3a with **two unanswered questions** -- whether a fragment
+  declaring `envvar_prefix` is rejected, and whether a fragment may override a shared
+  infrastructure key at all. Both are decisions rather than implementations, and guessing either
+  produces a merge that silently drops or silently overrides configuration. Still open.
+- **`on_startup` raising** -- the third row of sec. 9.1's failure table. It says "mark namespace
+  down, pause consumers (C4), continue", which is phase 9's per-namespace degradation machinery,
+  not something to improvise here.
+- **`deployment-groups.yaml` and `agents.toml` are not generated.** Phase 8 *reads* them; the
+  scaffolder writing them belongs with the manifest generation that is already parked.
+
+Tests: `tests/unit/agents/test_group_config.py` (33 cases), `test_with_group.py` (24) and
+`test_entrypoint.py` (12) -- 69 in total. The group file and the environment as sources and in
+combination, precedence and its logging, criticality from both sources, every validation failure,
+the value object's freezing; one namespace per agent with order preserved, the group's caches,
+every declaration-loading failure for critical and non-critical agents, and that `with_group`
+ignores the environment even when it is set; and the entry point building from either source,
+serving what it built, and returning non-zero with the reason on stderr without binding a port.
+
+### `build()` did not change, and one `main.py` does serve both shapes
+
+Both raised by the user against phase 8, and the first was a fair misreading of a name I chose
+badly.
+
+**`AppBuilder.build()` still returns a `FastAPI`.** Nothing about it changed in phase 8, and no
+existing `main.py` needs editing. The function that returns a tuple was `entrypoint.build()` -- a
+*different* function, in a module nothing imported before this phase. But a second `build` in the
+same package returning a different shape is exactly the trap it looks like, so it is now
+`entrypoint.build_group_app()`, with the reason in its docstring and a test asserting that
+`entrypoint.build` does not exist. The lesson is worth keeping: `build` is spoken for in this
+package.
+
+**One `main.py` for both shapes is not merely possible, it is what spec sec. 11 requires** -- and
+it already works. The single declaration the spec asks for is the whole file:
+
+```python
+registration = (
+    AgentRegistration()
+    .with_service(OrderService)
+    .with_handler(OrderValidationHandler)
+    .with_rest_api(OrderApi)
+)
+```
+
+No `AppBuilder`, no `Config`, no `run_app`, no `if __name__`, no namespace, no group. The same
+object then serves three deployments, which `TestOneDeclarationServesBothDeploymentShapes` now
+pins down rather than asserting:
+
+| Deployment | How | What runs |
+|---|---|---|
+| Standalone, as today | `AppBuilder(config).with_registration(registration).build()`, `uvicorn src.main:app` | root namespace |
+| Alone, as a group of one | `BLUEPRINT_AGENTS=order python -m blueprint.agents.entrypoint` | namespace `order` |
+| Beside other agents | `BLUEPRINT_AGENTS=order,billing ...` | namespaces `order`, `billing` |
+
+The dual-branch `main.py` the plan once described -- the component list duplicated under
+`if __name__ == "__main__"` and `else:` -- is what the spec forbids, and nothing in the
+implementation needs it: `agents.toml` points at `main:registration` like any other module, and a
+group of one is an ordinary group.
+
+**The one consequence to know about, and it is deliberate.** A group of one is *not* identical to
+standalone, because it uses the agent's real name: components become `order_order_service` rather
+than `order_service`, routes move from `/api/...` to `/api/order/...`, and the queue group becomes
+`order` rather than `app_name`. Spec sec. 11 chooses this on purpose -- "a dev mode that ran at
+`namespace=""` would give every developer local URLs and integration tests that differ from
+production" -- so local and CI match the deployment instead of diverging from it. Migrating an
+existing agent from standalone to a group of one therefore moves its routes and its consumer
+identity, which is a migration with consequences rather than a rename; phase 10 is where that gets
+written up for a project to follow.
+
 ---
 
 ## Compatibility
 
-**One breaking change has landed: `scheduler_mode` is required.** A project that registers a
+**Two breaking changes have landed.** The second one only affects a project that already uses
+`Config(agent_scope=...)`; the scheduler change discussed further down is deliberately *not* on
+this list, and why is stated with it.
+
+**Breaking change 1: `scheduler_mode` is required.** A project that registers a
 scheduler and does not set it fails at `build()` with an error naming both values and what each
 one costs. Nothing changes behaviour silently: the alternative -- defaulting the key -- would
 either keep firing a timer per replica (#73) or stop ticking a service that has no broker, and
 neither is safe to inherit. The reasoning, including the counter-argument, is under *P5* above; it
 is a deliberate departure from spec sec. 7.5 and needs a spec amendment.
+
+**Breaking change 2: a scoped `Config`'s telemetry `service.name` is now the agent's name.**
+This affects a project that constructs `Config(agent_scope="foo")` -- which is not new, it has
+been available since April and is on `develop`, so this is a change to shipped behaviour rather
+than to something only this branch can reach.
+
+| | Was | Is |
+|---|---|---|
+| `otel_service_name` for a scoped view | `<scope>.otel_service_name`, else root `otel_service_name`, else `<scope>.app_name`, else root `app_name` | `<scope>.otel_service_name`, else the scope name |
+
+So a repo with `foo.app_name = "Foo Service"` and no `foo.otel_service_name` sees its
+`service.name` change from `Foo Service` to `foo`, and one relying on a *root*
+`otel_service_name` while using a scope sees it change to the scope name as well. The root path is
+untouched, so a project that passes no `agent_scope` -- every single-agent application -- is
+unaffected.
+
+**Migration** is one line if the old name matters: set `<scope>.otel_service_name` to whatever the
+dashboards already key on. Keeping the old chain was the alternative and is what C2 forbids: it
+lets every agent in a group report one `service.name`, and then regrouping moves work between
+agents no dashboard can tell apart. The point of the change is that the agent's name is the one
+identity it has.
 
 **Migrating an existing service with a scheduler** is one line, and which line depends on the
 deployment:
@@ -3614,6 +3995,47 @@ Everything else remains non-breaking. Specifically:
   Whether Dapr merges the two or delivers twice needs checking against a real sidecar; it belongs on
   the broker-test list.
 - New config keys all default to current behaviour.
+- **Phase 8 is entirely additive.** A standalone `main.py` deployment is untouched: nothing
+  reads `deployment-groups.yaml` or `agents.toml` unless `python -m blueprint.agents.entrypoint`
+  or `GroupConfig.resolve` is called, and `uvicorn src.main:app` behaves exactly as before.
+- **New environment variables, all optional**: `BLUEPRINT_GROUP_CONFIG`, `BLUEPRINT_GROUP`,
+  `BLUEPRINT_AGENTS`, `BLUEPRINT_CRITICAL_AGENTS`, `BLUEPRINT_AGENT_MAP`. They are read only by
+  the group resolution, never by `Config`, so they cannot collide with a project's settings.
+- **`pyyaml>=6.0` is a new declared dependency.** Asked for and approved; it is what reads the
+  group file. Already present in every environment through `uvicorn[standard]`, so declaring it
+  changes no installed set -- it stops the group file depending on a *transitive* dependency,
+  which is the thing that breaks on an unrelated upgrade.
+- **`<agent>.app_name` is no longer required.** A scoped `Config` used to refuse to load without
+  it. Setting one is still allowed and still read, but only for display.
+- **An agent's `otel_service_name` now defaults to its own name rather than to `app_name`, and no
+  longer inherits a root-level `otel_service_name`.** A single-agent application is unchanged:
+  explicit `otel_service_name`, then `app_name`, then the default. A grouped agent's
+  `service.name` becomes its agent name unless it sets its own -- which is the point (C2), and
+  which does change what a dashboard sees for a project that had been relying on the root value
+  while using namespaces.
+- **A namespaced scheduler's derived tick subject changes from `<app_name>.scheduler.<name>` to
+  `<agent>.scheduler.<name>` -- and this is deliberately *not* counted as a breaking change.**
+  A scheduler's namespace is only non-empty when it was constructed inside a `namespace_scope`,
+  which exists only on this branch: `SchedulerBase.__init__` never took a namespace, and
+  `Component`'s namespace parameter arrived with P6. So no deployed scheduler can have one, and
+  no `CronJob` in the field publishes to a namespaced subject. A root scheduler -- every one that
+  exists -- derives exactly what it derived before.
+
+  It *is* a change for anyone who adopted this branch mid-flight and gave a scheduler a
+  namespace: their tick subject moves, and the publisher has to move with it. The startup log
+  names the subject in both modes, which is where to read the new value. Note also that
+  `Config(agent_scope=...)` alone does **not** give a scheduler a namespace -- a scoped config and
+  a component's namespace are different things before this branch -- so a project using
+  `agent_scope` today is unaffected by this one.
+- **An explicit `name=` is now namespace-qualified, wherever it is set.** At the root -- every
+  single-agent application -- `qualified_component_name("", name)` is `name`, so nothing changes.
+  Inside a namespace, a component constructed directly with `name="planner"` registers as
+  `orders_planner` where it used to register as `planner`. The builder path already behaved this
+  way.
+- **`Registry.update_component_name` refuses a name that is taken** instead of overwriting the
+  entry. Anything relying on the overwrite was losing a component silently.
+- **`AppBuilder.with_namespace` refuses an agent name it already hosts** instead of merging into
+  it. To assemble one agent from several parts, compose them into one `AgentRegistration`.
 - **`EventHandlerBase.get_runtime_name(event, context)` is new and defaults to `None`.** It was
   already in the class's usage docstring, so a project may have written one; it is now actually
   called. Returning `None` keeps today's behaviour.
@@ -3838,12 +4260,6 @@ stay keyword-only and last, or an existing `with_cache(False)` would silently be
   application that has two agents and handlers resolving their own runtime by name -- the shape
   the scaffolder generates. The spec's compatibility table already calls phase 7 "purely
   additive", which the raise would contradict; the plan bullet is what should change.
-- **An explicit `name=` is qualified with the namespace only on the builder path.** Constructing
-  a component directly inside a `namespace_scope` with `name="planner"` registers it as
-  `planner`, so two agents doing that collide on one registry key. `AppBuilder._register`
-  qualifies; `Component.__init__` does not. Fixing it there would change naming for every
-  component and wants its own step.
-
 - **P0-P5 have landed. P6 is next**, and two requirements for it were settled during P5 (see the
   namespace bullet below). What remains open from P5 is deferred work rather than unfinished work:
   both modes now fire a cron once across three replicas, which was P5's acceptance criterion.
