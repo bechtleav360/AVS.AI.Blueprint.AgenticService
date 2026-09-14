@@ -31,7 +31,7 @@ Each component type follows a consistent suffix pattern:
 | **Handler** | `order_placed` | `OrderPlacedHandler` | `order_placed_handler.py` | Handles events |
 | **Service** | `invoice_processor` | `InvoiceProcessorService` | `invoice_processor_service.py` | Contains business logic |
 | **API** | `order_management` | `OrderManagementApi` | `order_management_api.py` | REST endpoints + models file |
-| **Agent** | `document_analyzer` | `DocumentAnalyzer` | `document_analyzer_agent.py` | No "Agent" suffix in class name |
+| **Agent** | `document_analyzer` | -- | -- | No module of its own: a builder in `main.py` plus two prompt files |
 | **Scheduler** | `cleanup` | `CleanupScheduler` | `cleanup_scheduler.py` | Background tasks |
 
 ### Name Normalization Examples
@@ -60,7 +60,7 @@ asbs create api product_catalog
 asbs create api ProductCatalog
 asbs create api product-catalog
 # All produce: ProductCatalogApi in product_catalog_api.py
-# And: product_catalog_models.py (without the "_api" suffix)
+# And the models package src/models/product_catalog/ (dto, domain_models, mapper)
 ```
 
 #### Agent Examples
@@ -68,9 +68,8 @@ asbs create api product-catalog
 asbs create agent document_analyzer
 asbs create agent DocumentAnalyzer
 asbs create agent document-analyzer
-# All produce: DocumentAnalyzer (agent class, not DocumentAnalyzerAgent)
-# File: document_analyzer_agent.py
-# Builder function: build_document_analyzer_agent()
+# All produce the runtime name: document_analyzer_agent
+# Declared in src/main.py as an AgentBuilder; prompts in src/prompts/
 ```
 
 ### Auto-Registration
@@ -100,7 +99,7 @@ $ asbs create handler order_placed
 Scaffold a complete Blueprint Agents project with all required directories and configuration files.
 
 ```bash
-asbs setup <project-name>
+asbs setup <project-name> [--output-dir <dir>] [--overwrite] [--verbose]
 ```
 
 ### Arguments
@@ -109,25 +108,39 @@ asbs setup <project-name>
 |----------------|------------------------------------|----------|
 | `project-name` | Name of the project to create      | Yes      |
 
+### Options
+
+| Flag                  | Description                                            | Default |
+|-----------------------|--------------------------------------------------------|---------|
+| `--output-dir <dir>`  | Parent directory the project is created in             | `.`     |
+| `--overwrite`         | Overwrite existing files instead of refusing           | off     |
+| `--verbose`, `-v`     | Debug-level logging from the generator                 | off     |
+
+The project name is normalised to a class name (`order-processor` gives `OrderProcessor/`), and the
+agent's namespace is that name in snake case (`order_processor`).
+
 ### Generated Project Structure
 
 ```
-<project-name>/
+<ProjectName>/
   src/
-    main.py
-    handlers/
-    services/
+    main.py            # the declaration: agent = AppBuilder()...
     api/
-    models/
+    handlers/
+    models/<name>/     # dto.py, domain_models.py, mapper.py
     prompts/
-  tests/
-    unit/
-    integration/
+    services/
+  agents.toml          # agent name -> declaration; baked into the image
   settings.toml
-  secrets.toml
-  pyproject.toml
+  secrets.toml         # git-ignored
+  secrets.toml.example # committed, so the keys to fill in are known
   Dockerfile
+  .gitignore
 ```
+
+There is no `tests/` directory and no `pyproject.toml`: the scaffolder writes source, settings and
+the image, and the packaging and test layout are the project's own. `asbs validate` reports both as
+missing, which is a reminder rather than a defect in the scaffold.
 
 ### Example
 
@@ -181,7 +194,7 @@ with `python -m blueprint.agents.entrypoint`, which reads that map and the deplo
 Generate a new event handler component by creating a subclass of `EventHandlerBase`.
 
 ```bash
-asbs create handler <name> [--event-type <type>] [--priority <int>]
+asbs create handler <name> [--event-type <type>] [--priority <int>] [--output-dir <dir>]
 ```
 
 ### Arguments
@@ -192,10 +205,14 @@ asbs create handler <name> [--event-type <type>] [--priority <int>]
 
 ### Options
 
-| Flag                    | Description                                        | Default   |
-|-------------------------|----------------------------------------------------|-----------|
-| `--event-type <type>`   | The event type this handler will respond to         | (prompt)  |
-| `--priority <int>`      | Handler priority (lower numbers execute first)      | `0`       |
+| Flag                    | Description                                        | Default          |
+|-------------------------|----------------------------------------------------|------------------|
+| `--event-type <type>`   | The event type this handler will respond to        | (prompt)         |
+| `--priority <int>`      | Handler priority (lower numbers execute first)     | `10`             |
+| `--output-dir <dir>`    | Where the handler module is written                | `src/handlers`   |
+
+Ties at equal priority are resolved by registration order, which is the order the `with_*` calls
+appear in `main.py`.
 
 ### Naming
 
@@ -240,7 +257,7 @@ from blueprint.agents.handler import EventHandlerBase
 
 class OrderPlacedHandler(EventHandlerBase):
     def __init__(self) -> None:
-        super().__init__(priority=0)
+        super().__init__(priority=10)
 
     async def on_startup(self) -> None:
         # Initialize resources from registry
@@ -266,7 +283,7 @@ class OrderPlacedHandler(EventHandlerBase):
 Generate a new service component by creating a subclass of `ServiceBase`.
 
 ```bash
-asbs create service <name>
+asbs create service <name> [--output-dir <dir>]
 ```
 
 ### Arguments
@@ -274,6 +291,12 @@ asbs create service <name>
 | Argument | Description                     | Required |
 |----------|---------------------------------|----------|
 | `name`   | Name of the service to create   | Yes      |
+
+### Options
+
+| Flag                  | Description                         | Default          |
+|-----------------------|-------------------------------------|------------------|
+| `--output-dir <dir>`  | Where the service module is written | `src/services`   |
 
 ### Naming
 
@@ -337,7 +360,7 @@ class InvoiceProcessorService(ServiceBase):
 Generate a new REST API component by creating a subclass of `RestApiBase`, plus a models file with Request/Response classes.
 
 ```bash
-asbs create api <name>
+asbs create api <name> [--output-dir <dir>]
 ```
 
 ### Arguments
@@ -346,24 +369,32 @@ asbs create api <name>
 |----------|------------------------------|----------|
 | `name`   | Name of the API to create    | Yes      |
 
+### Options
+
+| Flag                  | Description                     | Default     |
+|-----------------------|---------------------------------|-------------|
+| `--output-dir <dir>`  | Where the API module is written | `src/api`   |
+
 ### Naming
 
-API names are converted to `<Name>Api` format with an accompanying models file:
+API names are converted to `<Name>Api`, with a models package named after the component:
 
 - Input: `order_management`
   - Class: `OrderManagementApi`
-  - API File: `order_management_api.py`
-  - Models File: `order_management_models.py`
+  - API file: `src/api/order_management_api.py`
+  - Models package: `src/models/order_management/`
 
 ### Files Generated
 
-1. **API File** (`src/api/<name>_api.py`)
-   - REST API class with `.get()`, `.post()`, `.put()`, `.delete()` endpoints
-   - Dependency injection via `self.registry.get_service(...)`
+1. **API module** (`src/api/<name>_api.py`)
+   - `RestApiBase` subclass with a `GET /{item_id}` and a `POST /` placeholder, both raising
+     `501 Not Implemented` until you write them
+   - Dependency injection via `self.registry.get_service(...)` in `on_startup`
 
-2. **Models File** (`src/models/<name>_models.py`)
-   - Request and Response Pydantic models
-   - Example: `OrderManagementRequest` and `OrderManagementResponse`
+2. **A models package** (`src/models/<name>/`), three files:
+   - `dto.py` -- `<Name>Request` and `<Name>Response`, the API's wire contract
+   - `domain_models.py` -- `<Name>Model`, what the service works with
+   - `mapper.py` -- `<Name>Mapper`, converting between the two
 
 ### Auto-Registration
 
@@ -380,8 +411,10 @@ asbs create api order_management
 ```
 
 Creates:
-- `src/api/order_management_api.py` with `OrderManagementApi` class
-- `src/models/order_management_models.py` with `OrderManagementRequest` and `OrderManagementResponse` classes
+- `src/api/order_management_api.py` with the `OrderManagementApi` class
+- `src/models/order_management/dto.py` with `OrderManagementRequest` and `OrderManagementResponse`
+- `src/models/order_management/domain_models.py` with `OrderManagementModel`
+- `src/models/order_management/mapper.py` with `OrderManagementMapper`
 
 #### API Generated Code
 
@@ -392,7 +425,7 @@ The generated API includes:
 
 from fastapi import HTTPException, status
 from blueprint.agents.io.api.rest_api_base import RestApiBase
-from src.models.order_management_models import OrderManagementRequest, OrderManagementResponse
+from src.models.order_management.dto import OrderManagementRequest, OrderManagementResponse
 
 class OrderManagementApi(RestApiBase):
     async def on_startup(self) -> None:
@@ -436,7 +469,8 @@ class OrderManagementResponse(BaseModel):
 
 ## asbs create agent
 
-Generate an AI agent component with `AgentRuntime`, `AgentBuilder` boilerplate, system prompt, instruction prompt, and settings configuration.
+Declare an AI agent runtime: two prompt files, a settings section, and an `AgentBuilder` in
+`src/main.py`.
 
 ```bash
 asbs create agent <name>
@@ -450,36 +484,29 @@ asbs create agent <name>
 
 ### Naming
 
-Agent names are converted to `<Name>` format (no "Agent" suffix in class name, but used in builder function):
+The runtime name is the input in snake case with `_agent` appended, unless it already ends that way:
 
-- Input: `document_analyzer` → Function: `build_document_analyzer_agent()` → File: `document_analyzer_agent.py`
-- Input: `DocumentAnalyzer` → Function: `build_document_analyzer_agent()` → File: `document_analyzer_agent.py`
+- Input: `document_analyzer` -> runtime `document_analyzer_agent`
+- Input: `DocumentAnalyzer` -> runtime `document_analyzer_agent`
+- Input: `analyzer_agent` -> runtime `analyzer_agent`
+
+**This command writes no module of its own.** There is no `src/agents/` file and no builder
+function: an agent runtime is a declaration in `main.py` plus its prompts, so there is nothing for a
+separate module to hold.
 
 ### Files Generated
 
-1. **Agent Module** (`src/agents/<name>_agent.py`)
-   - `build_<name>_agent(config)` function that creates and configures the agent
-   - Uses `AgentBuilder` with model config, prompts, and tools
-
-2. **System Prompt** (`src/prompts/<name>_system.prompt`)
-   - Static context for the agent
-   - Example content already provided
-
-3. **Instruction Prompt** (`src/prompts/<name>_instruction.prompt`)
-   - Dynamic template with `{placeholders}` for runtime input
-   - Example content already provided
-
-4. **Settings Configuration** (`settings.toml`)
-   - `[default.runtimes.<name>]` section with model configuration
-   - Model provider, name, temperature, and token limits
+1. **System prompt** (`src/prompts/<runtime>_system.prompt`) -- static context, with example content
+2. **Instruction prompt** (`src/prompts/<runtime>_instruction.prompt`) -- a template with
+   `{placeholders}` for runtime input, with example content
+3. **Settings** (`settings.toml`) -- a `[default.runtimes.<runtime>]` section and a
+   `[default.runtimes.<runtime>.models]` section beneath it
 
 ### Auto-Registration
 
-The created agent is automatically:
-- Imported in `src/main.py`
-- Agent instance created before `app =`
-- Registered with `.with_agent(<name>_agent, name="<name>_agent")`
-- Configuration added to `settings.toml`
+- The `AgentBuilder` import is added to `src/main.py` if it is not already there
+- The runtime declaration is inserted above the `AppBuilder` chain
+- `.with_agent(<runtime>, name="<runtime>")` is added to the chain
 
 ### Examples
 
@@ -490,55 +517,49 @@ asbs create agent document_analyzer
 ```
 
 Creates:
-- `src/agents/document_analyzer_agent.py` with `build_document_analyzer_agent()` function
-- `src/prompts/document_analyzer_system.prompt` with system context
-- `src/prompts/document_analyzer_instruction.prompt` with instruction template
-- `[default.runtimes.document_analyzer]` section in `settings.toml`
+- `src/prompts/document_analyzer_agent_system.prompt`
+- `src/prompts/document_analyzer_agent_instruction.prompt`
+- `[default.runtimes.document_analyzer_agent]` in `settings.toml`
+- the declaration and the registration in `src/main.py`
 
-#### Agent Generated Code
-
-The generated agent builder includes:
+#### What is added to `src/main.py`
 
 ```python
-"""AgentRuntime for document_analyzer operations."""
+document_analyzer_agent = (
+    AgentBuilder(runtime_name="document_analyzer_agent")
+    .with_model_from_config()
+    .with_system_prompt("document_analyzer_agent_system")
+)
 
-from blueprint.agents import AgentBuilder
-from blueprint.agents.base import AgentRuntime
-from blueprint.agents.config import Config
-
-
-def build_document_analyzer_agent(config: Config) -> AgentRuntime:
-    """Build the document_analyzer agent.
-
-    Args:
-        config: Application configuration
-
-    Returns:
-        Configured AgentRuntime instance
-    """
-    agent = (
-        AgentBuilder(config, runtime_name="document_analyzer")
-        .with_model_from_config()
-        .with_system_prompt("document_analyzer_system")
-        .build(name="document_analyzer")
-    )
-
-    return agent
+agent = (
+    AppBuilder()
+    .with_agent(document_analyzer_agent, name="document_analyzer_agent")
+)
 ```
+
+The builder is left **unbuilt**, and takes no `Config`. `AppBuilder.build()` calls
+`agent.build(config.for_namespace(<this agent>))`, so the model, prompt and metrics are read from
+this agent's own configuration view; building it at this line would bind it to whatever
+configuration happened to be in scope, which in a group is a neighbour's.
 
 #### Settings Configuration
 
 Auto-generated in `settings.toml`:
 
 ```toml
-[default.runtimes.document_analyzer]
+[default.runtimes.document_analyzer_agent]
 model_provider = "openai"
-model_name = "gpt-4o-mini"
+model_name = "gpt-5-mini"
 model_temperature = 0.7
 model_max_tokens = 2000
+
+[default.runtimes.document_analyzer_agent.models]
+openai_reasoning_effort = "low"
+openai_reasoning_summary = "detailed"
 ```
 
-Override any defaults in your `settings.toml` after creation.
+Override any defaults in your `settings.toml` after creation. In a group, these are read through
+this agent's own configuration view, so two agents may run different models under the same key.
 
 ---
 
@@ -547,7 +568,7 @@ Override any defaults in your `settings.toml` after creation.
 Generate a scheduled task component by creating a subclass of `SchedulerBase`.
 
 ```bash
-asbs create scheduler <name> [--cron <expr>]
+asbs create scheduler <name> [--cron <expr>] [--output-dir <dir>]
 ```
 
 ### Arguments
@@ -558,9 +579,18 @@ asbs create scheduler <name> [--cron <expr>]
 
 ### Options
 
-| Flag             | Description                          | Default       |
-|------------------|--------------------------------------|---------------|
-| `--cron <expr>`  | Cron expression for the schedule     | `0 * * * *`   |
+| Flag                  | Description                             | Default            |
+|-----------------------|-----------------------------------------|--------------------|
+| `--cron <expr>`       | Cron expression for the schedule        | `0 * * * *`        |
+| `--output-dir <dir>`  | Where the scheduler module is written   | `src/schedulers`   |
+
+### `scheduler_mode` is required
+
+A registered scheduler with no `scheduler_mode` in `settings.toml` fails at `build()`. The key has
+no default because neither value is safe to inherit: `in_process` runs a timer in every replica and
+claims each tick in the agent's own cache, so it needs `.with_cache()`; `event` starts no timer at
+all and waits for a tick published by an external `CronJob`, so it needs `event_bus` -- and nothing
+in this project generates that `CronJob`. `asbs validate` reports both.
 
 ### Naming
 
@@ -927,64 +957,46 @@ agent = (
 
 ## asbs claude
 
-Generate or update Claude Code context files for AI integration. The CLI creates framework and project-specific CLAUDE.md files automatically.
+Copy the framework's Claude Code resources into a project, so that Claude Code picks up the
+Blueprint patterns when working in it.
 
 ```bash
-asbs claude [create|update]
+asbs claude [<project-dir>] [--overwrite] [--verbose]
 ```
 
-### Subcommands
+### Arguments
 
-| Subcommand | Description                                              |
-|------------|----------------------------------------------------------|
-| `create`   | Generate new Claude Code context files                   |
-| `update`   | Update existing Claude Code context files                |
+| Argument        | Description                          | Default |
+|-----------------|--------------------------------------|---------|
+| `project-dir`   | Project root to write into           | `.`     |
 
-### CLAUDE.md Placement
+### Options
 
-The CLI creates and manages files in a consistent structure:
+| Flag              | Description                                         | Default |
+|-------------------|-----------------------------------------------------|---------|
+| `--overwrite`     | Replace files that already exist                    | off     |
+| `--verbose`, `-v` | Debug-level logging                                 | off     |
 
-| Path | Purpose | Updated By |
-|------|---------|-----------|
-| `src/CLAUDE.md` | Framework reference for Blueprint patterns | `asbs claude` |
-| `.claude/agents/` | CLI-generated agent documentation | `asbs create agent` |
-| `.claude/skills/` | CLI-generated skill definitions | `asbs` commands |
-| `CLAUDE.md` (optional) | Project-specific context (root) | User (manual) |
+There are no `create` / `update` subcommands: the command is idempotent, and `--overwrite` is the
+difference between leaving existing files alone and replacing them.
 
-### Framework CLAUDE.md
+### What it copies
 
-Running `asbs claude create` generates:
+| From the framework | To the project | Contents |
+|---|---|---|
+| `claude_docs/CLAUDE.md` | `src/CLAUDE.md` | Framework reference: base classes, the registry and lifecycle rules, component patterns, configuration |
+| `claude_docs/agents/` | `.claude/agents/` | Architecture agents |
+| `claude_docs/skills/` | `.claude/skills/` | CLI skills |
 
-1. **`src/CLAUDE.md`** - Framework documentation containing:
-   - Component base classes and imports
-   - Critical rules (registry, lifecycle, wiring)
-   - Component patterns with examples
-   - Registry lookup patterns
-   - Configuration structure
-   - CLI command reference
-
-2. **`.claude/` directory** - Generated context for Claude Code:
-   - Agent documentation in `.claude/agents/`
-   - Skill definitions in `.claude/skills/`
-   - Automatically updated when components are created
+Nothing here is generated from *your* project: the files are the framework's own documentation,
+copied. They are not updated when you run `asbs create`.
 
 ### Example
 
 ```bash
-# Generate initial Claude Code context files
-asbs claude create
-
-# Update after adding new components
-asbs claude update
+asbs claude
+asbs claude --overwrite    # after upgrading the framework
 ```
-
-The generated files include information about:
-
-- Project structure and component locations
-- Registered handlers, services, APIs, and agents
-- Configuration settings and environment variables
-- Testing patterns and commands
-- Build and deployment instructions
 
 ### Project-Specific CLAUDE.md
 

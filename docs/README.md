@@ -41,6 +41,7 @@ Blueprint Agents is a Python 3.13+ framework for building AI-powered microservic
 | Guide | Description |
 |-------|-------------|
 | [CLI Reference](guides/cli-reference.md) | Full reference for the `asbs` command-line tool |
+| [Multi-Agent Setup](guides/multi-agent-setup.md) | Running several agents in one process, and migrating an existing one into a group |
 | [Testing](guides/testing.md) | Unit testing, integration testing, and test fixtures |
 | [Deployment](guides/deployment.md) | Docker builds, environment configuration, and production setup |
 | [Troubleshooting](guides/troubleshooting.md) | Common issues, debugging tips, and FAQ |
