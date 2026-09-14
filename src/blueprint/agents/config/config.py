@@ -37,6 +37,22 @@ keeps them out of reach.
 """
 
 
+SHARED_NESTED_PREFIXES = frozenset({"cache", "event_publishing", "runtimes", "runtime"})
+"""The dotted sections that belong to the process rather than to an agent.
+
+Flat is the norm in this tree -- ``app_port``, ``log_level``, ``nats_url`` and the rest are
+top-level keys -- and these four are the only prefixes the framework itself reads a dotted key
+under: ``cache.*`` (the cache backend's settings), ``event_publishing.*`` (the pubsub name and
+topic mapping), and ``runtimes.<name>.*`` with its legacy singular ``runtime.<name>.*``.
+
+Everything else at the top of the tree that is a table is somebody's *scope*: an agent's section
+is written ``[default.<agent>]``, so its keys are reachable as ``<agent>.<key>`` by anyone who
+can resolve a dotted name. That is why this is an allowlist of what may be shared rather than a
+denylist of agent names -- a new agent needs no entry here, and a key this list has never heard
+of is refused rather than resolved.
+"""
+
+
 PROCESS_SCOPE_KEYS = frozenset(
     {
         "app_port",
@@ -164,6 +180,10 @@ class Config:
         self._agent_scope = agent_scope
         self._is_view = False
         self._views: dict[str, Config] = {}
+        # Set on a view by for_namespace, so a view can ask the object that owns the tree to
+        # flatten *its own* scope. Stripping the other agents' subsections needs the list of
+        # namespaces, and a view deliberately does not have one (C6).
+        self._loader: Config | None = None
         # Kept so that :meth:`merge_agent_settings` can recognise a file the process has already
         # loaded as its own. An agent whose declaration module sits beside the group's settings
         # file would otherwise have every root key merged under its scope a second time.
@@ -428,6 +448,7 @@ class Config:
         view._agent_scope = namespace
         view._is_view = True
         view._views = {}
+        view._loader = self
         self._views[namespace] = view
         return view
 
@@ -649,31 +670,46 @@ class Config:
         A key whose scoped value is ``None`` is left at its root value, matching
         :meth:`_scoped_get` -- ``None`` there means "not set", not "set to nothing".
 
-        Args:
-            namespace: The agent to resolve for. ``""`` returns the whole tree, which is what the
-                root namespace resolves.
-
         Returns:
             A plain dictionary, keys as the settings tree spells them.
 
+        **A view may resolve itself, and nothing else.** Asked for an arbitrary namespace this
+        would be a window on a neighbour, which is what it used to refuse outright -- but a view
+        asking for its *own* scope is the agent describing itself, and the operator-facing
+        environment endpoint needs exactly that when it is scoped to one agent. The work is
+        delegated to the object that owns the tree, because flattening means stripping the other
+        agents' subsections and a view deliberately does not know what they are (C6).
+
+        Args:
+            namespace: The agent to resolve for. ``""`` returns the whole tree on the
+                application's own configuration, and this view's own scope on a view.
+
         Raises:
-            RuntimeError: if called on a view, for the reason given on :attr:`namespaces` -- this
-                answers for an arbitrary namespace, so on a view it would be a route to a
-                neighbour's configuration.
+            RuntimeError: if a view is asked for a namespace other than its own.
         """
         if self._is_view:
-            raise RuntimeError(
-                f"Namespace '{self._agent_scope}' asked its own view to resolve configuration for namespace "
-                f"'{namespace}'. Views resolve their own keys through get(); they are not a window on another "
-                "agent's configuration."
-            )
+            if namespace and namespace != self._agent_scope:
+                raise RuntimeError(
+                    f"Namespace '{self._agent_scope}' asked its own view to resolve configuration for namespace "
+                    f"'{namespace}'. A view resolves itself; it is not a window on another agent's configuration."
+                )
+            assert self._loader is not None, "a view without the loader that made it cannot resolve itself"
+            return self._loader.resolved_settings(self._agent_scope or "")
 
         tree: dict[str, Any] = dict(self._settings.as_dict())
         if not namespace:
             return tree
 
         logger.debug("Resolving the flattened configuration of namespace '%s'", namespace)
-        others = {name.lower() for name in self._views} - {namespace.lower()}
+        # Every top-level table that is not one of the framework's own is an agent's section, so
+        # that is what gets stripped. Derived from the tree rather than from `self._views`, which
+        # holds only the namespaces that have *asked* for a view: an agent whose components had
+        # not yet read their configuration was therefore left in a neighbour's resolved settings,
+        # and whether it leaked depended on construction order.
+        sections = {
+            str(key).lower() for key, value in tree.items() if hasattr(value, "items") and str(key).lower() not in SHARED_NESTED_PREFIXES
+        }
+        others = (sections | {name.lower() for name in self._views}) - {namespace.lower()}
         own: Any = None
         resolved: dict[str, Any] = {}
         for key, value in tree.items():
@@ -805,12 +841,45 @@ class Config:
         ``None`` from a scoped lookup is treated as "not set" so the root
         fallback fires. Empty containers (``[]``, ``{}``, ``""``) at the scoped
         key are returned as-is — only ``None`` triggers fallback.
+
+        **The root fallback does not walk into another agent's section.** An agent's keys live
+        under its own name at the top of the tree, so a dotted key resolves them:
+        ``for_namespace("billing").get("orders.record_id")`` used to return orders' value,
+        because the scope *prefixes* a key without confining it. The fallback is therefore
+        restricted to the dotted prefixes the framework itself owns -- see
+        :data:`SHARED_NESTED_PREFIXES`, an allowlist rather than a list of agent names, so it
+        fails closed for anything it has not been told about.
         """
         if self._agent_scope:
             scoped = self._settings.get(f"{self._agent_scope}.{key}")
             if scoped is not None:
                 return scoped
+            self._refuse_a_foreign_section(key)
         return self._settings.get(key, default)
+
+    def _refuse_a_foreign_section(self, key: str) -> None:
+        """Refuse a dotted key that a scoped view would resolve outside its own agent.
+
+        Raised rather than answered with the default, for the reason the deployment-identity
+        check raises: a quiet miss reads as "not configured" and sends the caller looking for a
+        setting, while what actually happened is that the key names somewhere they cannot read.
+
+        Args:
+            key: The key being resolved, before the root fallback runs.
+
+        Raises:
+            ValueError: if ``key`` is dotted and its first segment is not one of the framework's
+                own nested sections.
+        """
+        head = key.split(".", 1)[0]
+        if "." not in key or head in SHARED_NESTED_PREFIXES:
+            return
+        raise ValueError(
+            f"Agent '{self._agent_scope}' cannot read '{key}': its first segment names a section of the "
+            f"configuration tree outside this agent, and an agent reads its own keys and the process's shared "
+            f"ones. The nested sections the framework shares are {', '.join(sorted(SHARED_NESTED_PREFIXES))}; "
+            "anything else dotted is somebody's scope. Write the key flat to read this agent's own value."
+        )
 
     def get(self, key: str, default: Any = None) -> Any:
         """Get a configuration value, scope-aware when ``agent_scope`` is set.
@@ -989,11 +1058,18 @@ class Config:
         )
 
     def get_observability_config(self) -> ObservabilityConfig:
-        """Get observability-related configuration."""
+        """Get observability-related configuration.
+
+        ``token_metrics_enabled`` is read here like every other key. It was previously left to
+        the model's default, so the one thing it gates -- the per-call token and latency metrics
+        in :mod:`blueprint.agents.agent.metrics` -- could not be turned off from a settings file
+        at all.
+        """
         return ObservabilityConfig(
             otel_enabled=self.get("otel_enabled", False),
             otel_endpoint=self.get("otel_endpoint"),
             otel_service_name=self._resolve_service_name(),
+            token_metrics_enabled=self.get("token_metrics_enabled", True),
             log_level=self.get("log_level", "INFO"),
         )
 

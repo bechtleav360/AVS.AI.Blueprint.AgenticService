@@ -6422,23 +6422,659 @@ durable survival across reconnect and the shutdown drain are specified, implemen
 
 566 lines became 809.
 
+### The scaffolded settings file writes keys the framework reads
+
+Three open points, all the same defect wearing different names: the scaffolder writes a key in a
+shape nothing looks up. Nothing fails -- the file says one thing, the process does another, and
+there is no message in between. Each was probed against a real `Config` before and after.
+
+**`base_files/settings.txt`: two tables become four flat keys.** The template wrote
+
+```toml
+[default.logging]
+level = "DEBUG"
+format = "json"
+
+[default.observability]
+otel_enabled = false
+token_metrics_enabled = true
+```
+
+and the framework reads `log_level`, `log_format`, `otel_enabled` and `token_metrics_enabled` from
+the top level of the environment table. Probed: that file yields
+`get_observability_config().otel_enabled == False` and `log_level == "INFO"` -- every value in both
+tables inert, including the one a developer would edit first. They are now written flat, inside
+`[default]` and above the `[default.runtimes.*]` tables the generator appends, with the reason in
+the file: *these are flat keys, not sections*.
+
+Two values changed as a consequence, because making a key effective is choosing what it does:
+
+- **`log_format` is now `"text"`, not `"json"`.** A scaffolded project is run locally first, where
+  a JSON line per log record is unreadable. Nothing had ever run with `"json"`, so this is not a
+  behaviour change to anything that exists.
+- **`log_level` stays `"DEBUG"`**, which is what the `debug = true` two lines above it already says.
+
+The comment also states what these two become in a group: `log_level` and `log_format` are in
+`PROCESS_SCOPE_KEYS`, so if this project is later hosted as one agent, its own copies are reported
+and ignored and the group's file decides. That is a warning the author will see, and it is better
+read next to the keys than in a log line.
+
+**`config.py`: `token_metrics_enabled` was read by nothing at all.** Flattening the key exposed
+that the getter never passed it -- `get_observability_config()` built an `ObservabilityConfig`
+from four keys and left the fifth to the model's default of `True`:
+
+```python
+return ObservabilityConfig(
+    otel_enabled=self.get("otel_enabled", False),
+    otel_endpoint=self.get("otel_endpoint"),
+    otel_service_name=self._resolve_service_name(),
+    token_metrics_enabled=self.get("token_metrics_enabled", True),
+    log_level=self.get("log_level", "INFO"),
+)
+```
+
+The line in the middle is new. `MetricsRecorder` gates the per-call token and latency metrics on
+`observability.otel_enabled and observability.token_metrics_enabled`, so until now the key could
+be written in any shape, anywhere, and the metrics stayed on.
+
+**`create.py`: `[default.runtimes.<agent>.models]` becomes `.model_settings`.** `Config.get_ai_config`
+reads `runtimes.<name>.model_settings` and hands the dictionary to the provider client verbatim;
+`OpenAIClient` builds `OpenAIResponsesModelSettings(**ai_config.model_settings)` out of it. A
+`.models` table is read by nothing, so the reasoning-effort block `asbs create agent` adds was
+inert -- while the generator's own settings writer (`settings_part_generator.py`) has always
+written the right name, so the two halves of the scaffolder disagreed.
+
+**A fourth defect, found by the test written for the third.** `create_agent` derived the runtime
+name *inside* the try block that reads `src/main.py`:
+
+```python
+agent_name = snake_name if snake_name.lower().endswith("agent") else snake_name + "_agent"
+```
+
+`read_main_py` raises when there is no `src/main.py` -- which is exactly the project that then
+needs the "register it by hand" instructions printed at the end, and those name `agent_name`. So
+the fallback path ended in `UnboundLocalError`, after the prompts and the settings block had
+already been written. The assignment moved above the `try`.
+
+Tests: `TestTheGeneratedSettingsAreRead` in `test_generated_project.py` loads the generated
+`settings.toml` through a real `Config`, **flipping each value first** so that what is asserted is
+that the key is live rather than that its value matches the framework's default, and checks that no
+`logging` or `observability` table is written at all; new
+`tests/unit/agent_generator/cli/commands/test_create_agent.py` asserts the runtime block through
+`get_ai_config` rather than through the file text, and takes the no-`main.py` path; two cases added
+to `TestGetObservabilityConfig`.
+
+**Found while writing them, not fixed here:** a scaffolded project cannot start. The generator
+writes `secrets.toml`, and `DEFAULT_SETTINGS_FILES` -- what `entrypoint.py` loads -- names
+`.secrets.toml`. With the scaffolded `model_provider = "vllm"`, `Config.validate()` then raises
+`Missing API key for vLLM provider` on a project nobody has edited. Raised rather than fixed
+because which of the two names is right is a decision: the generator says `secrets.toml` in three
+places (the file, `secrets.toml.example`, `.gitignore` and `asbs validate`), Dynaconf's convention
+says `.secrets.toml`, and changing the framework's list moves the ground under every existing
+deployment.
+
+### The scaffolded project's secrets file is the one the framework loads
+
+`asbs setup` wrote **`secrets.toml`**; `DEFAULT_SETTINGS_FILES` -- the list `entrypoint.py` hands
+to `Config`, and the image's contract with the project -- is `["settings.toml", ".secrets.toml"]`.
+So the file was loaded by nothing, and since the scaffolded `model_provider = "vllm"` makes the
+API key a *validated* requirement, `Config.validate()` raised on a project nobody had edited:
+
+```
+FAILED: ConfigError Missing API key for vLLM provider
+```
+
+**This is fallout from phase 10 step 1**, not an old defect. Before `5740195` the generated
+`main.py` built its own configuration and named the file itself:
+
+```python
+config = Config(settings_files=["settings.toml", "secrets.toml"], root_path=...)
+```
+
+Step 1 made `main.py` a pure declaration and moved the construction into the entry point, which
+reads `DEFAULT_SETTINGS_FILES` -- and the undotted name was left behind in the generator.
+
+**The dot wins, and the generator moves.** The alternative is adding `secrets.toml` to
+`DEFAULT_SETTINGS_FILES`, which changes what every existing deployment loads -- a project with a
+stray `secrets.toml` on disk would start reading it -- to fix a file only the scaffolder writes.
+`.secrets.toml` is also Dynaconf's own convention and the same shape as `.env`, and keeping the
+framework's list untouched means no consumer of this package sees a change at all.
+
+- `secrets_part_generator.py` writes `.secrets.toml` and `.secrets.toml.example`. The example
+  keeps the real name plus a suffix, so there is one rule rather than two names to remember.
+- The generated `.gitignore` ignores `**/.secrets.toml` -- named exactly, **not** `.secrets.*`,
+  which would also ignore the committed example.
+- `asbs validate` reports an undotted file as the **rename it needs**, not as a file that is
+  missing: `Found secrets.toml, which nothing loads: the framework reads '.secrets.toml'`. That
+  is the only message an already-scaffolded project will get, and "missing" would send its author
+  to create a second file beside the one they already have.
+- The generated `Dockerfile`'s mount example named the wrong path on both sides, so following it
+  produced a container whose secrets were invisible. It now mounts `/app/.secrets.toml`, and the
+  stale `DYNACONF_SETTINGS=/run/secrets/...` example -- which does nothing, because the entry
+  point passes `settings_files` explicitly -- is replaced by a Docker secret with a `target=` and
+  by the environment-variable form.
+- `asbs setup`'s printed tree and next steps name the file it actually wrote.
+
+Documentation: every `secrets.toml` in `docs/` and in the docs shipped into a generated project
+(`claude_docs/`, `assistant_integrations/`) is now `.secrets.toml` -- 33 occurrences across 16
+files. The `Config(settings_files=["settings.toml", "secrets.toml"])` snippets worked as written,
+because they name the file explicitly, but they taught the name that the scaffolder no longer
+writes.
+
+Tests: `test_the_project_configures_itself_from_the_files_the_image_reads` is the one that would
+have caught this -- it builds a `Config` over the generated project using `DEFAULT_SETTINGS_FILES`
+itself, so the project and the framework have to agree on the name or the test fails the way the
+container did. The `.gitignore` assertion now reads the file as *patterns* rather than as text,
+since a comment naming the example would otherwise pass for a rule about it.
+
+**Still not startable, for a second and unrelated reason.** With the secrets file found, the
+scaffolded project gets as far as building its agent and fails:
+
+```
+TypeError: AgentRuntime.__init__() missing 1 required positional argument: 'name'
+```
+
+`AgentBuilder.build()` constructs `AgentRuntime(system_prompt=..., tools=..., **kwargs)` and never
+passes a name, while `AppBuilder.with_agent(agent, name=...)` keeps `name` as the *declaration's*
+name and applies it after construction. Every test that builds an `AgentBuilder` through
+`AppBuilder` replaces `agent.build` with a lambda returning a `MagicMock`, so the real path has
+never run. Its own change.
+
+### An agent runtime is constructed with a name, and registered like every other component
+
+The last thing standing between `asbs setup` and a process that serves. With the secrets file
+found, a scaffolded project got as far as building its agent and stopped:
+
+```
+TypeError: AgentRuntime.__init__() missing 1 required positional argument: 'name'
+```
+
+**Nothing passed the name.** `AgentRuntime.__init__(self, name: str, **kwargs)` requires it --
+it is the registry key -- and `AgentBuilder.build()` constructed the runtime without one, while
+`AppBuilder.with_agent(agent, name=...)` keeps that name on the *declaration* and assigns it
+after construction (`_construct`: `instance.name = declaration.name`). So the call raised before
+the assignment that would have supplied it. The builder has held the answer all along:
+
+```python
+kwargs.setdefault("name", self._runtime_name)
+runtime = AgentRuntime(
+    system_prompt=self._system_prompt,
+    tools=self._tools if self._tools else [],
+    **kwargs,
+)
+```
+
+`runtime_name` is the key the runtime's own configuration is read under, so it is the right
+default, and a differing declaration name still renames it afterwards. `setdefault` rather than a
+positional argument, because `build(config, name=...)` is a legal call and a positional would
+have turned it into a duplicate-argument `TypeError`.
+
+**The half that only becomes visible once the path runs: the runtime was the one component that
+registered itself.**
+
+```python
+Agent.__init__(self, name=name, **kwargs)
+Component.__init__(self, should_register=False)
+self._name = name
+self.registry.add_component(name, self)
+```
+
+Every other component is registered by `Component.__init__` under
+`qualified_component_name(namespace, base_name)`; this one opted out and registered under the
+**bare** name. Two agents in a group whose runtimes shared a name therefore collided on one
+registry key -- `Registry.add_component` raising "name is already taken" -- instead of becoming
+`orders_assistant` and `billing_assistant`. `_base_name` was never set either, so it kept the
+class-derived `agent_runtime` for every agent, which is what the readiness entry and the OpenAPI
+tag render from. The four lines are now two:
+
+```python
+Agent.__init__(self, name=name, **kwargs)
+Component.__init__(self, name=name)
+```
+
+Nothing is lost at the root, where `qualified_component_name("", name) == name`, so a
+single-agent application's registry key and every lookup of it are unchanged. Inside an agent
+the bare name still resolves, because `Registry._lookup` qualifies on the way in -- a service
+written as `self.registry.get_agent("assistant")` finds `orders_assistant`.
+
+**The rename had to be fixed with it, and this is the subtle one.** pydantic-ai's `Agent.name` is
+backed by `self._name` -- the *same field* `Component` uses -- and its setter does nothing else
+(read from `pydantic_ai`'s source: `name_ = self._override_name.get(); return name_.value if
+name_ else self._name`). The combined setter called both:
+
+```python
+Agent.name.fset(self, value)      # self._name = value, unqualified
+Component.name.fset(self, value)  # update_component_name(self._name, qualified)
+```
+
+With the runtime registered under the bare name, the first line happened to write the value the
+second line then found. Registered under a *qualified* name it no longer does: `Agent`'s setter
+overwrites the field with the unqualified value, and `Component`'s setter then asks the registry
+to rename a key that was never there -- `Component with name assistant does not exist`. The
+setter is now `Component.name.fset` alone, which qualifies, moves the key, and writes the field
+both getters read.
+
+**A docstring that said the opposite of the code.** `Component.name`'s setter claimed
+`qualified_component_name` "is idempotent, so a caller that has already qualified the name is not
+punished for it". That function's own docstring spends a paragraph on being **deliberately not**
+idempotent. Corrected to say what it does: pass the bare name.
+
+Tests:
+
+- `TestAnAgentRuntimeIsNamedLikeEveryOtherComponent` in `test_name_uniqueness.py`, against a real
+  registry: qualification, two agents with one runtime name, the root's bare name, lookup by the
+  bare name from inside the agent, `base_name`, and the rename.
+- Two cases in `TestBuild`, which had **no successful build at all** -- every existing case was an
+  error path, which is the other half of why this survived.
+- `TestTheProjectTheEntryPointBuilds` in `test_generated_project.py`: the scaffolded project is
+  built through `entrypoint.build_group_app`, the function the container's command calls. It
+  assembles only -- the lifespan is where an agent reaches for its model -- and asserts the
+  agent's components all carry its namespace.
+
+**One existing test was passing because of the defect.**
+`test_a_model_name_override_is_applied_at_build` asserted that `build()` raised *something*
+(`pytest.raises(Exception)`, with a `# noqa: B017`) and then read the override out of the
+wreckage. What it raised was this `TypeError`. It now stubs the rest of the build and asserts the
+override alone.
+
+Every test that builds an `AgentBuilder` through `AppBuilder` replaces `agent.build` with a lambda
+returning a `MagicMock` (`test_deferred_wiring.py`), which is the reason a defect on the path
+every grouped agent takes left a green suite.
+
+**A scaffolded project now starts.** Probed end to end: generate, `create_group_app`, and the
+lifespan runs to `Application startup completed`. `/health/ready` answers 503 until a real
+`model_api_key` replaces the scaffolded placeholder -- the AI client's health check is what fails,
+which is the intended behaviour rather than a remaining defect.
+
+### Isolation, step 1 -- the registry's root fallback stops reaching a neighbour
+
+The first of the four routes out of an agent, and the one that needed no argument at all: the
+asking agent already knows its neighbours' names, because they are in the group, and the
+qualifier is a documented `<namespace>_<name>`.
+
+```python
+billing.registry.get_component("orders_ledger").record_id   # -> "ORDERS-RECORD-4242"
+```
+
+`Registry._lookup` tries `<namespace>_<name>` and then the bare name. That fallback exists to
+reach the **root** -- the shared transport client, the shared health cache -- but a neighbour's
+registry key *is* a bare name in the same dictionary, so the fallback resolved it. The fix is to
+check who owns what the fallback found:
+
+```python
+found = self._components.get(name)
+if found is not None and namespace and namespace_of(found) not in (ROOT_NAMESPACE, namespace):
+    return None
+return found
+```
+
+Two owners pass. `ROOT_NAMESPACE` is the fallback's whole purpose. The asking namespace itself is
+the documented already-qualified case -- a caller holding `orders_ledger` inside `orders` misses
+on `orders_orders_ledger` and then finds it bare -- and a test now pins that, because it is what
+the ownership check could most easily have cost.
+
+**It reads as absent, not refused.** `get_component` raises its ordinary
+`Component with name orders_ledger does not exist in namespace 'billing' or at the root`. A
+refusal naming the agent would confirm the neighbour exists, which is the same class of
+disclosure in a smaller size -- so the neighbour is simply not there.
+
+`namespace` is falsy on the application registry and on a root component's view, so nothing the
+root does changes: `build()`, the lifespan and the fan-out services all resolve exactly what they
+resolved before.
+
+The `xfail(strict=True)` marker came off
+`test_a_neighbours_qualified_name_is_not_a_key_this_agent_can_use`, which is what strict xfail is
+for -- the fix turned the test red until the marker went.
+
+### Isolation, step 2 -- a view may name its own agent or the root, and no other
+
+The second route, and the one that took two tests to state because it opens two surfaces from one
+line of code. An explicit ``namespace`` argument won unconditionally:
+
+```python
+billing.registry.get_component("ledger", namespace="orders")           # -> orders' instance
+billing.registry.get_cache("default", namespace="orders").get("record")  # -> orders' stored record
+```
+
+Every agent was one keyword away from its neighbours, and the second call is the one that
+matters more: a component instance holds what is in flight, a cache holds what was *kept*.
+
+Both resolvers now refuse a view that names another agent. `_effective_namespace`:
+
+```python
+if namespace is None:
+    return self._default_namespace
+if self._default_namespace and namespace not in (self._default_namespace, ROOT_NAMESPACE):
+    raise RuntimeError(...)
+return namespace
+```
+
+and `_cache_owner` carries the same check rather than sharing one -- **the two cannot be merged**,
+because they mean different things by an omitted argument. For components it means *every*
+namespace on the application registry, which is what `build()` and the lifespan iterate over; for
+a cache it means *this agent*, never every agent, since no cache belongs to all of them. That is
+why they were written as separate functions in the first place, and the duplicated check is the
+price of keeping it that way.
+
+**Refused, not answered absent** -- the opposite of step 1, deliberately. There, a bare name that
+happened to be a neighbour's key is a near miss, so the neighbour is reported as not existing.
+Here the caller *named* another agent, which is a decision rather than a slip, and a silent
+`None` would read as "that agent has nothing registered" -- itself a claim about the neighbour.
+
+**One existing test asserted the hole as intended behaviour.**
+`test_an_explicit_namespace_overrides_the_view` did exactly what its name says, and it was the
+only casualty of the whole isolation change. It is now
+`test_an_explicit_namespace_naming_a_neighbour_is_refused`, with a second case for the two names
+a view may still give -- its own and the root's.
+
+**Nothing else in the framework is caught by it**, which is what made the change safe to make. Every
+component that passes a namespace passes `self.namespace` -- its own (`handler_chain.py:419,432`,
+`nats.py:55,87`) -- and the three places that pass an arbitrary one are constructed **at the
+root**: `EventProcessingService` and `DaprEventing` in `build()` outside the per-agent loop
+(`app_builder.py:917,1127`), and `NamespaceSupervisor`, which is handed the application registry.
+A root component's `registry` property returns the registry itself, not a view, so the guard
+never fires for them. Two tests pin the calls that must keep working: a view naming its own
+namespace, and a view naming the root.
+
+**Probed while here, and sound:** class-based resolution cannot reach a neighbour even though
+`_all_of_type` deliberately ignores the namespace when gathering candidates.
+`resolve_for_namespace` then filters strictly to `namespace` and then `ROOT_NAMESPACE`, so a
+neighbour's instance is never a candidate it can return -- only an ambiguity *within* one level
+raises.
+
+Two `xfail(strict=True)` markers came off.
+
+### Isolation, step 3 -- one declaration stops handing two agents the same object
+
+The only one of the four routes that needs no lookup at all: the object arrives in both
+constructors.
+
+```python
+declaration = AppBuilder().with_service(Ledger, holdings=[])
+AgentGroup("finance", {"orders": declaration, "billing": declaration}).assemble(config)
+orders.holdings.append("ORDER-7")
+billing.holdings                      # -> ['ORDER-7']
+```
+
+One declaration serving several agents is the property the whole design rests on -- the same
+`AppBuilder` named twice in the map, replayed once per namespace. Replay re-issues the recorded
+call and `_construct` spreads the recorded `kwargs` into the constructor, and `**` copies the
+*mapping* and not its values. Both agents therefore hold the same list.
+
+**Refused rather than copied.** `deepcopy` would close the hole silently and change what the
+author wrote: a client or a connection pool passed deliberately would be duplicated per agent,
+and an object holding a lock or a socket cannot be copied at all -- so the failure would arrive
+later, somewhere else, and look like something different. `AgentGroup._refuse_state_shared_between_agents`
+runs with the other refusals, at assembly, and names the agents, the call, the argument, its type
+and the way out.
+
+**The line is code versus data**, in a new `SHARED_NESTED_PREFIXES`-style allowlist,
+`SHAREABLE_TYPES`: `None`, `bool`, `int`, `float`, `complex`, `str`, `bytes`, `frozenset`,
+`range`, `Enum`, and `type`, function, method and module -- tuples checked recursively. Two agents
+built from one declaration *already* share the component class, and a class, a function or a
+module is behaviour rather than something an agent can write into. A list, a dict, a set or an
+ordinary instance is state. Arbitrary instances are refused even when their author considers them
+frozen, because "frozen" is not decidable from the object and the cost of being wrong is silent
+cross-agent sharing.
+
+**The fix needs no new API.** A declaration's target may be a zero-argument factory, called once
+per agent, so `with_service(lambda: Ledger(holdings=[]))` gives each its own -- and a test pins
+that. **Only a declaration used by more than one agent is checked**: a single-agent declaration
+may carry anything, because there is nobody to share it with, which is *standalone is permissive,
+the group has rules* applied to the one case that is genuinely about the group.
+
+### Isolation, step 4 -- a dotted configuration key stays inside its own agent
+
+The last route, and the one with compatibility consequences, which is why it went last.
+
+```python
+config.for_namespace("billing").get("orders.record_id")   # -> "ORDERS-RECORD-4242"
+```
+
+An agent's section is written `[default.<agent>]`, so its keys *are* `<agent>.<key>` to anyone
+who can resolve a dotted name -- and `_scoped_get` tries `<scope>.<key>` and then falls back to
+the raw key against the whole tree. The scope prefixes a key; it never confined it.
+
+The fallback is now restricted to the dotted prefixes the framework itself owns, by an
+**allowlist** rather than a list of agent names:
+
+```python
+SHARED_NESTED_PREFIXES = frozenset({"cache", "event_publishing", "runtimes", "runtime"})
+```
+
+Those are the only four the framework reads a dotted key under -- `cache.*` (11 keys),
+`event_publishing.*` (2), and `runtimes.<name>.*` with its legacy singular. Flat is the norm for
+everything else. An allowlist fails closed: a new agent needs no entry, and a prefix this list has
+never heard of is refused rather than resolved, which is the opposite of the default that created
+the hole.
+
+**It raises, and does not quietly miss**, for the reason the deployment-identity check raises: a
+`None` reads as "not configured" and sends the caller hunting for a setting, when what actually
+happened is that the key names somewhere they cannot read.
+
+**Only a view is confined.** The loader is untouched -- the application owns its whole tree, and
+`build()`, `resolved_settings` and the environment endpoint read across agents by design. A test
+pins that too.
+
+**The compatibility note:** a project reading its own *custom* nested key through a scoped view
+now gets an error naming the rule. Nothing in the framework or the examples does, and
+`Config.settings` remains the escape hatch, but it is a behaviour change rather than a pure
+tightening -- the only one of the four.
+
+### Publishing is its own decision, and its subjects are declared
+
+Closes the defect broker step 2 found. `_stream_subjects` covered what the client *subscribed*
+to and nothing it published to, so a JetStream publish to a handler-result subject waited for a
+`PubAck` no stream would send, timed out, and was swallowed by `publish_handler_event` as a
+WARNING -- while a Core NATS subscriber still saw the message, because the publish did go out.
+A live listener looked healthy; nothing was stored.
+
+**The root cause was one key doing two jobs.** `nats_use_jetstream` exists so *consumers* can be
+durable, and `publish()` read the same flag:
+
+```python
+if self._use_jetstream and client.jetstream():
+    ack = await client.jetstream().publish(topic, event_data)
+```
+
+Nobody decided that publishing should be durable -- it followed from a key about something else.
+Three changes, in that order:
+
+**`nats_publish_mode` splits the decision.** `"core"` or `"jetstream"`; unset, it follows
+`nats_use_jetstream`, so no existing deployment changes. The shape this makes reachable is
+durable consumption beside fire-and-forget publishing -- a status notification nothing needs to
+persist, which under the old coupling paid for a stream round trip it had no use for. A test pins
+that a client with `_use_jetstream` set no longer publishes through JetStream on that basis alone.
+
+**`_resolve_publish_subjects` declares what may be published.** Two sources, because there are two
+ways an outbound subject is chosen: `event_publishing.topic_mapping`, which is how a
+`HandlerResult` is routed and therefore where nearly every outbound subject is already written
+down, and `nats_publish_subjects` for a caller that passes `topic=` to `publish_event` directly
+and so never appears in the mapping.
+
+**A wildcard is refused**, by a new `validate_publish_subject` beside the existing
+`validate_subject_segment` -- same rule, whole subject rather than one segment, so dots are legal
+and `*`, `>` and whitespace are not. `orders.*` is a good thing to subscribe to and a meaningless
+thing to publish to: NATS takes it literally, so the message lands on a subject spelled with an
+asterisk and every subscriber to the pattern misses it. Nothing fails and nothing arrives, which
+is why it is worth refusing at startup.
+
+`_stream_subjects` then adds the publishable subjects **when publishing is durable** -- and not
+otherwise, because a Core publish stores nothing and widening the stream for it would claim
+subjects the deployment has no reason to own.
+
+One existing test had set the old coupling by hand (`nats_client._use_jetstream = True` before
+calling `publish`); it now sets the publish mode, and has a companion asserting the separation.
+
+### The scaffolded project ships tests, and a pyproject that makes its own next step possible
+
+`asbs setup` printed *"Install dependencies: pip install -e ."* and wrote no `pyproject.toml`, so
+that command could not work; `asbs validate` then reported `tests/` and `pyproject.toml` missing
+on a project the same tool had just produced. Both are now generated, and the loop closes:
+`asbs setup` -> `pytest` (7 passed) -> `asbs validate` (passes).
+
+**Two tests, deliberately not more.** The scaffolded handler and service `raise
+NotImplementedError` in the methods that matter -- that is where the author's logic goes -- so a
+generated test of `handle_event` could only assert the stub is still a stub, and would fail the
+moment it stopped being one. A test that must be deleted before the project can work teaches that
+the suite is noise. What is generated is what is true on day one and stays true:
+
+- `tests/test_declaration.py` -- `src/main.py` declares an unbuilt `AppBuilder`, constructs
+  nothing on import, and passes classes rather than instances. Both mistakes it guards against
+  work fine standalone, which is why they are easy to make: `.build()` here takes the
+  configuration and namespace the host is supposed to decide, and `with_service(MyService())`
+  creates a component before any namespace exists, so it belongs to the root for ever.
+- `tests/test_mapper.py` -- the generated mapper is the one piece of scaffolded code with real
+  logic in it, so a DTO round trip is a real assertion, and it is what says so when a field is
+  added to one side and forgotten on the other.
+
+`pyproject.toml` declares the framework and pytest, and carries `pythonpath = ["."]` -- without
+it the first `pytest` in a new project fails on importing `src.main`, which is the same import
+`agents.toml` names and the entry point performs.
+
+### `asbs` prints UTF-8 and writes ASCII
+
+Every command prints check marks, warning signs and box drawing; Python encodes stdout with the
+locale encoding, which on Windows is cp1252, which has none of them. The first line of output
+raised `UnicodeEncodeError` -- *mid-command*: `asbs create handler` died after writing the handler
+and before registering it in `main.py`, leaving the project half-edited.
+
+`use_utf8`, called on `sys.stdout` and `sys.stderr` at the top of `main()`, reconfigures to UTF-8
+and falls back to `errors="replace"` for a stream that refuses an encoding change -- where a lost
+glyph is a `?` in a log rather than an abandoned command. Reproduced before and after with
+`PYTHONIOENCODING=cp1252`, and `setup`, `create handler` and `validate` all run clean on one now.
+
+The other half of the rule is held by a test rather than a docstring:
+`TestEverythingWrittenIsAscii` generates a **pristine** project -- the module's shared one has
+`__pycache__` written into it by the tests that import `src.main`, and a `.pyc` is binary -- and
+asserts every file decodes as ASCII.
+
+### `asbs create` writes the imports the file it edits already uses
+
+The generator emits relative imports throughout (`from .handlers import OrderHandler` in
+`main.py`, `from ..services import OrderService` in a component); `asbs create` appended absolute
+ones (`from src.handlers.order_placed_handler import ...`). Both resolve, which is why nothing
+failed and why it survived -- and two styles in one file is how a later move breaks exactly one of
+them. Twelve occurrences, across the handler, service, API, models and scheduler paths, plus the
+"add this by hand" messages that print them. The one inside a generated API module needed `..`
+rather than `.`, being a package deeper.
+
+### The environment endpoint reports what it claims to report
+
+`env_status` had a branch whose comment said *"An agent-scoped actuator reports its own scope and
+nothing else"* and whose code handed `_as_dict(settings)` -- the **unscoped** tree. A scoped
+actuator would have served every agent's configuration over HTTP. Latent rather than live, since
+`ActuatorApi` is constructed at the root, and wrong as written either way.
+
+The fix needed `Config.resolved_settings` to work on a view, which it refused outright. It now
+**resolves a view's own scope and nothing else**: asked for another namespace it still raises, and
+the flattening is delegated to the object that owns the tree, because stripping the other agents'
+subsections needs the list of namespaces and a view deliberately has none (C6). `for_namespace`
+gives each view a `_loader` reference for exactly that.
+
+**A second defect surfaced while testing it.** The flattening derived "the other agents" from
+`self._views` -- the namespaces that had *asked* for a view. An agent whose components had not yet
+read their configuration was therefore left in a neighbour's resolved settings, so whether it
+leaked depended on construction order. It is now derived from the tree itself: every top-level
+table that is not one of `SHARED_NESTED_PREFIXES` is an agent's section.
+
+`_as_dict` was that branch's only caller and is gone. The existing test
+`test_an_agent_scoped_actuator_reports_only_its_own_scope` asserted `APP_NAME == "root-app"` while
+`orders` overrides it -- the second test in this session found asserting the bug its name
+disclaims.
+
+### Five examples declared an app_name the framework refuses
+
+Since P1 a root-namespace application's `app_name` *is* its NATS queue group, and the dead-letter
+subject derives from it -- so a space in it is a subject the broker rejects and the application
+raises at subscribe time. `examples/webhook_relay` was broken outright, being the only example on
+`event_bus = "nats"`; the other four were the same illegal value waiting for somebody to switch
+bus. All five renamed to hyphenated forms, and `tests/unit/examples` now holds every example's
+`app_name` to `validate_subject_segment`, so the next one cannot ship. The prose and docstrings
+keep the readable names -- nothing reads those.
+
 ---
 
 ## Open points
 
-- **The generated `settings.toml` writes two sections nothing reads.** `[default.logging]`
+- ~~**The generated `settings.toml` writes two sections nothing reads.**~~ **Done.** `[default.logging]`
   (`level`, `format`) and `[default.observability]` (`otel_enabled`, `token_metrics_enabled`) are
   sectioned, and the framework reads all four as **flat** keys -- `log_level`, `log_format`,
   `otel_enabled`, `token_metrics_enabled`. Probed against a real `Config`: a settings file with
   `[default.observability] otel_enabled = true` yields `get_observability_config().otel_enabled ==
   False`, so a developer who turns telemetry on in the file scaffolded for them gets nothing and no
   message. `base_files/settings.txt` is where it is written.
-- **`asbs create agent` writes `[default.runtimes.<agent>.models]`; the framework reads
-  `runtimes.<agent>.model_settings`.** The generator's own settings writer
+- ~~**`asbs create agent` writes `[default.runtimes.<agent>.models]`; the framework reads
+  `runtimes.<agent>.model_settings`.**~~ **Done.** The generator's own settings writer
   (`settings_part_generator.py`) writes `.model_settings` correctly, so the two halves of the
   scaffolder disagree and the block `asbs create agent` adds is inert. Found beside the
   `openai_reasoning_effort` value fixed in step 3, in the same statement.
-- **`asbs` crashes on a Windows console** -- still open from step 1, and now the only thing standing
+- ~~**A scaffolded project cannot start: its secrets file is never loaded.**~~ **Done** -- the
+  generator moved to `.secrets.toml`. `asbs setup` used to write
+  `secrets.toml`, and `DEFAULT_SETTINGS_FILES` -- the list `entrypoint.py` hands to `Config` --
+  names `.secrets.toml`. The scaffolded `model_provider = "vllm"` makes the API key a validated
+  requirement, so `Config.validate()` raises `Missing API key for vLLM provider` on a project
+  nobody has edited. Probed by generating a project and loading it with the framework's own
+  defaults. Which name is right is the decision: the generator says `secrets.toml` in four places
+  (the file it writes, `secrets.toml.example`, the `.gitignore` entry and `asbs validate`'s two
+  checks), Dynaconf's own convention is `.secrets.toml`, and adding a name to the framework's list
+  changes what every existing deployment loads.
+- ~~**A scaffolded project still cannot start: `AgentRuntime` is constructed without a name.**~~
+  **Done.**
+  `AgentBuilder.build()` calls `AgentRuntime(system_prompt=..., tools=..., **kwargs)`, and
+  `AgentRuntime.__init__` takes `name` as a required positional argument;
+  `AppBuilder.with_agent(agent, name=...)` records `name` on the declaration and assigns it after
+  construction, so nothing supplies it. Every unit test of that path stubs `agent.build`, which is
+  why it is green. Reproduced by generating a project and calling `create_group_app`.
+
+- ~~**An agent can read a neighbour's data by four routes.**~~ **All four closed** in isolation
+  steps 1-4; what follows is the record of what each was. The barrier is now enforced rather
+  than conventional, with one deliberate exception (`Config.settings`, below). Grouping's whole premise is that co-hosted agents are isolated; each of these was
+  reached with nothing but the framework's public API and a neighbour's *name*, which an agent
+  knows because it is in the group. Stated as tests in
+  `tests/unit/agents/test_agent_isolation.py`, marked `xfail(strict=True)` so that closing one
+  turns the test red until the marker goes.
+  - ~~**`Registry._lookup` falls back from `<me>_<name>` to the bare name**~~ **Closed in
+    isolation step 1.** A neighbour's key *is* a bare name in the same dictionary, so
+    `get_component("orders_ledger")` from `billing` returned orders' instance. The fallback now
+    checks that what it found belongs to the root or to the asking agent.
+  - ~~**`_effective_namespace` lets an explicit `namespace=` win on a view**~~ **Closed in
+    isolation step 2**, together with the same hole in `_cache_owner` -- both now refuse a view
+    that names an agent other than itself or the root.
+  - ~~**A scoped `get()` resolves a dotted key against the whole tree**~~ **Closed in
+    isolation step 4.** The root fallback now accepts only the framework's own dotted prefixes
+    (`SHARED_NESTED_PREFIXES`), an allowlist that fails closed.
+  - ~~**One declaration serving two agents constructs both with the same mutable argument.**~~
+    **Closed in isolation step 3.** A declaration used by more than one agent is refused at
+    assembly if it carries anything but code or an immutable value; a zero-argument factory is
+    the way out and needs no new API.
+
+  `Config.settings` is a fifth route and is **deliberate** -- the documented escape hatch, which
+  returns the unscoped tree and logs a WARNING naming the agent. It is covered by a passing test
+  rather than an xfail, because what it does is what it is for; whether an escape hatch belongs in
+  the barrier at all is the question to settle with the other four.
+
+  What holds, and is now pinned: two agents get separate instances of one declared class; a
+  lookup by bare name, by class, or by enumeration sees only the asking agent's own; the root
+  remains resolvable; two agents declaring one cache name get separate stores and cannot read each
+  other's keys; `cache_entries()` refuses on a view (C6); `Config.for_namespace` refuses to hand
+  out another agent's view; and each agent gets its own thread pool.
+
+- ~~**A handler's published result is lost under JetStream unless something else provisions the
+  stream.**~~ **Closed.** The client declares its publishable subjects and the stream carries
+  them; publishing is now its own mode. Originally: `NATSClient._stream_subjects` covers the subscribed topics and the dead-letter
+  subject; a subject a `HandlerResult` is published *to* is not among them, so `js.publish` waits
+  for a stream acknowledgement that never comes, times out, and
+  `EventPublishingService.publish_handler_event` swallows it as a WARNING. A Core NATS listener
+  still sees the event, so a live subscriber looks healthy while a downstream JetStream consumer
+  gets nothing. Found and reproduced against a real broker in broker step 2; stated as an
+  `xfail(strict=True)` in `tests/integration/test_event_path.py`, and written up in
+  `docs/plans/2026-09-11-broker-integration-tests.md`. The fix is a design question rather than a
+  line: the client would have to learn its publishable subjects, and `topic_mapping` is read by
+  the publishing service rather than by the client.
+
+- ~~**`asbs` crashes on a Windows console**~~ **Closed** -- `use_utf8` at the CLI entry point.
+  Originally: still open from step 1, and the only thing standing
   between the CLI and the ASCII rule. Every command prints check marks and box drawing; on a cp1252
   console the first one raises `UnicodeEncodeError` mid-command, after files have been written.
 - ~~**`docs/guides/cli-reference.md` still documents checks that have never existed.**~~ **Done in
@@ -6456,7 +7092,8 @@ durable survival across reconnect and the shutdown drain are specified, implemen
   It is also a standing rule violation: source files are ASCII only. The fix is a sweep of the
   CLI's output glyphs, which is its own step rather than a drive-by inside a step about the
   generated project's shape.
-- **`asbs create` writes absolute imports into a file that uses relative ones.** A generated
+- ~~**`asbs create` writes absolute imports into a file that uses relative ones.**~~ **Closed** --
+  twelve occurrences rewritten. Originally: a generated
   `main.py` imports `from .handlers import ...`; `asbs create handler` appends
   `from src.handlers.order_placed_handler import OrderPlacedHandler`. Both resolve, so nothing
   fails -- but the two styles in one file are how a later refactor breaks one of them.

@@ -187,7 +187,7 @@ Register handlers with `AppBuilder` by passing the **class** or an instance of t
 ```python
 from blueprint.agents import AppBuilder, Config
 
-config = Config(settings_files=["settings.toml", "secrets.toml"])
+config = Config(settings_files=["settings.toml", ".secrets.toml"])
 app = (
     AppBuilder(config)
     .with_service(OrderService)
@@ -263,7 +263,7 @@ class InvoiceHandler(EventHandlerBase):
 
 ## Testing
 
-Use a mock registry to unit test handlers in isolation. 
+Use a mock registry to unit test handlers in isolation.
 
 ```python
 import pytest

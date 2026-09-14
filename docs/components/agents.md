@@ -250,9 +250,9 @@ model_max_tokens = 500
 model_temperature = 0.0
 ```
 
-### secrets.toml
+### .secrets.toml
 
-Store API keys in `secrets.toml` (never commit this file):
+Store API keys in `.secrets.toml` (never commit this file):
 
 ```toml
 [default.runtimes.summarizer]

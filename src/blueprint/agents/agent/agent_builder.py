@@ -375,6 +375,16 @@ class AgentBuilder:
                 if kwarg not in allowed:
                     raise ValueError(f"Unexpected keyword argument for Agent: {kwarg}")
 
+        # AgentRuntime takes its registry name as a required argument and nothing was passing
+        # one: AppBuilder.with_agent(agent, name=...) keeps that name on the *declaration* and
+        # assigns it after construction, so this call raised TypeError before it could get
+        # there. The builder already knows what the runtime is called -- runtime_name is the
+        # key its configuration is read under -- so that is the name it is built with, and a
+        # differing declaration name still renames it afterwards.
+        #
+        # setdefault rather than a positional argument: build(config, name=...) may legitimately
+        # carry one, and a positional would make that a duplicate-argument TypeError.
+        kwargs.setdefault("name", self._runtime_name)
         runtime = AgentRuntime(
             system_prompt=self._system_prompt,
             tools=self._tools if self._tools else [],

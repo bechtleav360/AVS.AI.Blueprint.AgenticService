@@ -32,7 +32,7 @@ Use the `blueprint-architect` agent to produce an architecture plan based on the
 - Which components are needed (handlers, services, agents, APIs, schedulers)
 - The dependency graph between components
 - The wiring order in `main.py`
-- Configuration structure (settings.toml, secrets.toml)
+- Configuration structure (settings.toml, .secrets.toml)
 
 ## Step 4: Implementation
 
@@ -52,7 +52,7 @@ Ensure `settings.toml` has:
 - Event publishing topic mappings (if handlers publish events)
 - Cache settings (if caching is used)
 
-Ensure `secrets.toml` has placeholder keys for any required API keys.
+Ensure `.secrets.toml` has placeholder keys for any required API keys.
 
 ## Step 6: Verification
 

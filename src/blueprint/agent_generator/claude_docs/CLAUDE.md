@@ -39,7 +39,7 @@ from pathlib import Path
 from blueprint.agents import AppBuilder, Config, AgentBuilder
 
 config = Config(
-    settings_files=["settings.toml", "secrets.toml"],
+    settings_files=["settings.toml", ".secrets.toml"],
     root_path=Path(__file__).parent.parent,
 )
 
@@ -156,7 +156,7 @@ class CleanupScheduler(SchedulerBase):
 
     async def on_startup(self) -> None:
         self._service = self.registry.get_service(CleanupService)
-        await super().on_startup()   # required: without it the scheduler never runs
+        await super().on_startup()  # required: without it the scheduler never runs
 
     async def on_shutdown(self) -> None:
         await super().on_shutdown()
@@ -241,7 +241,7 @@ model_name = "gpt-4-turbo"
 model_temperature = 0.5
 ```
 
-**secrets.toml** (never commit): `model_api_key = "sk-..."`
+**.secrets.toml** (never commit): `model_api_key = "sk-..."`
 
 ## CLI (`asbs`)
 
@@ -264,7 +264,7 @@ asbs dev [--port 8000]                             # Run dev server
 - All I/O must be `async`/`await`
 - `%s`-style args in log calls, not f-strings
 - Pydantic validation at system boundaries
-- Secrets via `secrets.toml` — never hardcoded
+- Secrets via `.secrets.toml` — never hardcoded
 - Context managers (`async with`) for external resources
 - **No `assert` statements in production code** — `assert` is only permitted in test files (`tests/`)
 - **All imports at the top of the file** — never inside methods, functions, or classes

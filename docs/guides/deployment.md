@@ -65,7 +65,7 @@ Three things about it are load-bearing:
   scaffolded `src/main.py` declares an agent and builds nothing; the entry point resolves this
   process's group, builds it and serves it. A project that has not migrated keeps `uvicorn
   src.main:app` and keeps working.
-- **`secrets.toml` is never copied in.** Mount it, or supply the values as environment variables.
+- **`.secrets.toml` is never copied in.** Mount it, or supply the values as environment variables.
 
 ### Building and running
 
@@ -753,7 +753,7 @@ Later sources override earlier ones:
 1. `settings.toml` -- base configuration, baked into the image
 2. each agent's own `settings.toml`, merged under that agent's scope -- filling gaps only, so the
    group's file and any `DYNACONF_<AGENT>__KEY` win over it
-3. `secrets.toml` -- local development only; never copied into the image
+3. `.secrets.toml` -- local development only; never copied into the image
 4. environment variables -- the ConfigMap and Secret above
 
 ---

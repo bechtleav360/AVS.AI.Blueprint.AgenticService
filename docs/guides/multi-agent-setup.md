@@ -128,7 +128,7 @@ of the three is a name you cannot cheaply change afterwards.
 Before:
 
 ```python
-config = Config(settings_files=["settings.toml", "secrets.toml"])
+config = Config(settings_files=["settings.toml", ".secrets.toml"])
 
 app = (
     AppBuilder(config)
@@ -161,7 +161,7 @@ component:
 
 ```python
 def create_app():
-    return agent.build(Config(settings_files=["settings.toml", "secrets.toml"]))
+    return agent.build(Config(settings_files=["settings.toml", ".secrets.toml"]))
 ```
 
 Two things the module must not do, because it is imported into a shared runtime: construct clients

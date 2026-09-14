@@ -175,14 +175,35 @@ class Registry:
         return [component for component in self._components.values() if isinstance(component, component_type)]
 
     def _effective_namespace(self, namespace: str | None) -> str | None:
-        """Resolve an omitted ``namespace`` argument.
+        """Resolve an omitted ``namespace`` argument, and refuse one that names a neighbour.
 
         On the application's own registry an omitted namespace means *every* namespace, which is
         what ``build()`` and the lifespan need when they iterate. On a view it means *that view's*
-        namespace, which is what a component needs when it looks up a collaborator. An explicit
-        argument always wins, on either.
+        namespace, which is what a component needs when it looks up a collaborator.
+
+        **A view may name its own namespace or the root, and no other.** An explicit argument
+        used to win unconditionally, which made every agent one keyword away from its
+        neighbours: ``self.registry.get_component("ledger", namespace="orders")`` resolved
+        orders' instance from inside billing. Unlike the fallback in :meth:`_lookup`, this is
+        refused rather than answered with an absence -- the caller named another agent, so it is
+        a decision rather than a near miss, and a silent ``None`` would leave it looking like the
+        neighbour had nothing registered.
+
+        Nothing in the framework is caught by this. Every component that passes a namespace
+        passes ``self.namespace`` -- its own -- and the three places that pass an arbitrary one
+        (``EventProcessingService``, ``DaprEventing``, ``NamespaceSupervisor``) are constructed
+        at the root, so they hold the application registry rather than a view.
         """
-        return self._default_namespace if namespace is None else namespace
+        if namespace is None:
+            return self._default_namespace
+        if self._default_namespace and namespace not in (self._default_namespace, ROOT_NAMESPACE):
+            raise RuntimeError(
+                f"The registry view for namespace '{self._default_namespace}' was asked for namespace "
+                f"'{namespace}'. An agent resolves its own components and the root's shared ones; a "
+                "neighbour's belong to that agent alone. Drop the 'namespace' argument to resolve within "
+                "this agent."
+            )
+        return namespace
 
     def _lookup(self, name: str, namespace: str | None) -> Any | None:
         """Return the component registered under ``name`` for ``namespace``, or ``None``.
@@ -195,13 +216,29 @@ class Registry:
 
         A caller that already holds the qualified name is unaffected: qualifying it a second time
         simply misses, and the bare lookup then finds it.
+
+        **The fallback reaches the root, and only the root.** A neighbour's registry key is a
+        bare name in the same dictionary -- ``orders_ledger`` is what orders' component is
+        registered under -- so the fallback used to resolve it: asking billing's view for
+        ``"orders_ledger"`` returned orders' instance, with nothing but a name the asking agent
+        already knows from the group. What the fallback found is therefore checked for ownership,
+        and a neighbour's component is reported **absent** rather than refused. Absence is the
+        stronger answer: a refusal naming the agent would confirm that the neighbour exists,
+        which is the same class of disclosure in a smaller size.
+
+        The two owners that pass are the root (``""``), which holds what the process genuinely
+        shares, and the asking namespace itself, which is the already-qualified case above.
         """
         namespace = self._effective_namespace(namespace)
         if namespace:
             qualified = qualified_component_name(namespace, name)
             if qualified in self._components:
                 return self._components[qualified]
-        return self._components.get(name)
+
+        found = self._components.get(name)
+        if found is not None and namespace and namespace_of(found) not in (ROOT_NAMESPACE, namespace):
+            return None
+        return found
 
     @property
     def correlation_context(self) -> CorrelationContext:
@@ -272,11 +309,27 @@ class Registry:
         a lookup that ranged over the process would be the cross-agent sharing spec sec. 8
         exists to prevent.
 
+        **A view may name its own agent or the root, and no other**, for the reason
+        :meth:`_effective_namespace` gives -- and it matters more here, because a cache is where
+        an agent's data accumulates rather than merely passes through. ``get_cache("default",
+        namespace="orders")`` from inside billing used to return orders' live store, keys and
+        all. The check is repeated rather than shared because the two resolvers mean different
+        things by an omitted argument, which is the whole reason they are separate functions.
+
         Args:
             namespace: The agent named at the call site, or ``None`` to take it from this
                 object.
+
+        Raises:
+            RuntimeError: if a view names an agent that is neither itself nor the root.
         """
         if namespace is not None:
+            if self._default_namespace and namespace not in (self._default_namespace, ROOT_NAMESPACE):
+                raise RuntimeError(
+                    f"The registry view for namespace '{self._default_namespace}' was asked for the caches of "
+                    f"namespace '{namespace}'. A cache belongs to the agent that declared it (spec sec. 8), and "
+                    "no agent reads another's. Drop the 'namespace' argument to reach this agent's own."
+                )
             return namespace
         return self._default_namespace or ROOT_NAMESPACE
 

@@ -84,7 +84,7 @@ my-first-agent/
 │   └── prompts/             # LLM prompt files
 ├── tests/
 ├── settings.toml            # Configuration
-├── secrets.toml             # Secrets (gitignored)
+├── .secrets.toml           # Secrets (gitignored)
 ├── pyproject.toml
 └── Dockerfile
 ```
@@ -98,7 +98,7 @@ my-first-agent/
 | `src/models/` | Pydantic models for request/response schemas and domain objects. |
 | `src/prompts/` | Prompt template files used by LLM-powered agents. |
 | `settings.toml` | Application configuration managed by Dynaconf. |
-| `secrets.toml` | Sensitive values (API keys, connection strings). Gitignored by default. |
+| `.secrets.toml` | Sensitive values (API keys, connection strings). Gitignored by default. |
 
 ---
 
@@ -112,7 +112,7 @@ asbs dev
 
 This will:
 
-1. Load configuration from `settings.toml` and `secrets.toml`
+1. Load configuration from `settings.toml` and `.secrets.toml`
 2. Register all handlers, services, and API endpoints
 3. Start the FastAPI server with hot-reload enabled
 
@@ -180,7 +180,7 @@ app = (
 ### Key points
 
 - **`AppBuilder`** is the central assembly point. It uses a fluent (method-chaining) API to register each component.
-- **`Config`** loads values from `settings.toml` and `secrets.toml` via Dynaconf. Environment variables can override any setting.
+- **`Config`** loads values from `settings.toml` and `.secrets.toml` via Dynaconf. Environment variables can override any setting.
 - **Handlers** (`EventHandlerBase` subclasses) process incoming events from message queues or other sources.
 - **Services** (`ServiceBase` subclasses) encapsulate reusable business logic and are injected into handlers and APIs.
 - **APIs** (`RestApiBase` subclasses) define REST endpoints that are automatically mounted on the FastAPI server.
@@ -202,7 +202,7 @@ log_level = "INFO"
 server_port = 8000
 ```
 
-**secrets.toml** -- Sensitive values (API keys, credentials):
+**.secrets.toml** -- Sensitive values (API keys, credentials):
 
 ```toml
 [default]

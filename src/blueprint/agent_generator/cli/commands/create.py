@@ -139,7 +139,7 @@ def create_handler(args: Namespace) -> None:
         main_content = read_main_py(project_root)
 
         # Add import statement (use snake_case module name)
-        import_statement = f"from src.handlers.{module_name} import {class_name}"
+        import_statement = f"from .handlers.{module_name} import {class_name}"
         main_content = add_import_to_main(main_content, import_statement, "handler")
 
         # Add component registration
@@ -150,7 +150,7 @@ def create_handler(args: Namespace) -> None:
 
         auto_registered = True
         print("✓ Auto-registered in src/main.py")
-        print(f"  - Added import: from src.handlers.{module_name} import {class_name}")
+        print(f"  - Added import: from .handlers.{module_name} import {class_name}")
         print(f"  - Added registration: .with_handler({class_name})")
 
     except (FileNotFoundError, ValueError) as e:
@@ -232,7 +232,7 @@ def create_service(args: Namespace) -> None:
         main_content = read_main_py(project_root)
 
         # Add import statement (use snake_case module name)
-        import_statement = f"from src.services.{module_name} import {class_name}"
+        import_statement = f"from .services.{module_name} import {class_name}"
         main_content = add_import_to_main(main_content, import_statement, "service")
 
         # Add component registration
@@ -243,7 +243,7 @@ def create_service(args: Namespace) -> None:
 
         auto_registered = True
         print("✓ Auto-registered in src/main.py")
-        print(f"  - Added import: from src.services.{module_name} import {class_name}")
+        print(f"  - Added import: from .services.{module_name} import {class_name}")
         print(f"  - Added registration: .with_service({class_name})")
 
     except (FileNotFoundError, ValueError) as e:
@@ -389,7 +389,7 @@ from fastapi import HTTPException, status
 
 from blueprint.agents.io.api.rest_api_base import RestApiBase
 
-from src.models.{models_module_name} import {request_class_name}, {response_class_name}
+from ..models.{models_module_name} import {request_class_name}, {response_class_name}
 
 
 logger = logging.getLogger(__name__)
@@ -471,11 +471,11 @@ class {class_name}(RestApiBase):
         main_content = read_main_py(project_root)
 
         # Add models import (use snake_case module name)
-        models_import_statement = f"from src.models.{models_module_name} import {request_class_name}, {response_class_name}"
+        models_import_statement = f"from .models.{models_module_name} import {request_class_name}, {response_class_name}"
         main_content = add_import_to_main(main_content, models_import_statement, "api")
 
         # Add API import (use snake_case module name)
-        api_import_statement = f"from src.api.{module_name} import {class_name}"
+        api_import_statement = f"from .api.{module_name} import {class_name}"
         main_content = add_import_to_main(main_content, api_import_statement, "api")
 
         # Add component registration
@@ -486,8 +486,8 @@ class {class_name}(RestApiBase):
 
         auto_registered = True
         print("✓ Auto-registered in src/main.py")
-        print(f"  - Added import: from src.models.{models_module_name} import {request_class_name}, {response_class_name}")
-        print(f"  - Added import: from src.api.{module_name} import {class_name}")
+        print(f"  - Added import: from .models.{models_module_name} import {request_class_name}, {response_class_name}")
+        print(f"  - Added import: from .api.{module_name} import {class_name}")
         print(f"  - Added registration: .with_rest_api({class_name})")
 
     except (FileNotFoundError, ValueError) as e:
@@ -508,8 +508,8 @@ class {class_name}(RestApiBase):
     print(f"     from .{module_name} import {class_name}")
     if not auto_registered:
         print("  6. Add to src/main.py:")
-        print(f"     from src.models.{models_module_name} import {request_class_name}, {response_class_name}")
-        print(f"     from src.api.{module_name} import {class_name}")
+        print(f"     from .models.{models_module_name} import {request_class_name}, {response_class_name}")
+        print(f"     from .api.{module_name} import {class_name}")
         print(f"     .with_rest_api({class_name})")
     print("  6. View docs at http://localhost:8000/docs")
 
@@ -591,9 +591,13 @@ Provide a clear and actionable response."""
             settings_content += "model_temperature = 0.7\n"
             settings_content += "model_max_tokens = 2000\n"
 
-            settings_models_section = f"[default.runtimes.{snake_name}.models]"
-            if settings_models_section not in settings_content:
-                settings_content += f"\n{settings_models_section}\n"
+            # model_settings, not models: Config.get_ai_config reads
+            # runtimes.<name>.model_settings and hands it to the provider client verbatim.
+            # A [.models] table is read by nothing, so the block would look configured and
+            # be inert -- which is what it was.
+            model_settings_section = f"[default.runtimes.{snake_name}.model_settings]"
+            if model_settings_section not in settings_content:
+                settings_content += f"\n{model_settings_section}\n"
                 # An effort level, not a model: the value was a copy of model_name, and the
                 # scaffolder's own settings writer has always written "low" here.
                 settings_content += 'openai_reasoning_effort = "low"\n'
@@ -608,12 +612,16 @@ Provide a clear and actionable response."""
         logger.debug("Could not update settings.toml: %s", e)
         print(f"⚠ Could not update settings.toml: {e}")
 
+    # The registry key, derived before the attempt rather than inside it: the manual-registration
+    # instructions printed when auto-registration fails name it, and read_main_py raises for
+    # exactly the project that needs those instructions -- so deriving it inside the try left the
+    # fallback path printing an unbound local and ending in a traceback.
+    agent_name = snake_name if snake_name.lower().endswith("agent") else snake_name + "_agent"
+
     # Attempt to auto-register in main.py
     auto_registered = False
     try:
         main_content = read_main_py(project_root)
-
-        agent_name = snake_name if snake_name.lower().endswith("agent") else snake_name + "_agent"
 
         # An unbuilt AgentBuilder, and no configuration. AppBuilder.build() calls
         # agent.build(config.for_namespace(<this agent>)), so the model, prompt and metrics are
@@ -755,7 +763,7 @@ class {class_name}(SchedulerBase):
         main_content = read_main_py(project_root)
 
         # Add import statement (use snake_case module name)
-        import_statement = f"from src.schedulers.{module_name} import {class_name}"
+        import_statement = f"from .schedulers.{module_name} import {class_name}"
         main_content = add_import_to_main(main_content, import_statement, "scheduler")
 
         # Add component registration
@@ -766,7 +774,7 @@ class {class_name}(SchedulerBase):
 
         auto_registered = True
         print("✓ Auto-registered in src/main.py")
-        print(f"  - Added import: from src.schedulers.{module_name} import {class_name}")
+        print(f"  - Added import: from .schedulers.{module_name} import {class_name}")
         print(f"  - Added registration: .with_scheduler({class_name})")
 
     except (FileNotFoundError, ValueError) as e:

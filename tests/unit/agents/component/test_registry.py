@@ -563,9 +563,22 @@ class TestNamespaceViews:
         found = grouped_registry.for_namespace("orders").get_components_by_type(_Namespaced)
         assert [component.namespace for component in found] == ["orders"]
 
-    def test_an_explicit_namespace_overrides_the_view(self, grouped_registry: Registry) -> None:
+    def test_an_explicit_namespace_naming_a_neighbour_is_refused(self, grouped_registry: Registry) -> None:
+        """This asserted the opposite until the isolation work: an explicit namespace overrode
+        the view, so every component was one keyword away from its neighbours. A view resolves
+        its own agent and the root, and naming another is refused rather than answered.
+        """
         view = grouped_registry.for_namespace("orders")
-        assert view.get_component("order_service", "billing").namespace == "billing"
+        with pytest.raises(RuntimeError, match="neighbour's belong to that agent alone"):
+            view.get_component("order_service", "billing")
+
+    def test_an_explicit_namespace_may_name_this_view_or_the_root(self, grouped_registry: Registry) -> None:
+        """What the refusal must not cost: every framework component that passes a namespace
+        passes its own, and the root is shared infrastructure."""
+        view = grouped_registry.for_namespace("orders")
+
+        assert view.get_component("order_service", "orders").namespace == "orders"
+        assert view.get_component("shared_audit", "").namespace == ""
 
     def test_the_application_registry_still_sees_everything(self, grouped_registry: Registry) -> None:
         """build() and the lifespan hold the unscoped registry and must keep iterating all of it."""

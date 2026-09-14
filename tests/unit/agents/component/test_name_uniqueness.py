@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from blueprint.agents.agent.agent_runtime import AgentRuntime
 from blueprint.agents.component.component import Component
 from blueprint.agents.component.namespace import namespace_scope, qualified_component_name
 from blueprint.agents.config import Config
@@ -97,6 +98,58 @@ class TestAnExplicitNameCarriesItsAgent:
         planner.name = "db"
 
         assert planner.name == "db"
+
+
+class TestAnAgentRuntimeIsNamedLikeEveryOtherComponent:
+    """It used to register itself by hand, under the bare name, and was the only one that did."""
+
+    def test_it_carries_its_agent(self, config: Config) -> None:
+        with namespace_scope("orders"):
+            runtime = AgentRuntime(name="assistant")
+
+        assert (runtime.name, registry_names()) == ("orders_assistant", ["orders_assistant"])
+
+    def test_two_agents_can_each_have_one_of_the_same_name(self, config: Config) -> None:
+        """Registered bare, the second of these raised 'name is already taken' -- so a group
+        could not host two agents whose runtimes happened to share a name."""
+        with namespace_scope("orders"):
+            AgentRuntime(name="assistant")
+        with namespace_scope("billing"):
+            AgentRuntime(name="assistant")
+
+        assert registry_names() == ["billing_assistant", "orders_assistant"]
+
+    def test_the_root_keeps_the_bare_name(self, config: Config) -> None:
+        """A single-agent application's registry key, and every lookup of it, is unchanged."""
+        runtime = AgentRuntime(name="assistant")
+
+        assert (runtime.name, registry_names()) == ("assistant", ["assistant"])
+
+    def test_it_is_found_by_the_bare_name_from_inside_its_own_agent(self, config: Config) -> None:
+        """What qualification must not cost: user code asks for the name it declared."""
+        with namespace_scope("orders"):
+            runtime = AgentRuntime(name="assistant")
+
+        assert Component.shared_registry.get_agent("assistant", "orders") is runtime
+
+    def test_base_name_is_the_name_it_was_given(self, config: Config) -> None:
+        """Left unset by the hand-rolled registration, it said 'agent_runtime' for every agent --
+        and it is what the readiness entry and the OpenAPI tag are rendered from."""
+        with namespace_scope("orders"):
+            runtime = AgentRuntime(name="assistant")
+
+        assert runtime.base_name == "assistant"
+
+    def test_a_rename_moves_the_registry_key(self, config: Config) -> None:
+        """Assigning the declaration's name is what AppBuilder._construct does to every
+        component. Agent.name.fset used to run first and overwrite the field Component's setter
+        reads as the current key, so this raised 'does not exist'."""
+        with namespace_scope("orders"):
+            runtime = AgentRuntime(name="assistant")
+
+        runtime.name = "planner"
+
+        assert (runtime.name, registry_names()) == ("orders_planner", ["orders_planner"])
 
 
 class TestTheQualifierDoesNotGuess:

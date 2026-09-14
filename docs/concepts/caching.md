@@ -18,7 +18,7 @@ this file; see the git history for those.
 ```python
 from blueprint.agents import AppBuilder, Config
 
-config = Config(settings_files=["settings.toml", "secrets.toml"])
+config = Config(settings_files=["settings.toml", ".secrets.toml"])
 
 app = (
     AppBuilder(config)

@@ -80,14 +80,15 @@ COPY --chown=appuser:appuser agents.toml ./
 # "Writable cache directory" section of docs/guides/deployment.md.
 RUN mkdir -p /app/.cache && chown -R appuser:appuser /app/.cache
 
-# Note: secrets.toml is NOT copied into the image.
-# Mount it at runtime via Docker secrets or volume mount.
-# Example (Docker Swarm):
-#   docker run --secret secrets_file_id \
-#     -e DYNACONF_SETTINGS=/run/secrets/secrets_file_id \
-#     pir-agent:latest
-# Example (Volume mount):
-#   docker run -v ./secrets.toml:/app/secrets.toml:ro pir-agent:latest
+# Note: .secrets.toml is NOT copied into the image. Mount it at runtime, at that exact path --
+# the entry point loads ["settings.toml", ".secrets.toml"] relative to the working directory, so
+# a file mounted under any other name is loaded by nothing and reports nothing.
+# Example (volume mount):
+#   docker run -v ./.secrets.toml:/app/.secrets.toml:ro <image>
+# Example (Docker secret, which lands under /run/secrets):
+#   docker run --secret source=agent_secrets,target=/app/.secrets.toml <image>
+# An individual key can also be supplied as an environment variable instead, with no file at
+# all:  -e DYNACONF_MODEL_API_KEY=...
 
 ENV PYTHONPATH="/app/src" \
     DYNACONF_ENVIRONMENT="production" \

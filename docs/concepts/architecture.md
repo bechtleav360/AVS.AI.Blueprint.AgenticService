@@ -29,7 +29,7 @@ from my_app.agents import ResearchAgent
 from my_app.apis import QueryApi
 from my_app.schedulers import CleanupScheduler
 
-config = Config(settings_files=["settings.toml", "secrets.toml"])
+config = Config(settings_files=["settings.toml", ".secrets.toml"])
 
 app = (
     AppBuilder(config)
@@ -206,7 +206,7 @@ class PurgeScheduler(SchedulerBase):
 
 
 # -- Application assembly --
-config = Config(settings_files=["settings.toml", "secrets.toml"])
+config = Config(settings_files=["settings.toml", ".secrets.toml"])
 
 app = (
     AppBuilder(config)

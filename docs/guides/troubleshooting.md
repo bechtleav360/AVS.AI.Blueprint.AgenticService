@@ -207,15 +207,15 @@ Check the Dapr subscription configuration to ensure topic mappings are correct.
 **Symptom:** Agent calls fail with an authentication error.
 
 ```
-AuthenticationError: No API key provided. Set DYNACONF_LLM__API_KEY or add it to secrets.toml.
+AuthenticationError: No API key provided. Set DYNACONF_LLM__API_KEY or add it to .secrets.toml.
 ```
 
 **Cause:** The LLM provider API key is not configured.
 
-**Solution:** Set the API key in `secrets.toml` (for local development) or via an environment variable (for production):
+**Solution:** Set the API key in `.secrets.toml` (for local development) or via an environment variable (for production):
 
 ```toml
-# secrets.toml (local only -- do not commit)
+# .secrets.toml (local only -- do not commit)
 [llm]
 api_key = "sk-..."
 ```

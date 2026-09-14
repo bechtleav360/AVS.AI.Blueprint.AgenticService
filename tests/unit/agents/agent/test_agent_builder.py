@@ -63,11 +63,24 @@ class TestWithModelFromConfig:
         assert builder._ai_config is mock_ai_config
 
     def test_a_model_name_override_is_applied_at_build(self, builder: AgentBuilder, mock_ai_config: MagicMock) -> None:
+        """The rest of the build is stubbed rather than allowed to fail.
+
+        This used to assert that ``build()`` raised *something* and then read the override out
+        of the wreckage. What it raised was ``AgentRuntime.__init__() missing 1 required
+        positional argument: 'name'`` -- so the test passed because of a defect, and started
+        failing when that was fixed. It asserts the override and nothing else now.
+        """
         builder.with_model_from_config(model_name="override-model")
         assert mock_ai_config.model_name == "gpt-4o"
 
-        with pytest.raises(Exception):  # noqa: B017 -- the build path beyond the override is not under test
-            builder.build()
+        with patch.dict(
+            "blueprint.agents.agent.agent_builder._CLIENT_MAP",
+            {"openai": MagicMock(return_value=MagicMock())},
+        ):
+            with patch("blueprint.agents.agent.agent_builder.PromptLoader.load_prompt", return_value="prompt"):
+                with patch("blueprint.agents.agent.agent_builder.AgentRuntime"):
+                    builder.build()
+
         assert mock_ai_config.model_name == "override-model"
 
     def test_deprecated_runtime_name_logs_warning(self, builder: AgentBuilder, caplog: pytest.LogCaptureFixture) -> None:
@@ -251,6 +264,31 @@ class TestBuild:
         ):
             with pytest.raises(ValueError, match="System prompt must be configured"):
                 builder_with_model.build()
+
+    def test_the_runtime_is_named_after_the_builders_runtime_name(self, builder_with_model: AgentBuilder) -> None:
+        """AgentRuntime takes its name as a required argument and nothing passed one, so every
+        build through AppBuilder raised TypeError. The name is the key the runtime's own
+        configuration is read under, which is the one the builder already holds."""
+        builder_with_model._system_prompt = "system"
+        with patch.dict(
+            "blueprint.agents.agent.agent_builder._CLIENT_MAP",
+            {"openai": MagicMock(return_value=MagicMock())},
+        ):
+            runtime = builder_with_model.build()
+
+        assert runtime.name == "test-agent"
+
+    def test_an_explicit_name_wins_over_the_runtime_name(self, builder_with_model: AgentBuilder) -> None:
+        """setdefault, not a positional argument: build(config, name=...) is a legal call and a
+        positional would have made it a duplicate-argument TypeError."""
+        builder_with_model._system_prompt = "system"
+        with patch.dict(
+            "blueprint.agents.agent.agent_builder._CLIENT_MAP",
+            {"openai": MagicMock(return_value=MagicMock())},
+        ):
+            runtime = builder_with_model.build(name="given-here")
+
+        assert runtime.name == "given-here"
 
     def test_build_raises_for_conflicting_kwarg(self, builder_with_model: AgentBuilder) -> None:
         builder_with_model._system_prompt = "system"

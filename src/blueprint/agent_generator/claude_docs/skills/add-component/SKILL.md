@@ -81,7 +81,7 @@ Add the component to the `AppBuilder` chain in `src/main.py`:
 If the component needs configuration:
 - Add runtime config to `settings.toml` under `[default.runtimes.<name>]` for agents
 - Add topic mappings under `[default.event_publishing]` for handlers that publish events
-- Add API key placeholders to `secrets.toml` for new AI providers
+- Add API key placeholders to `.secrets.toml` for new AI providers
 
 ## Rules
 

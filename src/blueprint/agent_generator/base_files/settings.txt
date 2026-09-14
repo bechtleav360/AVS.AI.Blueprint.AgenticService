@@ -28,12 +28,22 @@ scheduler_mode = "in_process"
 # applications need it. Needs event_bus, and subscribes to nothing.
 # event_publishing_enabled = true
 
-[default.logging]
-level = "DEBUG"
-format = "json"
+# Logging and telemetry. These are flat keys, not sections: the framework reads
+# log_level, log_format, otel_enabled and token_metrics_enabled from the top level
+# of the environment table, so a [default.logging] or [default.observability]
+# section would be read by nothing at all.
+#
+# log_level and log_format describe the process. If this project is later hosted as
+# one agent of a group, the group's own settings file decides both and these two are
+# reported and ignored -- one process configures logging once.
+log_level = "DEBUG"
+log_format = "text"
 
-[default.observability]
+# otel_enabled turns OpenTelemetry on and needs otel_endpoint to have somewhere to
+# send to. token_metrics_enabled adds per-call token and latency metrics on top, and
+# is read only when otel_enabled is true.
 otel_enabled = false
+# otel_endpoint = "http://localhost:4317"
 token_metrics_enabled = true
 
 agent_runtime_configs

@@ -9,7 +9,7 @@ The `Config` class is the entry point for all configuration. It accepts a list o
 ```python
 from blueprint.agents import Config
 
-config = Config(settings_files=["settings.toml", "secrets.toml"])
+config = Config(settings_files=["settings.toml", ".secrets.toml"])
 ```
 
 The `Config` instance is passed to `AppBuilder` and automatically made available to all components via `self.config`.
@@ -27,7 +27,7 @@ log_level = "INFO"
 event_bus = "dapr"
 ```
 
-### secrets.toml
+### .secrets.toml
 
 A separate file for sensitive values such as API keys, connection strings, and credentials. This file should be listed in `.gitignore` and never committed to version control.
 
