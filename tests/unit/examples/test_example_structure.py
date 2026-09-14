@@ -26,12 +26,6 @@ NOT_PROJECTS: dict[str, str] = {
         "plus a README, illustrating the cache API. It has no declaration and no settings because "
         "it is not an application."
     ),
-    "customer_support_qa": (
-        "A skeleton left behind by an earlier refactor: it has src/api, src/handlers, src/models "
-        "and src/services but no main.py, no settings.toml and no README.md, so there is nothing "
-        "to run. Finishing or removing it is a decision about the examples, which are deliberately "
-        "untouched by the multi-agent work."
-    ),
 }
 """Directories under ``examples/`` that are not Blueprint projects, each with why.
 
@@ -41,9 +35,22 @@ entries is how a guard stops guarding.
 """
 
 
+def _has_content(directory: Path) -> bool:
+    """True if anything but compiled bytecode lives under ``directory``.
+
+    A directory deleted from the repository leaves its ``__pycache__`` behind in a working copy
+    -- git removes tracked files and nothing else -- and ``.pyc`` is gitignored, so the husk is
+    invisible to ``git status`` and looks like a real example forever. That is not a hypothetical:
+    ``customer_support_qa`` was deleted in ``ef6cd03`` and sat in ``NOT_PROJECTS`` describing a
+    layout read off exactly such a husk, which passed locally and failed on CI's clean checkout.
+    Deriving from files rather than from directories makes this test answer the same on both.
+    """
+    return any(path.is_file() and path.suffix != ".pyc" for path in directory.rglob("*"))
+
+
 def example_directories() -> list[Path]:
-    """Every directory under ``examples/``, derived rather than declared."""
-    return sorted(path for path in EXAMPLES_DIR.iterdir() if path.is_dir() and not path.name.startswith((".", "__")))
+    """Every directory under ``examples/`` that has content, derived rather than declared."""
+    return sorted(path for path in EXAMPLES_DIR.iterdir() if path.is_dir() and not path.name.startswith((".", "__")) and _has_content(path))
 
 
 def project_examples() -> list[Path]:
