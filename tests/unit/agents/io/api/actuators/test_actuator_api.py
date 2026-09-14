@@ -55,6 +55,53 @@ class TestSanitizeConfig:
     def test_empty_dict_returns_empty_dict(self, actuator_api: ActuatorApi) -> None:
         assert actuator_api._sanitize_config({}) == {}
 
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "openai_api_key",
+            "vllm_api_key",
+            "nats_password",
+            "redis_password",
+            "azure_client_secret",
+            "client_token",
+            "service_credentials",
+            "signing_salt",
+            "private_key_pem",
+            "OPENAI_API_KEY",
+        ],
+    )
+    def test_compound_keys_are_masked(self, actuator_api: ActuatorApi, key: str) -> None:
+        """The whole-key match returned every one of these in clear (issue #91)."""
+        assert actuator_api._sanitize_config({key: "s3cr3t"})[key] == "***"
+
+    def test_secrets_inside_a_list_are_masked(self, actuator_api: ActuatorApi) -> None:
+        """Only dict values used to be walked, so a list of provider entries was returned whole."""
+        result = actuator_api._sanitize_config({"providers": [{"name": "openai", "api_key": "sk-1234"}]})
+        assert result["providers"][0] == {"name": "openai", "api_key": "***"}
+
+    def test_a_list_of_secret_values_is_masked(self, actuator_api: ActuatorApi) -> None:
+        result = actuator_api._sanitize_config({"api_keys": ["sk-a", "sk-b"]})
+        assert result["api_keys"] == ["***", "***"]
+
+    def test_url_userinfo_is_stripped_although_the_key_names_nothing_sensitive(self, actuator_api: ActuatorApi) -> None:
+        result = actuator_api._sanitize_config({"redis_url": "redis://admin:hunter2@cache.internal:6379/0"})
+        assert result["redis_url"] == "redis://cache.internal:6379/0"
+        assert "hunter2" not in result["redis_url"]
+
+    def test_url_without_userinfo_is_untouched(self, actuator_api: ActuatorApi) -> None:
+        assert actuator_api._sanitize_config({"nats_url": "nats://localhost:4222"})["nats_url"] == "nats://localhost:4222"
+
+    def test_ipv6_url_keeps_its_brackets(self, actuator_api: ActuatorApi) -> None:
+        result = actuator_api._sanitize_config({"redis_url": "redis://user:pw@[::1]:6379/0"})
+        assert result["redis_url"] == "redis://[::1]:6379/0"
+
+    def test_booleans_pass_through_even_under_a_matching_key(self, actuator_api: ActuatorApi) -> None:
+        """A flag cannot carry a credential, and it is what the endpoint is read for."""
+        assert actuator_api._sanitize_config({"auth_enabled": True})["auth_enabled"] is True
+
+    def test_a_plain_string_that_merely_contains_an_at_sign_is_untouched(self, actuator_api: ActuatorApi) -> None:
+        assert actuator_api._sanitize_config({"contact": "team@example.com"})["contact"] == "team@example.com"
+
 
 # ---------------------------------------------------------------------------
 # liveness_probe

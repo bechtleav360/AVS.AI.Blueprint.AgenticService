@@ -71,7 +71,7 @@ uv pip install --no-cache-dir --find-links file:///home/pajoma/pypi/ avs-bluepri
   surface, config reference, acceptance criteria. Where any other document disagrees with the
   spec, the spec wins.
 - **Implementation plan:** `docs/plans/2026-08-28-multi-agent-grouping.md` -- prerequisites P0-P6
-  (blocking defects) and phases 0-9.
+  (blocking defects) and phases 0-10.
 
 **Work this feature in reviewable steps.** Make one change, then stop and report what changed and
 why before starting the next. Do not chain phases together, and do not chain the work items within
