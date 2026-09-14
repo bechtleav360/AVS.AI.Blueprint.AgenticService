@@ -258,11 +258,20 @@ class Config:
                 Validator("app_environment", must_exist=True, default="development"),
             ]
 
-        # Second pass: load with the correct environment
+        # Second pass: load with the correct environment.
+        #
+        # The selector is ``env``, not ``current_env`` (#89). ``current_env`` is a *derived*
+        # property on Dynaconf -- it reports which environment is active -- and passing it as a
+        # keyword stores the value and then ignores it for layer selection, so the resolved
+        # environment was never actually loaded. Nothing failed: the log line above named the
+        # resolved environment while ``[development]`` stayed in force, so a deployment could
+        # read "Loading configuration properties for environment: production" and be running
+        # the default section. Verified against dynaconf 3.3.5: with two sections that disagree,
+        # ``current_env=`` returns the default's value and ``env=`` returns production's.
         self._settings = Dynaconf(
             settings_files=settings_files,
             environments=True,
-            current_env=app_env,
+            env=app_env,
             load_dotenv=False,
             merge_enabled=True,
             root_path=root_path,
