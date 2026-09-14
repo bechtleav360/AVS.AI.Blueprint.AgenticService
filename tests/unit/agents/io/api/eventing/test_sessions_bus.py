@@ -221,10 +221,11 @@ class TestProcessJobNotification:
         started_sessions_bus._api_client.cancel_job.assert_awaited_once()
         call_kwargs = started_sessions_bus._api_client.cancel_job.call_args.kwargs
         assert call_kwargs["job_id"] == notification.job_id
-        # #76: _cancel_invalid_job's own key fetch also threads job_id through (get_session_key
-        # is called twice overall here — once in the main try block, once inside cancel — both
-        # with the same args, so assert on the most recent call rather than requiring exactly one).
-        started_sessions_bus._key_provider.get_session_key.assert_awaited_with(notification.session_id, job_id=notification.job_id)
+        # get_session_key is called exactly once overall: _cancel_invalid_job reuses the
+        # key already fetched in the main try block instead of re-fetching (review, PR #95,
+        # finding 1 — a blind re-fetch would repeat the exact failure that triggered the
+        # cancel in the first place, when the trigger was itself a key-fetch failure).
+        started_sessions_bus._key_provider.get_session_key.assert_awaited_once_with(notification.session_id, job_id=notification.job_id)
 
     async def test_invalid_event_error_cancel_failure_is_swallowed(
         self,
@@ -325,6 +326,36 @@ class TestProcessJobNotification:
         call_kwargs = started_sessions_bus._api_client.cancel_job.call_args.kwargs
         assert call_kwargs["job_id"] == notification.job_id
         assert "Unexpected HTTP error" in call_kwargs["reason"]
+
+    async def test_non_403_http_error_from_key_fetch_cannot_be_cancelled_but_is_escalated(
+        self,
+        started_sessions_bus: SessionsBus,
+        notification: JobNotification,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """#94's own originating failure class: get_session_key itself raises (not
+        dispatch). _cancel_invalid_job cannot authenticate a cancel_job call without a
+        real session key — verified against service-sessions' cancel_job route, which
+        requires X-Session-Key unconditionally — so there is no way to reach a terminal
+        state here without a server-side change out of this client's scope (review, PR
+        #95, finding 1 re-review). What IS fixable client-side, and what this asserts:
+        no *redundant* fetch attempt beyond the one reasonable retry inside the cancel
+        path (in case a concurrent job already refreshed the cache), and the failure is
+        escalated at `critical` — clearly distinct from a routine cancel failure — rather
+        than disappearing at the same log level as every other cancel error.
+        """
+        response_mock = MagicMock()
+        response_mock.status_code = 500
+        http_err = httpx.HTTPStatusError("500", request=MagicMock(), response=response_mock)
+        started_sessions_bus._key_provider.get_session_key = AsyncMock(side_effect=http_err)
+
+        with caplog.at_level("CRITICAL"):
+            await started_sessions_bus._process_job_notification(notification)
+
+        assert started_sessions_bus._key_provider.get_session_key.await_count == 2
+        started_sessions_bus._api_client.cancel_job.assert_not_awaited()
+        assert "Cannot cancel job" in caplog.text
+        assert "remain pending indefinitely" in caplog.text
 
     async def test_unexpected_error_is_logged_not_raised(
         self,
