@@ -300,7 +300,9 @@ class TestProcessJobNotification:
         notification: JobNotification,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """A non-403 HTTPStatusError must be logged, not re-raised (#94 follow-up).
+        """A non-403 HTTPStatusError must be logged and cancel the job, not re-raised
+        (#94 follow-up; cancel added per PR #95 re-review — logging alone still left the
+        job stuck at "pending" forever, just now with a visible log line).
 
         The old `else: raise` inside `except httpx.HTTPStatusError` re-raised the original
         exception. Since that ran inside an except clause, it propagated straight out of
@@ -319,6 +321,10 @@ class TestProcessJobNotification:
             await started_sessions_bus._process_job_notification(notification)
 
         assert "Unexpected HTTP error" in caplog.text
+        started_sessions_bus._api_client.cancel_job.assert_awaited_once()
+        call_kwargs = started_sessions_bus._api_client.cancel_job.call_args.kwargs
+        assert call_kwargs["job_id"] == notification.job_id
+        assert "Unexpected HTTP error" in call_kwargs["reason"]
 
     async def test_unexpected_error_is_logged_not_raised(
         self,
