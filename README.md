@@ -64,26 +64,42 @@ uv add avs-blueprint-agents
 
 ### Alpha Release (TestPyPI)
 
-To install the latest alpha version for testing, add the TestPyPI index to your `pyproject.toml`:
+Alpha builds are published to TestPyPI. **TestPyPI must be used for this package only** -- it also
+carries stale copies of common dependencies (an ancient `fastapi`, an `apscheduler` too old for
+this package), and any setup that lets the resolver reach them for *dependencies* fails.
+
+With uv, name the index for this one package and nothing else:
 
 ```toml
 [[tool.uv.index]]
 name = "test-pypi"
 url = "https://test.pypi.org/simple/"
-priority = "supplemental"
-```
+explicit = true                                    # only for packages that name it below
 
-Then install:
+[tool.uv.sources]
+avs-blueprint-agents = { index = "test-pypi" }
+```
 
 ```bash
-uv add avs-blueprint-agents
+uv add "avs-blueprint-agents==0.9.0a1"
 ```
 
-Or with pip:
+`explicit = true` is the load-bearing part: without it uv applies its default `first-index`
+strategy, pins every dependency to the first index that happens to contain it, and the resolution
+fails on TestPyPI's old `apscheduler`. That is deliberate protection against dependency confusion,
+not something to work around with `--index-strategy unsafe-best-match`.
+
+**pip has no equivalent** -- no index priority and no per-package source, so `--extra-index-url`
+merges both indexes and the broken copies stay reachable whichever order the flags are in. Fetch
+the package alone, then install it with dependencies resolved from PyPI:
 
 ```bash
-pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ avs-blueprint-agents
+pip download --no-deps --index-url https://test.pypi.org/simple/ "avs-blueprint-agents==0.9.0a1" -d ./dl
+pip install --index-url https://pypi.org/simple/ ./dl/avs_blueprint_agents-0.9.0a1-py3-none-any.whl
 ```
+
+Pin the exact alpha version in both cases: PyPI carries the newer stable release, and an unpinned
+install resolves to that instead.
 
 ### From Source
 
