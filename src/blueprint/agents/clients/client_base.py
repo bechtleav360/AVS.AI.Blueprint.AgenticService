@@ -5,6 +5,7 @@ from typing import Any, TYPE_CHECKING
 from collections.abc import Awaitable, Callable
 
 from ..component.component import Component
+from ..component.namespace import ROOT_NAMESPACE
 from ..models.events import CloudEvent
 
 if TYPE_CHECKING:
@@ -26,9 +27,16 @@ class ClientBase(Component, ABC):
     config values), not establish the connection.
     """
 
-    def __init__(self) -> None:
-        """Initialize the client."""
-        super().__init__()
+    def __init__(self, name: str | None = None, namespace: str = ROOT_NAMESPACE) -> None:
+        """Initialize the client.
+
+        Args:
+            name: Registry name to use instead of the derived one. Forwarded to
+                ``Component``, which registers under it.
+            namespace: The agent this client belongs to; ``""`` for the root namespace.
+                Forwarded to ``Component``, which validates it and qualifies the name.
+        """
+        super().__init__(name=name, namespace=namespace)
         self._client: Any = None
 
     async def _get_connected_client(self) -> Any:

@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | P0, P1 and P2 landed on `feature/multi-agent-namespaces`; P3 is next. No phase (0-9) started. |
+| **Status** | P0-P6 landed on `feature/multi-agent-namespaces`; the prerequisites are done. No phase (0-9) started. |
 | **Spec (normative)** | `docs/specs/2026-08-28-multi-agent-grouping.md` |
 | **What landed, and why** | `docs/plans/2026-08-28-multi-agent-grouping-changelog.md` -- read before resuming |
 
@@ -200,7 +200,13 @@ applies either way. Set `concurrencyPolicy: Forbid` to prevent overlap, and watc
 Note #43 — schedulers started twice *within* one process by two `build()` passes — is a distinct
 defect; both touch scheduler startup and should be fixed together.
 
-**P6 — Transport topology: one connection per namespace.** Not a defect, but it belongs here
+**P6 — Transport topology: one connection per namespace. Done.** Ownership, naming and
+resolution are in place; Phases 5 and 6 are what actually *create* a second client, and they now
+have somewhere to create it. Landed as part of this: clients take a `namespace`, register under a
+namespace-qualified name so two can coexist, name their connection
+`f"{namespace}.{group}.{pod}"`, and derive queue group and durable from the namespace alone.
+`EventPublishingService` takes a namespace and resolves its own namespace's client, falling back
+to the root one. Not a defect, but it belongs here
 because it changes `NATSClient` ownership. Per-namespace clients confine ack loss and
 slow-consumer disconnects to one agent, and give named connections in `/connz` —
 `nats.connect()` is called today with no `name=` at all (`nats_client.py:93`). No config knob: a

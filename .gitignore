@@ -158,3 +158,6 @@ uv.lock
 
 
 ARCHITECTURE_DECISIONS.md
+
+# Private, machine-local Claude Code instructions
+CLAUDE.local.md

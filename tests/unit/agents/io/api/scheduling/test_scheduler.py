@@ -206,19 +206,41 @@ class TestTickTopic:
     @pytest.mark.parametrize("topic", ["ops.cron.*", "ops.cron.>"])
     def test_wildcard_topic_raises(self, topic: str, settings: dict[str, Any], mock_registry: MagicMock) -> None:
         unusable = _TestScheduler(topic=topic)
-        with pytest.raises(ValueError, match="not a usable subject"):
+        with pytest.raises(ValueError, match="cannot appear in a NATS subject"):
             _ = unusable.tick_topic
 
     def test_whitespace_in_an_explicit_topic_raises(self, settings: dict[str, Any], mock_registry: MagicMock) -> None:
         unusable = _TestScheduler(topic="ops cron nightly")
-        with pytest.raises(ValueError, match="contains whitespace"):
+        with pytest.raises(ValueError, match="cannot appear in a NATS subject"):
             _ = unusable.tick_topic
 
-    def test_whitespace_in_the_identity_is_rewritten_not_rejected(self, settings: dict[str, Any], mock_registry: MagicMock) -> None:
-        """A spaced app_name is legal and common, and the topic is derived, not typed."""
+    def test_whitespace_in_the_identity_is_rejected_not_rewritten(self, settings: dict[str, Any], mock_registry: MagicMock) -> None:
+        """A CronJob is written against this subject by someone who cannot see the rewrite."""
         settings["app_name"] = "Health Monitor"
         derived = _TestScheduler()
-        assert derived.tick_topic == f"Health_Monitor.scheduler.{derived.name}"
+        with pytest.raises(ValueError, match="cannot appear in a NATS subject"):
+            _ = derived.tick_topic
+
+    def test_the_identity_error_names_the_key_and_the_subject_it_would_have_made(
+        self, settings: dict[str, Any], mock_registry: MagicMock
+    ) -> None:
+        settings["app_name"] = "Health Monitor"
+        derived = _TestScheduler()
+        with pytest.raises(ValueError, match="'app_name'.*'Health Monitor'.*Health Monitor.scheduler"):
+            _ = derived.tick_topic
+
+    def test_wildcard_in_the_identity_is_rejected(self, settings: dict[str, Any], mock_registry: MagicMock) -> None:
+        settings["app_name"] = "health*monitor"
+        derived = _TestScheduler()
+        with pytest.raises(ValueError, match="cannot appear in a NATS subject"):
+            _ = derived.tick_topic
+
+    def test_whitespace_in_the_scheduler_name_is_rejected(self, settings: dict[str, Any], mock_registry: MagicMock) -> None:
+        """with_scheduler(name=...) reaches the subject too, so it is checked as well."""
+        renamed = _TestScheduler()
+        renamed.name = "night ly"
+        with pytest.raises(ValueError, match="cannot appear in a NATS subject"):
+            _ = renamed.tick_topic
 
 
 class TestWire:

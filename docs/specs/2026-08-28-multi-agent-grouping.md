@@ -65,7 +65,42 @@ other deployment identifier.
 - Queue group: `namespace`, or `nats_queue_group` (default `app_name`) when the namespace is `""`.
   It **MUST NOT** be the empty string.
 - JetStream durable: `f"{namespace}-{topic}-durable"`, or the configured `nats_durable_name`
-  when the namespace is `""`.
+  when the namespace is `""`. Only the topic is rewritten to suit a consumer name; the namespace
+  reaches it as declared.
+- Namespace alphabet: a namespace **MUST** be `""` or match `[a-z][a-z0-9_]*`, and **MUST** be
+  validated where it enters the framework rather than by each consumer of it. It becomes a
+  registry key prefix, a queue group, part of a durable name and a telemetry `service.name`, and
+  a value each of those repairs differently is one agent under four names. Two exclusions do not
+  follow from any single consumer:
+  - `-` is the separator in the durable name above. With it allowed, namespace `orders-eu` on
+    topic `created` and namespace `orders` on topic `eu-created` produce one durable name, so two
+    agents would bind one JetStream consumer and consume each other's events.
+  - `<` and `>` keep the sec. 6 connection-name placeholders unforgeable. `>` is a NATS wildcard
+    and illegal in a consumer name in any case.
+
+**A name that crosses the process boundary MUST be validated, never repaired.** This covers every
+name that becomes part of a subject, a queue group or a consumer: the namespace, `app_name` and
+`nats_queue_group` where they stand in for it, and a scheduler's name where it forms the tick
+subject. Silently rewriting one -- an `app_name` of `"My Service"` becoming `My_Service` in a
+subject -- leaves the party on the other side of the contract, typically a `CronJob` in another
+repository written by someone who has never read this framework, publishing to a subject nothing
+subscribes to. The tick simply never arrives, and no log on either side says why. The side that
+knows the name is unusable **MUST** fail its own startup instead, naming the key, the value and
+the subject that would have been derived.
+
+Two rewrites are permitted, and only these:
+
+- The **topic** portion of a durable name. Dots are idiomatic in subjects and illegal in consumer
+  names, so there is no alternative; it is bounded by the requirement that two topics resolving to
+  one durable name is an error, and the mapping is documented.
+- The **connection name** (sec. 6), which exists for attribution and which C1 forbids anything
+  from deriving from, so no external party can depend on its spelling.
+
+**The namespace MUST be validated in `Component.__init__`**, not in `Registry.add_component` and
+not per base class. Every component passes through that constructor, including the eight that
+opt out of registration, and it runs before the registry name is derived. A gate in the registry
+would miss unregistered components -- among them the eventing endpoints, which become
+namespace-owned in phase 2.
 - The NATS **connection name** (sec. 6) is deployment-specific and **MUST NOT** be used to derive
   either of the above.
 
@@ -333,6 +368,23 @@ deployment may have no access to. The cost argument above justifies a connection
 that uses one*; it does not justify one per namespace that does not.
 
 Connection name **MUST** be `f"{namespace}.{group}.{pod}"`, and **MUST NOT** feed C1 naming.
+An absent segment **MUST** be filled with a placeholder rather than left empty -- `<root>` for the
+root namespace, `<ungrouped>` for an unset `BLUEPRINT_GROUP`, `<unknown-pod>` when the replica
+cannot be identified -- so all three positions always carry a value, a name never degenerates into
+`..pod-7`, and "no group" stays distinguishable from a group whose name happens to be empty.
+
+The placeholders **MUST** be unproducible by a real value rather than merely unlikely, because a
+placeholder that collides with a legitimate name reintroduces exactly the ambiguity it was
+introduced to remove. Two rules give that:
+
+- The namespace alphabet (C1, below) excludes `<` and `>`, so no legal namespace can spell one.
+- The group and the pod are supplied by the deployment and **MUST NOT** be rejected on this
+  ground -- failing a rollout over a display string is the wrong trade -- so they **MUST** be
+  sanitised for display instead: `<`, `>`, `.` and whitespace replaced. Replacing `.` is not
+  cosmetic; it keeps a group called `a.b` from turning a three-segment name into four and
+  misattributing the connection. Sanitising rather than validating is acceptable here only
+  because nothing derives from the connection name (C1), so a mangled segment loses no
+  information any consumer depends on.
 
 `EventPublishingService` **MUST** publish on its own namespace's client; otherwise outbound
 traffic is unattributable and reason 3 is defeated.

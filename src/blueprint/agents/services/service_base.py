@@ -1,6 +1,7 @@
 from abc import ABC
 
 from ..component.component import Component
+from ..component.namespace import ROOT_NAMESPACE
 
 
 class ServiceBase(Component, ABC):
@@ -11,6 +12,13 @@ class ServiceBase(Component, ABC):
     are inherited from Component.
     """
 
-    def __init__(self) -> None:
-        """Initialize the business service."""
-        super().__init__()
+    def __init__(self, name: str | None = None, namespace: str = ROOT_NAMESPACE) -> None:
+        """Initialize the business service.
+
+        Args:
+            name: Registry name to use instead of the derived one. Forwarded to
+                ``Component``, which registers under it.
+            namespace: The agent this service belongs to; ``""`` for the root namespace.
+                Forwarded to ``Component``, which validates it and qualifies the name.
+        """
+        super().__init__(name=name, namespace=namespace)
