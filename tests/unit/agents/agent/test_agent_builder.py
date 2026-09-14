@@ -6,6 +6,7 @@ import pytest
 from pydantic import BaseModel
 
 from blueprint.agents.agent.agent_builder import AgentBuilder
+from blueprint.agents.config import Config
 
 
 @pytest.fixture
@@ -36,30 +37,127 @@ def builder_with_model(builder: AgentBuilder, mock_registry: MagicMock) -> Agent
 
 
 class TestWithModelFromConfig:
-    def test_raises_when_no_model_name(self, builder: AgentBuilder, mock_ai_config: MagicMock) -> None:
-        mock_ai_config.model_name = ""
-        with pytest.raises(ValueError, match="No model name"):
-            builder.with_model_from_config()
+    """It records the intent; the configuration is read by build()."""
 
-    def test_raises_when_no_provider(self, builder: AgentBuilder, mock_ai_config: MagicMock) -> None:
-        mock_ai_config.provider = ""
-        with pytest.raises(ValueError, match="No provider"):
-            builder.with_model_from_config()
+    def test_it_reads_no_configuration(self, builder: AgentBuilder, mock_config: MagicMock) -> None:
+        """The point of the change: there may be no configuration yet, and in a group the one
+        that matters is the view scoped to this agent, which only the application can supply."""
+        mock_config.get_ai_config.reset_mock()
+        builder.with_model_from_config()
+        mock_config.get_ai_config.assert_not_called()
 
-    def test_raises_for_unsupported_provider(self, builder: AgentBuilder, mock_ai_config: MagicMock) -> None:
-        mock_ai_config.provider = "unsupported"
-        with pytest.raises(ValueError, match="Unsupported provider"):
-            builder.with_model_from_config()
-
-    def test_stores_ai_config_and_returns_self(self, builder: AgentBuilder, mock_ai_config: MagicMock) -> None:
+    def test_it_records_and_returns_self(self, builder: AgentBuilder) -> None:
         result = builder.with_model_from_config()
-        assert builder._ai_config is mock_ai_config
+        assert builder._ai_config is None
         assert result is builder
+
+    def test_build_resolves_the_ai_config(self, builder: AgentBuilder, mock_ai_config: MagicMock, mock_registry: MagicMock) -> None:
+        builder.with_model_from_config().with_system_prompt("system")
+        with patch.dict(
+            "blueprint.agents.agent.agent_builder._CLIENT_MAP",
+            {"openai": MagicMock(return_value=MagicMock())},
+        ):
+            with patch("blueprint.agents.agent.agent_builder.PromptLoader.load_prompt", return_value="prompt"):
+                with patch("blueprint.agents.agent.agent_builder.AgentRuntime"):
+                    builder.build()
+        assert builder._ai_config is mock_ai_config
+
+    def test_a_model_name_override_is_applied_at_build(self, builder: AgentBuilder, mock_ai_config: MagicMock) -> None:
+        builder.with_model_from_config(model_name="override-model")
+        assert mock_ai_config.model_name == "gpt-4o"
+
+        with pytest.raises(Exception):  # noqa: B017 -- the build path beyond the override is not under test
+            builder.build()
+        assert mock_ai_config.model_name == "override-model"
 
     def test_deprecated_runtime_name_logs_warning(self, builder: AgentBuilder, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level("WARNING"):
             builder.with_model_from_config(runtime_name="ignored")
         assert "Deprecation" in caplog.text
+
+
+class TestTheModelRefusalsMovedToBuild:
+    """The three refusals with_model_from_config used to raise, now raised by build()."""
+
+    def test_raises_when_no_model_name(self, builder_with_model: AgentBuilder, mock_ai_config: MagicMock) -> None:
+        mock_ai_config.model_name = ""
+        with pytest.raises(ValueError, match="No model name"):
+            builder_with_model.build()
+
+    def test_raises_when_no_provider(self, builder_with_model: AgentBuilder, mock_ai_config: MagicMock) -> None:
+        mock_ai_config.provider = ""
+        with pytest.raises(ValueError, match="No provider"):
+            builder_with_model.build()
+
+    def test_raises_for_unsupported_provider(self, builder_with_model: AgentBuilder, mock_ai_config: MagicMock) -> None:
+        mock_ai_config.provider = "unsupported"
+        with pytest.raises(ValueError, match="Unsupported provider"):
+            builder_with_model.build()
+
+    def test_the_refusal_names_the_runtime(self, builder_with_model: AgentBuilder, mock_ai_config: MagicMock) -> None:
+        mock_ai_config.model_name = ""
+        with pytest.raises(ValueError, match="test-agent"):
+            builder_with_model.build()
+
+
+class TestWhereTheConfigurationComesFrom:
+    """D6: __init__ no longer requires one, and build()'s wins because it is the scoped view."""
+
+    def test_it_can_be_constructed_without_one(self) -> None:
+        """The defect this fixes: a declaration-only main.py has no Config in scope at all."""
+        assert AgentBuilder(runtime_name="orders")._config is None
+
+    def test_build_supplies_it(self, mock_config: MagicMock, mock_ai_config: MagicMock, mock_registry: MagicMock) -> None:
+        mock_config.get_ai_config.return_value = mock_ai_config
+        agent = AgentBuilder(runtime_name="test-agent").with_model_from_config().with_system_prompt("system")
+
+        with patch.dict(
+            "blueprint.agents.agent.agent_builder._CLIENT_MAP",
+            {"openai": MagicMock(return_value=MagicMock())},
+        ):
+            with patch("blueprint.agents.agent.agent_builder.PromptLoader.load_prompt", return_value="prompt"):
+                with patch("blueprint.agents.agent.agent_builder.AgentRuntime"):
+                    agent.build(mock_config)
+
+        assert agent._config is mock_config
+
+    def test_no_configuration_anywhere_is_refused(self) -> None:
+        agent = AgentBuilder(runtime_name="orders").with_model_from_config()
+        with pytest.raises(ValueError, match="has no configuration"):
+            agent.build()
+
+    def test_the_refusal_names_both_places_to_pass_one(self) -> None:
+        agent = AgentBuilder(runtime_name="orders").with_model_from_config()
+        with pytest.raises(ValueError, match=r"AgentBuilder\(config\).*build\(config\)"):
+            agent.build()
+
+    def test_builds_config_wins_over_the_constructors(
+        self, builder: AgentBuilder, mock_ai_config: MagicMock, mock_registry: MagicMock
+    ) -> None:
+        """The scoped view the application passes must beat whatever the chain closed over."""
+        scoped = MagicMock(spec=Config)
+        scoped.for_namespace.return_value = scoped
+        scoped.get_ai_config.return_value = mock_ai_config
+        builder.with_model_from_config().with_system_prompt("system")
+
+        with patch.dict(
+            "blueprint.agents.agent.agent_builder._CLIENT_MAP",
+            {"openai": MagicMock(return_value=MagicMock())},
+        ):
+            with patch("blueprint.agents.agent.agent_builder.PromptLoader.load_prompt", return_value="prompt"):
+                with patch("blueprint.agents.agent.agent_builder.AgentRuntime"):
+                    builder.build(scoped)
+
+        scoped.get_ai_config.assert_called_with("test-agent")
+        assert builder._config is scoped
+
+    def test_get_model_settings_without_a_configuration_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="has no configuration"):
+            AgentBuilder(runtime_name="orders").get_model_settings()
+
+    def test_the_runtime_name_is_readable_before_building(self) -> None:
+        """The application names the agent in its logs before it exists."""
+        assert AgentBuilder(runtime_name="orders").runtime_name == "orders"
 
 
 # ---------------------------------------------------------------------------

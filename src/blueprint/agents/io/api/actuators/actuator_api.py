@@ -3,6 +3,7 @@
 import logging
 import os
 import platform
+from collections.abc import Sequence
 from importlib import metadata
 from importlib.metadata import PackageNotFoundError
 from typing import Any
@@ -18,7 +19,7 @@ from ....models.api import LivenessResponse, ReadinessResponse
 from ....models.status import BuildStatus, EnvironmentStatus, LLMStatus, ServiceInfo, VLLMInfo
 from .health.health_cache import HealthCheckCache
 from ..rest_api_base import RestApiBase
-from .health.health_base import HealthCheckerBase
+from .health.health_base import HealthCheckEntry
 
 logger = logging.getLogger(__name__)
 
@@ -44,24 +45,53 @@ class ActuatorApi(RestApiBase):
     def __init__(self) -> None:
         super().__init__(should_register=False)
         self._health_cache: HealthCheckCache | None = None
-        self._pending_providers: dict[str, HealthCheckerBase] = {}
+        self._health_entries: list[HealthCheckEntry] = []
 
-    def add_health_providers(self, providers: dict[str, HealthCheckerBase]) -> None:
-        """Register health check providers.
+    @property
+    def health_entries(self) -> tuple[HealthCheckEntry, ...]:
+        """Every check registered so far, in registration order."""
+        return tuple(self._health_entries)
+
+    def add_health_providers(self, providers: Sequence[HealthCheckEntry]) -> None:
+        """Register health checks, adding to the ones already registered.
+
+        **Accumulates rather than replaces**, which is a fix rather than a refinement: the
+        previous version assigned the whole mapping, so a ``with_health_checker`` call made
+        after ``build()`` -- the shape the method's own docstring documents -- discarded every
+        client and cache check the build had wired, and the readiness probe then reported one
+        component and nothing else.
+
+        A duplicate key is refused. Two checks under one name is exactly the silent loss D4
+        exists to remove: a dict kept the last one, so an agent's check could vanish with
+        nothing logged and nothing failing.
 
         Args:
-            providers: Mapping of component name to HealthCheckerBase instance
+            providers: The checks to add, each carrying the agent it belongs to.
+
+        Raises:
+            ValueError: if a key is already registered.
         """
+        registered = {entry.key: entry for entry in self._health_entries}
+        for entry in providers:
+            existing = registered.get(entry.key)
+            if existing is not None:
+                raise ValueError(
+                    f"Health check '{entry.name}' of agent '{entry.agent}' would appear in the readiness payload as "
+                    f"'{entry.key}', which is already taken by a {type(existing.checker).__name__} of agent "
+                    f"'{existing.agent}'. Two checks under one entry cannot be told apart in the payload, so one of "
+                    "them has to be renamed."
+                )
+            registered[entry.key] = entry
+            self._health_entries.append(entry)
+
         if self._health_cache is not None:
-            self._health_cache.set_health_check_provider(providers)
-        else:
-            self._pending_providers = providers
+            self._health_cache.set_health_entries(self._health_entries)
 
     async def on_startup(self) -> None:
         """Start the health check cache."""
         self._health_cache = HealthCheckCache(check_interval_seconds=self.config.get("health_check_interval_seconds", 30))
-        if hasattr(self, "_pending_providers") and self._pending_providers:
-            self._health_cache.set_health_check_provider(self._pending_providers)
+        if self._health_entries:
+            self._health_cache.set_health_entries(self._health_entries)
         await self._health_cache.start()
 
     async def on_shutdown(self) -> None:

@@ -20,8 +20,8 @@ platform of 100 agents pays the ~154 MB Python and library baseline 100 times. T
 **which agents share a process a deployment parameter rather than an architectural commitment.**
 
 Components gain an optional **namespace** (`""` by default, so nothing existing changes). A
-namespace owns its own handlers, agent runtime, REST routes, AI client, thread pool and broker
-connection, while genuinely shared infrastructure -- the port, the health endpoint, the caches --
+namespace owns its own handlers, agent runtime, REST routes, AI client, thread pool, caches and
+broker connection, while genuinely shared infrastructure -- the port and the health endpoint --
 stays single. Which namespaces a process hosts is resolved at startup from a group configuration,
 and Kubernetes runs one Deployment per group: a group of one gives today's process isolation, a
 group of twenty gives the shared-interpreter memory profile, and moving an agent between groups
@@ -3897,6 +3897,529 @@ existing agent from standalone to a group of one therefore moves its routes and 
 identity, which is a migration with consequences rather than a rename; phase 10 is where that gets
 written up for a project to follow.
 
+### The builder surface: one class, and the group's rules in the class that imposes them
+
+**No code changed. Two proposals written, and the spec and plan amended to match.** Recorded here
+because the decisions are the reviewable artefact, and because the next phase is their
+implementation.
+
+`docs/plans/2026-09-10-builder-unification.md` -- **phase 8b**, decided, not written.
+`docs/plans/2026-09-10-config-validation-unification.md` -- deliberately **not** part of this
+feature.
+
+**The problem, restated correctly.** Adding one `with_*` method today means editing four places:
+`AppBuilder`, `AgentRegistration`, `NamespaceBuilder`, and `AgentRegistration.apply`'s `appliers`
+dict. Three of those fail *silently* -- the capability is simply absent from that surface -- and
+nothing tells the next developer the four exist. The duplication looked like a style problem and
+is not: `AppBuilder.with_handler(H)` **constructs `H` immediately**, and a component constructed
+before a namespace exists belongs to the root for ever, so a second class had to exist to defer
+construction until a namespace was in force. `AgentRegistration` is that class, `NamespaceBuilder`
+is its block-form sugar, and `appliers` is the bridge. So the fix is not to share the methods but
+to remove the reason they diverged: an `AppBuilder` that **records** instead of constructing
+serves both shapes, and the other three have no purpose left. Four sites become one.
+
+**Collection is its own class.** An intermediate design put an `absorb(builder, namespace=...)`
+method on `AppBuilder`; the user's objection retired it -- an `AppBuilder` does not know it is
+being collected, because the collection happens elsewhere. So `AgentGroup` (new class, new module)
+takes named builders and one configuration and drives one wiring pass, `AppBuilder` keeps exactly
+one job, and `with_group` / `from_group` move off `AppBuilder` too. The refusals move with them,
+which is the better half of the change: the group's restrictions belong to the thing imposing
+them, so **standalone stays permissive and the collector enforces**. That is also the rule stated
+plainly -- standalone allows more; to join a group you accept the group's constraints.
+
+**Decisions, D1-D7 in the proposal:**
+
+- **Standalone knows nothing about namespaces.** `build()` wires at the root, and the agent's name
+  lives only in the group configuration. Consequence, stated rather than hidden: a standalone agent
+  moved into a group changes its queue group and durable once, on the first grouped deploy.
+- **Refusals at assembly, each named:** instances (their namespace and registry key were fixed
+  before the group existed), `AppBuilder(config)` (one process, one settings tree, one port), a
+  builder already built. Nothing loses a capability -- the factory form recovers the instance case.
+  No deprecation warnings: sec. 10 makes the standalone shape supported indefinitely, so warning
+  about it every startup would be crying wolf.
+- **A cache is private to the agent that declared it.** Names qualified per namespace, no root
+  fallback, no shared-cache opt-in. This finally implements what spec sec. 8 always said and only
+  half of which was built. It **deletes** `GroupConfig.cache_names` and `AgentScopedCache`:
+  separate stores make the isolation structural, so the prefixing lens has nothing left to prevent.
+- **A health checker's key carries its agent.** Two agents calling
+  `with_health_checker("db", ...)` currently collide in a dict and one disappears silently.
+  `(namespace, name)` is stored as data, the prefix is its rendering -- phase 9's
+  `readiness_policy = "critical"` has to attribute a failing checker to an agent, and recovering
+  that by splitting a string breaks the moment a name contains the separator.
+- **Group settings are defaults, and only defaults**; each agent's own `settings.toml` merges under
+  that agent's scope. So an agent may set any key for itself and can never change what another
+  agent or the process sees -- which closes the fragment-merge open point below rather than
+  answering it.
+- **`AgentBuilder` records too**, and this fixes a live defect rather than only changing a shape.
+  `AgentBuilder.__init__` requires a `Config`, and `Component._shared_config` deliberately has no
+  public read path -- so the factory form phase 8 documents,
+  `lambda: AgentBuilder(config, runtime_name="orders").build()`, **cannot be written at all** in a
+  declaration-only `main.py`. Passing the unbuilt builder to `with_agent` and calling
+  `agent.build(config.for_namespace(ns))` at wiring time removes the lambda and a second latent bug
+  with it: a lambda closes over whichever configuration was in scope where it was written, which in
+  a group is the wrong one.
+
+**Two behavioural changes worth knowing.** `configure_logging()` moves from `__init__` into
+`build()` -- with nothing constructed before `build()`, that is where it belongs. And registration
+order keeps its meaning, but an instance recorded *after* a class registers *before* it, which can
+flip equal-priority tie-breaking; `build()` knows both the recorded order and which entries were
+instances, so it raises on that combination instead of silently reordering.
+
+**Checked against the four Builder anti-patterns**, which was the user's question. Collect-then-wire
+is the pattern, not an abuse of it; what exists today is the smell. (1) Side effects during
+accumulation -- removed. (2) A silently single-use builder -- `build()` calls
+`Component.configure`, which refuses a second call and surfaces as someone else's error; it gets
+its own message. (3) Requiring the product's context in the constructor -- `config` moves to
+`build()`. (4) Replay drift -- mitigated by storing the *method name* and resolving it with
+`getattr`, plus a test asserting the declaration surface and the replay agree.
+
+**Deferred, and not to be touched during 8b:** configuration validation. Four mechanisms disagree
+about what a missing key means, and two findings are worth recording because they are not visible
+from reading the code:
+
+- **The three root validators cannot fail.** `must_exist=True` together with `default=` never
+  fires -- Dynaconf injects the default. Verified against the installed version:
+  `Validator("app_name", must_exist=True, default="agent_blueprint")` yields
+  `'agent_blueprint'`; drop the default and the same declaration raises. So the only condition
+  among the three that can actually fail is `is_type_of=int` on `app_port`, and an application with
+  no `settings.toml` starts and calls itself `agent_blueprint`. The defaults are defensible; the
+  code *claiming* `must_exist=True` is not, because the next genuinely required key gets copied
+  from it.
+- **The actuator's configuration branches are dead.** `Config.validate()` runs inside
+  `__init__` and raises, so a `Config` that exists has always passed and `_validation_errors` is
+  always empty -- making `actuator_api.py:95` (readiness 503 carrying the reasons) and `:149`
+  (liveness warning) unreachable. The readiness probe was written for a behaviour the process does
+  not have.
+
+**Amended in the spec:** sec. 2 (Registration -> Declaration), 4.1 (`AgentGroup`, no cache list),
+4.2 (deferred wiring normative, the refusal table, config resolution order, order semantics), 4.3
+(the ContextVar's owner), 5.3 (defaults-only group settings; process-scope keys raise), 8 (caches
+declared-only), 9 (startup sequence), 10 (three new compatibility rows), 11 (`main.py` and the
+optional `create_app`).
+
+**Amended in the plan:** phase 8b added between 8 and 9 with an eight-step breakdown, and it is
+before 9 deliberately because 9 needs D4's attribution data; phases 0 and 3 carry superseded
+banners rather than being deleted, because their ContextVar and `with_cache`-signature reasoning
+still stands; the migration path corrected from two file changes to **three** (`agents.toml` was
+missing) and its `main.py` rewritten; the dual-branch migration recipe under *File change summary*
+removed, since it contradicted the rejection stated 600 lines above it; `python -m
+blueprint.agents.orchestrator` corrected to `entrypoint`; the *not a separate orchestrator*
+argument reconciled with `AgentGroup`; cache and executor sharing rows corrected; testing
+expectations extended.
+
+### Phase 8b, step 1 -- `AppBuilder` records, and `build()` is the only thing that builds
+
+**`Declaration` (`app_builder.py`), the five `with_*` and `with_cache` store instead of
+constructing, `build(config=None)` replays them.** This is the change the whole unification rests
+on: `with_handler(H)` used to construct `H` on the spot, so a component declared before any
+namespace existed belonged to the root for ever -- which is the only reason `AgentRegistration`
+had to exist as a second class. It no longer does.
+
+- **`Declaration`** is a frozen value object holding `kind`, `target`, `name`, `namespace` and
+  `kwargs`. `target` is a class, a zero-argument factory, an already-built component, or `None`
+  for a cache. `is_built` reports whether `target` is already a `Component`, which is what the
+  order check below reads.
+- **`_record(kind, target, namespace, kwargs, *, name, method)`** replaces `_register`. It
+  resolves the namespace **at the call**, not at construction -- `namespace or
+  current_namespace()` -- because the caller's scope is what carries it and by the time the
+  replay runs no scope is in force. Two checks stay at record time, both answerable there and
+  both better reported at the offending line: `validate_namespace(namespace)`, and the
+  already-built-instance-for-another-namespace refusal (unchanged wording, moved from
+  `_register`).
+- **`_construct(declaration)`** is the other half of the old `_register`: it enters
+  `_construction_scope(declaration.namespace)` and calls `declaration.target(**kwargs)`, or
+  adopts the instance, then assigns the explicit name. A class and a factory are now handled by
+  the same branch, because a class *is* a zero-argument factory once its keyword arguments are
+  applied -- which is what lets `lambda: AgentBuilder(...).build()` be deferred exactly as far as
+  a class is.
+- **`declarations`** is a public read-only snapshot, for the collector in step 3 and for a test
+  that wants to assert what a `main.py` declares without building any of it.
+- **`_construct_declarations()`** replays in call order, then creates the caches. Caches last on
+  purpose: a cache backend is itself a `Component`, so building one mid-pass would interleave it
+  into the registry's insertion order and shift every component declared after it.
+
+**`build(config=None)`** gained three things. It refuses a second call with its own message
+rather than surfacing `Component.configure`'s "already set" from three frames down. It settles
+the configuration -- given to `__init__`, given here, or, when neither, loaded from
+`DEFAULT_SETTINGS_FILES`, which is what makes the migrated `AppBuilder().build()` shape work.
+And it injects the configuration **before** constructing anything, which is strictly more correct
+than the old order: every component now exists in a process that already has its configuration.
+
+**`_check_declaration_order`** is the one new refusal. An instance is constructed by the caller
+at its own source line and is therefore in the registry *before* `build()` runs, while a class is
+constructed during the replay -- so an instance recorded after a class registers before it.
+That is not cosmetic: `DispatchIndex.build` resolves handler priority ties by registration order.
+The check runs **after** construction, deliberately, because a class's priority is a property of
+the object and reading it off the class would mean parsing a default argument and being wrong
+about every handler that computes one; the application is not returned when it raises, so the
+components already in the registry go nowhere. It fires only for handlers, only within one
+namespace, and only at equal priority -- the only case where the order decides anything.
+
+**`configure_logging()` moves, but not all the way to `build()`.** The plan says `build()`; that
+is right for a declaration-only `main.py` and wrong for the shape the scaffolder still generates,
+where `with_service(OrderService())` constructs at its source line and the builder's own
+`with_namespace` / `with_cache` calls log as they go. So the call lives in one place,
+`_use_config`, which runs from `__init__` when a configuration is given there and from `build()`
+when it is not. An existing `AppBuilder(config)` chain therefore logs exactly as it did.
+
+**Smaller changes that this needed:**
+
+- `EventHandlerBase.priority` -- a public property over `_priority`. The ordering rule is
+  enforced from outside the class, and `__lt__` answers the sorting question, not that one.
+- `CacheBackendFactory._validate_name` -> `validate_name`. `with_cache` calls it at record time,
+  because a cache name becomes a directory segment and a Redis key prefix: it crosses the process
+  boundary, so it is validated where it is written. The factory still validates when it creates
+  the backend -- it owns the rule, and nothing reaches it only through the builder.
+- `DEFAULT_SETTINGS_FILES` moved from `entrypoint.py` to `config/config.py` and is exported from
+  the `config` package. Two callers now need the same answer: the container entry point, and
+  `build()` when the application handed it no configuration.
+- `AgentRegistration.apply` hands a factory to the builder instead of calling it. A factory used
+  to be invoked at apply time -- producing an instance that landed in the registry before every
+  class of the same agent -- and now defers as far as a class does.
+- The registry-creation fallback considered for `build()` was **not** added: `AppBuilder.__init__`
+  constructs a `TelemetryManager`, which is a `Component`, so the shared registry always exists by
+  the time `build()` runs. Verified rather than assumed.
+
+**Behavioural change, stated for the migration guide:** nothing is in the registry until
+`build()`, so code that looks a component up between `with_*` calls breaks. The framework's own
+convention already forbids it -- collaborators are resolved in `on_startup` -- so the fix is the
+documented pattern.
+
+**Tests.** New `tests/unit/agents/app_builder/test_deferred_wiring.py` (32 cases): nothing is
+constructed or registered before `build()`, what a declaration records, the order refusal and the
+three cases it must *not* fire on, where the configuration may be handed over, the single-use
+guard, and an application that declares nothing. The existing suites that asserted on the registry
+straight after a `with_*` call now say when construction happens, through a `realize()` helper in
+`conftest.py` that runs `build()`'s own replay pass without the actuator, root API and FastAPI
+application that would drown the assertion. 1962 unit tests pass, 34 more than before this step.
+
+---
+
+### Phase 8b gains a step 9: the rules this overhaul establishes, written where they will be read
+
+**No code changed. A step was added to the plan, and a documentation audit was run to decide where
+it lands.** Recorded here because the audit's findings are the reviewable artefact and because they
+changed the answer.
+
+**The question.** This overhaul settles principles -- collect then wire, the namespace is ambient,
+a name that leaves the process is validated and never repaired -- that a later feature can violate
+without anyone noticing. They exist today only in this changelog, which is now over 4600 lines and
+which nobody will read end to end. So: write them down as rules, and put a test behind the ones a
+test can hold. Placed **last** in phase 8b, because a rule can only describe something that exists.
+
+**The finding that decided the location.** `CLAUDE.md:5` has always said *"See `AGENTS.md` for
+architecture, component patterns, and testing conventions shared across all AI assistants."*
+**`AGENTS.md` has never existed.** `git log --all --diff-filter=A -- AGENTS.md` returns nothing --
+it was not written and later deleted, it was cited into existence. Worse,
+`docs/plans/2026-06-10-sessions-job-handler.md:122` quotes what it *states* about versioning, so a
+claim has already been sourced to a document that is not there.
+
+That inverted the recommendation. A new `docs/concepts/design-rules.md` would have added a file and
+left the dead pointer beside a live one; writing `AGENTS.md` turns a reference that resolves nowhere
+into one that resolves, at no net cost in files.
+
+**The rest of the audit**, over all 61 tracked markdown files. Two real problems, both duplication
+rather than absence:
+
+- **`docs/superpowers/`** holds `plans/` and `specs/` mirroring `docs/plans` and `docs/specs` --
+  3 files, 2079 lines -- and **nothing in the repository links to any of them.** A second,
+  abandoned home for the same two document types.
+- **Four cache documents totalling 968 lines:** `docs/concepts/caching.md` (347),
+  `docs/concepts/cache-system-overview.md` (232), `docs/concepts/cache-architecture.md` (181),
+  `docs/guides/caching-getting-started.md` (208). `docs/README.md` links one of the four.
+
+Two further references resolve nowhere and are legitimate: `docs/guides/multi-agent-setup.md` is a
+phase 10 deliverable, and `agent_group.py` is phase 8b step 3. One is not:
+`docs/development-workflow.md`, cited by this plan's own file summary and never written. Everything
+else that a naive sweep flags -- `nats.py`, `config.py`, `settings.toml` -- is this repository's
+bare-filename shorthand, which is convention rather than rot; the audit script resolves those
+against `src/blueprint/agents/` before reporting.
+
+**What step 9 will do**, in three commits: write `AGENTS.md`; add
+`tests/unit/agents/test_design_rules.py` with one guard per mechanically checkable rule -- including
+a reference-resolution guard, which is the check that would have caught `AGENTS.md` and is what
+makes the rest durable; and clean up the duplication above. Step 8's surfaces-agree test moves into
+that file rather than being written twice.
+
+**The user's instruction, recorded because it widened the step:** `AGENTS.md` alone is not enough --
+everything else has to be coherent too. Hence part 3, which is documentation debt this feature did
+not create.
+
+---
+
+### Phase 8b, step 2 -- `AgentBuilder` records too, and is built against its own agent's configuration
+
+**This fixes a live defect, not only a shape.** `AgentBuilder.__init__` required a `Config`, and
+`Component._shared_config` deliberately has no public read path (config rework step 2b). So in a
+`main.py` that only declares -- which is every grouped agent -- there was no configuration in
+scope to pass, and the factory form phase 8 documents,
+`lambda: AgentBuilder(config, runtime_name="orders").build()`, **could not be written at all**.
+`AgentBuilder` was unusable in exactly the deployment shape this feature exists for.
+
+**`agent/agent_builder.py`**
+
+- **`__init__(config: Config | None = None, ...)`.** `config` stays the first positional
+  parameter, so `AgentBuilder(config, runtime_name="x")` is untouched; it is now optional, which
+  is what makes an unbuilt builder declarable.
+- **`with_model_from_config` records.** It used to call `self._config.get_ai_config(...)` on the
+  spot, apply the `model_name` override and raise all three of its refusals. Now it sets
+  `_model_from_config` and `_model_name_override` and returns. The reading moved to a new
+  `_resolve_ai_config`, called from `build()`, which carries the same three refusals with the
+  same messages, naming the same runtime.
+- **`build(config: Config | None = None, **kwargs)`.** The single-use guard moved to the top,
+  ahead of the "model must be configured" check it used to follow -- with `_ai_config` now
+  resolved *inside* `build`, the old first check tested a field that is `None` on every call, so
+  the two had to be reordered and the model check rewritten to ask whether
+  `with_model_from_config()` was called rather than whether it left a result. Then
+  `_resolve_config`, `_resolve_ai_config`, and the AI client, prompt and metrics as before, all
+  reading the resolved configuration rather than `self._config` directly.
+- **`_resolve_config` -- and its precedence is the opposite of `AppBuilder`'s, deliberately.**
+  `build(config)` **wins** over `AgentBuilder(config)`. An `AppBuilder` is the application, so
+  nothing above it knows better and two configurations mean the author is confused -- step 1 made
+  that a refusal. An `AgentBuilder` sits *inside* an application, and what the application passes
+  is the view scoped to this agent's namespace (C5), which is the whole point of D6. A
+  constructor argument is a convenience for the standalone chain, so it yields. When the two
+  differ the choice is logged at DEBUG. At the root `for_namespace("")` returns the loader
+  itself, so for a single-agent application they are the same object and nothing is chosen.
+- **`_require_config`** raises when neither was given, naming both places one can be passed.
+  Not defaulted to `DEFAULT_SETTINGS_FILES` the way `AppBuilder.build()` is: an `AgentBuilder`
+  always sits inside an application that already has a configuration, so a missing one is a
+  wiring mistake rather than a case to guess a settings file for.
+- **`runtime_name`** is now a public property. The application names the agent in its logs and
+  its failures before the agent exists.
+- `get_model_settings()` reads through `_require_config()`, so it is unchanged for anyone who
+  constructed with a configuration and raises a named error for anyone who did not.
+
+**`app_builder.py`**
+
+- **`with_agent` accepts an unbuilt `AgentBuilder`** -- a class, an unbuilt builder, a factory,
+  or an instance (D6). `_record` had to learn it, because an `AgentBuilder` is neither a
+  `Component` nor callable and would have been refused by the `not callable(target)` branch. It
+  is accepted for `kind == "agent"` only; passed to any other `with_*` it is refused with a
+  message saying where it belongs.
+- **`_construct(declaration, config)`** gained the configuration and a third branch:
+
+      elif isinstance(declaration.target, AgentBuilder):
+          with _construction_scope(declaration.namespace):
+              instance = declaration.target.build(config.for_namespace(declaration.namespace), **declaration.kwargs)
+
+  That one line is D6: the model, prompt and metrics of a grouped agent are read from its own
+  configuration section rather than from the root or from a neighbour's. `_construct_declarations`
+  takes the configuration and passes it through; `build()` hands it the one it resolved.
+- `AgentRegistration.with_agent` and `_add` learned the same, and the docstring's `lambda`
+  example is replaced by the builder form. The factory form still works and is still the escape
+  hatch for anything a plain call cannot express -- but it is no longer what the documentation
+  recommends, because a lambda closes over whichever configuration was in scope where it was
+  written, which in a group is another agent's.
+- Importing `AgentBuilder` into `app_builder.py` introduces no cycle: `agent_builder.py` imports
+  the config package, the AI clients and `AgentRuntime`, and none of them import the builder.
+  Verified by import, not by reading.
+
+**Behavioural change:** the three model refusals move from `with_model_from_config()` to
+`build()`. An application that misconfigures its model now learns at build time rather than at
+declaration time. Nothing else about them changed -- same conditions, same messages, same runtime
+named.
+
+**Tests.** `tests/unit/agents/agent/test_agent_builder.py` gains `TestTheModelRefusalsMovedToBuild`
+(the three refusals, plus one asserting the message still names the runtime) and
+`TestWhereTheConfigurationComesFrom` (constructible without a config; `build(config)` supplies
+one; neither is refused with a message naming both places; `build`'s wins over the constructor's;
+`get_model_settings` without one is refused; `runtime_name` readable before building), and
+`TestWithModelFromConfig` now pins that it reads no configuration at all.
+`test_deferred_wiring.py` gains `TestAnUnbuiltAgentBuilder`: recorded rather than refused, not
+built by the `with_` call, handed the namespace-scoped view, handed the loader itself at the root,
+constructor arguments forwarded to `build`, and refused by the other `with_*` methods. The
+`realize()` helper passes the builder's configuration through the replay. 1979 unit tests pass,
+17 more than before this step.
+
+---
+
+### Phase 8b, step 3 -- `AgentGroup`: named declarations in, one application out
+
+**New module `agent_group.py`.** Collection is its own unit, in a class `AppBuilder` has never
+heard of. That is the correction that killed the earlier `absorb(builder)` design: an
+`AppBuilder` records what *one* agent is made of and never learns it can be collected, so every
+rule that exists only because agents share a process lives in the new file rather than being
+scattered into the builder, where it would punish the single-agent case for a situation it is
+not in.
+
+**`AgentGroup(name, agents, *, cache_names=())`** takes a `Mapping[str, AppBuilder]` -- a mapping
+rather than a list because two agents cannot share a name, and a mapping says so structurally
+instead of needing a check. Each key is validated as a namespace and the root is refused.
+`cache_names` is D3's casualty and is marked as such; it is what `GroupConfig` still carries.
+
+**Three things happen there and nowhere else:**
+
+- **`resolve(config, *, environ=None)`** -- the only I/O: `GroupConfig.resolve` reads the
+  environment and the group file. It is `AppBuilder.from_group` moved and renamed.
+- **`from_config(group)`** -- imports each agent's module and reads the named attribute, which
+  must now be an **`AppBuilder`**, not an `AgentRegistration`. `_load_declaration` and
+  `_skip_or_raise` moved across with the critical/non-critical rule intact: a critical agent
+  that cannot be loaded raises, a non-critical one is skipped with an ERROR. Reads no
+  environment and no files, so a test states an exact composition literally.
+- **`assemble(config)`** -- one root `AppBuilder`, one `build()`, one `FastAPI`:
+
+      for namespace, builder in self._agents.items():
+          root.host_agent(namespace)
+          with namespace_scope(namespace):
+              for declaration in builder.declarations:
+                  declaration.replay(root)
+
+  The namespace is never passed as an argument. The collector opens a `namespace_scope` and
+  `_record` reads it from there -- the same ambient mechanism a component uses, and the reason
+  step 4 can delete the `namespace=` keyword without the group losing anything.
+
+**`Declaration.replay(builder)`** is how a recorded call moves onto another builder:
+
+      arguments = () if self.target is None else (self.target,)
+      getattr(builder, f"with_{self.kind}")(*arguments, name=self.name, **self.kwargs)
+
+Resolved by name with `getattr` rather than through a table, which is the fourth Builder
+anti-pattern -- replay drift -- mitigated as the proposal specified: a table is a second place
+to edit, and a missing method fails just as loudly as a `KeyError` while needing no maintenance.
+One branch above it handles `with_health_checker(name, checker)`, whose name is positional where
+every other `with_*` takes it as a keyword; the irregularity is cheaper in one commented branch
+than as a breaking change to published API.
+
+**The refusals** (spec sec. 4.2), all in `_refuse_what_a_group_cannot_honour`, all run before
+anything is replayed so a bad group leaves no half-populated registry:
+
+| Refused | Because |
+|---|---|
+| the builder has already been built | its components exist and belong to the root, and `build()` injects the configuration process-wide, which happens once |
+| `AppBuilder(config)` | one process has one settings tree, one logging configuration and one port, and the group supplies all three |
+| a declaration holding an instance | it was constructed at that line, before the group existed, so its namespace and registry key are already the root's |
+
+**Order matters and is documented in the code:** the already-built check runs *first*, because
+`build()` adopts whatever configuration it resolved, so a built builder always reports one too --
+check the configuration first and its message is the only one anybody ever sees. Found by a test
+that asserted the wrong message.
+
+**`app_builder.py`**
+
+- **`host_agent(namespace)`** -- extracted from `with_namespace`, which now calls it. Not a
+  `with_*`: it declares no component, it states a fact about the process. `build()` needs that
+  fact because two of the things it does are per agent rather than per component -- it wires one
+  transport per hosted agent, and asks each agent's configuration whether that agent publishes.
+  Neither can be derived from the declarations, because an agent may declare nothing and still
+  have opted into publishing. The builder is *told*; it never learns another builder exists.
+- **`has_config` and `is_built`** -- two public booleans, which is what the collector reads.
+  Booleans rather than the objects: handing out the configuration would hand out the *unscoped*
+  loader, and config rework step 2b removed every path to that.
+- **`with_health_checker` records** a `Declaration` with `kind="health_checker"` instead of
+  stashing into a lazily-created `_custom_health_checkers` attribute behind a `hasattr` check.
+  This is what stops a group silently dropping an agent's readiness checks, and it hands step 6
+  the `(namespace, name)` pair it needs as data. The key is still the bare name, so a readiness
+  payload is unchanged and two agents declaring `"db"` still collide -- that is step 6's fix.
+  Calling it *after* `build()` still adds straight to the live `ActuatorApi`, because by then
+  the declarations have been replayed and recording would do nothing.
+- `_UNCONSTRUCTED_KINDS` names the two kinds the replay pass does not construct: a cache is
+  created by `CacheBackendFactory`, and a health checker is not a `Component` at all.
+- **Deleted:** `from_group`, `with_group`, `_load_registration`, `_skip_or_raise` -- 126 lines,
+  and with them the `importlib` and `group_config` imports. `AppBuilder` no longer references
+  `GroupConfig` in any form.
+
+**`entrypoint.py`** now reads:
+
+      config = Config(settings_files=DEFAULT_SETTINGS_FILES)
+      app = AgentGroup.resolve(config, environ=environ).assemble(config)
+
+so the module holds the one thing neither `AppBuilder` nor `assemble` may do: exit the process.
+Its header said it held "the three things `AppBuilder` must not: reading the environment, reading
+files, and exiting the process"; two of those now belong to `AgentGroup.resolve`, and the
+docstring says so.
+
+`AgentGroup` is exported from `blueprint.agents`.
+
+**Tests.** `test_with_group.py` becomes `tests/unit/agents/test_agent_group.py`, rewritten
+against the new surface: one namespace per agent, a group of one, one declaration serving two
+agents, a declaration not consumed by being assembled, an empty group, name validation, all
+three refusals with the messages that name the agent and the fix, a factory accepted where an
+instance is refused, nothing assembled when a refusal fires, the group's caches and an agent's
+own cache, a health checker carried over, loading and the critical flag, no I/O in `from_config`,
+`resolve`, and a case asserting `AppBuilder` has neither `with_group` nor `from_group`.
+`test_entrypoint.py`'s declaration is now an unbuilt `AppBuilder`, and its standalone case builds
+a separate one -- a builder builds once, and only that file runs both shapes in one process.
+1994 unit tests pass, 15 more than before this step.
+
+---
+
+### Phase 8b, step 4 -- four declaration surfaces become one
+
+**Deleted: `RegisteredComponent`, `AgentRegistration`, `NamespaceBuilder`,
+`AppBuilder.with_registration`, `AppBuilder.with_namespace` and its two `@overload`s, and the
+`namespace=` keyword on all five `with_*`.** `app_builder.py` goes from 1566 lines to 1236.
+`AgentRegistration.apply` and its `appliers` dict go with the class.
+
+This is the payoff the phase was for. Adding one `with_*` method meant editing four places --
+`AppBuilder`, `AgentRegistration`, `NamespaceBuilder`, and `apply`'s `appliers` dict -- and
+three of those failed *silently*, the capability simply absent from that surface. There is now
+one place. The other three existed only to defer construction until a namespace was in force,
+and step 1 removed that reason.
+
+**What replaced each of them**
+
+| Deleted | Now |
+|---|---|
+| `AgentRegistration` | an unbuilt `AppBuilder` -- used without `build()`, it *is* the declaration |
+| `NamespaceBuilder` + `with_namespace` | `AgentGroup`, which takes named builders |
+| `AgentRegistration.apply` + `appliers` | `Declaration.replay`, resolving the method with `getattr` |
+| `namespace=` on the five `with_*` | the ambient scope the group opens |
+
+**`_record` lost its namespace parameter**, and that is the point rather than a tidy-up:
+
+      namespace = current_namespace()
+
+A declaration takes the namespace in force *where it is written* -- the root for a standalone
+application, the agent's own for a declaration a group is replaying inside `namespace_scope`.
+So nothing a developer writes names a namespace, and the same file serves both deployment
+shapes unchanged.
+
+**A removed keyword that would have kept working is refused.** `namespace` is not an error to
+Python once the parameter is gone -- it falls into `**kwargs` and is forwarded to the
+component's constructor, and `ServiceBase` accepts one. So `with_service(OrderService,
+namespace="orders")` would have gone on placing the component in `orders`, by an entirely
+different mechanism, until the first component with its own `__init__` failed at build time
+instead. `_record` therefore refuses the keyword by name and says what it would otherwise do.
+Found by writing the test that asserts the keyword is gone and watching it not raise.
+
+**Smaller changes:**
+
+- The five `with_*` type hints gained `| Callable[[], T]`. Factories were always accepted and
+  were only ever in `AgentRegistration`'s signatures; with that class gone, `AppBuilder`'s
+  signatures have to say what it takes.
+- The instance-namespace refusal is still there and still reachable -- ``with_service(instance)``
+  with a scope open -- but its message no longer suggests a `namespace=` argument as the fix.
+- `blueprint.agents` no longer exports `AgentRegistration` or `NamespaceBuilder`.
+- `AgentSpec.module`'s docstring says `AppBuilder` rather than `AgentRegistration`; it is what
+  step 3 made true and this is where it is written down.
+
+**Tests.** `test_agent_registration.py` deleted -- its subject no longer exists.
+`test_namespace_builder.py` becomes `test_namespace_placement.py`, keeping every case whose
+subject survives the API change: the ambient scope qualifies the registry name, reaches the
+component, is never forwarded to its constructor, and is captured at the call rather than at
+construction; explicit names are qualified; an already-built instance is refused for another
+namespace; `host_agent` records the composition and refuses a duplicate, the root and an illegal
+name; a scoped declaration is not a hosted agent. It gains `TestTheDeletedSurfaces`, four cases
+pinning that the other three surfaces stay deleted and unexported.
+
+`test_build_namespaces.py` and `test_route_namespacing.py` were written against
+`with_namespace(...)`. The route tests now use `AgentGroup(...).assemble(config)` directly,
+because they assert on the application. The transport tests need the *root builder* -- the
+endpoints they assert on register nowhere, and `assemble()` returns the application and keeps
+its builder private -- so they use a local `hosting()` helper that runs `assemble`'s loop
+through the same public `Declaration.replay`, with a docstring pointing at `test_agent_group.py`
+for the group's own behaviour.
+
+`tests/unit/agents/app_builder/TESTS.md` updated: it documented two files that no longer exist
+and a `with_health_checker` that no longer works that way.
+
+1963 unit tests pass, zero failures. The count is 31 *lower* than after step 3, and that is the
+deletion showing up rather than coverage lost: the cases for two classes that no longer exist
+went with them.
+
+---
+
 ---
 
 ## Compatibility
@@ -4252,6 +4775,557 @@ stay keyword-only and last, or an existing `with_cache(False)` would silently be
 
 ---
 
+### Phase 8b, step 5 -- a cache is private to the agent that declared it
+
+**D3, and the half of spec sec. 8 that was never built.** Sec. 8 requires that cache names be
+namespace-scoped and that `get_cache(name)` resolve within the declaring agent and raise
+otherwise. What existed was the *data-partition* half: `AgentScopedCache`, a lens that prefixed
+each call's partition argument with the agent, over one shared backend. Two agents therefore
+still shared a store, a `size_limit` and a Redis keyspace, and the isolation held only as long
+as every call site went through the lens.
+
+The isolation is now **structural**: separate registry entries, separate directories, separate
+key prefixes. There is nothing left for a prefixing lens to prevent, so it is deleted.
+
+**`Registry` -- the store is keyed on `(namespace, name)`**
+
+    self._caches: dict[tuple[str, str], CacheService] = {}
+
+and every cache method takes the owning agent, defaulted from the object it is called on:
+
+    def _cache_owner(self, namespace: str | None) -> str:
+        if namespace is not None:
+            return namespace
+        return self._default_namespace or ROOT_NAMESPACE
+
+That default is the whole developer-facing story: `Component.registry` hands a component its own
+namespace's view, so `self.registry.get_cache("sessions")` reaches this agent's store with no
+namespace at the call site -- and `add_cache`, `has_cache`, `get_all_caches` and the
+`cache_service` alias resolve the same way. `add_cache(name, cache, namespace=...)` names one
+explicitly, which is what `build()` uses.
+
+**`_cache_owner` deliberately differs from `_effective_namespace`.** For components an omitted
+namespace on the application's registry means *every* namespace, which is what `build()` and the
+lifespan need when they iterate. For caches it means *the root*, because every cache operation
+names exactly one cache: there is no cache that belongs to all agents, and a lookup ranging over
+the process would be the cross-agent sharing sec. 8 exists to prevent.
+
+- `get_cache` has **two fallbacks that do not exist** -- none from an unknown name to the
+  default, and none from an agent to the root or a neighbour. The message names the agent and
+  lists what *that* agent has: `No cache registered as 'sessions' for agent 'billing'
+  (registered: none)`.
+- `get_all_caches(namespace=None)` is **one agent's**, keyed by bare name.
+- **`cache_entries()` is new** and is the only cache view that crosses agents:
+  `list[tuple[str, str, CacheService]]`, `(namespace, name, cache)`. It **raises on a view**
+  (C6) -- a view is what agent code holds, and an agent that can enumerate its neighbours' caches
+  can be written to depend on them. The agent is returned **as data**, not folded into the name,
+  because a cache name may legally contain the separator (`v2.sessions`), so a caller that has to
+  attribute a cache to an agent must not be splitting a string. `clear()` iterates the tuple keys
+  and names the agent in its log line.
+
+**`CacheBackendFactory` -- one argument carries every consequence of ownership**
+
+`create(config, enable_locking, name, *, namespace="")`. The bare name stays what is validated
+and what appears in the registry; the *storage* name is composed here, in the same class that
+already owned "how a name becomes a separate store":
+
+    @staticmethod
+    def storage_name(namespace: str, name: str) -> str:
+        return name if not namespace else f"{namespace}.{name}"
+
+`_scoped_cache_dir` and `_scoped_key_prefix` now take that storage name, so agent `orders`
+declaring `sessions` gets `<cache_dir>/orders.sessions` on disk and `<prefix>:orders.sessions` on
+Redis, and its *default* cache gets `<cache_dir>/orders.default` -- only the root keeps the
+configured directory itself, which is what leaves a single-agent application reading exactly the
+store it always did. The directory stays a **subdirectory** of `cache.cache_dir` for the reason
+named caches already did: under `readOnlyRootFilesystem` only the mount is writable, so one
+volume per group still works and a group does not multiply the writable paths a pod needs.
+
+`.` is the separator because it is in the cache-name alphabet and not in the namespace alphabet:
+an agent's storage name is still a legal cache name, and no cache name can forge one. `_` is in
+both, which would make `orders_sessions` ambiguous between agent `orders` and a root cache of
+that name.
+
+**`create` also enters the namespace scope itself**:
+
+    storage = CacheBackendFactory.storage_name(namespace, name)
+    with construction_scope(namespace):
+        if config.backend == "redis":
+            return CacheBackendFactory._create_redis(config, enable_locking, name, storage)
+        return CacheBackendFactory._create_disk(config, enable_locking, name, storage)
+
+A cache backend is itself a `Component`, so two agents' caches both derive
+`disk_cache_service` and collide on that one registry name unless each is constructed inside its
+agent's scope. Doing it in the factory rather than at the call site means the `namespace`
+argument alone decides *both* where the cache stores and what it registers as, whatever scope
+the caller happens to be in -- **found by a test**: the first version scoped only in `build()`,
+and a direct `create(..., namespace="orders")` produced an agent-scoped store with a root
+registry name, which failed the moment a second agent did the same.
+
+**`construction_scope` moved to `component/namespace.py`** and is now public. It was
+`app_builder._construction_scope`: the guarded form of `namespace_scope` that leaves the ambient
+namespace alone for the root, because `namespace_scope("")` is not a no-op -- it *sets* the root.
+The factory needs exactly that guard, and the trap is one that gets re-derived wrongly, so the
+one implementation lives beside the thing it guards.
+
+**`AppBuilder` -- three things are per agent at build time**
+
+`_create_cache(declaration, config)` now takes the configuration and reads the agent's own view:
+
+    cache_service = CacheBackendFactory.create(
+        config.for_namespace(namespace).get_cache_config(),
+        enable_locking=enable_locking,
+        name=name,
+        namespace=namespace,
+    )
+    registry.add_cache(name, cache_service, namespace=namespace)
+
+So the *backend* is chosen per agent too (C5): one agent in a group can run on redis while its
+neighbour uses the disk, which a process-wide read of `cache.backend` could not express.
+
+**The readiness probe attributes each cache to its agent:**
+
+    for namespace, cache_name, cache in registry.cache_entries():
+        entry = "cache" if cache_name == DEFAULT_CACHE_NAME else f"cache:{cache_name}"
+        health_providers[f"{namespace}.{entry}" if namespace else entry] = CacheHealthChecker(cache)
+
+Two agents' default caches were previously one entry keyed `cache`, so the payload reported
+whichever registered last and one agent's Redis outage was invisible. The root keeps the bare
+`cache` / `cache:sessions` entries, so an existing readiness payload does not change. (Step 6
+generalises this to every health checker and stores the attribution as data; this is the cache
+half, which step 5 cannot leave broken.)
+
+**`/cache/*` became per agent:**
+
+    for namespace in self._cache_owners(registry):
+        with construction_scope(namespace):
+            cache_api = CacheManagementApi()
+        self._mount(app, cache_api, root_prefix="/api")
+
+One router per agent that declared a cache, mounted under that agent's `/api/<agent>` prefix by
+the `route_prefix` mechanism phase 6 built, each resolving names through its own registry view.
+So `/api/orders/cache/stats` reports the orders agent's caches and cannot reach billing's --
+where one process-wide endpoint would have reported one agent's keys to another. `_cache_owners`
+derives the list from `cache_entries()` rather than from `hosted_namespaces`, because a cache is
+declared and not implied: an agent that declared none gets no endpoint, exactly as an application
+built without `with_cache()` has never served `/cache/*`. A standalone application keeps
+`/api/cache/*` unchanged, and its 503/404 branches now speak about that agent's caches.
+
+**Deleted**
+
+- **`AgentScopedCache`** (`services/infrastructure/agent_scoped_cache.py`) and `Registry`'s
+  `_scoped_cache` / `_scoped_caches` machinery, including the reset of `_scoped_caches` in
+  `for_namespace`. Separate stores make the isolation structural, so the lens has nothing left to
+  prevent -- and it had a real weakness: it was per registry *view*, so framework code holding
+  `Component.shared_registry` directly still reached the shared store.
+- **`GroupConfig.cache_names`**, its env-override slot and its line in the resolution log; the
+  `cache_names` argument to `AgentGroup` and the `with_cache` replay loop in `assemble`. A group
+  declares no caches because there is no process-wide cache to declare. `cache_names` in a
+  mounted group file is now **read by nothing** -- ignored rather than refused, because a
+  rollout must not fail over a key that has become inert, and `GroupConfig` reports only what it
+  understands.
+
+**Knock-on, as D3 predicted:** `has_cache()` and `cache_service` answer per agent, so an agent
+with `idempotency_enabled = true` must itself declare `with_cache()`; a neighbour's cache no
+longer satisfies it. The existing error message already says exactly what to add. This is what
+changed `test_event_processing_namespaces.py`'s fixture, whose `orders` agent enables dedup: its
+cache is now registered *for* `orders` instead of at the root.
+
+**Tests.** `test_agent_scoped_cache.py` deleted with its subject. New: `TestCachesPerAgent` in
+`test_registry.py` (13 cases -- two agents holding one name, no fallback by name, through the
+root or by enumeration, the per-agent alias and `has_cache`, `cache_entries` carrying the agent
+as data and refused on a view, `clear` reaching every agent);
+`TestACacheBelongsToTheAgentThatDeclaredIt` in `test_named_caches.py` (registration, directory,
+two agents' separate stores, both backends registering as components, the agent's own config view,
+and the readiness entry); `TestAgentIsolation` in `test_cache_backend_factory.py` (the storage
+name at the root and for an agent, the separator staying a legal cache name, separate directories
+and Redis prefixes, the directory staying inside the mount); `TestCacheEndpointsPerAgent` in
+`test_route_namespacing.py` (per-agent paths through `app.openapi()`, no endpoint for an agent
+that declared none, and the standalone paths unchanged). `test_agent_group.py`'s
+`TestTheGroupsCaches` is rewritten around agents owning caches, including the D3 case -- two
+agents declaring `sessions` get separate stores and neither can read the other's.
+
+1975 unit tests pass, zero failures.
+
+---
+
+### Phase 8b, step 6 -- a health check carries the agent it belongs to
+
+**D4.** A readiness check was a dict entry, `name -> checker`, and that lost the attribution
+twice over. Two agents calling `with_health_checker("db", ...)` collided on one key and one
+disappeared with nothing logged; and even where the keys differed -- a client's registry name is
+already unique -- nothing recorded *whose* check a failing entry was, which is exactly what
+`readiness_policy = "critical"` (phase 9) has to answer.
+
+**`HealthCheckEntry`, in `health/health_base.py`** -- the value object the dict becomes:
+
+    @dataclass(frozen=True)
+    class HealthCheckEntry:
+        name: str
+        namespace: str
+        checker: HealthCheckerBase
+
+        @property
+        def key(self) -> str:
+            return qualified_entry_name(self.namespace, self.name)
+
+        @property
+        def agent(self) -> str:
+            return self.namespace or ROOT_LABEL
+
+The agent is **data**; `key` is only its rendering. Recovering the namespace by splitting the key
+would break on the first name containing the separator, and `cache:v2.sessions` is one. `agent`
+exists so a log line can name the root without every caller writing the `or ROOT_LABEL`.
+
+**`qualified_entry_name` in `component/namespace.py`** is the rendering, and it is a *second*
+naming rule rather than a reuse of `qualified_component_name`:
+
+    def qualified_entry_name(namespace: str, name: str) -> str:
+        return name if not namespace else f"{namespace}.{name}"
+
+`.` rather than `_`, deliberately. A registry name is an identifier other code looks up, and `_`
+is what every lookup qualifies with; an entry name is a label nothing resolves, and it may
+contain characters a registry name never does -- `cache:sessions` already does. Rendering both
+the same way would suggest a readiness key can be passed to `get_component`, and it cannot. The
+route-tag prefixing in `_mount` now calls it too, so the dotted form has one definition instead
+of two spellings.
+
+**`HealthCheckCache` polls entries, not a mapping.** `set_health_check_provider(dict)` becomes
+`set_health_entries(Sequence[HealthCheckEntry])`, and the poll loop lost its intermediate dict:
+
+    results = await asyncio.gather(*(entry.checker.health_check() for entry in self._entries), return_exceptions=True)
+
+    for entry, result in zip(self._entries, results, strict=True):
+        if isinstance(result, BaseException):
+            logger.warning("Health check '%s' of agent '%s' failed: %s", entry.name, entry.agent, result)
+            components[entry.key] = ComponentHealth(status="unhealthy", message=f"Check failed: {result}")
+        else:
+            components[entry.key] = result
+
+The payload is still `dict[str, ComponentHealth]` keyed by `entry.key`, so the response *shape*
+is unchanged and the root's keys do not move. What is new is that the object doing the ANDing
+knows whose each result is -- phase 9 groups these by `entry.namespace` and needs no string
+surgery to do it. The failure log names the agent separately from the entry, because "whose
+check is failing" is the question asked of a group.
+
+**`ActuatorApi.add_health_providers` accumulates, and refuses a duplicate key.** It took a
+mapping and **assigned** it:
+
+    self._pending_providers = providers        # before
+    self._health_cache.set_health_check_provider(providers)
+
+That is a live defect, not just a shape: the method's own docstring documents calling
+`with_health_checker` *after* `build()`, and doing so replaced every client and cache check the
+build had wired -- before startup by overwriting `_pending_providers`, after startup by
+overwriting the cache's mapping. The readiness probe then reported one component and nothing
+else. It now appends to `self._health_entries`, re-pushes the whole list to a live cache, and
+raises on a key that is already taken:
+
+    raise ValueError(
+        f"Health check '{entry.name}' of agent '{entry.agent}' would appear in the readiness payload as "
+        f"'{entry.key}', which is already taken by a {type(existing.checker).__name__} of agent "
+        f"'{existing.agent}'. Two checks under one entry cannot be told apart in the payload, so one of "
+        "them has to be renamed."
+    )
+
+Refused rather than kept-last, because silent loss is the whole of what D4 is about. It is
+checked here rather than at `with_health_checker` because this is the single funnel every source
+passes through -- clients, caches, declared checkers, and post-build additions -- and a collision
+between two *different* sources is only visible at this point. `health_entries` is a public
+read-only property; `_pending_providers` is gone.
+
+**`AppBuilder` attributes every source.** `_health_checkers` is a `list[HealthCheckEntry]`, and
+the three sources compose their entries:
+
+    health_providers: list[HealthCheckEntry] = [
+        HealthCheckEntry(name=client.base_name, namespace=client.namespace, checker=ClientHealthChecker([client]))
+        for client in registry.get_clients()
+    ]
+    for namespace, cache_name, cache in registry.cache_entries():
+        name = "cache" if cache_name == DEFAULT_CACHE_NAME else f"cache:{cache_name}"
+        health_providers.append(HealthCheckEntry(name=name, namespace=namespace, checker=CacheHealthChecker(cache)))
+    health_providers.extend(self._health_checkers)
+
+and `with_health_checker` records `current_namespace()` on the entry for the post-build path as
+well, so a checker declared inside an agent's scope belongs to that agent wherever it is flushed.
+
+**`Component.base_name` is new, and the client entry is why.** A client's registry name is
+already qualified -- `orders_nats_client` -- so passing it as the entry name rendered
+`orders.orders_nats_client`. Stripping the prefix back off is not available:
+`qualified_component_name` is deliberately not idempotent, precisely because "does
+`billing_handler` in agent `billing` carry a prefix?" is not decidable from the string. So the
+unqualified half is kept at construction instead of being recovered later:
+
+    self._base_name = name or camel_to_snake(self.__class__.__name__)
+    self._name = qualified_component_name(self._namespace, self._base_name)
+
+The setter updates both. A grouped client's readiness key is therefore `orders.nats_client`, and
+a root client's is `nats_client` -- the key it has always had.
+
+**What a payload looks like now**, from a probe against real objects (two agents, each with a
+handler, a cache and a `db` checker):
+
+    orders.nats_client       | orders  | ClientHealthChecker
+    billing.nats_client      | billing | ClientHealthChecker
+    orders.cache             | orders  | CacheHealthChecker
+    billing.cache:sessions   | billing | CacheHealthChecker
+    orders.db                | orders  | DbChecker
+    billing.db               | billing | DbChecker
+
+Every entry reads `<agent>.<what>`, and the same probe confirmed the duplicate refusal fires and
+that a post-build checker now adds a seventh entry instead of replacing the six.
+
+**Unchanged on purpose:** the policy. Every checker is still polled on a timer and ANDed, so one
+unhealthy check still returns 503 for the whole pod -- in a group, one agent's outage still
+removes every agent from rotation. That is `readiness_policy = "all"`, which phase 9 makes
+selectable; this step only makes the attribution available to it. `ComponentHealth` and
+`ReadinessResponse` are untouched, so nothing about the response schema changes.
+
+**Tests.** `test_health_cache.py` moved onto entries and gained `TestAnEntryIsAttributedToItsAgent`
+(root keeps the bare name, an agent's is prefixed, two agents declaring one name are two
+components, the failure log names the agent). `test_actuator_api.py` gained
+`TestRegisteringChecks` (accumulation across calls, two agents sharing a name, a duplicate
+refused across calls and within one call, a post-startup addition reaching the live cache).
+`test_build_namespaces.py` gained `TestEveryReadinessEntryNamesItsAgent` against real components
+-- including that the key does not carry the agent twice, and that `namespace` is readable
+without splitting the key. `test_name_uniqueness.py` gained `TestBaseName`, whose last case pins
+the non-idempotence that `base_name` exists to work around. The app_builder, named-cache and
+agent-group tests that asserted on the old dict now read `health_entries`.
+
+1996 unit tests pass, zero failures.
+
+---
+
+### Phase 8b, step 7 -- an agent's own settings file becomes that agent's scope
+
+**D5, spec sec. 5.3.** An agent author writes plain keys in their own directory's
+`settings.toml` -- `model_name = "..."`, or a `[default]` section, which is what every scaffolded
+project has -- and the build merges that file **under that agent's scope**. The author never
+learns that a scope exists, and the same file serves the project standalone and as one agent of a
+group. That is the requirement the whole feature rests on: only `main.py` may differ between the
+two.
+
+**`Config.merge_agent_settings(namespace, path)`** is the whole of it, and it is on the loader
+only -- calling it on a view raises, because authoring another agent's configuration through a
+view is the breach that reading one is (C6).
+
+    fragment = self._layer_fragment(document)
+    fragment = self._drop_process_scope_keys(namespace, resolved, fragment)
+    ...
+    existing = self._settings.get(namespace)
+    merged = dict(existing.items()) if hasattr(existing, "items") else {}
+    added = self._fill_missing(merged, fragment)
+    self._settings[namespace] = merged
+
+Writing a subsection into the loaded tree is all the "merge" a scope needs: probed first, and
+`for_namespace("orders").get("model_name")`, `_scoped_get("cache.cache_dir")` and
+`resolved_settings("orders")` all pick it up, because the tree is what they read and a view
+shares it by reference.
+
+**Precedence: what is already in the tree wins, and the fragment fills the gaps.**
+`_fill_missing` recurses so a fragment's `[cache] cache_dir` joins a group's
+`[default.<agent>.cache] size_limit` instead of replacing the table or being dropped by it. Two
+things this protects at once: a value the group's own settings state under `[<agent>]` -- the
+deployment named the agent, so it meant it, and a file baked into the image does not overrule it
+-- and an environment override (`DYNACONF_<AGENT>__KEY`), which Dynaconf has already put in the
+tree by the time this runs and which a file read afterwards must not clobber.
+
+**`_layer_fragment` resolves the file itself rather than handing it to Dynaconf**, and that is
+forced rather than chosen. Dynaconf always reads `DYNACONF_*` from the environment and cannot be
+told not to (`loaders/env_loader.py`, established in config rework step 3a), so a Dynaconf-loaded
+fragment would pull *process-wide* environment overrides into one agent's scope -- including the
+very keys the next paragraph refuses, which would then be reported against a file that does not
+contain them. So the file is read with `tomllib` and layered explicitly, lowest first: keys
+written at the top level, `[default]`, the section for the environment in force, then `[global]`,
+matching what Dynaconf does with the process's own file. A top-level table that is *not* one of
+those three names is a value, not an environment: `[cache]` beside `[default]` is this agent's
+cache configuration.
+
+**Process-scope keys are dropped, loudly** -- `PROCESS_SCOPE_KEYS` in `config.py`:
+
+    {"app_port", "app_host", "app_workers", "app_environment", "envvar_prefix", "event_bus",
+     "log_level", "log_format", "suppress_noisy_loggers", "health_check_interval_seconds",
+     "dot_placeholder", "nats_stream_name"}
+
+plus `DEPLOYMENT_IDENTITY_KEYS`, which `get()` refuses to answer at all. One process binds one
+port, loads one environment section, reads its environment through one prefix, speaks one event
+bus and configures logging once, so every one of those is read from the group's configuration and
+never from an agent's scope: a copy under `[<agent>]` would be read by nothing.
+`nats_stream_name` is the one entry whose reason differs -- it *is* read through an agent's own
+view, so a scoped value would take effect, and it is dropped because the stream is a server-side
+object shared with every other deployment on that broker.
+
+**Departure from the spec, argued: sec. 5.3 says such a key MUST raise; it warns instead.** The
+evidence is in this repository. Every one of the seven example projects declares `app_port` and
+`app_environment` in its `settings.toml`, and several declare `log_level` and `event_bus`:
+
+    [default]
+    app_name = "Order Event Pipeline"
+    app_port = 8000
+    app_environment = "development"
+    log_level = "INFO"
+    event_bus = "dapr"
+
+Raising would mean **no existing project could be hosted as an agent without first editing a file
+that is correct for its own standalone deployment** -- which contradicts the constraint the spec
+itself serves, and would fail a rollout over a key the file has every right to contain. The
+purpose of the MUST is that the author can discover the value is inert, and that is what the
+warning does, naming the agent, the key, the file and the value in force:
+
+    Agent 'orders' sets 'app_port' in /app/pkg/orders/settings.toml, and that is a process-wide
+    setting: one process has one of it, so this value (8000) is ignored and the group's own value
+    (8080) is used. Remove it from the agent's settings file, or set it in the group's.
+
+**Display metadata is deliberately not in the list.** `app_name`, `app_version` and
+`app_description` are in every scaffolded file, and a scoped `app_name` is genuinely read -- the
+NATS queue group falls back to it, and so does the telemetry service name -- so an agent naming
+itself is its own business.
+
+**Where the file is looked for: beside the module that declares the agent.**
+
+    module_path = module_spec.partition(":")[0]
+    module = sys.modules.get(module_path)
+    file = getattr(module, "__file__", None)
+    ...
+    return Path(file).parent / "settings.toml"
+
+One rule, and one an author can see without reading the framework: an agent is a directory of
+handlers, services and a declaration, and its settings belong to that directory the same way.
+Read from `sys.modules` rather than by importing again, so the answer is the file Python actually
+loaded rather than one guessed from a dotted path. `AgentGroup.from_config` records it per agent
+that loaded -- a skipped non-critical agent has no scope to merge into -- and
+`AgentGroup(name, agents, settings={...})` takes them directly, which is what the tests use.
+
+**`assemble` merges before the root builder exists:**
+
+    for namespace in self._agents:
+        path = self._settings.get(namespace)
+        if path is not None:
+            config.merge_agent_settings(namespace, path)
+
+    root = AppBuilder(config)
+
+Ordering is the load-bearing part: `build()` is where components are constructed and where each
+one reads its keys through its agent's view, so a fragment merged afterwards would be a file read
+too late to matter. A test pins it by having a service read `model_name` in its constructor.
+
+**One guard found by its own test.** A fragment path that resolves to one of the process's own
+settings files is skipped, with DEBUG naming it. Without it, an agent whose declaration module
+sits beside the group's `settings.toml` would have every root key merged under its scope a second
+time -- and every process-scope key reported against the group's own file. It fired immediately:
+the first version of the group tests wrote the fragment into `tmp_path`, which is where the
+fixture's own settings file lives, and the merge correctly did nothing.
+
+**Not done, deliberately:** `.secrets.toml` per agent. The spec names `settings.toml`, and an
+agent's secret belongs in the environment, where `DYNACONF_<AGENT>__KEY` already resolves per
+agent (verified during the config rework). One file, one rule.
+
+**Tests.** New `tests/unit/agents/config/test_agent_settings_fragments.py`, 38 cases in five
+classes: what an agent reads (a plain key, a `[default]` section, the environment section winning
+over it, another environment's section ignored, nested tables, a top-level table as a value, the
+root default still the fallback); isolation (the root and a neighbour unchanged, two agents
+declaring one key, a view refused, the root refused); precedence (the group's own value for the
+agent wins, the fragment fills the rest, a nested table merged key by key); process-scope keys
+(dropped, reported with the file and the value in force, an existing project's file hosted
+unchanged, every listed key parameterised, deployment identity dropped too); and files that are
+not there (absent, the process's own, empty, unparseable -> `ConfigError`).
+`test_agent_group.py` gained `TestEachAgentsOwnSettings`: where the file is looked for, an agent
+that ships none, a fragment merged under its scope, merged *before* the components are built, one
+agent's file not reaching another, and a group given none.
+
+2040 unit tests pass, zero failures.
+
+---
+
+### Phase 8b, step 8 -- what a group does to each declaration, said where it is read, and gated
+
+Three parts, and the first one is documentation on purpose. The decision taken when `AgentGroup`
+was designed was **RTFM, not authoring-time validation**: a group refuses what it cannot honour
+at assembly, and everything else it does to a declaration -- moving routes, scoping a cache,
+resolving a scheduler's mode per agent -- is *behaviour*, not an error, so the place it has to be
+written is the method a developer is already reading.
+
+**Part 1: group behaviour on each `with_*`.** Every declaration method now carries an **In a
+group:** paragraph, and each says something that method does not share with the others:
+
+- `with_handler` -- its own `HandlerChain` and its own subscription, so it is never offered a
+  neighbour's events, and `idempotency_enabled` needs a cache *this* agent declared.
+- `with_service` -- only the registry name changes (`orders_order_service`), plus what
+  `self.registry` and `self.config` answer for.
+- `with_agent` -- the class and factory forms work, but only the `AgentBuilder` form is handed
+  the scoped configuration view, so a runtime reading its own model wants that one.
+- `with_scheduler` -- `scheduler_mode` resolves per agent, so an in-process timer can sit beside
+  an event-driven neighbour; `"in_process"` claims each tick in *this* agent's cache and
+  `"event"` needs the group's `event_bus`; its routes move with the agent's.
+- `with_rest_api` -- **the routes move**: `/api/<agent>`, tags prefixed, nothing in the component
+  changed, but a client of a grouped agent addresses the prefixed path.
+- `with_cache` -- private to the declaring agent, separate stores for the same name, backend from
+  this agent's configuration, `/cache/*` per agent.
+- `with_health_checker` -- the entry becomes `<agent>.<name>`, a collision is refused rather than
+  silently reduced, and the readiness *policy* is unchanged (still ANDed, still 503 for the pod).
+
+**Part 2: the surfaces-agree gate**, `tests/unit/agents/app_builder/test_declaration_surface.py`.
+Adding a capability is now one edit, but the group still has to move a recorded call from one
+builder to another, and `Declaration.replay` does that with
+`getattr(builder, f"with_{self.kind}")`. So there are exactly two ways for the halves to part
+company, and **neither is visible in a single-agent application**: a method that records a `kind`
+no method answers to, and a replay that does not reproduce the call. Both would be found in
+production by whoever first grouped two agents.
+
+The gate discovers the methods rather than listing them --
+
+    return sorted(name for name in dir(AppBuilder) if name.startswith("with_"))
+
+-- and pairs each with a sample call, so **a new `with_*` fails this file until it is listed**.
+Per method it asserts: exactly one declaration recorded; the registry untouched (collect, then
+wire); `replay` onto a fresh builder reproduces the declaration exactly; a replay inside
+`namespace_scope("orders")` takes the namespace from the scope and not from the source; and the
+recorded `kind` has a `with_<kind>` to go back to.
+
+**Probed, because a gate that cannot fail is decoration.** Three drift modes injected against
+the real classes:
+
+    1. uncovered methods the gate would report: ['with_widget']
+    2. recorded kind 'gadget'; AppBuilder has with_gadget(): False
+       replay of that kind fails, as the gate predicts: 'AppBuilder' object has no attribute 'with_gadget'
+    3. declarations equal after a lossy replay: False
+       recorded name: planner | replayed name: None
+
+A `with_widget` added to `AppBuilder` is reported as uncovered; one recording `kind="gadget"` is
+caught by the kind assertion *and* fails replay with the `AttributeError` the docstring predicts;
+and a `replay` that drops `name` breaks the equality.
+
+**Part 3: the frozen compatibility suite**, `tests/unit/agents/test_frozen_compatibility.py` --
+spec sec. 10.2, which asks for a suite "never updated to the new API; if it needs editing, a
+break shipped". It did not exist; it does now, and its module docstring says exactly that. Twenty
+cases, every one written the way a project in `examples/` writes it today, instance forms
+included, because four of the seven examples pass constructed objects:
+
+    app = AppBuilder(config).with_service(InventoryService).with_rest_api(InventoryApi()).with_cache().build()
+
+and asserting the observable things such a project depends on: `with_cache(False)` and
+`with_cache(True, False)` positionally (sec. 10.1 names both); `get_component("inventory_service")`
+and `get_component("disk_cache_service")` resolving unprefixed; `registry.cache_service` as the
+alias; two services resolving *one* cache object; `/api/inventory` with its own tag unrewritten;
+`/api/cache/stats` unprefixed; `/health/ready`, `/health/live` and `/info` where they were; the
+readiness entries `cache` and a bare `database`; and a component constructed with
+`super().__init__()` getting `("inventory_service", "")`.
+
+The fixture is an example's `settings.toml` key for key -- `app_name`, `app_port`,
+`app_environment`, `log_level`, `[default.cache]` -- which is the same file step 7 refuses to
+raise over. The one fixture that is *not* frozen usage is the autouse
+`Component.reset_shared_state()`, and it says so: a test file is many processes in one, which a
+deployment never is.
+
+**Not done, and belongs in this open point rather than this step:** sec. 10.2's second half, the
+generated-project smoke test (`asbs setup`, then build and start the result unchanged). It needs
+Docker, which this machine does not have, and it is the only part of the compatibility guarantee
+that covers the Dockerfile and `main.py` paths a unit test cannot reach.
+
+2100 unit tests pass, zero failures. The 60 added are the two new files.
+
+---
+
 ## Open points
 
 - **Phase 7's ambiguity error needs a spec amendment.** The plan asks `process_event` to raise
@@ -4302,7 +5376,21 @@ stay keyword-only and last, or an existing `with_cache(False)` would silently be
     generated `CronJob` is the remaining silent-failure case -- the missing `event_bus` and the
     missing mode both fail at startup now, but a mode and a transport with nothing publishing
     does not. Validate is where it should be caught.
-- **The settings-fragment merge has two unanswered questions, both raised by step 3a.** Spec
+- ~~**The settings-fragment merge has two unanswered questions, both raised by step 3a.**~~
+  **Answered 2026-09-10 (D5), and by dissolving the questions rather than deciding them.** A
+  group's settings supply *defaults only*, and each agent's own `settings.toml` merges under that
+  agent's scope -- so a fragment and a root key never occupy the same slot and there is no
+  collision to report or refuse. The second sub-question therefore has no subject, and the first is
+  generalised: process-scope keys in a fragment (`app_port`, `event_bus`, `envvar_prefix`,
+  `nats_stream_name`) **raise**, from an explicit list, because scoped they are read by nothing and
+  reported by nothing. **Implemented in phase 8b step 7** (`Config.merge_agent_settings`), with one departure: a
+  process-scope key in a fragment is **reported and ignored**, not raised, because every example
+  project declares `app_port` and `app_environment` in its settings file and raising would mean no
+  existing project could be hosted as an agent without editing it. Spec sec. 5.3's MUST should
+  become a MUST-report. The original text follows, because the probe in it is the evidence for
+  what the merge had to be built around.
+
+  Spec
   sec. 5.3 requires each agent to keep writing plain top-level keys in its own `settings.toml` and
   the build to merge each fragment under that agent's scope, reporting collisions with a root key.
   Confirmed by probe that nothing does this yet: handing two fragments to
@@ -4382,16 +5470,26 @@ stay keyword-only and last, or an existing `with_cache(False)` would silently be
 - **Nothing observes dead-lettering.** It is logged, but there is no counter, so "how many messages
   did we give up on today" cannot be answered from metrics. It belongs with the telemetry work in
   phase 9, next to `blueprint.events.unhandled`.
-- ~~**Cache names are not namespace-scoped**~~ -- **done**, by prefixing the partition
-  (`AgentScopedCache`). The deployment constraint decided it: a backend per agent per name would
-  multiply the writable paths a group needs and split one `emptyDir`'s budget N ways. Two things
-  it leaves open. The lens is per *registry view*, so framework code that reaches
-  `Component.shared_registry` directly still gets the shared store -- correct today, and worth
-  re-checking whenever a framework component starts caching on an agent's behalf. And nothing
-  migrates keys written before the prefix existed: an application upgrading with a persistent
-  redis cache sees its old entries as absent, which is a cold cache rather than an error, but
-  should be said in the migration guide (phase 10).
-- **The examples are not migrated to `AgentRegistration`, by decision (2026-09-08).** Asked
+- ~~**Cache names are not namespace-scoped**~~ -- **done twice.** First by prefixing the
+  partition (`AgentScopedCache`), then properly in phase 8b step 5, which keys the registry on
+  `(namespace, name)` and gives each agent its own directory and Redis prefix; the lens is
+  deleted, and with it the hole that framework code reaching `Component.shared_registry`
+  directly still got the shared store. The deployment constraint that argued for one shared
+  backend still holds and is still honoured: an agent's store is a *subdirectory* of
+  `cache.cache_dir`, so a group still needs exactly one writable mount. What remains open is
+  migration -- **the key layout changed twice**, so an application upgrading with a persistent
+  redis cache or a mounted disk cache sees its old entries as absent. A cold cache rather than
+  an error, and it must be said in the migration guide (phase 10), for both hops.
+- **The cache documentation is wrong about the endpoints, and now about their paths too.**
+  `docs/concepts/caching.md` documents `GET`/`PUT /api/cache/{namespace}/{key}`, which have never
+  existed (the API is `stats`, `namespaces`, `evict`), and step 5 moved a grouped agent's routes
+  to `/api/<agent>/cache/*`. Left for step 9 part 3, which owns the four overlapping cache
+  documents; fixing one of them here would have been the fifth version of the same content.
+- **The examples are not migrated, by decision (2026-09-08).** Note that phase 8b changes what
+  blocks them: `AgentRegistration` is deleted, and passing instances (`with_rest_api(MonitorApi())`)
+  stays legal standalone -- it is refused only when a builder is collected into a group. So the
+  examples keep working untouched, and converting them is only needed if they are to be *grouped*.
+  Asked
   whether to convert one project's `main.py` as proof, the user chose not to touch the examples
   part-way through the changes, and to revisit them when the integration tests are written --
   where two real example projects grouped into one process would be a better test of C1 and C5

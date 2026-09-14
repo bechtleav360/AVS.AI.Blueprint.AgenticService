@@ -6,6 +6,8 @@
 | **Resolves** | #75 (deployment model decision), #73 (duplicate cron ticks) |
 | **Unblocks** | #32 (100 agents in 4 GB), #35 (shared interpreter), #20 (worker scaling) |
 | **Related** | #33 (lazy heavy imports), #34 / #74 (dependency slimming), #36 (concurrency bounds + benchmark), #43 (scheduler double-start), #6 (config service) |
+| **Amended by** | `docs/plans/2026-09-10-builder-unification.md` -- decided 2026-09-10, folded into sec. 2, 4, 5.3, 8, 9, 10 and 11 below. |
+| **Deferred out of** | `docs/plans/2026-09-10-config-validation-unification.md` -- configuration validation is not part of this feature. |
 
 Requirement keywords (**MUST**, **MUST NOT**, **SHOULD**, **MAY**) are used in the RFC 2119 sense.
 
@@ -45,7 +47,7 @@ into processes a deployment-time parameter rather than a code-time one.
 | **Agent** | A unit of business capability: handlers, services, prompts, optionally a REST API and scheduler. Authored as one directory. |
 | **Namespace** | The registry partition an agent's components live in. Equal to the agent name. `""` is the root namespace and means "pre-migration single-agent app". |
 | **Group** | The set of agents loaded into one process, and therefore into one pod. |
-| **Registration** | An `AgentRegistration` -- component classes collected without instantiation. |
+| **Declaration** | An `AppBuilder` whose `build()` has not been called -- component classes recorded without instantiation. |
 | **Root** | Namespace `""`, holding process-wide shared components. |
 
 ---
@@ -200,21 +202,22 @@ deliberately rather than inferred from a restart.
 ### 4.1 New
 
 ```python
-class AgentRegistration:
-    """Fluent collector. Stores component classes; instantiates nothing."""
-    def with_handler(self, handler, *, name=None, **kwargs) -> "AgentRegistration"
-    def with_service(self, service, *, name=None, **kwargs) -> "AgentRegistration"
-    def with_agent(self, agent, *, name=None, **kwargs) -> "AgentRegistration"
-    def with_scheduler(self, scheduler, *, name=None, **kwargs) -> "AgentRegistration"
-    def with_rest_api(self, api, *, name=None, **kwargs) -> "AgentRegistration"
-    # No with_cache -- caches are registered on the AppBuilder.
+class AgentGroup:
+    """Collects one declaration per agent and wires them into a single application."""
+    def __init__(self, config: Config) -> None: ...
+    def add(self, namespace: str, agent: AppBuilder) -> "AgentGroup"
+    def with_group(self, group: GroupConfig) -> "AgentGroup"     # import each module, add each
+    def build(self) -> FastAPI
+
+    @classmethod
+    def from_group(cls, config: Config) -> "AgentGroup"          # resolve + with_group
 
 
 class GroupConfig:
     """Resolved group composition. A value object; performs no I/O once constructed."""
     name: str
     agents: tuple[AgentSpec, ...]      # name, critical flag, module path
-    cache_names: tuple[str, ...]
+    # No cache list: an agent may use only the caches it declared itself (sec. 8).
 
     @classmethod
     def resolve(cls, config: Config) -> "GroupConfig":
@@ -224,26 +227,74 @@ class GroupConfig:
 def run_app(app: FastAPI, config: Config) -> None: ...
 ```
 
-`GroupConfig.resolve` is the only member that touches the environment or the filesystem.
-`with_group` **MUST NOT** perform I/O, so tests can construct a `GroupConfig` literally.
+`GroupConfig.resolve` is the only member that reads the environment or the filesystem.
+`AgentGroup.with_group` **MUST NOT** read either -- importing the agent modules a `GroupConfig`
+names is not a configuration read -- so tests can construct a `GroupConfig` literally.
+
+**Collection is its own class, and `AppBuilder` MUST NOT know it can be collected.** An
+`AppBuilder` never absorbs another builder and exposes no group concept; `AgentGroup` constructs
+its own and replays what each agent recorded. This is what keeps one fluent surface honest: the
+group's restrictions belong to the thing imposing them, so `AppBuilder` stays permissive and every
+refusal in sec. 4.2 is raised by `AgentGroup`.
 
 ### 4.2 Changed
 
 ```python
 class AppBuilder:
-    def with_namespace(self, name: str, *, registration: AgentRegistration | None = None,
-                       config: Config | None = None) -> "AppBuilder | NamespaceBuilder"
-    def with_group(self, group: GroupConfig) -> "AppBuilder"
+    """One declaration surface. Records what it is told; wires nothing until build()."""
+    def __init__(self, config: Config | None = None) -> None: ...
 
-    @classmethod
-    def from_group(cls, config: Config) -> "AppBuilder"      # resolve + with_group
-
-    # namespace: str = "" added to with_handler / with_service / with_agent /
-    # with_scheduler / with_rest_api -- keyword-only.
+    # with_handler / with_service / with_agent / with_scheduler / with_rest_api:
+    #   signatures unchanged. They record; nothing is constructed until build().
 
     def with_cache(self, enabled: bool = True, enable_locking: bool = True,
                    *, name: str = "default") -> "AppBuilder"
+    def with_health_checker(self, name: str, checker) -> "AppBuilder"
+
+    def build(self, config: Config | None = None) -> FastAPI
+
+    @property
+    def declarations(self) -> tuple[Declaration, ...]        # what AgentGroup replays
 ```
+
+**Deferred wiring is normative.** A `with_*` call **MUST NOT** construct a component or enter
+anything into the registry; both happen only in `build()`. This is not a style preference:
+constructing a component reads the namespace from a `ContextVar` (sec. 4.3), so one built during a
+`with_*` call belongs to whichever namespace was in force at that line and can never be moved
+afterwards. Recording instead of constructing is what lets one class serve both the standalone and
+the grouped shape, and it is why no second collector type (`AgentRegistration`, `NamespaceBuilder`)
+needs to exist.
+
+`AppBuilder.build()` wires at the **root** namespace. There **MUST** be no `with_namespace` method
+and no `namespace` parameter on any `with_*` method: standalone has no namespace to name, and an
+agent's name lives only in the group configuration (sec. 11).
+
+**Configuration resolution order, highest first:** `build(config)`, then `AppBuilder(config)`, then
+the default settings files. `AgentGroup` **MUST** refuse a builder that carries its own
+configuration -- one process has one settings tree and one port -- and **MUST** wire each agent
+with that agent's own scoped view (C5).
+
+**What `AgentGroup` refuses, each because a group cannot honour it:**
+
+| Recorded call | In a group | Capability lost |
+|---|---|---|
+| a class plus kwargs | allowed | -- |
+| a factory or lambda | allowed; called inside the namespace scope | -- |
+| an already-constructed **instance** | **refused** -- its namespace and registry key were fixed before the group existed | none: the factory form recovers it |
+| `AppBuilder(config)` | **refused** -- one process, one settings tree, one port | none |
+| `with_cache(...)` | allowed; the name is qualified per agent (sec. 8) | -- |
+| `with_health_checker(...)` | allowed; the key is qualified per agent | none |
+| a builder whose `build()` already ran | **refused** -- already wired at the root | none |
+
+Every refusal **MUST** name the agent and the fix. Refusals land at assembly, not at authoring
+time: `with_cache()` runs at import, long before anything knows whether this builder will be
+collected.
+
+**Registration order keeps its meaning.** An instance is constructed by the caller at its own
+source line, a class during `build()`, so an instance recorded *after* a class would register
+*before* it -- which can flip equal-priority handler tie-breaking, resolved by registration order
+today. `build()` knows both the recorded order and which entries were instances, and **MUST**
+raise on that combination rather than silently reordering.
 
 **`with_cache` is the one place where the obvious design breaks compatibility.** The current
 signature is `with_cache(enabled: bool = True, enable_locking: bool = True)`
@@ -255,8 +306,8 @@ two existing positional parameters.
 ### 4.3 Component
 
 `Component.__init__` **MUST NOT** gain a namespace parameter. The namespace is read from a
-module-level `ContextVar` set by `AgentRegistration._apply`, so no user subclass constructor
-signature changes and no positional argument shifts.
+module-level `ContextVar` set by `AgentGroup` around each agent's wiring, so no user subclass
+constructor signature changes and no positional argument shifts.
 
 `Component.executor` returns the namespace's `ThreadPoolExecutor`, falling back to root. The
 executor **MUST** be created lazily on first access; an app that never performs blocking work
@@ -305,11 +356,24 @@ changing them triggers a rolling update on their own.
 
 ### 5.3 Settings authoring
 
-An agent author writes plain top-level keys in their own directory's `settings.toml`
-(`model_name = "..."`), not `[default.<agent>]`. The build **MUST** merge each agent's fragment
-under its own scope so C5 resolves them, without the author knowing the scope exists.
+A group's own `settings.toml` supplies **defaults, and only defaults**. An agent author writes
+plain top-level keys in their own directory's `settings.toml` (`model_name = "..."`), not
+`[default.<agent>]`, and the build **MUST** merge that fragment **under that agent's scope** so C5
+resolves it, without the author knowing the scope exists.
 
-Collisions between an agent fragment and a root key **MUST** be reported at build time.
+An agent may therefore set any key for itself, and **MUST NOT** be able to change what another
+agent or the process sees. There is consequently no collision to report: a fragment and a root key
+never occupy the same slot, and a default restated in an agent's fragment is simply that agent's
+own value.
+
+Process-scope keys in an agent fragment **MUST** raise at startup, from an explicit list
+(`app_port`, `event_bus`, `envvar_prefix`, `nats_stream_name`). Scoped, such a key is read by
+nothing and reported by nothing -- C7's failure mode in configuration form -- and its author has
+no way to discover that the value they set is inert.
+
+What happens when a *required* key is absent is deliberately not specified here. It is
+`docs/plans/2026-09-10-config-validation-unification.md`, kept out of this feature so that the
+two cannot fail together.
 
 ---
 
@@ -551,8 +615,10 @@ seconds field in particular -- are not portable to one.
 **In-process coordination is a per-tick claim, not a leader lease.** An earlier form of this
 section called for a NATS KV or cache-backed leader lease. A slot claim satisfies the same
 requirement and is preferred, because it removes rather than answers the failover question: every
-replica's timer fires, each tries to store a marker keyed on `(scheduler, minute)` in the shared
-cache, and the one that stores it runs the tick. Nothing is elected and nothing is held, so there
+replica's timer fires, each tries to store a marker keyed on `(scheduler, minute)` in the agent's
+own cache -- shared across that agent's replicas, and per sec. 8 invisible to every other agent, so
+two agents each running a scheduler of the same name cannot claim each other's slots -- and the
+replica that stores it runs the tick. Nothing is elected and nothing is held, so there
 is no renewal task to schedule (and therefore none to leak, C7), no lease left behind by a replica
 that dies holding one, and no takeover bound to specify -- the next slot is claimed from scratch by
 whoever is alive.
@@ -668,9 +734,16 @@ Caches are looked up by name with no namespace dimension, which makes them a cro
 collision surface: two independently developed agents both calling `get_cache("sessions")` share
 one cache the moment they are grouped, invisibly and only in production.
 
-Cache names **MUST** therefore be namespace-scoped by default, with an explicit opt-in for
-genuinely shared caches. Agents share no cache by design, so isolation is the correct
-default.
+An agent **MUST** have access to exactly the caches it declared with `with_cache`, and to no
+others. Cache names **MUST** be qualified by namespace, so two agents may both declare `sessions`
+and receive separate stores; `get_cache(name)` **MUST** resolve within the declaring agent and
+raise otherwise, with no root fallback and no shared-cache opt-in. Agents share no cache by
+design, and separate stores make that isolation structural rather than dependent on a key prefix
+being applied correctly at every call site.
+
+Two things follow. A group declares no caches of its own, so `GroupConfig` carries no cache list
+(sec. 4.1). And `/cache/*` is per agent: one process-wide cache endpoint would report one agent's
+keys to another, which is the collision this section exists to close.
 
 `registry.cache_service` (getter and setter) **MUST** be retained as an alias for the `"default"`
 cache in the root namespace.
@@ -683,8 +756,9 @@ cache in the root namespace.
 2. Validate every agent name against the in-image agent map. Fail with the group and the missing
    agent named.
 3. Import each agent module lazily; read its module-level `registration`.
-4. `AppBuilder(config).with_group(group)` -- one `with_namespace` per agent.
-5. `build()`, then `run_app(app, config)`.
+4. `AgentGroup(config).with_group(group)` -- one recorded declaration added per agent.
+5. `build()`, then `run_app(app, config)`. Every component is constructed here, inside its own
+   namespace scope; steps 1-4 construct nothing.
 
 Resolution **MUST** complete before the first `Component.__init__`, because namespace injection
 happens through a `ContextVar` read during construction. No incremental resolution.
@@ -721,7 +795,10 @@ change, and `uvicorn src.main:app` as its entrypoint. Specifically:
 
 | Concern | Guarantee |
 |---|---|
-| `AppBuilder` fluent API | Unchanged; `namespace` added keyword-only. |
+| `AppBuilder` fluent API | Unchanged. `AppBuilder(config)...build()` behaves as today, and no `namespace` parameter is added to anything. |
+| Passing a constructed instance to `with_*` | Unchanged standalone; refused only when the builder is collected into a group (sec. 4.2). |
+| Component construction timing | Deferred to `build()`. Reading a component out of the registry between `with_*` calls was never supported -- collaborators resolve in `on_startup` -- and now breaks. |
+| `with_health_checker` keys | Bare name at the root, so an existing readiness payload is unchanged; qualified per agent in a group. |
 | `with_cache(False)` / `with_cache(True, False)` | Unchanged (sec. 4.2). |
 | `Component` subclasses | No constructor change (sec. 4.3). |
 | `registry.cache_service` | Retained as alias. |
@@ -760,18 +837,26 @@ grouping work.
 An agent author's `main.py` is, in full:
 
 ```python
-registration = (
-    AgentRegistration()
+agent = (
+    AppBuilder()
     .with_service(OrderService)
     .with_handler(OrderValidationHandler)
     .with_rest_api(OrderApi)
 )
 ```
 
-No `AppBuilder`, no `Config`, no `run_app`, no `if __name__`, no namespace, no group. The
-dual-branch `main.py` in the current plan -- which duplicates the component list under
-`if __name__ == "__main__"` and `else:` -- **MUST** be collapsed to this single declaration; two
-branches to keep in sync is itself a leak of the grouping model.
+No `Config`, no `run_app`, no `if __name__`, no namespace, no group -- and no `.build()`: the
+declaration is the file. A project that also wants to serve this agent alone adds one function and
+nothing else:
+
+```python
+def create_app():           # uvicorn src.main:create_app --factory --reload
+    return agent.build()
+```
+
+The component list appears **once** either way. The dual-branch `main.py` of an earlier draft --
+the same components repeated under `if __name__ == "__main__"` and `else:` -- **MUST NOT** be
+used; two copies to keep in sync is itself a leak of the grouping model.
 
 `asbs dev agents/<name>` runs one agent as a group of one, using its **real** namespace. Local
 routes are therefore `/api/order/orders/{id}`, identical to production, and local consumer
@@ -863,8 +948,9 @@ Two things an author still needs to know: their agent's name, and that handlers 
   duplication itself, and that is mechanically checkable -- the in-image agent map already
   enumerates every agent, so the CI gate **SHOULD** require each environment's declaration to
   account for all of them. Open: which shape, and how many environments actually differ.
-- Is the dedup cache per-namespace or shared, and what TTL is defensible against the redelivery
-  window?
+- What dedup TTL is defensible against the redelivery window? (Whether the dedup cache is
+  per-namespace or shared is **answered**: sec. 8 gives an agent only the caches it declared, so it
+  is necessarily per-namespace.)
 - **#32's metric needs restating.** "Per-agent RAM" stops being meaningful once the interpreter is
   shared; the correct unit is *baseline per group + marginal per agent*. Its "as-is 160-250 MB per
   agent" row describes the model being retired, and its acceptance criteria should be re-expressed

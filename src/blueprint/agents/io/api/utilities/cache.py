@@ -15,13 +15,21 @@ logger = logging.getLogger(__name__)
 class CacheManagementApi(RestApiBase):
     """API for managing cache operations.
 
-    One router for the process, and every endpoint takes an optional ``?name=`` naming which
-    cache to act on. It defaults to :data:`DEFAULT_CACHE_NAME`, so a request that names nothing
-    reaches the cache a single-cache application has always had.
+    **One router per agent, not one per process** (spec sec. 8): ``build()`` mounts one of
+    these for each agent that declared a cache, under that agent's ``/api/<agent>`` prefix, and
+    each resolves names through its own registry view -- so ``/api/orders/cache/stats`` can
+    report only the orders agent's caches. A single process-wide endpoint would report one
+    agent's keys to another, which is the collision that section exists to close. A standalone
+    application has one root component and keeps the ``/api/cache/*`` paths it always served.
 
-    A router per cache was the alternative and is wrong: caches can be registered after startup
-    (``registry.add_cache``), and routes cannot, so anything keyed on the set of caches at build
-    time would serve a stale list. Resolving the name per request has no such window.
+    Within one agent, every endpoint takes an optional ``?name=`` naming which of its caches to
+    act on. It defaults to :data:`DEFAULT_CACHE_NAME`, so a request that names nothing reaches
+    the cache a single-cache application has always had.
+
+    A router per *cache* was the alternative and is wrong: caches can be registered after
+    startup (``registry.add_cache``), and routes cannot, so anything keyed on the set of caches
+    at build time would serve a stale list. Resolving the name per request has no such window --
+    and the set of *agents* is fixed at assembly, which is why the per-agent split is safe.
     """
 
     def __init__(self) -> None:
@@ -36,9 +44,13 @@ class CacheManagementApi(RestApiBase):
     def _cache(self, name: str) -> CacheService:
         """Return the cache called ``name``, or answer the request with an HTTP error.
 
-        Two distinct failures, answered differently. **503** when no cache is registered at all:
-        the application was built without one, the condition is not the caller's doing, and it
-        may resolve without a redeploy -- which is what 503 says. **404** when caches exist but
+        "Registered" means *this agent's*, in both branches: ``self.registry`` is this
+        component's namespace view, so a neighbour's cache of the same name is neither found nor
+        counted.
+
+        Two distinct failures, answered differently. **503** when this agent has no cache at
+        all: it was built without one, the condition is not the caller's doing, and it may
+        resolve without a redeploy -- which is what 503 says. **404** when it has caches but
         none has this name: that is a bad request for a resource that is not there, and
         answering 503 would invite a retry that can never succeed.
 

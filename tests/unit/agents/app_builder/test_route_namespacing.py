@@ -17,7 +17,8 @@ from typing import Any
 import pytest
 from fastapi import FastAPI
 
-from blueprint.agents.app_builder import AgentRegistration, AppBuilder
+from blueprint.agents.agent_group import AgentGroup
+from blueprint.agents.app_builder import AppBuilder
 from blueprint.agents.component.component import Component
 from blueprint.agents.component.namespace import namespace_scope
 from blueprint.agents.config import Config
@@ -84,6 +85,23 @@ def nats_config(tmp_path: Path) -> Config:
     return Config(settings_files=[str(settings)], root_path=str(tmp_path))
 
 
+@pytest.fixture
+def cache_config(tmp_path: Path) -> Config:
+    """One writable cache directory for the process, as a mounted volume would be.
+
+    The agents share it and the *stores* inside it are separated per agent, which is the shape
+    a pod can actually satisfy -- see "Writable Cache Directory" in ``docs/guides/deployment.md``.
+    """
+    settings = tmp_path / "settings.toml"
+    settings.write_text(
+        '[development]\napp_name = "root-app"\napp_port = 8000\n\n'
+        f'[development.cache]\ncache_dir = "{(tmp_path / "cache").as_posix()}"\n\n'
+        '[development.orders]\napp_name = "orders"\n\n'
+        '[development.billing]\napp_name = "billing"\n'
+    )
+    return Config(settings_files=[str(settings)], root_path=str(tmp_path))
+
+
 def paths(app: FastAPI) -> list[str]:
     return sorted(app.openapi()["paths"])
 
@@ -117,50 +135,35 @@ class TestRestRoutesMoveUnderTheAgent:
         assert "/api/orders" in paths(app)
 
     def test_an_agents_route_carries_its_namespace(self, dapr_config: Config) -> None:
-        builder = AppBuilder(dapr_config)
-        builder.with_namespace("orders", registration=AgentRegistration().with_rest_api(OrderApi))
-
-        app = builder.build()
+        app = AgentGroup("g", {"orders": AppBuilder().with_rest_api(OrderApi)}).assemble(dapr_config)
 
         assert "/api/orders/orders" in paths(app)
 
     def test_two_agents_declaring_one_route_do_not_collide(self, dapr_config: Config) -> None:
         """The failure without a prefix: FastAPI serves the first match for both agents."""
-        registration = AgentRegistration().with_rest_api(OrderApi)
-        builder = AppBuilder(dapr_config)
-        builder.with_namespace("orders", registration=registration)
-        builder.with_namespace("billing", registration=registration)
+        declaration = AppBuilder().with_rest_api(OrderApi)
 
-        app = builder.build()
+        app = AgentGroup("g", {"orders": declaration, "billing": declaration}).assemble(dapr_config)
 
         assert {"/api/orders/orders", "/api/billing/orders"} <= set(paths(app))
 
 
 class TestTags:
     def test_an_agents_tags_are_prefixed(self, dapr_config: Config) -> None:
-        builder = AppBuilder(dapr_config)
-        builder.with_namespace("orders", registration=AgentRegistration().with_rest_api(OrderApi))
-
-        app = builder.build()
+        app = AgentGroup("g", {"orders": AppBuilder().with_rest_api(OrderApi)}).assemble(dapr_config)
 
         assert tags_for(app, "/api/orders/orders") == ["orders.orders"]
 
     def test_the_bare_tag_is_replaced_rather_than_added_to(self, dapr_config: Config) -> None:
         """Appending would put the operation in two Swagger groups instead of one."""
-        builder = AppBuilder(dapr_config)
-        builder.with_namespace("orders", registration=AgentRegistration().with_rest_api(OrderApi))
-
-        app = builder.build()
+        app = AgentGroup("g", {"orders": AppBuilder().with_rest_api(OrderApi)}).assemble(dapr_config)
 
         assert "orders" not in tags_for(app, "/api/orders/orders")
 
     def test_two_agents_tags_do_not_merge(self, dapr_config: Config) -> None:
-        registration = AgentRegistration().with_rest_api(OrderApi)
-        builder = AppBuilder(dapr_config)
-        builder.with_namespace("orders", registration=registration)
-        builder.with_namespace("billing", registration=registration)
+        declaration = AppBuilder().with_rest_api(OrderApi)
 
-        app = builder.build()
+        app = AgentGroup("g", {"orders": declaration, "billing": declaration}).assemble(dapr_config)
 
         assert tags_for(app, "/api/orders/orders") == ["orders.orders"]
         assert tags_for(app, "/api/billing/orders") == ["billing.orders"]
@@ -180,22 +183,16 @@ class TestEventingRoutes:
 
     def test_the_dapr_delivery_path_never_moves(self, dapr_config: Config) -> None:
         """Dapr's two paths are fixed by its protocol, so its endpoint stays at the root."""
-        builder = AppBuilder(dapr_config)
-        builder.with_namespace("orders", registration=AgentRegistration().with_handler(OrderHandler))
-
-        app = builder.build()
+        app = AgentGroup("g", {"orders": AppBuilder().with_handler(OrderHandler)}).assemble(dapr_config)
 
         assert {"/events/{topic}", "/dapr/subscribe"} <= set(paths(app))
         assert "/api/orders/events/{topic}" not in paths(app)
 
     def test_two_agents_get_their_own_nats_delivery_paths(self, nats_config: Config) -> None:
         """Unprefixed, FastAPI would serve one agent's endpoint for both agents' deliveries."""
-        registration = AgentRegistration().with_handler(OrderHandler)
-        builder = AppBuilder(nats_config)
-        builder.with_namespace("orders", registration=registration)
-        builder.with_namespace("billing", registration=registration)
+        declaration = AppBuilder().with_handler(OrderHandler)
 
-        app = builder.build()
+        app = AgentGroup("g", {"orders": declaration, "billing": declaration}).assemble(nats_config)
 
         assert {"/api/orders/events/{topic}", "/api/billing/events/{topic}"} <= set(paths(app))
 
@@ -206,3 +203,46 @@ class TestEventingRoutes:
         document = await DaprEventing().subscribe()
 
         assert document == [{"pubsubname": "pubsub", "topic": "orders.created", "route": "/events/orders.created"}]
+
+
+class TestCacheEndpointsPerAgent:
+    """``/cache/*`` is per agent, because one process-wide endpoint reports one agent's keys to another.
+
+    The router is not keyed on the set of caches at request time -- a cache can be registered
+    after startup and routes cannot -- so what is per agent is the *mount*: one router per agent
+    that declared a cache, each resolving names within its own agent.
+    """
+
+    def test_an_agents_cache_endpoints_live_under_its_prefix(self, cache_config: Config) -> None:
+        declaration = AppBuilder().with_cache()
+
+        app = AgentGroup("finance", {"orders": declaration}).assemble(cache_config)
+
+        assert "/api/orders/cache/stats" in paths(app)
+        assert "/api/cache/stats" not in paths(app)
+
+    def test_each_agent_gets_its_own(self, cache_config: Config) -> None:
+        orders = AppBuilder().with_cache()
+        billing = AppBuilder().with_cache(name="sessions")
+
+        app = AgentGroup("finance", {"orders": orders, "billing": billing}).assemble(cache_config)
+
+        assert {"/api/orders/cache/stats", "/api/billing/cache/stats"} <= set(paths(app))
+
+    def test_an_agent_that_declared_no_cache_gets_no_endpoint(self, cache_config: Config) -> None:
+        orders = AppBuilder().with_cache()
+        billing = AppBuilder()
+
+        app = AgentGroup("finance", {"orders": orders, "billing": billing}).assemble(cache_config)
+
+        assert "/api/billing/cache/stats" not in paths(app)
+
+    def test_a_standalone_application_keeps_the_paths_it_had(self, cache_config: Config) -> None:
+        app = AppBuilder(cache_config).with_cache().build()
+
+        assert "/api/cache/stats" in paths(app)
+
+    def test_no_endpoint_at_all_without_a_cache(self, cache_config: Config) -> None:
+        app = AppBuilder(cache_config).build()
+
+        assert not [path for path in paths(app) if "/cache/" in path]

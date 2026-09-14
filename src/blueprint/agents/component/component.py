@@ -149,7 +149,8 @@ class Component(ABC, metaclass=_ComponentMeta):
         # line, health entry and span -- say nothing about which agent it belonged to. Two
         # agents in a group each with a 'planner' were then one indistinguishable 'planner' in
         # the logs, and the second one to register collided on the key.
-        self._name = qualified_component_name(self._namespace, name or camel_to_snake(self.__class__.__name__))
+        self._base_name = name or camel_to_snake(self.__class__.__name__)
+        self._name = qualified_component_name(self._namespace, self._base_name)
         if should_register:
             self.registry.add_component(self.name, self)
 
@@ -174,6 +175,20 @@ class Component(ABC, metaclass=_ComponentMeta):
         qualified = qualified_component_name(self._namespace, value)
         self.registry.update_component_name(self._name, qualified)
         self._name = qualified
+        self._base_name = value
+
+    @property
+    def base_name(self) -> str:
+        """The name without its namespace: what this component is called *within* its agent.
+
+        Kept because :attr:`name` cannot be un-qualified afterwards --
+        ``qualified_component_name`` is deliberately not idempotent, so stripping a prefix from
+        a name is guesswork ("does ``billing_handler`` in agent ``billing`` carry a prefix or
+        not?"). Anything that has to render the pair itself needs the two halves separately: the
+        readiness payload does, where an entry reads ``orders.nats_client`` rather than
+        ``orders.orders_nats_client``.
+        """
+        return self._base_name
 
     @property
     def namespace(self) -> str:

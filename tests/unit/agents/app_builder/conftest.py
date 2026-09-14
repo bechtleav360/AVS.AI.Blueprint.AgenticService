@@ -125,6 +125,19 @@ def all_build_mocks():
         )
 
 
+def realize(builder: AppBuilder) -> AppBuilder:
+    """Construct everything ``builder`` has recorded, and nothing else.
+
+    ``with_*()`` records rather than constructs, so a test asserting on the registry has to say
+    when construction happens. ``build()`` would do it, but it also creates the actuator, the
+    root API and a FastAPI application, and those components would drown the one or two the
+    test is about. This runs the same replay pass ``build()`` runs, on its own, against the
+    configuration the builder was given.
+    """
+    builder._construct_declarations(builder._require_config())
+    return builder
+
+
 def wire_empty_registry(mock_registry: MagicMock) -> None:
     """Set all registry collection methods to return empty lists/False."""
     mock_registry.get_event_handler.return_value = []
