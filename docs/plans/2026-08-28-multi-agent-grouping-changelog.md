@@ -2629,6 +2629,918 @@ subdirectory including a Windows separator in the configured path; the Redis pre
 on the derivation and on the kwargs the service is constructed with; both fallback paths isolating
 as disk rather than as Redis; and the name being validated before any directory is created.
 
+### Phase 4, part 1 -- dispatch happens per agent, and the root stops reaching into one
+
+Phase 1 and 2 made the registry answer per namespace and gave every component its own view of
+it. The dispatch path never used any of that: one `HandlerChain` served the process, and it asked
+the *application's* registry for handlers -- which in a grouped process means every agent's. This
+step makes an event reach one agent's handlers and no other's. The dispatch index (spec sec. 7.7,
+the second half of plan phase 4) is a separate step and is not in this one.
+
+**A `HandlerChain` now belongs to a namespace, and that is the only line about it in the class:**
+
+```python
+    def __init__(self, namespace: str = ROOT_NAMESPACE) -> None:
+        super().__init__(should_register=False, namespace=namespace)
+```
+
+Everything else follows from `Component.registry` and `Component.config` handing a component its
+own namespace's view: the handlers it dispatches to, the `idempotency_enabled` / `idempotency_ttl`
+it reads, and the cache partition the dedup markers are claimed in (the agent-scoped lens from
+spec sec. 8) are all that agent's already, with no further plumbing. Two agents in one process can
+therefore run different dedup windows, and the tests assert exactly that against one settings
+tree.
+
+**The namespace is named explicitly in `_dispatch`, and that is the load-bearing part:**
+
+```python
+        handlers = sorted(self.registry.get_event_handler(namespace=self.namespace))
+```
+
+It looks redundant -- the registry view already defaults to its own namespace -- and it is not.
+`Registry.for_namespace("")` returns the registry *itself*, whose `_default_namespace` is `None`,
+and on the registry an omitted namespace means **every namespace**. So a root chain in a grouped
+process would have dispatched one delivery through every agent's handlers. Naming the namespace
+makes the root chain mean strictly the root, which in a single-agent application is every handler
+there is -- unchanged. `test_the_root_chain_does_not_reach_into_an_agent` is the test for it.
+
+There is deliberately **no fallback to root handlers** either, unlike the singleton lookups that
+resolve namespace-then-root. A handler registered at the root of a grouped process would
+otherwise run for every agent in it, and nothing in a handler's code could tell its author that
+was happening.
+
+**`EventProcessingService` keeps one chain per agent and stays a single root service.** What it
+does -- correlation context, request ids, Dapr unwrapping, normalising handler output -- is the
+same for every agent; what differs is the dispatch. So:
+
+```python
+        self._handler_chains: dict[str, HandlerChain] = {ROOT_NAMESPACE: HandlerChain()}
+```
+
+The root chain always exists, so an application that never mentions a namespace behaves exactly
+as it did. `_chain_for(namespace)` creates the others:
+
+```python
+        chain = self._handler_chains.get(namespace)
+        if chain is None:
+            chain = HandlerChain(namespace=namespace)
+            self._handler_chains[namespace] = chain
+```
+
+**The chains are built at startup, not on first delivery**, and the namespaces come from the
+handlers rather than from a list of agents:
+
+```python
+        for namespace in sorted({namespace_of(handler) for handler in self.registry.get_event_handler()}):
+            self._chain_for(namespace)
+
+        for namespace, chain in self._handler_chains.items():
+            await chain.on_startup()
+```
+
+A chain's startup resolves its idempotency policy, and the existing guarantee is that a
+misconfigured dedup window fails the pod rather than the first event. That guarantee is *per
+agent*: built lazily, a group whose second agent has a bad `idempotency_ttl` would start cleanly
+and fail on a delivery hours later, while the first agent's clean startup said nothing about it.
+
+Reading the namespaces off the registered handlers is not a way around C6. The registry
+deliberately cannot enumerate agents, and this service is not the builder -- but what it needs is
+not "which agents exist", it is "which namespaces have handlers to dispatch to", and the handlers
+are the authority on that. `_chain_for` stays lazy for anything that arrives later, because a
+handler registered after startup should produce a dispatch that finds nobody -- an outcome the
+acknowledgement contract already has a disposition for -- rather than a failed delivery.
+
+**`process_event` and `process_rest_request` take a keyword-only `namespace`.** Keyword-only
+because both already have positional tails that existing callers use; `""` is the root, which is
+what every caller that does not know about agents gets.
+
+**The publishing-service lookup became namespace-aware, and that was a latent crash:**
+
+```python
+                    # This agent's publishing service, falling back to a root one. Not the
+                    # unscoped lookup this used to be: with one publishing service per
+                    # namespace (P6) that finds several and refuses to choose, so a grouped
+                    # process would fail on the first handler that returns an event_type.
+                    publisher = self.registry.get_component(EventPublishingService, namespace=namespace)
+```
+
+P6 already gives each namespace its own `EventPublishingService`. The old call passed no
+namespace, which on the application's registry means "search every namespace and raise if more
+than one matches" -- so the first handler in a grouped process to return a `HandlerResult` with an
+`event_type` would have raised `Multiple components of type EventPublishingService found`. With
+`namespace=""` the lookup is restricted to the root, which is where the only publishing service in
+a single-agent application lives.
+
+**The two call sites pass their own namespace**, which is what makes the parameter reach anything:
+
+- `CloudEventProcessorMixin._dispatch_cloud_event` passes `namespace=self.namespace` -- the
+  namespace of the transport endpoint that received the delivery. Its docstring's contract grew
+  from "a class that supplies a `registry` attribute" to `registry` and `namespace`.
+- `RestApiBase._process_resource` passes `namespace=self.namespace`, so a REST call into one agent
+  is not offered to another agent's handlers.
+
+Both are the root today, so both are today's behaviour today; they become per-agent the moment
+phase 5 and 6 give each namespace its own endpoints.
+
+**Not in this step.** The plan's third phase-4 bullet -- "wire previously unused `runtime_name`:
+after the chain picks a winner, resolve the agent via `get_runtime_name()`" -- depends on
+`EventHandlerBase.get_runtime_name`, which phase 7 adds. The spec's own compatibility table
+(sec. 10) records `runtime_name` as only logged today, so it stays logged; the namespace is now
+logged alongside it.
+
+Tests: `tests/unit/agents/services/eventing/test_event_processing_namespaces.py`, 18 cases against
+real `Config`, `Registry`, `HandlerChain` and handler subclasses rather than mocks -- an event
+reaching one agent's handler and not the other's; a namespace with no handler returning
+`NO_HANDLER_FOUND` rather than raising; the root chain not reaching into an agent; a root handler
+not running for an agent; a single-agent application dispatching as before over both `process_event`
+and `process_rest_request`; one chain per namespace with handlers, each carrying its own namespace
+and resolving its own agent's dedup policy from one settings tree; a chain created on first use for
+an unknown namespace and reused across deliveries; an illegal namespace refused; and four cases for
+`HandlerChain` itself, including that it is still not a registered component. The three
+mock-based lifecycle tests in `test_event_processing_service.py` were updated to the chain map and
+one added for the per-namespace startup.
+
+### Phase 4, part 2 -- a handler can say what it wants, and stops being asked about the rest
+
+`_dispatch` asked every registered handler's `can_handle` in turn until one said yes, so a
+process hosting fifty handlers awaited fifty coroutines to find the one that wanted the event.
+Grouping multiplies exactly that, because a group's handlers all live in one process. Spec
+sec. 7.7 asks for an in-process dispatch index; this is it.
+
+**The declaration: `EventHandlerBase.get_handled_event_types()`**, defaulting to `[]`. It joins
+the two declaration methods already on the class (`get_published_event_types`,
+`get_subscribed_topics`) and is a *selection hint, not a selector* -- `can_handle_event` still
+decides, and a declared handler is still asked and may still say no.
+
+**The default means "offer me everything", and getting that backwards is the whole risk.** No
+handler in this framework or in any scaffolded project declares an event type today, so an index
+that read an empty declaration as an empty set would silence every handler that exists -- and
+because an unhandled event acknowledges (spec sec. 7.2), the deliveries would be consumed and
+discarded rather than piling up anywhere visible. Spec sec. 7.7 calls this "the most destructive
+failure mode available in this design".
+
+**`DispatchIndex`** is a frozen dataclass with two fields and one question:
+
+```python
+    by_type: dict[str, tuple[EventHandlerBase, ...]]
+    wildcard: tuple[EventHandlerBase, ...]
+
+    def candidates(self, event_type: str) -> tuple[EventHandlerBase, ...]:
+        return self.by_type.get(event_type, self.wildcard)
+```
+
+`by_type[t]` already holds the *merged* candidate list -- the handlers that declared `t` plus
+every wildcard handler -- so dispatch is one dictionary lookup and no per-event merging or
+sorting. An event type nobody declared falls back to `wildcard`, because a type no handler named
+is not a type no handler wants.
+
+**The candidate lists are built by filtering the priority-sorted order, not by concatenating
+buckets:**
+
+```python
+        wildcard = tuple(handler for handler, declared in declarations if not declared)
+        by_type = {
+            event_type: tuple(handler for handler, declared in declarations if not declared or event_type in declared)
+            for event_type in {event_type for _, declared in declarations for event_type in declared}
+        }
+```
+
+Concatenating `typed + wildcard` and sorting would have put declared handlers ahead of undeclared
+ones *of equal priority*, and priority ties are currently resolved by registration order --
+something a project may be relying on without having said so. Filtering the already-sorted list
+means the sequence a handler is tried in is exactly the sequence it would have been tried in
+without an index. There is a test comparing the two orders.
+
+**A declaration that looks like a pattern is refused, at startup:**
+
+```python
+        if _WILDCARD_IN_DECLARATION.search(event_type):
+            raise ValueError(
+                f"Handler '{handler.name}' declares the event type '{event_type}', which looks like a pattern. "
+                "Declarations are matched by equality, so this handler would never be asked about any event. ..."
+            )
+```
+
+This is not defensive tidiness, it closes a hole the new API opens. Declarations are matched by
+equality, so `get_handled_event_types() -> ["order.*"]` is a type no event ever has: the handler
+would go in the typed bucket for the literal string and never be asked about anything -- the same
+silent silencing, reintroduced by the very method meant to avoid it. Blank declarations are
+refused for the same reason. Both fail while the pod is starting, naming the handler.
+
+**The index is built once at startup, and checked on every dispatch.** `on_startup` builds it (so
+a malformed declaration fails the pod) and logs how many handlers are offered every event against
+how many event types are declared -- the observable evidence that nothing was silenced. But
+`_candidates` re-reads the handlers:
+
+```python
+        handlers = self._handlers()
+        if self._index is None or handlers != self._indexed:
+            self._indexed = handlers
+            self._index = DispatchIndex.build(handlers)
+        return self._index.candidates(event_type)
+```
+
+Before the index, the chain queried the registry per event, so a handler registered after startup
+was picked up automatically. A purely startup-built index would drop it silently, which is the
+class of failure this design is most careful about. The check costs exactly what the old code
+already paid -- one registry query and now a tuple comparison instead of a sort -- while the index
+still removes the `can_handle` await per handler, which is the expensive part. `HandlerChain`
+being unregistered means nothing calls its `on_startup` when it is used outside `AppBuilder`, and
+the same branch covers that.
+
+**`SessionsJobHandler` opts in without its subclasses writing anything.** Its `can_handle_event`
+was `event.type == f"sessions.job.created.{self.JOB_TYPE}"`; that string now has one definition:
+
+```python
+    @property
+    def job_created_event_type(self) -> str:
+        return f"sessions.job.created.{self.JOB_TYPE}"
+
+    def get_handled_event_types(self) -> list[str]:
+        return [self.job_created_event_type]
+```
+
+`can_handle_event` reads the same property. Written out twice the two could drift, and a
+declaration that no longer matches the check is a handler the index never offers an event to --
+which is why the property exists rather than a second f-string. A subclass opts in by setting the
+`JOB_TYPE` class variable it already had to set.
+
+`_dispatch` was also split: `_handlers()` now owns the namespace-scoped registry query (with the
+explanation of why the namespace is named explicitly, from part 1), and `_dispatch` itself asks
+`_candidates(event.type)`. The `handlers.count` span attribute keeps its meaning -- how many
+handlers this dispatch will walk -- and the debug line now reports candidates against the total.
+
+Tests: `tests/unit/agents/handler/test_dispatch_index.py`, 24 cases -- an undeclared handler being
+a candidate for every event type, including alongside a declared one, and an undeclared-only
+application indexing to nothing at all; declarations narrowing who is asked, every declared type
+keyed, and an unknown type falling back to the wildcard handlers or to nobody; candidate order
+identical to the unindexed order and priority still deciding; dispatch asking only the candidates,
+the chain-of-responsibility fallthrough surviving, and an event no candidate wants returning
+`None`; a pattern and a blank declaration refused with the handler named, and the refusal landing
+on `on_startup`; the index built at startup, not rebuilt when nothing changed, rebuilt for a
+handler registered afterwards, and built on demand for a chain nobody started; and two agents in
+one process indexing only their own handlers. One mock-based test in
+`test_event_processing_service.py` grew a small stub handler, because a bare `MagicMock` is no
+longer sortable now that startup indexes.
+
+### Phase 5, part 1 -- a transport endpoint subscribes for one agent, and only for one agent
+
+P6 gave each namespace its own `NATSClient`, with the queue group and the durable derived from
+the namespace. What still ran once for the whole process was the thing that decides *what to
+subscribe to*: `NatsEventing` and `DaprEventing` each collected topics from
+`registry.get_event_handler()` with no namespace, which on the application's registry means every
+agent's handlers, and deduplicated the result globally.
+
+Both of those are wrong in a group, and the second is wrong in the way spec sec. 7.6 singles out.
+
+**The endpoints are namespace-owned.** `NatsEventing(namespace=...)` and
+`DaprEventing(namespace=...)`, so phase 6 can build one per agent:
+
+```python
+    def __init__(self, namespace: str = ROOT_NAMESPACE) -> None:
+        super().__init__(should_register=False, namespace=namespace)
+```
+
+That needed `RestApiBase.__init__` to accept a namespace, since `EventHandlingBase` is a
+`RestApiBase`:
+
+```python
+    def __init__(self, should_register: bool = True, *, namespace: str = ROOT_NAMESPACE) -> None:
+        super().__init__(should_register, namespace=namespace)
+```
+
+Keyword-only, defaulting to the root, and every existing subclass already calls
+`super().__init__()` or `super().__init__(should_register=False)` by keyword -- so nothing
+changes for a developer's API, which still gets its namespace from the ambient scope. The
+framework's own per-agent endpoints are constructed outside any scope, which is why they name it.
+
+**Each endpoint resolves its own agent's client:**
+
+```python
+        self._client = self.registry.get_component(NATSClient, namespace=self.namespace)
+```
+
+Unscoped, this raised `Multiple components of type NATSClient found` the moment a second agent
+joined the process -- P6 created the clients but nothing had been taught to pick between them.
+With `namespace=""` the lookup is restricted to the root, which is where a single-agent
+application's only client is.
+
+**`NatsEventing._declared_topics` is new and is where the per-agent scope lands:**
+
+```python
+        topics: dict[str, None] = {}
+        for handler in self.registry.get_event_handler(namespace=self.namespace):
+            for topic in handler.get_subscribed_topics():
+                if topic:
+                    topics[topic] = None
+        for topic in self.config.get_nats_subscription_config():
+            if topic:
+                topics[topic] = None
+        return list(topics)
+```
+
+Two sources, handler declarations first and the configured list second, both already scoped to
+this agent -- `self.registry` and `self.config` are this namespace's views, so
+`orders.nats_subscriptions` resolves before the shared list (C5) with nothing here saying so.
+`DaprEventing._declared_topics` took the same namespace argument, which scopes both halves of the
+Dapr path at once: the sidecar's subscription document and the readiness hand-off to `DaprClient`.
+
+**Deduplication is now per agent because it cannot be anything else.** The `dict` above lives
+inside one endpoint, and one endpoint serves one namespace, so a cross-agent "first declaration
+wins" is not something that has to be avoided -- it is unreachable. That is the point of spec
+sec. 7.6: two agents subscribing to one topic both want the event, and a global dedup would
+silently disable one of them, invisibly to an author who runs that agent alone.
+
+**The unhandled and duplicate counters were attributing every event to the root.** Both are
+documented as per-namespace and both were hardcoded:
+
+```python
+-            _DUPLICATE_EVENTS.add(1, {"namespace": ROOT_NAMESPACE, "topic": topic})
++            _DUPLICATE_EVENTS.add(1, {"namespace": self.namespace, "topic": topic})
+```
+
+In a group that would have reported one agent's over-broad subscription as everybody's, which is
+precisely the signal spec sec. 7.7 wants those counters to carry. The value is the namespace
+verbatim rather than `ROOT_LABEL`, so a single-agent application keeps emitting `""` and its
+existing dashboards do not suddenly see a new label value.
+
+**Two plan bullets are already satisfied, and one of them must not be implemented as written.**
+
+- **"`NATSClient` consumer identity (C1)"** -- the durable `f"{namespace}-{topic}-durable"` and
+  `queue=namespace` landed with P6. Part 2 of this phase adds the invariant test the plan asks
+  for.
+- **"Give each namespace's JetStream consumer a `filter_subjects` set"** -- already true, in a
+  better form, and building it as written would make things worse. The client creates **one
+  durable per `(namespace, topic)` pair** with `filter_subject=topic`
+  (`nats_client.py:_consumer_config`), so the filter set of a namespace *is* the union of its
+  declared topics and its `nats_subscriptions`, one consumer per element. The plan's own
+  objection to a multi-subject filter is the reason to keep it that way: "a filter that follows
+  handler churn turns adding one handler into a consumer reconfiguration -- and possibly a
+  redelivery storm on deploy". With one consumer per topic, declaring a new topic *adds* a
+  consumer and never rewrites one, so there is no reconfiguration to be had. Collapsing several
+  topics into one consumer with a `filter_subjects` set would reintroduce exactly that.
+
+  The fan-out the bullet worries about is not removable at this layer either: spec sec. 7.6
+  *requires* one consumer per `(namespace, topic)`, so a broad subject selected by three agents
+  is copied three times by definition. Sec. 7.7 asks for that to be *observable*, not absent, and
+  the plan puts the reporting in `asbs validate`.
+
+**Also not implemented as written: "iterate `registry.get_known_namespaces()`".** That method
+deliberately does not exist -- the registry is reachable from every component, so it would let an
+agent enumerate its neighbours (C6). It is not needed: with one endpoint per agent, each one
+knows only its own namespace, which is all the collection needs.
+
+**Still to come in phase 6.** The Dapr path mounts `POST /events/{topic}` and
+`GET /dapr/subscribe` on the endpoint's router, and two agents' routers would collide on both
+paths. Phase 6 owns the route namespacing and the `_eventing_component` list that creates these
+per agent; nothing in this step creates more than one, so nothing collides yet.
+
+Tests: `tests/unit/agents/io/api/eventing/test_eventing_namespaces.py`, 18 cases -- an endpoint
+subscribing its own handlers' topics and not another agent's; two agents on one topic both
+getting it, for both transports; a topic declared twice inside one agent subscribed once; the
+agent's own `nats_subscriptions` winning and falling back to the shared list; handler topics
+ordered before configured ones; each endpoint resolving its own namespace's client and a root
+endpoint resolving the root one; only this agent's topics reaching the client; the Dapr
+subscription document holding one agent's topics and a root document unchanged; and namespace
+ownership, including that an illegal namespace is refused and that endpoints stay unregistered.
+
+### Phase 5, part 2 -- C1 gets the regression test the plan asks for
+
+No production change. The plan marks the consumer identity "**C1 -- invariant, cover with a
+test**", and the invariant was the one thing about P6's naming that nothing checked: the durable
+and the queue group are derived from the namespace, and the tests proved they *are* -- but nothing
+proved a deployment value cannot get in.
+
+That is the failure worth a permanent guard rather than a review. A durable that picks up the
+group name becomes a *different* durable the moment the agent is moved between groups, and a
+fresh JetStream consumer resumes according to its delivery policy: the agent either replays the
+stream from the beginning or silently skips whatever arrived while it was being renamed. Nothing
+in the process reports either. And the temptation is real, because the connection name
+(`f"{namespace}.{group}.{pod}"`) is right there in the same class and carries both values.
+
+`TestConsumerIdentityIgnoresTheDeployment` in `tests/unit/agents/clients/io/test_nats_client.py`,
+four cases. Each derives the queue group and the durable, changes the deployment, and derives them
+again from the same client -- so what is asserted is the derivation rather than a value cached at
+subscribe time:
+
+- the group name changing leaves both identifiers untouched;
+- the pod name changing leaves both untouched (a pod name in a durable would mean a new consumer
+  on every restart);
+- the connection name *does* change across the same edit, which is the positive half: the
+  deployment is visible where attribution needs it and nowhere else;
+- the JetStream `ConsumerConfig` carries `durable_name`, `filter_subject` and `deliver_group`
+  derived from the namespace and the topic, and neither the group nor the pod appears anywhere in
+  it.
+
+**The tests were verified to fail.** Injecting `BLUEPRINT_GROUP` into `_durable_for`'s prefix
+fails three of the four; injecting `POD_NAME` fails all four. An invariant test that passes
+against a broken implementation is worse than no test, so this was checked rather than assumed.
+
+The last case doubles as the record of why part 1 does not build a `filter_subjects` set: one
+durable per `(namespace, topic)` filtering one subject means declaring a topic *adds* a consumer
+and never rewrites one, so there is no filter to churn and no reconfiguration to migrate.
+
+### Phase 6, part 1 -- build() wires a transport per agent, and none for an agent that needs one not
+
+Phase 5 made a transport endpoint able to subscribe for one agent. Nothing created more than one:
+`build()` still made a single client and a single endpoint for the whole process, so every agent
+in a group would have shared the root's connection and the root's subscription set -- which is
+neither what spec sec. 6 asks for nor what phase 5's endpoints were built to do.
+
+**`_eventing_component` became `_eventing_components: list[...]`**, and the decision moved into
+one method per agent:
+
+```python
+        event_bus_type = str(self._config.get("event_bus", "") or "").strip().lower()
+        for namespace in self.hosted_namespaces:
+            self._wire_transport(registry, namespace, event_bus_type)
+```
+
+`event_bus` is read once, from the root: one transport type per process is a stated boundary of
+this plan (mixing NATS and Dapr is out of scope). What is decided per agent is *whether* that
+agent gets a client, and whether it gets an endpoint.
+
+**`AppBuilder.hosted_namespaces`** is the list `build()` iterates -- the root first, then each
+declared agent. It is deliberately not `namespaces`, which is only what `with_namespace` was
+told: that property answers "which agents was this builder asked to host", this one answers
+"which namespaces does `build()` have to walk", and they differ by exactly the root. The root
+cannot be conditional, because it is where a single-agent application's components live and where
+the framework's own root components go.
+
+**`_wire_transport` is where the per-agent gates live:**
+
+```python
+        consumes = bool(registry.get_event_handler(namespace=namespace))
+        publishes = self._publishing_requested(namespace)
+        ...
+        if not (consumes or publishes):
+            logger.debug("Namespace '%s' neither consumes nor publishes events; it is given no transport client", agent)
+            return
+
+        if event_bus_type == "dapr":
+            DaprClient(namespace=namespace)  # auto-registers
+            if consumes:
+                self._eventing_components.append(DaprEventing(namespace=namespace))
+        elif event_bus_type == "nats":
+            NATSClient(namespace=namespace)  # auto-registers
+            if consumes:
+                self._eventing_components.append(NatsEventing(namespace=namespace))
+```
+
+The early return is a spec requirement, not an optimisation: **an agent that neither consumes nor
+publishes must not be given a client** (sec. 6). A pure-scheduler agent in `in_process` mode that
+has not opted into publishing is that case, and a connection for it would be a socket, a
+readiness dependency and a `/connz` entry for traffic that does not exist -- on a broker its own
+deployment may have no access to. The same gate is what makes the root pass a no-op in a grouped
+application, where every handler belongs to a namespace and the root holds nothing.
+
+**Publishing became a per-agent opt-in.** `_publishing_requested` now takes a namespace and reads
+through that agent's configuration view:
+
+```python
+        raw = self._config.for_namespace(namespace).get("event_publishing_enabled", False)
+```
+
+So one agent in a group can emit events while its neighbours do not (C5). `for_namespace("")`
+returns the loader itself, so a single-agent application reads exactly the key it always read.
+The error for "publishing enabled, no transport" now names the agent that asked, because in a
+group "somebody set this" is not a usable message.
+
+**One `EventPublishingService` per agent that has a client**, which is what spec sec. 6 requires
+for outbound attribution -- an agent's events go out on its own connection:
+
+```python
+        for namespace in self.hosted_namespaces:
+            if registry.get_io_clients(namespace=namespace):
+                EventPublishingService(namespace=namespace)
+```
+
+Keyed on the client rather than on `publishes`, so a consuming agent keeps the publishing service
+it has always had without opting in. `EventProcessingService` stays single and at the root, since
+phase 4 gave it a chain per agent instead.
+
+**The lifespan and the router mount iterate the list**, shutdown in reverse, and both log the
+namespace of the endpoint they are driving -- in a group "eventing component startup failed" with
+no agent named is not attributable, which is C7.
+
+**Three sessions components gained a namespace** (`SessionsApiClient`, `SessionKeyProvider`,
+`SessionsBus`), because the sessions branch of `_wire_transport` creates them per agent like the
+other two. `SessionsBus` is the one that matters beyond naming: it dispatches through
+`CloudEventProcessorMixin`, which passes `self.namespace` since phase 4, so a job notification is
+now offered to that agent's handlers and no other's.
+
+Tests: `tests/unit/agents/app_builder/test_build_namespaces.py`, 16 cases against real
+components -- one client per consuming agent, one at the root for a single-agent application, none
+for the root when it holds nothing, none for an agent that neither consumes nor publishes, and a
+client-without-endpoint for a publish-only agent; publishing opted into per agent; one endpoint
+per consuming agent, one at the root for a single-agent application, none without handlers, and
+each endpoint subscribing only its own topics; one publishing service per agent with a client and
+none for an agent without one; `hosted_namespaces` ordering; and the publish-opt-in error naming
+the agent.
+
+Four existing `build()` tests were updated: the mock config gained
+`for_namespace.return_value = config` (the pattern `mock_config` already used), seven
+`assert_called_once_with()` assertions became `assert_called_once_with(namespace="")` -- the same
+call, now explicit -- `_eventing_component is None` became `_eventing_components == []`, and one
+`get_event_handler` stub lambda took the namespace argument it is now passed. None of these is a
+behaviour change; each is an assertion on a call shape.
+
+### Phase 6, part 2 -- an agent's HTTP surface lives under its own prefix, and grouped Dapr is refused
+
+A group applies the same registration once per agent, so two agents declare the *same* paths.
+FastAPI serves the first match, so without a prefix one agent's requests are answered by another
+agent's code -- and its Dapr deliveries by another agent's handlers. Nothing about that is visible
+from a response.
+
+**`RestApiBase.route_prefix`** is the single definition of where a component's routes go:
+
+```python
+    @property
+    def route_prefix(self) -> str:
+        return f"/api/{self.namespace}" if self.namespace else ""
+```
+
+It is a property on the component rather than a rule inside `AppBuilder` because **two places
+have to agree on it**: the builder, which mounts the router, and `DaprEventing.subscribe`, which
+tells the sidecar where to post. If those disagreed the sidecar would post to a path FastAPI does
+not serve and every delivery would 404, with the application otherwise healthy.
+
+**`AppBuilder._mount` applies it, and rewrites the tags:**
+
+```python
+        prefix = component.route_prefix or root_prefix
+        if component.namespace:
+            for route in component.router.routes:
+                if isinstance(route, APIRoute) and route.tags:
+                    route.tags = [f"{component.namespace}.{tag}" for tag in route.tags]
+        app.include_router(component.router, prefix=prefix)
+```
+
+`root_prefix` is what a *root* component keeps, and it is not the same for every kind: a REST API
+has always been mounted under `/api`, a transport endpoint at the top level because its paths are
+a contract with a sidecar. A namespaced component ignores it and takes `route_prefix`, so both
+kinds end up under one prefix per agent -- `/api/orders/orders` for the REST API and
+`/api/orders/events/{topic}` for deliveries, which matches the `/api/order/orders/{id}` shape
+spec sec. 11 uses.
+
+The tags are **rewritten, not appended to**. `include_router(tags=...)` appends, which would put
+each operation in two Swagger groups -- once under the agent and once under the bare resource
+name -- so the rewrite happens on the routes. `isinstance(route, APIRoute)` rather than a
+`getattr`: a Starlette `BaseRoute` has no tags, and only the decorator-produced routes do.
+Mutating them is safe because a router belongs to exactly one component and `build()` runs once
+per process (`Component.configure` refuses a second call).
+
+**Grouped Dapr is refused at build time, and this is the part worth arguing.** *(Superseded by
+part 4 below, which routes and fans out in the process instead. The reasoning is kept because it
+is why the endpoint had to become singular.)* Prefixing fixed
+delivery, but discovery cannot be prefixed: the sidecar fetches `GET /dapr/subscribe` from one
+path, fixed by Dapr's protocol. With each agent's document behind its own prefix the sidecar finds
+*no* document, subscribes to nothing, and the pod reports itself healthy while consuming nothing
+-- the exact silent failure this feature exists to prevent. So:
+
+```python
+        if event_bus_type != "dapr" or len(self._eventing_components) <= 1:
+            return
+        ...
+        raise ValueError(
+            f"{len(self._eventing_components)} agents ({agents}) consume events and 'event_bus' is 'dapr', ..."
+        )
+```
+
+The check is on the resolved `event_bus_type` rather than on the endpoint types, because one
+transport serves the whole process and the type is what is already known here -- `isinstance`
+against a module-level name would also break under the test patching that mocks these classes.
+
+NATS is unaffected: it has no discovery endpoint, because the client subscribes directly, per
+agent. **A single-agent Dapr application is unaffected** -- one endpoint, no prefix, byte-identical
+document.
+
+Fixing grouped Dapr properly means one process-wide discovery endpoint returning the union of
+every agent's subscriptions, each entry naming that agent's own delivery route. That is a change
+to the sidecar-facing contract rather than an internal detail, so it is **not** done here and is
+listed under *Open points*. Refusing loudly is the interim, because the alternative is a pod that
+looks healthy and consumes nothing.
+
+Tests: `tests/unit/agents/app_builder/test_route_namespacing.py`, 18 cases, asserting through
+`app.openapi()["paths"]` rather than `app.routes` -- FastAPI stores an included router as one
+opaque entry rather than flattening its routes, so `app.routes` does not contain the paths under
+test while the OpenAPI document is exactly what is served. Covered: the prefix for a root and a
+namespaced component; a single-agent application's paths not moving; an agent's route carrying its
+namespace; two agents declaring one route not colliding; tags prefixed, the bare tag replaced
+rather than added to, two agents' tags not merging, and a root component's tags untouched; grouped
+Dapr refused with both agents named, one agent on Dapr fine, two on NATS fine; the root delivery
+path unchanged; an agent's delivery path moved; two agents on NATS getting their own; and the
+subscription document naming the mounted path for an agent and the unchanged path for the root.
+
+### Phase 6, part 3 -- every cache is manageable and every cache is probed
+
+Phase 3 part 2 let a process hold several named caches. Two things still only knew about the
+default one, and both were listed as phase 6's work.
+
+**`CacheManagementApi` takes an optional `?name=` on every endpoint:**
+
+```python
+    async def get_cache_stats(self, name: str = DEFAULT_CACHE_NAME) -> CacheStatsResponse:
+        stats = self._cache(name).get_stats()
+```
+
+One router for the process rather than one per cache, and that is a correctness point rather
+than tidiness: caches can be registered *after* startup (`registry.add_cache` exists for that),
+routes cannot, so anything keyed on the set of caches at build time would serve a stale list.
+Resolving the name per request has no such window. A request that names nothing reaches the
+default cache, so every existing call is unchanged.
+
+**`_cache(name)` answers the two failures differently, and the distinction is the point:**
+
+```python
+        if not self.registry.get_all_caches():
+            raise HTTPException(status_code=503, detail="Cache service not available")
+        try:
+            return self.registry.get_cache(name)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+```
+
+**503** when no cache is registered at all: the application was built without one, it is not the
+caller's doing, and it may resolve without a redeploy -- which is what 503 says, and it is what
+this endpoint has always answered. **404** when caches exist but none has that name: that is a
+bad request for a resource that is not there, and answering 503 would invite a retry that can
+never succeed. The registered names go in the 404 body, because a caller who mistypes a name has
+no other way to discover the right one -- there is no endpoint that lists them.
+
+The eviction response gained a `"cache"` field naming which cache was cleared. With one cache the
+answer was implicit; with several, a response that does not say what it cleared is not usable.
+
+**Readiness probes every cache, not just the default:**
+
+```python
+        for cache_name, cache in registry.get_all_caches().items():
+            entry = "cache" if cache_name == DEFAULT_CACHE_NAME else f"cache:{cache_name}"
+            health_providers[entry] = CacheHealthChecker(cache)
+```
+
+This was a real gap rather than a missing feature. `CacheHealthChecker` pings Redis and flips
+readiness when it cannot be reached; keyed on the default name, a project whose `sessions` cache
+was a Redis instance had that instance unprobed -- so a Redis outage there took the pod out of
+nothing, and the agent silently served cache misses. Worse, a project that registered *only* a
+named cache had no cache health check at all, because the old gate was `registry.has_cache()`,
+which asks about the default.
+
+The default keeps the entry name `cache` it has always had, so an existing `/readiness` payload
+does not change; a named cache appears as `cache:<name>`.
+
+Tests: `tests/unit/agents/io/api/utilities/test_cache.py` rewritten onto the new registry calls
+and grown to 20 cases -- the three endpoints reading and clearing a named cache, the default used
+when no name is given, the response naming the cache it cleared, 503 with no cache registered,
+404 for an unknown name on all three endpoints, and the 404 body listing the registered names.
+Four cases added to `test_named_caches.py` for the readiness wiring: the default keeping the
+`cache` entry name, a named cache getting its own, a *named-only* application still reaching
+readiness, and each entry probing its own cache object.
+
+Also corrected here: part 2's entry said 17 test cases where the file has 18.
+
+### Phase 6, part 4 -- grouped Dapr works: one endpoint, routed and fanned out in the process
+
+Part 2 refused a group of consuming agents on Dapr, because discovery cannot be prefixed per
+agent. The user's answer was the right one and better than the refusal: **do the routing in the
+process.** Keep the one endpoint the sidecar's protocol demands, pick the agents from the event,
+and fan out -- since several agents may legitimately want the same event. Part 2's guard is
+removed.
+
+**There is one Dapr endpoint, at the root, and that is now structural:**
+
+```python
+    def __init__(self) -> None:
+        super().__init__(should_register=False)
+```
+
+`DaprEventing` takes **no namespace at all**, unlike every other transport component. That is not
+a simplification -- it is what keeps `_topics_by_agent` correct. That method reads *every* handler
+in the process, which it can only do because `self.registry` is the application's registry rather
+than one agent's view of it; a namespaced instance would silently see one agent's handlers and
+route only that agent's topics. Making the constructor refuse a namespace means the mistake cannot
+be made, and `route_prefix` is then always `""`, so the two fixed paths never move.
+
+**The routing table is read from the handlers:**
+
+```python
+        by_agent: dict[str, dict[str, None]] = {}
+        for handler in self.registry.get_event_handler():
+            for topic in handler.get_subscribed_topics():
+                if topic:
+                    by_agent.setdefault(namespace_of(handler), {})[topic] = None
+```
+
+An agent that declared no topic does not appear, because it has nothing to subscribe and nothing
+to be delivered.
+
+**The document is the union; the delivery is the fan-out.** Those are two different readings of
+the same table, and the asymmetry is the whole design:
+
+- `_declared_topics` flattens it, deduplicated, because the sidecar delivers a topic to the
+  application **once** however many agents want it -- so it is told once.
+- `_agents_for(topic)` inverts it, returning every agent that declared the topic. Fanning that
+  single delivery out is the application's job, not the sidecar's.
+
+```python
+        declared = tuple(namespace for namespace, topics in by_agent.items() if topic in topics)
+        if declared:
+            return declared
+        with_handlers = tuple(dict.fromkeys(namespace_of(handler) for handler in self.registry.get_event_handler()))
+        return with_handlers or (ROOT_NAMESPACE,)
+```
+
+The fallback is the same rule `DispatchIndex.candidates` applies one level down: **an absent
+declaration cannot narrow anything to nothing.** A topic nobody declared goes to every agent that
+has handlers, and each agent's `can_handle_event` decides. That is what a topic arriving from
+outside the application needs -- `dapr_declarative_subscriptions` makes the document empty, so no
+handler need declare anything and the framework never sees the topic list, yet the sidecar still
+delivers. Routing such a delivery nowhere would silence the application, and an unhandled event
+acknowledges (spec sec. 7.2), so the events would be consumed and discarded. For a single-agent
+application both branches are the root, so nothing changes there.
+
+**`publish` dispatches once per agent and does not let a failure stop the others:**
+
+```python
+        for namespace in agents:
+            try:
+                await self._process_cloud_event(cloud_event, {"dapr_topic": topic}, topic, namespace=namespace)
+                dispositions.append(DeliveryDisposition.ACK)
+            except Exception as exc:
+                disposition = disposition_for(exc)
+                dispositions.append(disposition)
+                ...
+```
+
+Letting the exception out of the loop would let one agent silently cancel a neighbour's work. Each
+failure is logged with its own agent named, so a fan-out failure stays attributable (C7).
+
+**The single acknowledgement is `combined_disposition`, new in `models/errors.py`** beside the
+disposition table it extends, since it is a spec sec. 7.2 concern rather than a Dapr detail:
+
+```python
+    outcomes = set(dispositions)
+    if DeliveryDisposition.NAK in outcomes:
+        return DeliveryDisposition.NAK
+    if DeliveryDisposition.ACK in outcomes or not outcomes:
+        return DeliveryDisposition.ACK
+    return DeliveryDisposition.TERM
+```
+
+Each step is a decision, argued in its docstring. **Any NAK wins**, because one agent asked for
+the delivery again and the only way to give it one is to ask for the whole message again.
+**Otherwise ACK beats TERM**, because a TERM from one agent means *that* agent found the message
+undeliverable -- a finished outcome -- and if another agent handled it, the message was handled;
+answering TERM would report a successful delivery as dropped. **All TERM is TERM.** Empty is ACK:
+nothing was dispatched, so nothing failed.
+
+**The cost, stated because it has no NATS equivalent:** there is one delivery, so one
+acknowledgement, so **a retry asked for by one agent redelivers to every agent in the group**.
+A grouped Dapr deployment therefore wants `idempotency_enabled`, or handlers that tolerate a
+repeat. Under NATS each agent has its own consumer and its own ack, and no such coupling exists.
+This is in the class docstring as well as here, because it is the thing an operator has to know.
+
+**Plumbing:** `_process_cloud_event` and `_dispatch_cloud_event` took an optional `namespace`,
+defaulting to the endpoint's own -- every caller but this one. The unhandled and duplicate
+counters now carry the agent the dispatch was *for* rather than the endpoint's namespace, which
+for the fan-out is the difference between attributing an event to the agent that declined it and
+attributing every event in the process to the root.
+
+**`AppBuilder._wire_dapr_endpoint`** replaces `_refuse_grouped_dapr`: the Dapr branch of
+`_wire_transport` now creates only the per-agent client, and one root endpoint is created after
+the loop if anything in the process consumes. NATS endpoints stay per agent, because there the
+broker routes -- one consumer per `(namespace, topic)` -- and nothing needs to be done in
+process.
+
+Tests: `tests/unit/agents/io/api/eventing/test_dapr_fanout.py`, 24 cases against real handlers,
+config and chains -- the routing table keyed per agent and an agent that declared nothing absent
+from it; the document as the deduplicated union with every route at the fixed path; `_agents_for`
+resolving one declaring agent, two declaring agents, an undeclared topic to every agent with
+handlers, and a single-agent application to the root; the fan-out reaching both declaring agents,
+skipping a non-declaring one, dispatching once for a single-agent application, and continuing past
+one agent's failure; all six acknowledgement combinations; each agent's client receiving its own
+topics and being kept per agent; and the constructor refusing a namespace.
+
+Updated: `test_route_namespacing.py` lost `TestGroupedDaprIsRefused` and gained the Dapr endpoint
+staying at the root; `test_eventing_namespaces.py` is now NATS-only, since Dapr's per-agent
+subscription moved to the fan-out file; `test_dapr.py` moved from `_client` to `_clients` and its
+mock handlers gained a real `namespace` attribute, which `namespace_of` needs; and one
+`assert_called_once_with(namespace="")` became `assert_called_once_with()`.
+
+### Phase 7 -- a handler says which agent runtime should serve an event
+
+`EventHandlerBase`'s own usage docstring has shown `get_runtime_name` since before any of this
+work; the method did not exist. A project that overrode it got a method nothing ever called.
+Alongside it, `process_event` has taken a `runtime_name` argument that the spec's compatibility
+table records as "only logged". This closes both.
+
+**The hook, on `EventHandlerBase`:**
+
+```python
+    def get_runtime_name(self, event: GenericCloudEvent, context: dict[str, Any]) -> str | None:
+        return None
+```
+
+Per *event* rather than per handler, because the choice can depend on the payload -- one handler
+routing to a fast model or a thorough one on the same event type is the case it exists for.
+
+**The resolution happens in the chain, between selection and handling, and that is a departure
+from the plan.** The plan puts it in `EventProcessingService` "after the chain selects a
+handler". By then the handler has already run: the chain selects *and* runs in one pass, so a
+runtime resolved afterwards is a value nothing can act on. Inside the loop there is exactly one
+moment where the winner is known and the answer is still useful:
+
+```python
+                if await handler.can_handle(event, context):
+                    logger.info("Handler '%s' handling event '%s'", handler.name, event.type)
+                    self._bind_runtime(handler, event, context)
+                    result = await handler.handle(event, context)
+```
+
+So the runtime is *bound into the context the handler is about to be given*, under
+`RUNTIME_CONTEXT_KEY` (`"runtime"`) and `RUNTIME_NAME_CONTEXT_KEY` (`"runtime_name"`). A handler
+that wants a particular runtime reads it from the context rather than looking it up -- and in a
+grouped process it gets its own agent's runtime with no namespace anywhere in handler code, which
+is the constraint the whole feature is under. The fallthrough is unaffected: a candidate whose
+`handle` returns `None` passes on, and the next candidate gets its own binding.
+
+**Three sources, most explicit first:**
+
+```python
+        declared = handler.get_runtime_name(event, context) or context.get(RUNTIME_NAME_CONTEXT_KEY)
+        if declared:
+            context[RUNTIME_NAME_CONTEXT_KEY] = declared
+            context[RUNTIME_CONTEXT_KEY] = self._runtime_named(str(declared), handler)
+            return
+
+        names = self.registry.get_agents(namespace=self.namespace)
+        if len(names) == 1:
+            context[RUNTIME_NAME_CONTEXT_KEY] = names[0]
+            context[RUNTIME_CONTEXT_KEY] = self.registry.get_agent(names[0], self.namespace)
+            return
+```
+
+The handler's own answer, then the caller's `runtime_name`, then the single runtime in this
+handler's namespace. `process_event` now seeds its argument into the context:
+
+```python
+        if runtime_name:
+            context[RUNTIME_NAME_CONTEXT_KEY] = runtime_name
+```
+
+Only when asked for, so a caller that passes nothing leaves the key *absent* rather than `None` --
+the difference between "no preference" and "explicitly no runtime". That is what makes a parameter
+which has only ever been logged mean something, while keeping the handler's own answer above it.
+
+The namespace is named explicitly in both registry calls, for the reason it is named in
+`_handlers`: an omitted namespace on the root registry means every namespace, so the single-runtime
+count would include a neighbour's agent and "exactly one" would be wrong in a group. There is a
+test for two agents each owning a `planner`, where each chain binds its own.
+
+**The plan's ambiguity error is not implemented, and this is the substantive departure.** The plan
+says "`None` + multiple agents + no name declared -> raise a descriptive error". That would break
+applications that work today: two agents plus handlers that resolve their own runtime by name is a
+shape this framework already supports -- it is what the scaffolder generates, `self.registry
+.get_agent('<runtime_name>')` in a service's `on_startup` -- and those applications rely on the
+framework resolving nothing. Raising would fail every delivery in them. So nothing is bound, and
+the ambiguity is reported once per handler at WARNING, naming the candidates and the override.
+Once, because the condition is a property of the code rather than of the event: the same handler
+in the same namespace is ambiguous for every event it will ever see, and a per-delivery warning
+would bury the one line that matters. This needs a spec amendment; it is under *Open points*.
+
+**What *does* raise is a declaration the framework cannot honour:**
+
+```python
+            raise ValueError(
+                f"Handler '{handler.name}' asked for agent runtime '{name}', which is not registered in namespace "
+                f"'{self.namespace or ROOT_LABEL}' or at the root (registered here: {registered}). Either register it, "
+                "or return a name that exists from get_runtime_name()."
+            )
+```
+
+The same reading as `event_publishing_enabled` without a transport: an explicit statement the
+framework cannot satisfy is a failure, not something to fall back from silently.
+
+**Found while writing the tests, and worth recording:** constructing a component *directly* with
+an explicit `name=` does not qualify it with the namespace -- only `AppBuilder._register` does
+that (phase 3 part 1). So two `AgentRuntime(name="planner")` instances in two namespace scopes
+still collide on the one registry key. Everything the builder creates is safe; a test or a project
+that constructs a component by hand inside a `namespace_scope` is not. The test helper qualifies
+the name itself and says why. Not fixed here -- the fix would be `Component.__init__` qualifying an
+explicit name, which changes naming for every component in the framework and deserves its own step.
+
+Tests: `tests/unit/agents/handler/test_runtime_binding.py`, 18 cases against real
+`AgentRuntime`, `Config` and chains -- a declared runtime bound and bound *before* the handler
+runs; the choice varying with the payload; the handler winning over the caller and the caller
+winning over the fallback; `process_event` seeding its argument and leaving the key absent when
+it has none; one runtime bound with no declaration, none bound when there is no runtime at all,
+and each agent binding its own in a group; the ambiguous case binding nothing, reporting once
+rather than per delivery; an unknown declared name raising with the handler, the namespace and the
+registered names in the message; and the default hook returning `None`.
+
+**Verified not vacuous:** with the `_bind_runtime` call removed, 14 of the 18 fail -- the four
+that survive are the ones asserting that *nothing* is bound.
+
 ---
 
 ## Compatibility
@@ -2702,6 +3614,86 @@ Everything else remains non-breaking. Specifically:
   Whether Dapr merges the two or delivers twice needs checking against a real sidecar; it belongs on
   the broker-test list.
 - New config keys all default to current behaviour.
+- **`EventHandlerBase.get_runtime_name(event, context)` is new and defaults to `None`.** It was
+  already in the class's usage docstring, so a project may have written one; it is now actually
+  called. Returning `None` keeps today's behaviour.
+- **The processing context gains `runtime` and `runtime_name` keys when a runtime can be chosen.**
+  A single-agent application with one `AgentRuntime` now finds them populated where it did not
+  before -- additive, and nothing in the framework reads them. With several runtimes and no
+  declaration neither key is set, and a WARNING names the candidates once per handler.
+- **`process_event`'s `runtime_name` argument is no longer only logged.** It seeds the context as
+  the caller's choice, below the handler's own `get_runtime_name` and above the single-runtime
+  fallback. A caller that passes nothing is unaffected.
+- **`DaprEventing()` takes no namespace, and `DaprEventing._client` is now `_clients`, a dict
+  keyed by namespace.** There is one endpoint per process, at the root. A single-agent
+  application's document, delivery path and acknowledgement are all unchanged.
+- **A group of consuming agents on Dapr now works** (it was refused in phase 6 part 2). One
+  delivery is fanned out to every agent that declared the topic, and the one acknowledgement is
+  their combination -- so **a retry asked for by one agent redelivers to all of them.** Set
+  `idempotency_enabled` for grouped Dapr, or keep handlers repeat-tolerant. NATS is unaffected.
+- **`_process_cloud_event` and `_dispatch_cloud_event` gained a trailing optional `namespace`.**
+  Both are protected; the default is the endpoint's own namespace, which is what every caller
+  except the Dapr fan-out passes.
+- **The `/cache/*` endpoints take an optional `?name=`, defaulting to `default`.** Every existing
+  call is unchanged. New answer: an unknown name is `404` rather than `503`, and `POST
+  /cache/evict` now includes a `"cache"` field in its response body.
+- **`/readiness` gains one entry per named cache, as `cache:<name>`.** The default cache keeps
+  the entry name `cache`, so an existing payload is unchanged. A project that registered only a
+  named cache previously had no cache health check at all.
+- **A namespaced component's routes move to `/api/<agent>/...`, and its tags gain an
+  `<agent>.` prefix.** Nothing moves for an application that declares no namespace: a root REST
+  API stays under `/api`, and a root transport endpoint stays at `/events/{topic}` and
+  `/dapr/subscribe`.
+- **`RestApiBase.route_prefix` is new**, and public, because `DaprEventing.subscribe` has to
+  render the same prefix the builder mounts.
+- **A group of two or more consuming agents on `event_bus = "dapr"` now fails at `build()`.**
+  The sidecar fetches the subscription document from one fixed path, so per-agent documents
+  would leave it subscribed to nothing. Single-agent Dapr is unchanged; NATS hosts groups
+  normally. Listed under *Open points*.
+- **`AppBuilder._eventing_component` is now `_eventing_components`, a list.** Underscore-private,
+  but anything introspecting it breaks. It holds exactly one element for every application that
+  declares no namespace.
+- **`event_publishing_enabled` is now read per agent**, through that agent's configuration view.
+  A root-level key still applies to a single-agent application unchanged; in a group an agent can
+  set its own, and `<agent>.event_publishing_enabled` wins over the shared value.
+- **`SessionsApiClient`, `SessionKeyProvider` and `SessionsBus` gained a leading optional
+  `namespace`.** All three are framework-constructed from `build()`, so the leading position
+  affects nobody.
+- **Phase 5 is not a consumer migration, and expects neither a replay nor a gap.** The plan
+  requires this to be stated, because renaming a durable or changing a filter set is broker-side
+  state and a recreated consumer resumes by its delivery policy. Neither happens here: the
+  namespace-qualified durable landed with P6 and is dormant until a namespace exists (the root
+  keeps `<topic>-durable`), and phase 5 changes no filter set -- one durable per
+  `(namespace, topic)` filtering one subject was already the shape, so declaring a topic adds a
+  consumer instead of reconfiguring one. The first deployment that *is* a migration is the first
+  one that declares a namespace, and it creates new consumers rather than renaming existing ones.
+- **`RestApiBase.__init__` gained a keyword-only `namespace`**, forwarded to `Component`.
+  Defaults to the root, and every subclass in the repo already passes `should_register` by
+  keyword, so no existing call changes.
+- **`NatsEventing.__init__` and `DaprEventing.__init__` gained a leading optional `namespace`.**
+  Both are framework-constructed and unregistered, so the leading position affects nobody.
+- **The `blueprint.events.unhandled` and `blueprint.events.duplicate` counters now carry the
+  endpoint's real namespace** instead of a hardcoded root. A single-agent application still
+  reports `namespace=""`, so no existing dashboard sees a new label value.
+- **`EventHandlerBase.get_handled_event_types()` is new and defaults to `[]`**, which means
+  "offer me every event" -- the behaviour every handler has today. Overriding it narrows only
+  which events that handler is *asked* about; `can_handle_event` still decides. Declarations are
+  matched by equality: a pattern such as `order.*` is refused at startup rather than silently
+  matching nothing.
+- **`SessionsJobHandler` now declares its event type**, derived from the `JOB_TYPE` its
+  subclasses already set. Selection is unchanged -- the declaration and `can_handle_event` read
+  one property -- so a subclass sees no difference beyond not being asked about other job types.
+- **`HandlerChain.__init__` gained a leading optional `namespace`, and `process_event` /
+  `process_rest_request` a trailing keyword-only one.** All default to the root. `HandlerChain`
+  is constructed by the framework only -- it is `should_register=False` and nothing looks it up --
+  so the leading position is safe; the two service methods took keyword-only because their
+  positional tails are used by callers.
+- **`HandlerChain._dispatch` now asks for its own namespace's handlers instead of every
+  namespace's.** For a single-agent application these are the same set: every handler is at the
+  root. In a grouped process it is the difference between dispatching to one agent and to all of
+  them.
+- **`CloudEventProcessorMixin` requires a `namespace` attribute as well as `registry`.** Both come
+  from `Component`, which every class it is mixed into already subclasses.
 - **`AppBuilder.with_cache` gained a keyword-only `name`, and the three positional forms are
   unchanged.** `with_cache()`, `with_cache(False)` and `with_cache(True, False)` mean what they
   always meant, which is why `name` had to come last and be keyword-only (spec sec. 4.2). The
@@ -2840,13 +3832,17 @@ stay keyword-only and last, or an existing `with_cache(False)` would silently be
 
 ## Open points
 
-- **Two spec amendments are outstanding for `with_namespace` (phase 3 part 1).** Spec sec. 4.2
-  types the return as `AppBuilder | NamespaceBuilder` and lists a `config: Config | None`
-  parameter. The union is honoured at runtime but resolved by `@overload` so no caller narrows it;
-  the `config` parameter is **not** accepted, because config rework step 2 left it with no reader
-  -- `Component.config` derives each component's view from the one loaded tree. The spec should
-  say so rather than describing a parameter the implementation refuses. Reasoning in the phase 3
-  part 1 entry above.
+- **Phase 7's ambiguity error needs a spec amendment.** The plan asks `process_event` to raise
+  when a handler declares no runtime and several are registered. It is implemented as a
+  once-per-handler WARNING with nothing bound, because raising would fail every delivery in an
+  application that has two agents and handlers resolving their own runtime by name -- the shape
+  the scaffolder generates. The spec's compatibility table already calls phase 7 "purely
+  additive", which the raise would contradict; the plan bullet is what should change.
+- **An explicit `name=` is qualified with the namespace only on the builder path.** Constructing
+  a component directly inside a `namespace_scope` with `name="planner"` registers it as
+  `planner`, so two agents doing that collide on one registry key. `AppBuilder._register`
+  qualifies; `Component.__init__` does not. Fixing it there would change naming for every
+  component and wants its own step.
 
 - **P0-P5 have landed. P6 is next**, and two requirements for it were settled during P5 (see the
   namespace bullet below). What remains open from P5 is deferred work rather than unfinished work:

@@ -1363,6 +1363,85 @@ class TestNATSClientConsumerIdentityFollowsTheNamespace:
         assert "consume each other" in caplog.text
 
 
+class TestConsumerIdentityIgnoresTheDeployment:
+    """C1 -- regrouping must be invisible to the broker, so no deployment value may reach it.
+
+    The two broker-side identifiers are the queue group and the durable name, and both derive
+    from the namespace alone. A deployment identifier reaching either would make regrouping
+    observable: a durable that picked up the group name becomes a *different* durable when the
+    agent moves group, and a fresh consumer resumes according to its delivery policy -- so the
+    agent either replays the stream from the start or silently skips whatever arrived while it
+    was being renamed. This is the invariant the plan asks to be covered by a test, and it is
+    why the connection name -- which does carry the group and the pod -- is kept away from both.
+
+    Each case derives the two identifiers, changes the deployment, and derives them again from
+    the same client, so what is asserted is the derivation rather than a cached value.
+    """
+
+    @staticmethod
+    def _identities(client: NATSClient) -> tuple[str, str]:
+        return client._resolve_queue_group(), client._durable_for("orders.created")
+
+    def test_the_group_name_reaches_neither(self, mock_config: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("BLUEPRINT_GROUP", "group-a")
+        monkeypatch.setenv("POD_NAME", "pod-1")
+        client = _namespaced_client(mock_config, "orders")
+        before = self._identities(client)
+
+        monkeypatch.setenv("BLUEPRINT_GROUP", "group-b")
+
+        assert self._identities(client) == before == ("orders", "orders-orders_created-durable")
+
+    def test_the_pod_name_reaches_neither(self, mock_config: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A pod name in a durable would mean a new consumer on every restart."""
+        monkeypatch.setenv("BLUEPRINT_GROUP", "group-a")
+        monkeypatch.setenv("POD_NAME", "pod-1")
+        client = _namespaced_client(mock_config, "orders")
+        before = self._identities(client)
+
+        monkeypatch.setenv("POD_NAME", "pod-2")
+
+        assert self._identities(client) == before
+
+    def test_the_connection_name_changes_while_they_do_not(self, mock_config: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The positive half: the deployment is visible, but only where attribution needs it."""
+        monkeypatch.setenv("BLUEPRINT_GROUP", "group-a")
+        monkeypatch.setenv("POD_NAME", "pod-1")
+        client = _namespaced_client(mock_config, "orders")
+        identities, connection = self._identities(client), client._resolve_connection_name()
+
+        monkeypatch.setenv("BLUEPRINT_GROUP", "group-b")
+        monkeypatch.setenv("POD_NAME", "pod-2")
+
+        assert client._resolve_connection_name() != connection
+        assert self._identities(client) == identities
+
+    async def test_the_consumer_carries_the_namespace_and_not_the_deployment(
+        self, mock_config: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """One durable per (namespace, topic), filtering that one subject.
+
+        This is also what makes the plan's per-namespace ``filter_subjects`` set unnecessary: a
+        filter set that followed the handler list would be rewritten whenever a handler was
+        added, and a durable's filter is broker-side state that cannot be rewritten without
+        replaying or gapping. Here the filter is one subject and never changes.
+        """
+        monkeypatch.setenv("BLUEPRINT_GROUP", "group-a")
+        monkeypatch.setenv("POD_NAME", "pod-1")
+        client = _namespaced_client(mock_config, "orders")
+        with patch.object(client, "_start_with_retry", new_callable=AsyncMock):
+            await client.subscribe({"orders.created": AsyncMock()})
+
+        config = client._consumer_config("orders.created", client._durable_for("orders.created"))
+
+        assert (config.durable_name, config.filter_subject, config.deliver_group) == (
+            "orders-orders_created-durable",
+            "orders.created",
+            "orders",
+        )
+        assert "group-a" not in str(config) and "pod-1" not in str(config)
+
+
 class TestNATSClientConnectionName:
     """Reason 3 -- attribution. nats.connect() used to be called with no name at all."""
 

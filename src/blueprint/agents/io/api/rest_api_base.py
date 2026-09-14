@@ -35,6 +35,7 @@ from fastapi.responses import JSONResponse
 from opentelemetry import trace
 
 from ...component.component import traced
+from ...component.namespace import ROOT_NAMESPACE
 from ...models import ProcessResourceResponse, ProcessingStatus
 from ..io_base import IOBase
 
@@ -60,10 +61,37 @@ class RestApiBase(IOBase, ABC):
     which routes it is allowed to answer for.
     """
 
-    def __init__(self, should_register: bool = True) -> None:
-        super().__init__(should_register)
+    def __init__(self, should_register: bool = True, *, namespace: str = ROOT_NAMESPACE) -> None:
+        """Initialize the REST API and wire its declared routes.
+
+        Args:
+            should_register: Whether to add this instance to the shared registry.
+            namespace: The agent this API belongs to. Keyword-only and defaulting to the root,
+                so no existing subclass changes. A developer's API never passes it -- it is
+                read from the ambient scope by ``Component`` -- but the framework's own
+                per-agent endpoints are built outside any scope and name it.
+        """
+        super().__init__(should_register, namespace=namespace)
         self._router = APIRouter(route_class=type(self).route_class)
         self._wire_routes()
+
+    @property
+    def route_prefix(self) -> str:
+        """The path prefix this component's routes are mounted under.
+
+        ``""`` for the root, so every path an existing application serves is unchanged, and
+        ``/api/<agent>`` for a component that belongs to one. An agent's whole HTTP surface
+        therefore lives under one prefix, and two agents in a group cannot collide on a path --
+        which they otherwise would, since a group applies the same registration twice and both
+        copies declare the same routes.
+
+        It is a property on this class rather than a rule inside ``AppBuilder`` because two
+        places have to agree on it: the builder, which mounts the router, and
+        ``DaprEventing.subscribe``, which tells the sidecar where to post deliveries. If those
+        two disagreed the sidecar would post to a path FastAPI does not serve, and every
+        delivery would 404 -- with the application otherwise healthy.
+        """
+        return f"/api/{self.namespace}" if self.namespace else ""
 
     @property
     def router(self) -> APIRouter:
@@ -168,7 +196,9 @@ class RestApiBase(IOBase, ABC):
             from ...services.eventing.event_processing_service import EventProcessingService  # noqa: PLC0415
 
             event_processing_service = self.registry.get_service(EventProcessingService)
-            processing_result = await event_processing_service.process_rest_request(payload, context)
+            # This API's own namespace: a REST call into one agent must not be offered to
+            # another agent's handlers.
+            processing_result = await event_processing_service.process_rest_request(payload, context, namespace=self.namespace)
 
             success = processing_result.status == ProcessingStatus.PROCESSED
             success_message = processing_result.message or "Processing completed successfully"
