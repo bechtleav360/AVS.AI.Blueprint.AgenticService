@@ -1,9 +1,10 @@
-"""Integration test: an event-mode scheduler is ticked through the ordinary event path.
+"""An event-mode scheduler is ticked through the ordinary event path.
 
-Offline by design. Under Dapr the application holds no broker connection -- the sidecar
-pushes to ``POST /events/{topic}`` -- so the whole of ``scheduler_mode = "event"`` can be
-exercised with nothing listening anywhere: build the app, post a CloudEvent to the
-scheduler's tick topic, and the scheduler's ``tick()`` runs.
+Offline, which is why it lives here rather than under tests/integration (#80). Under Dapr the
+application holds no broker connection -- the sidecar pushes to ``POST /events/{topic}`` -- so
+the whole of ``scheduler_mode = "event"`` can be exercised with nothing listening anywhere:
+build the app, post a CloudEvent to the scheduler's tick topic, and the scheduler's ``tick()``
+runs. The one thing that did reach for the network was the Dapr health check; see ``_config``.
 
 Two claims that unit tests cannot make are pinned here, because both are about what
 ``build()`` hands to FastAPI:
@@ -52,14 +53,19 @@ def _config(tmp_path, mode: str) -> Config:
                 'app_name = "cron-test"',
                 'event_bus = "dapr"',
                 f'scheduler_mode = "{mode}"',
+                # Without this the Dapr health check probes localhost:3500 for a sidecar that is
+                # not there, the namespace supervisor degrades the root agent for the failing
+                # check, and its paused transports refuse the tick with RETRY (phase 9, C4). The
+                # delivery path below needs no sidecar; only the health check reaches for one, so
+                # turning that probe off is what makes this test offline -- and deterministic.
+                # Left on, its result depends on whether anything happens to be listening on 3500.
+                "health_check_dapr = false",
             ]
         )
     )
     return Config(settings_files=[str(settings)])
 
 
-# Not marked @pytest.mark.integration -- nothing here reaches the network, so these must run
-# in the offline CI matrix alongside test_sessions_startup_resilience.py.
 def test_event_mode_tick_arrives_as_an_event(tmp_path):
     scheduler = NightlyScheduler()
     app = AppBuilder(_config(tmp_path, "event")).with_scheduler(scheduler).build()

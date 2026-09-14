@@ -1,6 +1,9 @@
-"""Integration test: AppBuilder.build() with event_bus='sessions' yields a
-FastAPI app whose lifespan completes even when the sessions service URL is
-unreachable. Standard REST endpoints (the framework root API) must respond.
+"""AppBuilder.build() with event_bus='sessions' yields a FastAPI app whose lifespan
+completes even when the sessions service URL is unreachable. Standard REST endpoints
+(the framework root API) must respond.
+
+Offline -- it targets a closed loopback port deliberately -- which is why it lives here
+rather than under tests/integration (#80).
 """
 
 import logging
@@ -59,8 +62,6 @@ def _reset_component_state():
     Component.reset_shared_state()
 
 
-# Not marked @pytest.mark.integration — this test is fully offline (it deliberately
-# targets a closed local port) and must run in the offline CI matrix.
 def test_app_starts_when_sessions_service_unreachable(tmp_path, monkeypatch, caplog):
     """With sessions URL pointed at a closed port, build() returns and
     TestClient can hit the root endpoint."""
