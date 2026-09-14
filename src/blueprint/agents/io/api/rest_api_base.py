@@ -30,6 +30,7 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Request, status
+from fastapi.routing import APIRoute
 from fastapi.responses import JSONResponse
 from opentelemetry import trace
 
@@ -50,9 +51,18 @@ class RestApiBase(IOBase, ABC):
     never need to call ``_wire_routes()`` or touch the router directly.
     """
 
+    route_class: type[APIRoute] = APIRoute
+    """Route class for this component's router.
+
+    Override in a subclass whose routes need behaviour FastAPI applies per route rather
+    than per application -- turning a request-validation failure into a domain response,
+    for instance. An application-wide exception handler cannot do that without knowing
+    which routes it is allowed to answer for.
+    """
+
     def __init__(self, should_register: bool = True) -> None:
         super().__init__(should_register)
-        self._router = APIRouter()
+        self._router = APIRouter(route_class=type(self).route_class)
         self._wire_routes()
 
     @property

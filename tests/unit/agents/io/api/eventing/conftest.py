@@ -33,8 +33,14 @@ def unhandled_result() -> ProcessingResult:
 
 
 @pytest.fixture
-def dapr_eventing(mock_registry: MagicMock) -> DaprEventing:
-    """DaprEventing instance with a mocked registry."""
+def dapr_eventing(mock_registry: MagicMock, mock_config: MagicMock) -> DaprEventing:
+    """DaprEventing instance with a mocked registry and a config that yields its defaults.
+
+    The default ``side_effect`` returns whatever default the caller passed, so component
+    code sees real defaults instead of a truthy MagicMock. Tests that need a specific
+    value replace the ``side_effect``.
+    """
+    mock_config.get.side_effect = lambda key, default=None: default
     return DaprEventing()
 
 
