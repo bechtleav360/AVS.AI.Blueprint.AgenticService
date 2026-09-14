@@ -244,13 +244,28 @@ class CustomCheckHealth(BaseModel):
 
 
 class CacheStatsResponse(BaseModel):
-    """Cache statistics response model."""
+    """What one cache reports about itself. **The fields are the backend's, not this model's.**
 
-    size: int
-    cache_dir: str
-    ttl_tracked_keys: int
-    size_limit: int
-    eviction_policy: str
+    A disk cache and a Redis cache have almost nothing to report in common: the disk backend
+    answers with its directory, its entry count and its eviction policy, while Redis answers
+    with a server version, a client count and its key prefix. So every field here is optional
+    and extras are kept -- the payload is whatever ``CacheService.get_stats`` returned, and the
+    route drops the fields the backend in use did not fill in.
+
+    It was not always so: the four disk fields were required and a fifth, ``ttl_tracked_keys``,
+    was required and produced by **no** backend, so ``GET /cache/stats`` raised a
+    ``ValidationError`` and answered 500 -- on Redis it was missing all five. The endpoint's only
+    test passed a hand-written dictionary through a ``MagicMock``, inventing the field that does
+    not exist; a real cache was never asked. That is the failure *probe against real objects*
+    names, and the test now constructs a `DiskCacheService`.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    size: int | None = Field(default=None, description="Entries held, for a backend that counts them")
+    cache_dir: str | None = Field(default=None, description="Directory the disk backend writes to")
+    size_limit: int | None = Field(default=None, description="Configured maximum size in bytes, for the disk backend")
+    eviction_policy: str | None = Field(default=None, description="Eviction policy in force, for the disk backend")
 
 
 class CacheNamespacesResponse(BaseModel):
@@ -264,14 +279,6 @@ class CacheEvictRequest(BaseModel):
     """Request to evict (clear) cache contents."""
 
     namespace: str | None = None
-
-
-class CacheEvictResponse(BaseModel):
-    """Response for cache eviction operation."""
-
-    success: bool = Field(..., description="Whether the eviction was successful")
-    namespace: str | None = Field(None, description="The namespace that was evicted")
-    evicted_keys: int = Field(0, description="Number of keys evicted")
 
 
 class AgentHealthDependencies(BaseModel):
