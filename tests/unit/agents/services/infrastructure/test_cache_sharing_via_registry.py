@@ -149,15 +149,20 @@ class TestTwoServicesShareCacheViaRegistry:
         assert writer.read("price:laptop") == {"amount": 49.99}
         assert reader.read("recommendation:laptop") == {"verdict": "BUY"}
 
-    def test_registry_setter_rejects_double_registration(self, shared_cache: DiskCacheService, tmp_path: Path) -> None:
-        """AC-protection: assigning a 2nd cache to the registry raises, ensuring
-        a single source of truth across all services."""
+    def test_the_default_cache_stays_a_single_source_of_truth(self, shared_cache: DiskCacheService, tmp_path: Path) -> None:
+        """AC-protection: there is one cache called "default", so every service reads the same one.
+
+        Assigning a second one replaces it rather than raising -- named caches made the setter an
+        upsert -- so what protects the invariant is that both services still resolve one object,
+        and that the replacement is announced.
+        """
         Component.shared_registry = Registry(Component)
         Component.shared_registry.cache_service = shared_cache
 
         second_cache = DiskCacheService(cache_dir=str(tmp_path / "second"), enable_locking=False)
         try:
-            with pytest.raises(ValueError):
-                Component.shared_registry.cache_service = second_cache
+            Component.shared_registry.cache_service = second_cache
+            assert Component.shared_registry.cache_service is second_cache
+            assert list(Component.shared_registry.get_all_caches()) == ["default"]
         finally:
             second_cache.close()

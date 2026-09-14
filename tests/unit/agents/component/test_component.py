@@ -16,7 +16,10 @@ from blueprint.agents.component.component import (
     _stamp_span,
     traced,
 )
+from blueprint.agents.component.namespace import ROOT_NAMESPACE, namespace_scope
+from blueprint.agents.component.registry import Registry
 from blueprint.agents.config import Config
+from blueprint.agents.services.service_base import ServiceBase
 
 from .conftest import ConcreteComponent
 
@@ -402,3 +405,132 @@ class TestTheConfigLoaderIsNotReachable:
         Component.reset_shared_state()
         assert Component.has_config() is False
         assert Component.shared_registry is None
+
+
+class TestNamespaceComesFromTheAmbientScope:
+    """A developer-written component must be namespaced without naming a namespace.
+
+    These use the same shapes a project writes: a service that takes no namespace parameter at
+    all, and one that calls ``super().__init__()`` with nothing.
+    """
+
+    def test_a_component_built_outside_a_scope_is_root(self) -> None:
+        assert ConcreteComponent().namespace == ROOT_NAMESPACE
+
+    def test_a_component_built_inside_a_scope_takes_that_namespace(self) -> None:
+        with namespace_scope("orders"):
+            assert ConcreteComponent().namespace == "orders"
+
+    def test_a_developer_service_needs_no_namespace_parameter(self) -> None:
+        """ServiceBase defaults namespace to "" and forwards it, so "" must defer to the scope."""
+
+        class OrderService(ServiceBase):
+            def __init__(self) -> None:
+                super().__init__()
+
+            async def on_startup(self) -> None:
+                pass
+
+            async def on_shutdown(self) -> None:
+                pass
+
+        with namespace_scope("orders"):
+            service = OrderService()
+
+        assert service.namespace == "orders"
+
+    def test_the_registry_name_is_qualified_by_the_ambient_namespace(self) -> None:
+        """The point of the namespace: two agents can register the same class in one process."""
+        with namespace_scope("orders"):
+            first = ConcreteComponent()
+        with namespace_scope("billing"):
+            second = ConcreteComponent()
+
+        assert (first.name, second.name) == ("orders_concrete_component", "billing_concrete_component")
+
+    def test_an_explicit_namespace_still_wins(self) -> None:
+        """Framework components that own their namespace pass it; nothing ambient may override that."""
+        with namespace_scope("orders"):
+            assert ConcreteComponent(namespace="billing").namespace == "billing"
+
+    def test_the_namespace_is_validated_whichever_way_it_arrives(self) -> None:
+        with pytest.raises(ValueError, match="legal namespace"):
+            ConcreteComponent(namespace="Orders")
+
+
+class TestExecutorBelongsToTheNamespace:
+    @pytest.fixture(autouse=True)
+    def injected_config(self) -> MagicMock:
+        """A Config stand-in, since `executor` is the first property to read configuration."""
+        config = MagicMock(spec=Config)
+        config.get.side_effect = lambda key, default=None: default
+        config.for_namespace.return_value = config
+        Component.configure(config)
+        return config
+
+    def test_a_component_gets_its_namespace_pool(self) -> None:
+        with namespace_scope("orders"):
+            component = ConcreteComponent()
+        assert component.executor is component.registry.get_or_create_executor("orders")
+
+    def test_two_agents_do_not_share_a_pool(self) -> None:
+        with namespace_scope("orders"):
+            orders = ConcreteComponent()
+        with namespace_scope("billing"):
+            billing = ConcreteComponent()
+        assert orders.executor is not billing.executor
+
+    def test_two_components_of_one_agent_share_its_pool(self) -> None:
+        """The pool belongs to the agent, not to the component."""
+        with namespace_scope("orders"):
+            first, second = ConcreteComponent(), ConcreteComponent(name="second")
+        assert first.executor is second.executor
+
+    def test_the_pool_is_sized_from_the_scoped_configuration(self, injected_config: MagicMock) -> None:
+        """executor_workers is namespace-scoped (C5), so one agent can be sized differently."""
+        injected_config.get.side_effect = lambda key, default=None: 3 if key == "executor_workers" else default
+        with namespace_scope("orders"):
+            component = ConcreteComponent()
+        assert component.executor._max_workers == 3
+
+    def test_asking_twice_returns_the_same_pool(self) -> None:
+        component = ConcreteComponent()
+        assert component.executor is component.executor
+
+
+class TestRegistryIsScopedToTheComponent:
+    """The other half of "a developer never writes a namespace": collaborator lookups."""
+
+    @pytest.fixture(autouse=True)
+    def real_registry(self) -> Registry:
+        registry = Registry(Component)
+        Component.shared_registry = registry
+        Component.configure(MagicMock(spec=Config))
+        return registry
+
+    def test_a_root_component_gets_the_registry_itself(self, real_registry: Registry) -> None:
+        assert ConcreteComponent().registry is real_registry
+
+    def test_a_namespaced_component_gets_its_own_view(self, real_registry: Registry) -> None:
+        with namespace_scope("orders"):
+            component = ConcreteComponent()
+        assert component.registry is real_registry.for_namespace("orders")
+
+    def test_a_lookup_with_no_namespace_finds_this_agents_component(self, real_registry: Registry) -> None:
+        with namespace_scope("orders"):
+            asker = ConcreteComponent(name="orders_asker")
+        with namespace_scope("billing"):
+            ConcreteComponent(name="billing_asker")
+
+        found = asker.registry.get_components_by_type(ConcreteComponent)
+
+        assert [component.namespace for component in found] == ["orders"]
+
+    def test_two_agents_resolve_their_own_of_the_same_class(self, real_registry: Registry) -> None:
+        with namespace_scope("orders"):
+            orders = ConcreteComponent()
+        with namespace_scope("billing"):
+            billing = ConcreteComponent()
+
+        assert orders.registry.get_component(ConcreteComponent) is orders
+        assert billing.registry.get_component(ConcreteComponent) is billing
