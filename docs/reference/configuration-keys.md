@@ -30,17 +30,80 @@ Settings for the event bus transport layer.
 | `nats_url` | `str` | `"nats://localhost:4222"` | NATS server URL. Only used when `event_bus = "nats"`. |
 | `dapr_pubsub_name` | `str` | `"pubsub"` | Dapr pub/sub component name, used when publishing and in the subscription document served at `GET /dapr/subscribe`. Only used when `event_bus = "dapr"`. |
 | `dapr_declarative_subscriptions` | `bool` | `false` | Set `true` when Dapr subscriptions are declared outside the application (Kubernetes `Subscription` resources or YAML). The discovery endpoint then serves an empty document, so the sidecar cannot subscribe twice. |
-| `nats_queue_group` | `str` | value of `app_name` | Queue group joined by every NATS subscription, so exactly one replica processes any given message. Identifies the agent, not the process: it must not contain a pod, container or replica name, or moving the agent between deployments would change which consumer it is. Startup fails if neither this key nor `app_name` yields a name. Only used when `event_bus = "nats"`. |
+| `nats_queue_group` | `str` | value of `app_name` | Queue group joined by every NATS subscription, so exactly one replica processes any given message. Identifies the agent, not the process: it must not contain a pod, container or replica name, or moving the agent between deployments would change which consumer it is. Startup fails if neither this key nor `app_name` yields a name. Applies to the root namespace only -- a client that belongs to a namespace uses the namespace name, so two agents sharing a process never share a group. Only used when `event_bus = "nats"`. |
 | `event_client_max_retries` | `int` | `-1` | Number of reconnection attempts if the broker is unavailable at startup. `-1` retries indefinitely until the broker becomes reachable. `0` makes a single attempt and logs a permanent error on failure. |
 | `event_client_retry_delay` | `float` | `5.0` | Seconds to wait between reconnection attempts. |
 | `event_client_drain_timeout` | `float` | `30.0` | Seconds allowed at shutdown for in-flight message handlers to finish before the broker connection is closed. Bounds the whole shutdown sequence, so keep it below the pod's termination grace period. |
 | `nats_use_jetstream` | `bool` | `false` | Consume through a durable JetStream consumer instead of Core NATS. The keys below apply only when this is `true`. |
 | `nats_stream_name` | `str` | `"EVENTS"` | Stream the durable consumers are created on. The framework creates it if it is missing, and widens an existing one to cover every subscribed subject plus the dead-letter subject; it never removes a subject. |
-| `nats_durable_name` | `str` | `"<topic>-durable"` | Name of the durable consumer. Derived from the topic by default, with `.`, `*`, `>` and whitespace replaced by `_` because NATS rejects them in a consumer name. Setting it explicitly is only valid with a single subscribed topic: a durable filters one subject. |
+| `nats_durable_name` | `str` | `"<topic>-durable"` | Name of the durable consumer. Derived from the topic by default, with `.`, `*`, `>` and whitespace replaced by `_` because NATS rejects them in a consumer name. A client that belongs to a namespace prefixes it (`"<namespace>-<topic>-durable"`), so two agents subscribing to the same topic get a consumer each. Setting it explicitly is only valid with a single subscribed topic: a durable filters one subject, and under a namespace it must be scoped per namespace or every namespace binds to the same consumer. |
 | `nats_ack_wait` | `float` | `300.0` | Seconds the broker waits for an acknowledgement before redelivering. **Must exceed the p99 duration of your slowest handler**, or long inference is redelivered to another replica while the first is still working. The default is deliberately far above the NATS default of 30 s because handlers in this framework call models. |
 | `nats_max_ack_pending` | `int` | `16` | Unacknowledged messages the consumer may have outstanding at once, counted across every replica sharing it. `-1` is unlimited. Keep it close to the number of replicas: a push subscription runs its callbacks one at a time, so anything much larger queues messages inside the client while their `nats_ack_wait` is already running down. |
 | `nats_max_deliver` | `int` | `5` | Delivery attempts before the message is dead-lettered. `-1` is unlimited, which means a permanently failing message is retried forever and never dead-lettered; the client logs a warning at startup if you set it. |
 | `nats_dead_letter_subject` | `str` | `"<nats_queue_group>.dead-letter"` | Subject a message is republished to when the framework gives up on it -- either a terminal failure (`InvalidEventError`, `CriticalHandlerError`, or a payload that is not a CloudEvent) or `nats_max_deliver` attempts spent. The original bytes are republished unchanged, with `Blueprint-Dead-Letter-Reason`, `Blueprint-Original-Subject`, `Blueprint-Delivery-Count` and `Blueprint-Event-Id` headers. Set to `""` to disable, which drops those messages and loses their payloads. Startup fails if the subject is a wildcard or is itself one of the subscribed subjects, since that would loop. |
+
+---
+
+## Deployment Identity (environment only)
+
+These are read straight from the environment, not from `settings.toml`, and carry the
+`BLUEPRINT_` prefix rather than Dynaconf's. They describe *where* the process runs, so they
+are used for the NATS connection name and for nothing else: no queue group, durable name or
+dead-letter subject may be derived from them, or moving an agent between deployments would
+change which broker-side consumer it is.
+
+| Variable | Default | Description |
+|-----|---------|-------------|
+| `BLUEPRINT_GROUP` | `<ungrouped>` in the connection name | Deployment group this process was started as. Appears in the middle position of the NATS connection name. |
+| `POD_NAME` | -- | Replica identity, preferred over `HOSTNAME` because a deployment can set it explicitly through the Kubernetes downward API. Appears in the last position of the connection name. |
+| `HOSTNAME` | the host name, else `<unknown-pod>` | Used when `POD_NAME` is unset; the kubelet sets it to the pod name. |
+
+Every NATS connection is named `<namespace>.<group>.<pod>`, which is what makes a pod's
+contents legible in the broker's `/connz` output. The namespace segment is `<root>` for an
+application that never names one -- that is, for every single-agent application.
+
+An absent value becomes a bracketed placeholder rather than an empty segment, so a name never
+degenerates into `..pod-7`. The brackets are not decoration: they are excluded from the namespace
+alphabet (below), so no real namespace can spell one. Because a group name and a pod name come
+from the deployment and are not rejected on that ground, they are instead sanitised for display --
+`<`, `>`, `.` and whitespace become `_`. So a group called `eu.west` appears as `eu_west`, which
+keeps the name at three segments; an FQDN in `HOSTNAME` is folded the same way. Nothing derives
+from the connection name (a queue group or durable name that did would change on every restart),
+so the sanitising costs nothing downstream.
+
+### Namespace names
+
+A namespace is the agent's name and is the only thing broker-side consumer identity derives
+from, so it is validated once, where it enters the framework, and never rewritten afterwards.
+
+| Rule | Reason |
+|-----|-------------|
+| `""` (root) or `[a-z][a-z0-9_]*` | The namespace becomes a registry key prefix, a NATS queue group, part of a JetStream durable name and a telemetry service name. The alphabet is the intersection of what those accept. |
+| No `-` | `-` separates the fields of the durable name `<namespace>-<topic>-durable`. Allowing it makes that name ambiguous: `orders-eu` on `created` and `orders` on `eu-created` would be one consumer, so two agents would consume each other's events. Use `_`. |
+| No `.`, `*`, `>` | Subject separator and wildcards; illegal in a NATS consumer name. |
+| No `<`, `>` | Reserved for the connection-name placeholders above. |
+| No surrounding whitespace | Not trimmed for you: the trimmed and untrimmed forms would be one agent registered under one name and subscribed under another. |
+
+An illegal namespace fails in `Component.__init__` -- before the registry name is derived and
+before registration, and for every component including those that never register. It is not
+deferred to the first subscription, which a publish-only or Dapr-only agent never reaches.
+
+### Names that become subjects are never rewritten for you
+
+`app_name`, `nats_queue_group` and a scheduler's name all end up inside a NATS subject, a queue
+group or a consumer name. Whitespace, `*` and `>` in any of them **fails startup**, naming the key,
+the value and the subject that would have been derived.
+
+This is deliberately not forgiving. `app_name = "Health Monitor"` used to be rewritten into the
+tick subject `Health_Monitor.scheduler.nightly`, which is a subject the `CronJob` publishing that
+tick has to spell exactly -- and whoever writes that manifest has no way to know about the rewrite.
+The tick then never arrives, with nothing in either log to explain it. A name that only lives
+inside the process may be repaired; a name in a contract with something outside it may not.
+
+Two exceptions, both because nothing outside can depend on the spelling: the topic part of a
+JetStream durable name (dots are legal in subjects and illegal in consumer names, so `.` becomes
+`_`, and two topics colliding on one durable is an error), and the NATS connection name (see
+above).
 
 ---
 

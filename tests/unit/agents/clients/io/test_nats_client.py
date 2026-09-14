@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -591,7 +592,13 @@ class TestNATSClientQueueGroup:
 
     async def test_whitespace_error_names_the_key_and_value(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
         mock_config.get.side_effect = lambda key, default=None: {"app_name": "My Agent Service"}.get(key, default)
-        with pytest.raises(ValueError, match="'My Agent Service'.*'app_name'"):
+        with pytest.raises(ValueError, match="'app_name'.*'My Agent Service'"):
+            await nats_client.subscribe({"topic.a": AsyncMock()})
+
+    async def test_wildcard_in_the_queue_group_raises(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        """It would also seed the default dead-letter subject '<queue group>.dead-letter'."""
+        mock_config.get.side_effect = lambda key, default=None: {"app_name": "my*service"}.get(key, default)
+        with pytest.raises(ValueError, match="cannot appear in a NATS subject"):
             await nats_client.subscribe({"topic.a": AsyncMock()})
 
     async def test_surrounding_whitespace_is_trimmed_not_rejected(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
@@ -1236,3 +1243,223 @@ class TestNATSClientReconnect:
 # ---------------------------------------------------------------------------
 # asyncio import needed by the non-blocking subscribe test
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# P6 -- one connection per namespace (spec sec. 6)
+# ---------------------------------------------------------------------------
+
+
+_NAMESPACED_CONFIG = {
+    "app_name": "test-agent",
+    "nats_url": "nats://localhost:4222",
+    "nats_use_jetstream": False,
+}
+
+
+def _namespaced_client(mock_config: MagicMock, namespace: str) -> NATSClient:
+    """Return a NATSClient owned by a namespace, on a config with no durable name set."""
+    mock_config.get.side_effect = lambda key, default=None: _NAMESPACED_CONFIG.get(key, default)
+    return NATSClient(namespace=namespace)
+
+
+class TestNATSClientNamespaceOwnership:
+    """A client belongs to one namespace, and two of them coexist in one process."""
+
+    def test_default_is_the_root_namespace(self, nats_client: NATSClient) -> None:
+        assert nats_client.namespace == ""
+
+    def test_root_client_keeps_the_unqualified_registry_name(self, nats_client: NATSClient) -> None:
+        assert nats_client.name == "nats_client"
+
+    def test_namespaced_client_registers_under_a_qualified_name(self, mock_config: MagicMock) -> None:
+        assert _namespaced_client(mock_config, "orders").name == "orders_nats_client"
+
+    def test_two_namespaces_coexist_in_one_registry(self, mock_config: MagicMock) -> None:
+        """Registry.add_component rejects a duplicate name, so this used to raise."""
+        orders = _namespaced_client(mock_config, "orders")
+        invoice = _namespaced_client(mock_config, "invoice")
+        assert orders.registry.get_component("orders_nats_client") is orders
+        assert invoice.registry.get_component("invoice_nats_client") is invoice
+
+    def test_surrounding_whitespace_is_rejected_rather_than_trimmed(self, mock_config: MagicMock) -> None:
+        """Trimming would give one agent two names: the declared one and the registered one."""
+        with pytest.raises(ValueError, match="surrounding whitespace"):
+            _namespaced_client(mock_config, "  orders  ")
+
+
+class TestNATSClientConsumerIdentityFollowsTheNamespace:
+    """C1 -- broker-side identity derives from the agent, so co-hosted agents never merge."""
+
+    async def test_queue_group_is_the_namespace(self, mock_config: MagicMock) -> None:
+        client = _namespaced_client(mock_config, "orders")
+        with patch.object(client, "_start_with_retry", new_callable=AsyncMock):
+            await client.subscribe({"topic.a": AsyncMock()})
+        assert client.queue_group == "orders"
+
+    async def test_namespace_wins_over_the_configured_root_queue_group(self, mock_config: MagicMock) -> None:
+        """'nats_queue_group' is the root namespace's key only."""
+        mock_config.get.side_effect = lambda key, default=None: {"app_name": "test-agent", "nats_queue_group": "shared"}.get(key, default)
+        client = NATSClient(namespace="orders")
+        with patch.object(client, "_start_with_retry", new_callable=AsyncMock):
+            await client.subscribe({"topic.a": AsyncMock()})
+        assert client.queue_group == "orders"
+
+    async def test_two_namespaces_on_one_topic_get_different_queue_groups(self, mock_config: MagicMock) -> None:
+        """Sharing a group would make the broker deliver each event to one of the two agents."""
+        orders = _namespaced_client(mock_config, "orders")
+        invoice = _namespaced_client(mock_config, "invoice")
+        with (
+            patch.object(orders, "_start_with_retry", new_callable=AsyncMock),
+            patch.object(invoice, "_start_with_retry", new_callable=AsyncMock),
+        ):
+            await orders.subscribe({"shared.topic": AsyncMock()})
+            await invoice.subscribe({"shared.topic": AsyncMock()})
+        assert orders.queue_group != invoice.queue_group
+
+    def test_whitespace_is_rejected_at_construction_not_at_subscribe(self, mock_config: MagicMock) -> None:
+        """A publish-only or Dapr namespace never subscribes, so a subscribe-time check misses it."""
+        with pytest.raises(ValueError, match="cannot appear in it"):
+            _namespaced_client(mock_config, "my orders")
+
+    def test_durable_carries_the_namespace(self, mock_config: MagicMock) -> None:
+        assert _namespaced_client(mock_config, "orders")._durable_for("orders.created") == "orders-orders_created-durable"
+
+    def test_root_durable_is_unchanged(self, nats_client: NATSClient) -> None:
+        """Renaming a durable is a consumer migration, so the root namespace keeps its name."""
+        assert nats_client._durable_for("orders.created") == "orders_created-durable"
+
+    def test_two_namespaces_on_one_topic_get_different_durables(self, mock_config: MagicMock) -> None:
+        orders = _namespaced_client(mock_config, "orders")
+        invoice = _namespaced_client(mock_config, "invoice")
+        assert orders._durable_for("shared.topic") != invoice._durable_for("shared.topic")
+
+    def test_dotted_namespace_is_rejected(self, mock_config: MagicMock) -> None:
+        """A dot is a subject separator, so it cannot be silently rewritten into a consumer name."""
+        with pytest.raises(ValueError, match="cannot appear in it"):
+            _namespaced_client(mock_config, "orders.eu")
+
+    def test_hyphenated_namespace_is_rejected_because_the_durable_would_collide(self, mock_config: MagicMock) -> None:
+        """'orders-eu' on 'created' and 'orders' on 'eu-created' would name one consumer."""
+        with pytest.raises(ValueError, match="separator in the JetStream durable name"):
+            _namespaced_client(mock_config, "orders-eu")
+
+    def test_the_namespace_reaches_the_durable_exactly_as_declared(self, mock_config: MagicMock) -> None:
+        """Only the topic is rewritten, so the durable can be read back to its namespace."""
+        durable = _namespaced_client(mock_config, "orders_eu")._durable_for("orders.created")
+        assert durable == "orders_eu-orders_created-durable"
+        assert durable.split("-", 1)[0] == "orders_eu"
+
+    async def test_configured_durable_under_a_namespace_warns(self, mock_config: MagicMock, caplog: pytest.LogCaptureFixture) -> None:
+        """A root-level durable name would make every namespace bind to one consumer."""
+        mock_config.get.side_effect = lambda key, default=None: {
+            "app_name": "test-agent",
+            "nats_use_jetstream": True,
+            "nats_durable_name": "shared-durable",
+        }.get(key, default)
+        client = NATSClient(namespace="orders")
+        with caplog.at_level(logging.WARNING), patch.object(client, "_start_with_retry", new_callable=AsyncMock):
+            await client.subscribe({"topic.a": AsyncMock()})
+        assert "consume each other" in caplog.text
+
+
+class TestNATSClientConnectionName:
+    """Reason 3 -- attribution. nats.connect() used to be called with no name at all."""
+
+    async def test_connect_passes_the_name_to_nats(self, nats_client: NATSClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("BLUEPRINT_GROUP", "billing")
+        monkeypatch.setenv("POD_NAME", "billing-7d9f")
+        mock_nc = MagicMock(is_closed=False, is_connected=True)
+        mock_nc.jetstream = MagicMock(return_value=None)
+        with patch("blueprint.agents.clients.io.nats_client.nats.connect", new_callable=AsyncMock) as mock_connect:
+            mock_connect.return_value = mock_nc
+            await nats_client.connect()
+        assert mock_connect.call_args[1]["name"] == "<root>.billing.billing-7d9f"
+
+    def test_name_is_namespace_group_pod(self, mock_config: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("BLUEPRINT_GROUP", "billing")
+        monkeypatch.setenv("POD_NAME", "billing-7d9f")
+        assert _namespaced_client(mock_config, "orders")._resolve_connection_name() == "orders.billing.billing-7d9f"
+
+    def test_empty_namespace_is_named_rather_than_left_blank(self, nats_client: NATSClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("BLUEPRINT_GROUP", "billing")
+        monkeypatch.setenv("POD_NAME", "pod-1")
+        assert nats_client._resolve_connection_name() == "<root>.billing.pod-1"
+
+    def test_unset_group_is_named_rather_than_left_blank(self, nats_client: NATSClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("BLUEPRINT_GROUP", raising=False)
+        monkeypatch.setenv("POD_NAME", "pod-1")
+        assert nats_client._resolve_connection_name() == "<root>.<ungrouped>.pod-1"
+
+    def test_pod_name_wins_over_hostname(self, nats_client: NATSClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("POD_NAME", "from-downward-api")
+        monkeypatch.setenv("HOSTNAME", "from-kubelet")
+        assert nats_client._resolve_connection_name().endswith(".from-downward-api")
+
+    def test_hostname_is_used_when_pod_name_is_absent(self, nats_client: NATSClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("POD_NAME", raising=False)
+        monkeypatch.setenv("HOSTNAME", "from-kubelet")
+        assert nats_client._resolve_connection_name().endswith(".from-kubelet")
+
+    def test_falls_back_to_the_host_name(self, nats_client: NATSClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("POD_NAME", raising=False)
+        monkeypatch.delenv("HOSTNAME", raising=False)
+        monkeypatch.setattr("blueprint.agents.clients.io.nats_client.socket.gethostname", lambda: "laptop")
+        assert nats_client._resolve_connection_name().endswith(".laptop")
+
+    def test_unresolvable_host_still_yields_a_name(self, nats_client: NATSClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("POD_NAME", raising=False)
+        monkeypatch.delenv("HOSTNAME", raising=False)
+
+        def _raise() -> str:
+            raise OSError("no host name")
+
+        monkeypatch.setattr("blueprint.agents.clients.io.nats_client.socket.gethostname", _raise)
+        assert nats_client._resolve_connection_name().endswith(".<unknown-pod>")
+
+    def test_a_dotted_group_cannot_add_a_segment(self, nats_client: NATSClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Four segments would misattribute the connection; the name is three by construction."""
+        monkeypatch.setenv("BLUEPRINT_GROUP", "eu.west")
+        monkeypatch.setenv("POD_NAME", "pod-1")
+        name = nats_client._resolve_connection_name()
+        assert name == "<root>.eu_west.pod-1"
+        assert name.count(".") == 2
+
+    def test_a_group_cannot_forge_a_placeholder(self, nats_client: NATSClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The brackets are what make the placeholders unforgeable, so they are stripped here."""
+        monkeypatch.setenv("BLUEPRINT_GROUP", "<ungrouped>")
+        monkeypatch.setenv("POD_NAME", "pod-1")
+        assert nats_client._resolve_connection_name() == "<root>._ungrouped_.pod-1"
+
+    def test_an_fqdn_hostname_stays_one_segment(self, nats_client: NATSClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("POD_NAME", raising=False)
+        monkeypatch.setenv("HOSTNAME", "web-7.eu.internal")
+        name = nats_client._resolve_connection_name()
+        assert name.endswith(".web-7_eu_internal")
+        assert name.count(".") == 2
+
+    def test_connection_name_is_empty_before_connect(self, nats_client: NATSClient) -> None:
+        assert nats_client.connection_name == ""
+
+    async def test_connect_records_the_name_it_used(self, nats_client: NATSClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("BLUEPRINT_GROUP", "billing")
+        monkeypatch.setenv("POD_NAME", "pod-1")
+        mock_nc = MagicMock(is_closed=False, is_connected=True)
+        mock_nc.jetstream = MagicMock(return_value=None)
+        with patch("blueprint.agents.clients.io.nats_client.nats.connect", new_callable=AsyncMock) as mock_connect:
+            mock_connect.return_value = mock_nc
+            await nats_client.connect()
+        assert nats_client.connection_name == "<root>.billing.pod-1"
+
+    async def test_deployment_identity_never_reaches_the_consumer_identity(
+        self, mock_config: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """C1 -- the connection name carries the pod, so nothing broker-side may derive from it."""
+        monkeypatch.setenv("BLUEPRINT_GROUP", "group-b")
+        monkeypatch.setenv("POD_NAME", "pod-99")
+        client = _namespaced_client(mock_config, "orders")
+        with patch.object(client, "_start_with_retry", new_callable=AsyncMock):
+            await client.subscribe({"orders.created": AsyncMock()})
+        assert client.queue_group == "orders"
+        assert "group-b" not in client._durable_for("orders.created")
+        assert "pod-99" not in client._durable_for("orders.created")

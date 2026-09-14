@@ -20,6 +20,7 @@ from opentelemetry import trace
 
 from ..config import Config
 from ..utils import camel_to_snake
+from .namespace import ROOT_NAMESPACE, qualified_component_name, validate_namespace
 
 if TYPE_CHECKING:
     from .registry import Registry
@@ -76,8 +77,30 @@ class Component(ABC, metaclass=_ComponentMeta):
     Components must NOT access self.config in __init__ — use on_startup() instead.
     """
 
-    def __init__(self, should_register: bool = True) -> None:
-        """Initialize the component."""
+    def __init__(self, should_register: bool = True, name: str | None = None, namespace: str = ROOT_NAMESPACE) -> None:
+        """Initialize the component.
+
+        Args:
+            should_register: Whether to add this instance to the shared registry.
+            name: Registry name to use instead of the derived one. Passed by subclasses
+                whose instances are not unique per class *and* not distinguished by a
+                namespace -- ``AIClientBase`` naming itself after its provider, for example.
+                An explicit name wins over the namespace-qualified one, so the caller then
+                owns its uniqueness. It must be supplied here rather than assigned
+                afterwards: registration happens in this constructor, so a second instance
+                of the same class would collide before a rename could run.
+            namespace: The agent this component belongs to; ``""`` (the default) is the root
+                namespace and the whole of a single-agent application.
+
+        Raises:
+            ValueError: if the namespace is not a legal namespace. This is the framework's
+                single gate for that: every component passes through this constructor,
+                including the eight that opt out of registration, and it runs before the
+                name is derived and before registration, so an illegal namespace cannot
+                reach a registry key, a queue group, a durable name or a telemetry resource.
+                Validated here rather than in ``Registry.add_component`` for those two
+                reasons -- coverage of unregistered components, and ordering.
+        """
 
         if Component.shared_registry is None:
             # Import here to avoid circular dependency
@@ -85,7 +108,8 @@ class Component(ABC, metaclass=_ComponentMeta):
 
             Component.init_registry(Registry(Component))
 
-        self._name = camel_to_snake(self.__class__.__name__)
+        self._namespace = validate_namespace(namespace or ROOT_NAMESPACE)
+        self._name = name or qualified_component_name(self._namespace, camel_to_snake(self.__class__.__name__))
         if should_register:
             self.registry.add_component(self.name, self)
 
@@ -99,6 +123,15 @@ class Component(ABC, metaclass=_ComponentMeta):
         """Set the component name. Also updates the name in the component registry."""
         self.registry.update_component_name(self._name, value)
         self._name = value
+
+    @property
+    def namespace(self) -> str:
+        """The agent this component belongs to; ``""`` for the root namespace.
+
+        Owned by ``Component`` rather than by the bases that first needed it, so that the
+        namespace cannot be assigned after the validation gate in ``__init__`` has run.
+        """
+        return self._namespace
 
     @property
     def registry(self) -> Registry:

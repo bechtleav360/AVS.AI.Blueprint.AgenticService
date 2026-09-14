@@ -9,6 +9,7 @@ from typing import Any
 
 import httpx
 
+from ...component.namespace import ROOT_NAMESPACE
 from ...models.api import ComponentHealth
 from ...models.events import CloudEvent
 from .io_client_base import IOClientBase
@@ -37,6 +38,17 @@ class DaprClient(IOClientBase):
     additionally pings the sidecar on every call so runtime availability is
     always reflected.
 
+    One client per namespace, and what that does *not* buy here
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    A Dapr client may be created per namespace, for health attribution and so that
+    stopping one agent is a client close rather than selective unsubscription. It
+    **does not** confine ack loss or slow-consumer disconnects, which is the reason
+    the NATS client is per namespace (spec sec. 6): this client holds no broker
+    connection at all. It is an ``httpx`` client against the sidecar, and the sidecar
+    owns and multiplexes the one broker connection per pod, so those two failures
+    live there and are out of this class's reach. There is likewise no connection
+    name to set -- broker connections track pods on this path, not agents.
+
     Config keys
     ~~~~~~~~~~~
     ``event_client_max_retries`` (int, default -1): retries after first
@@ -44,8 +56,8 @@ class DaprClient(IOClientBase):
     ``event_client_retry_delay`` (float, default 5.0): seconds between retries.
     """
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, namespace: str = ROOT_NAMESPACE) -> None:
+        super().__init__(namespace=namespace)
         self._topic_callbacks: dict[str, Callable[[CloudEvent[Any]], Awaitable[None]]] = {}
         self._subscriptions_ready: bool = False
         self._subscriptions_managed: bool = False

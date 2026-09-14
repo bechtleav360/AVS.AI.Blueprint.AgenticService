@@ -29,9 +29,10 @@ def pub_config() -> EventPublishingConfig:
 
 @pytest.fixture
 def mock_io_client() -> MagicMock:
-    """Mock IOClientBase with async publish."""
+    """Mock IOClientBase with async publish, belonging to the root namespace."""
     client = MagicMock()
     client.publish = AsyncMock()
+    client.namespace = ""
     return client
 
 
