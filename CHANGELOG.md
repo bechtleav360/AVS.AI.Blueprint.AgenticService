@@ -112,6 +112,28 @@ Full migration path, including the one decision to get right before the first de
 
 ### Fixed
 
+- **⚠️ The environment a project selects is now actually the one that loads** (#89). `Config`
+  passed the resolved `app_environment` to Dynaconf as `current_env=`, which is a *derived*
+  property reporting the active environment, not the parameter that selects one. That parameter
+  is `env=`. The resolved environment was therefore never applied: a deployment could log
+  `Loading configuration properties for environment: production` and read every value from the
+  default section, with nothing anywhere disagreeing. Verified against dynaconf 3.3.5 — with two
+  sections that differ, `current_env=` returns the default's value and `env=` returns
+  production's.
+
+  **This is a behavioural change, and it is not opt-in.** A project that declares a non-default
+  `app_environment` *and* has a matching `[<environment>]` section has been silently running the
+  default section; on upgrade it starts getting the section it always asked for. If that section
+  is stale — written once, never exercised, never corrected because it never took effect — the
+  values in it go live on upgrade. **Check your non-default sections before upgrading.** A
+  project with no `app_environment`, or with no section for it, is unaffected.
+
+  Note `app_environment` is read by the first configuration pass, which loads with
+  `environments=False` and so sees **top-level keys only** — the same shape `envvar_prefix`
+  requires. Declared inside a section it is invisible to that pass and selects nothing, before
+  this fix or after; set it at the top level of `settings.toml`, or as `<PREFIX>_APP_ENVIRONMENT`
+  in the environment. Pinned by `TestTheResolvedEnvironmentIsTheOneLoaded`, whose cases fail
+  against the old keyword.
 - **`/status/env` no longer returns credentials in clear** (#91). Config masking matched whole keys
   only, so anything with a prefix or suffix around the secret word came back readable. Present since
   `4e6421b`, unrelated to grouping. An agent-scoped actuator also now reports its own scope rather
@@ -162,10 +184,6 @@ Full migration path, including the one decision to get right before the first de
 
 ### Known issues
 
-- **#89 is still open and this release does not fix it.** `Config` passes `current_env=` to Dynaconf
-  where the environment selector is `env=`, so the resolved environment is never actually loaded and
-  the log line reports a name that was never applied. The configuration layer was substantially
-  reworked here and this defect survived it.
 - Generating the `CronJob` for `scheduler_mode = "event"` is deliberately deferred, so the publisher
   must be written by hand.
 - No CI gate enforces that an environment's group declaration covers the in-image agent map;
