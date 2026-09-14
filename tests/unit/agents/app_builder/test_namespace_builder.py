@@ -242,11 +242,19 @@ class TestDeclaredNamespaces:
         builder.with_namespace("orders").end().with_namespace("billing").end()
         assert builder.namespaces == ("orders", "billing")
 
-    def test_a_namespace_is_recorded_once(self, two_agent_config: Config) -> None:
+    def test_declaring_one_namespace_twice_is_refused(self, two_agent_config: Config) -> None:
+        """Two agents cannot share a name: the name is what tells them apart everywhere."""
         builder = AppBuilder(two_agent_config)
         builder.with_namespace("orders", registration=AgentRegistration())
-        builder.with_namespace("orders", registration=AgentRegistration().with_service(OrderService))
-        assert builder.namespaces == ("orders",)
+
+        with pytest.raises(ValueError, match="already hosted by this process"):
+            builder.with_namespace("orders", registration=AgentRegistration().with_service(OrderService))
+
+    def test_the_refusal_points_at_composing_one_registration(self, two_agent_config: Config) -> None:
+        builder = AppBuilder(two_agent_config).with_namespace("orders").end()
+
+        with pytest.raises(ValueError, match=r"single\s+AgentRegistration"):
+            builder.with_namespace("orders")
 
     def test_a_tagged_with_call_is_not_a_declaration(self, two_agent_config: Config) -> None:
         """``namespaces`` is what the builder was *told* to host; a tagged call is not that.

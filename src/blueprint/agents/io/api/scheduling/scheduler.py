@@ -48,7 +48,6 @@ from apscheduler.triggers.cron import CronTrigger
 
 from ....clients.io.io_client_base import TOPIC_TRANSPORTS, validate_subject_segment
 from ....component.component import traced
-from ....component.namespace import ROOT_NAMESPACE
 from ....handler.event_handler_base import EventHandlerBase
 from ....models.events import GenericCloudEvent
 from ..rest_api_base import RestApiBase
@@ -376,10 +375,12 @@ class SchedulerBase(RestApiBase):
     def _resolve_topic(self) -> str:
         """Derive the tick topic from the agent's own identity, or take the override.
 
-        ``f"{namespace}.scheduler.{name}"``, falling back to ``app_name`` while the
-        namespace is the root one -- the same identity the queue group derives from, so
-        moving the scheduler between deployment groups does not change the subject a
-        ``CronJob`` has to publish to (C1).
+        ``f"{namespace}.scheduler.{name}"``, falling back to ``app_name`` only for a scheduler
+        at the root -- the same identity the queue group derives from, so moving the scheduler
+        between deployment groups does not change the subject a ``CronJob`` has to publish to
+        (C1). An agent's name is the agent's own; ``app_name`` is a display string belonging to
+        the whole process, so deriving a namespaced scheduler's subject from it would give two
+        agents' schedulers of the same name one subject.
 
         A derived topic is **validated, not repaired**, and both of the names it is derived
         from -- the identity and the scheduler's own name -- are checked. This subject is the
@@ -400,8 +401,15 @@ class SchedulerBase(RestApiBase):
             validate_subject_segment(topic, source=f"The tick topic given to scheduler '{self.name}'", subject=topic)
             return topic
 
-        # ROOT_NAMESPACE is still "" for every component; phase 2 is what gives this a value.
-        identity = ROOT_NAMESPACE or str(self.config.get("app_name", "") or "").strip()
+        # The scheduler's own namespace, and only then app_name. This read was
+        # `ROOT_NAMESPACE or app_name` -- the module constant, which is always "" -- left behind
+        # as a placeholder for phase 2. Phase 2 landed, so `self.namespace` has a value, and the
+        # placeholder had become a defect: a namespaced scheduler derived its tick subject from
+        # `app_name`, which is a display string shared by the whole process. Two agents in a
+        # group each with a `nightly` scheduler would have derived the same subject and consumed
+        # each other's ticks, and moving an agent between groups could change the subject its
+        # CronJob has to publish to (C1).
+        identity = self.namespace or str(self.config.get("app_name", "") or "").strip()
         if not identity:
             raise ValueError(
                 f"Scheduler '{self.name}' runs in event mode but its tick topic cannot be derived: "
@@ -409,7 +417,7 @@ class SchedulerBase(RestApiBase):
             )
 
         topic = f"{identity}.scheduler.{self.name}"
-        source = "'app_name'" if not ROOT_NAMESPACE else "The scheduler's namespace"
+        source = "The scheduler's namespace" if self.namespace else "'app_name'"
         validate_subject_segment(identity, source=source, subject=topic)
         validate_subject_segment(self.name, source=f"The name of scheduler '{self.name}'", subject=topic)
         return topic

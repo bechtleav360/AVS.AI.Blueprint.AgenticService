@@ -142,7 +142,15 @@ class Config:
             f"{self._envvar_prefix}_*" if self._envvar_prefix else "the whole process environment, unprefixed",
         )
 
-        # Validators differ when scoped: app_name is per agent, app_port is not.
+        # A scoped view validates neither app_name nor a per-agent port.
+        #
+        # `app_name` is **not** required per agent, and must not be: an agent's identity is the
+        # namespace it was given in code, and that is what reaches the registry, the queue
+        # group, the durable, the cache partition and its telemetry service name. Requiring
+        # `<scope>.app_name` made every agent carry a *second* name, free to disagree with the
+        # first -- so the same agent could be `orders` on the broker and `Order Processing` in
+        # a dashboard, which is precisely the confusion having one name is supposed to avoid.
+        # `app_name` stays a root key for display: the OpenAPI title, `/info`, `/status/build`.
         #
         # A group is one process behind one HTTP server, so only one port can be bound no
         # matter how many agents share it. Requiring `<scope>.app_port` would make every
@@ -150,7 +158,6 @@ class Config:
         # root key and is validated as one.
         if agent_scope:
             validators = [
-                Validator(f"{agent_scope}.app_name", must_exist=True),
                 Validator("app_port", must_exist=True, is_type_of=int, default=8000),
                 Validator("app_environment", must_exist=True, default="development"),
             ]
@@ -750,9 +757,30 @@ class Config:
         return ObservabilityConfig(
             otel_enabled=self.get("otel_enabled", False),
             otel_endpoint=self.get("otel_endpoint"),
-            otel_service_name=self.get("otel_service_name", self.get("app_name", "agent-service")),
+            otel_service_name=self._resolve_service_name(),
             log_level=self.get("log_level", "INFO"),
         )
+
+    def _resolve_service_name(self) -> str:
+        """Return the ``service.name`` this view reports to telemetry (C2).
+
+        **An agent's telemetry identity is its agent name.** For a scoped view that is the
+        namespace, unless the agent overrode ``otel_service_name`` for itself -- and the root's
+        ``otel_service_name`` deliberately does *not* apply, which is the one place a scoped read
+        must not fall back. Inheriting it would give every agent in a group the same
+        ``service.name``, so a regrouping would move work between agents that dashboards cannot
+        tell apart, and C2 exists to prevent exactly that.
+
+        The root view keeps the old chain untouched -- explicit ``otel_service_name``, then
+        ``app_name``, then a default -- so a single-agent application's dashboards do not move.
+
+        Returns:
+            The service name for this view.
+        """
+        if self._agent_scope:
+            scoped = self._settings.get(f"{self._agent_scope}.otel_service_name")
+            return str(scoped) if scoped else self._agent_scope
+        return str(self.get("otel_service_name", self.get("app_name", "agent-service")))
 
     def get_event_publishing_config(self) -> EventPublishingConfig:
         """Get complete event publishing configuration.

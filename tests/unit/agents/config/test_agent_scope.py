@@ -17,7 +17,6 @@ from pathlib import Path
 import pytest
 
 from blueprint.agents.config import Config
-from blueprint.agents.config.config import ConfigError
 from tests.unit.agents.config.conftest import WriteSettings
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -107,21 +106,28 @@ class TestGetAiConfigScoped:
 
 
 class TestValidators:
-    def test_missing_scoped_app_name_raises(self, write_settings: WriteSettings) -> None:
+    def test_an_agent_does_not_have_to_restate_its_name(self, write_settings: WriteSettings) -> None:
+        """An agent's identity is the name it was given in code, not a second one in config.
+
+        Requiring `<scope>.app_name` gave every agent two names free to disagree -- `orders` on
+        the broker and in the registry, something else in a dashboard.
+        """
         settings_file = write_settings("""
             [development]
             app_environment = "development"
+            app_name = "the-process"
 
             [development.foo]
             app_port = 8101
-            # app_name intentionally missing
             """)
-        with pytest.raises(ConfigError):
-            Config(
-                settings_files=[str(settings_file)],
-                root_path=str(settings_file.parent),
-                agent_scope="foo",
-            )
+
+        config = Config(
+            settings_files=[str(settings_file)],
+            root_path=str(settings_file.parent),
+            agent_scope="foo",
+        )
+
+        assert config.get("app_name") == "the-process"
 
     def test_scoped_config_needs_no_scoped_app_port(self, write_settings: WriteSettings) -> None:
         """A group is one process behind one HTTP server, so the port cannot be per agent."""
