@@ -270,36 +270,57 @@ class TestProcessJobNotification:
             notification.session_id, job_id=notification.job_id
         )
 
-    async def test_403_retry_failure_propagates_invalid_event_error(
+    async def test_403_retry_failure_cancels_job_not_raises(
         self, started_sessions_bus: SessionsBus, notification: JobNotification
     ) -> None:
+        """A failed 403-retry must not escape as a raised exception (#94 follow-up).
+
+        Raising here from inside `except httpx.HTTPStatusError` would propagate straight
+        out of _process_job_notification's try/except — peer `except InvalidEventError`
+        above it is never consulted for it — and since this coroutine only ever runs as a
+        fire-and-forget task, that's a silently-swallowed job, not a caller-visible failure.
+        The retry failure must instead route through _cancel_invalid_job like any other
+        InvalidEventError.
+        """
         response_mock = MagicMock()
         response_mock.status_code = 403
         http_err = httpx.HTTPStatusError("403", request=MagicMock(), response=response_mock)
         started_sessions_bus._dispatch_cloud_event = AsyncMock(  # type: ignore[method-assign]
             side_effect=[http_err, RuntimeError("still broken")]
         )
-        with pytest.raises(InvalidEventError, match="Session key invalid"):
-            await started_sessions_bus._process_job_notification(notification)
 
-    async def test_non_403_http_error_propagates(
+        await started_sessions_bus._process_job_notification(notification)
+
+        started_sessions_bus._api_client.cancel_job.assert_awaited_once()
+        call_kwargs = started_sessions_bus._api_client.cancel_job.call_args.kwargs
+        assert call_kwargs["job_id"] == notification.job_id
+        assert "Session key invalid" in call_kwargs["reason"]
+
+    async def test_non_403_http_error_is_logged_not_raised(
         self,
         started_sessions_bus: SessionsBus,
         notification: JobNotification,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """Non-403 HTTPStatusError is re-raised and escapes _process_job_notification.
+        """A non-403 HTTPStatusError must be logged, not re-raised (#94 follow-up).
 
-        The `else: raise` inside `except httpx.HTTPStatusError` re-raises the original
-        exception. Since it is executed inside an except clause, it propagates outside
-        the entire try/except block (peer except handlers are not consulted).
+        The old `else: raise` inside `except httpx.HTTPStatusError` re-raised the original
+        exception. Since that ran inside an except clause, it propagated straight out of
+        the entire try/except (peer `except Exception` below was never consulted) — and
+        since this coroutine only ever runs as a fire-and-forget task (`_spawn_tracked`)
+        whose result nothing awaits, the exception died silently as an unretrieved task
+        exception. This is the actual mechanism behind #94's "job never progresses past
+        pending" symptom, for any wire-contract drift, not just the one #94 diagnosed.
         """
         response_mock = MagicMock()
         response_mock.status_code = 500
         http_err = httpx.HTTPStatusError("500", request=MagicMock(), response=response_mock)
         started_sessions_bus._dispatch_cloud_event = AsyncMock(side_effect=http_err)  # type: ignore[method-assign]
 
-        with pytest.raises(httpx.HTTPStatusError):
+        with caplog.at_level("ERROR"):
             await started_sessions_bus._process_job_notification(notification)
+
+        assert "Unexpected HTTP error" in caplog.text
 
     async def test_unexpected_error_is_logged_not_raised(
         self,

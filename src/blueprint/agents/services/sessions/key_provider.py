@@ -203,7 +203,7 @@ class SessionKeyProvider(ServiceBase):
         # - AWS Secrets Manager
         raise NotImplementedError("Vault integration not yet implemented. Use session_key_source='env' or 'config' for now.")
 
-    async def _fetch_key_response(self, url: str, *, params: dict[str, str] | None = None, agent_id: str | None = None) -> httpx.Response:
+    async def _fetch_key_response(self, url: str, *, agent_id: str | None = None) -> httpx.Response:
         """Shared request/auth mechanics for the remote key-vault and job-handoff endpoints.
 
         Returns the raw response so callers can apply their own status-code special-casing
@@ -217,7 +217,7 @@ class SessionKeyProvider(ServiceBase):
             # (service-sessions#194/#203/#198). See AVS.AI.Blueprint.AgenticService#94.
             headers["X-Agent-Id"] = agent_id
         async with httpx.AsyncClient(timeout=10.0) as client:
-            return await client.get(url, params=params, headers=headers)
+            return await client.get(url, headers=headers)
 
     async def _get_from_remote(self, session_id: UUID | None) -> str:
         """Fetch session key from a remote key vault endpoint.
