@@ -1790,6 +1790,496 @@ the arguments uvicorn is handed, the two development differences, the level tran
 fallback, `reload=False`, and the worker refusal -- including that it happens before `uvicorn.run`
 is called at all.
 
+### Phase 0, part 2 -- the namespace becomes ambient, so a developer never writes one
+
+The constraint this serves, stated by the user while phase 0 was in progress and now the test the
+design is held to: **a developer using the blueprint should not have to care about namespaces at
+all**, and a project should read the same whether it runs as a single agent or inside a group --
+with `main.py` the only file that may differ.
+
+Threading a namespace through constructors fails that immediately: every handler, service and
+client would carry a parameter that exists only because of how it is deployed. So the namespace is
+**ambient during construction** instead.
+
+`component/namespace.py` gains three things -- placed there rather than in `component.py` as the
+plan said, because that module already declares itself the single definition of what a namespace
+is, and the scope validates through `validate_namespace` two functions above it:
+
+- `_CURRENT_NAMESPACE`, a `ContextVar[str]` defaulting to `ROOT_NAMESPACE`.
+- `current_namespace()`, read by `Component.__init__`.
+- `namespace_scope(namespace)`, a context manager: validate, set, and reset in `finally`. A
+  leaked namespace would attach the next agent -- or the framework's own root components -- to the
+  wrong one, and the registry key, the queue group and the durable name would all be wrong
+  together, so the reset is not left to a caller to remember. Nested scopes restore the enclosing
+  namespace rather than the root, and the namespace is validated **on entry**, so an illegal name
+  is reported against the registration that declared it instead of against whichever component
+  happened to be built first.
+
+**`Component.__init__` now resolves `namespace or current_namespace()`**, and the direction of that
+`or` is the whole change:
+
+```python
+self._namespace = validate_namespace(namespace or current_namespace())
+```
+
+The obvious reading -- an explicit argument wins over the ambient scope -- is wrong here, and
+quietly so. `ServiceBase`, `ClientBase`, `IOClientBase` and `EventPublishingService` all declare
+`namespace: str = ROOT_NAMESPACE` and forward it **unconditionally**, so a developer writing
+
+```python
+class OrderService(ServiceBase):
+    def __init__(self) -> None:
+        super().__init__()
+```
+
+passes an explicit `""` down to `Component`. Treating that as a decision would pin every
+developer-written component to the root and leave the ambient scope applying to nothing that
+matters -- the exact components the constraint is about. A *non-empty* argument still wins, which
+is what the framework's own namespace-owning components (the transport clients, the publishing
+service) rely on. The alternative -- a `None` sentinel threaded through four base classes -- was
+rejected: it changes four public signatures to express what one `or` expresses, and it would have
+to be repeated by every base class added later.
+
+**Nothing changes for a single-agent application.** Outside a scope `current_namespace()` is
+`ROOT_NAMESPACE`, so `namespace or current_namespace()` is `""` exactly as before, and
+`qualified_component_name` keeps the bare registry name. The 1462 tests that passed before this
+change still pass unmodified.
+
+**One limit worth stating.** A `ContextVar` is not inherited by another thread or task, so a
+component constructed off the builder's thread does not see the scope. That is the correct shape
+rather than a gap: construction happens synchronously inside the builder, and anything built
+lazily at request time is a root component by construction, which is what the fallback gives it.
+
+**Tests.** 1476 unit tests pass (up from 1462), 14 new. `TestAmbientNamespace` in
+`test_namespace.py` covers the default, setting, exit, exit **on exception**, nesting,
+the root scope as a no-op and validation on entry. `TestNamespaceComesFromTheAmbientScope` in
+`test_component.py` covers the part that matters: a `ServiceBase` subclass whose `__init__` takes
+no namespace and calls bare `super().__init__()` comes out namespaced, the same class registers
+under two different qualified names in two scopes, and an explicit non-empty namespace still wins.
+
+### Phase 0, part 3 -- one declaration, applied alone or once per agent
+
+Completes phase 0. `AgentRegistration` collects component *classes* and builds none of them;
+`AppBuilder.with_registration(registration, namespace="")` is what builds them, inside
+`namespace_scope`. Together with part 2 that satisfies the constraint end to end: a project
+declares its components once, and the same object serves both deployment shapes.
+
+```python
+registration = AgentRegistration().with_service(OrderService).with_handler(OrderHandler)
+
+app = AppBuilder(config).with_registration(registration).with_cache().build()   # alone
+# a group applies the same object once per agent, under that agent's namespace
+```
+
+Verified rather than asserted: applying one registration under `orders` and again under
+`billing` produces `orders_order_service` and `billing_order_service`, each resolving its own
+`app_name` and `model_name` through its own scoped `Config` view -- with the word "namespace"
+appearing nowhere in `OrderService` or in the declaration.
+
+**`with_registration` is new public API that the spec does not list.** Spec sec. 4.2 has only
+`with_namespace(..., registration=...)`, which is phase 3. Added now because without a caller
+`AgentRegistration` would be a collector nothing could consume for three phases, which is worse
+than an extra method: it is a published API that does not work yet. It is also the exact call
+phase 8's entry point needs per agent, so phase 3 narrows the gap rather than replacing this.
+
+**An already-built component is refused, and this is the part that would otherwise bite.** Four
+of the five examples pass instances today -- `with_rest_api(MonitorApi())`,
+`with_agent(agent)` -- which an `AppBuilder` chain accepts. In a registration that object is
+constructed at import time, *before any namespace exists*, so it belongs to the root whichever
+agent declared it; two grouped agents each declaring one would collide on its registry name, and
+until they collided the misattribution would be silent. `_add` raises `TypeError` on any
+`Component` instance, and the message names the class, the method and the fix.
+
+**Factories are accepted for the case a class cannot express.** `examples/document_summarizer`
+builds its agent as `AgentBuilder(config, runtime_name=...).with_model_from_config()...build()`
+-- a fluent chain, not a class plus keyword arguments. A zero-argument callable is therefore a
+legal target, called *inside* the scope, so the model and prompt resolve in the agent's own
+namespace instead of at import time. `apply` distinguishes the two:
+
+```python
+target = entry.target if isinstance(entry.target, type) else entry.target()
+appliers[entry.kind](target, name=entry.name, **entry.kwargs)
+```
+
+A class is handed to the builder, which instantiates it -- still inside the scope. A factory has
+to be called here, because the builder would otherwise take the callable itself for a built
+component.
+
+**`apply` is public, departing from the plan's `_apply`.** It is called from another class, and
+this repo's convention is that a leading underscore means internal to the defining class.
+
+**There is no `with_cache`,** per spec sec. 4.1: a cache is process-wide and belongs to the
+`AppBuilder` hosting the group. An agent that declared its own would duplicate a neighbour's or
+quietly take it over. `AttributeError` plus the class docstring is the whole of that story -- a
+method existing only to raise seemed worse than one not existing.
+
+`RegisteredComponent` is a frozen dataclass (`kind`, `target`, `name`, `kwargs`) and
+`AgentRegistration.components` exposes the tuple in declaration order. Order is preserved
+because it is meaningful -- handler priority and scheduler wiring read it -- and the tuple is
+what phase 8 will validate against `agents.toml` and what spec sec. 9.2's startup log needs.
+
+**Tests.** 1498 unit tests pass (up from 1476), 22 new in
+`tests/unit/agents/app_builder/test_agent_registration.py`: nothing is constructed at
+declaration time (asserted through `Component.shared_registry` still being `None`), order and
+kwargs survive the round trip, the instance and non-callable refusals, root application keeping
+the bare registry name, one declaration becoming two independently configured agents, the scope
+being left behind afterwards, and a factory both deferred and called inside the namespace.
+
+**Not done, and the obvious next proof:** no example uses this yet. Migrating one project's
+`main.py` to a registration would demonstrate the "only `main.py` differs" claim in the tree
+rather than in a test -- and would have to convert its `with_rest_api(MonitorApi())` to the
+class form, which is precisely the change the refusal above forces.
+
+### Phase 1, part 1 -- the registry resolves per namespace, without a namespace dimension
+
+Every lookup on `Registry` now takes an optional `namespace`, so two agents can own the same
+component class in one process and each find its own. Verified: `orders` and `billing` both
+declaring `OrderService` produce `orders_order_service` and `billing_order_service`, each
+resolvable as the bare `order_service` from its own namespace, with a root-registered
+`shared_audit` inherited by both.
+
+**The storage was not changed, and the plan's `dict[str, dict[str, Any]]` is not what this
+needs.** The plan predates P6, which made every registry name namespace-qualified
+(`qualified_component_name`). With qualified names, a namespace → name → component nesting
+duplicates the namespace in the outer key and the inner name at once, and either the inner key is
+the qualified name -- in which case the outer level carries no information -- or it is the bare
+name, in which case `get_component("orders_order_service")` stops resolving and every existing
+lookup, health-check entry and log line that uses `Component.name` breaks. So the namespace
+dimension the plan asked for is already present in the key space, and what was missing was only
+the ability to *ask* through it.
+
+Two kinds of question, and they resolve differently on purpose:
+
+- **"Find me the one X"** -- `get_component`, `get_service`, `get_scheduler`, `get_client`,
+  `get_agent` -- resolves **namespace first, then root**, because infrastructure stays shared
+  while an agent overrides what it owns. For a name that is `_lookup`, a new private helper that
+  tries `<namespace>_<name>` before `<name>`; for a class it is `resolve_for_namespace`, which
+  P6 already wrote for this and whose docstring said it would become the registry's
+  implementation when the registry grew a namespace. It now is.
+- **"Give me all the Xs"** -- `get_components_by_type`, `get_services`, `get_schedulers`,
+  `get_rest_apis`, `get_clients`, `get_event_handler` -- filters to **that namespace exactly**,
+  since iterating one agent's components must not sweep in a neighbour's.
+
+**`namespace=None` is the default and means every namespace, not the root** -- a departure from
+the plan's `namespace: str = ""`. With `""` as the default, `build()` calling
+`get_event_handler()` would have quietly seen only root handlers: correct on a single-agent
+application, and silently short-staffed on a grouped one, which is the worst possible shape for
+a default. `None` keeps today's behaviour exactly, so every existing caller is unaffected.
+
+Filtering is on the component's own `namespace` attribute, not on its registry name. An explicit
+`name=` overrides the qualified name (documented on `Component.__init__`, used by
+`AIClientBase`), so a name-based filter would lose exactly those components.
+
+**Ambiguity raises rather than picking a first match.** A class lookup with a namespace goes
+through `resolve_for_namespace`, which refuses two candidates at the same level; without a
+namespace the pre-existing "Multiple components of type X found" applies. Silently handing an
+agent a neighbour's collaborator is the attribution the whole topology exists to provide.
+
+**`get_known_namespaces()` was NOT added, because C6 forbids it.** The plan asks for it so
+`NatsEventing` and `build()` can iterate namespaces. But C6 says no API reachable from agent code
+may expose the group's membership or size, and `Component.registry` is a public property on every
+component -- so a `get_known_namespaces()` here is precisely the API C6 rules out, reachable by
+`self.registry.get_known_namespaces()` from any handler. The builder already knows the group
+composition, because it was told: it passes each namespace to the wiring that needs one, which is
+also the layering the plan argues for elsewhere ("`AppBuilder` must remain a pure function of its
+call sequence"). A test asserts the method does not exist, so it cannot be added back without the
+reason being read.
+
+**Tests.** 1514 unit tests pass (up from 1498), 16 new in `test_registry.py`
+(`TestNamespacedNameLookup`, `TestNamespacedTypeLookup`, `TestC6`): the fallback in both
+directions, an already-qualified name still resolving, a bare name *not* resolving without a
+namespace, the error naming where it looked, `None` returning every namespace, filtering by
+attribute rather than name, ambiguity refused both across and within a namespace, and the absence
+of `get_known_namespaces`.
+
+Still to do in phase 1: named caches (spec sec. 8) and the per-namespace executor. Note that the
+executor has its own plan-versus-spec conflict to settle -- the plan provisions the root executor
+eagerly in `build()`, while spec sec. 4.3 requires it to be created **lazily on first access**, so
+that an application which never performs blocking work spawns no threads.
+
+### Phase 1, part 2 -- caches are looked up by name, and never substituted for one another
+
+`_cache_service: CacheService | None` became `_caches: dict[str, CacheService]`, with
+`add_cache(name, cache)`, `get_cache(name="default")`, `has_cache(name="default")` and
+`get_all_caches()`. `DEFAULT_CACHE_NAME = "default"` names the one every existing application
+has, and `registry.cache_service` -- getter and setter -- is retained as an alias for it, which
+spec sec. 8 requires. Every existing caller (`with_cache`, `HandlerChain`, the scheduler tick
+claim, the cache management endpoints, the health check) reads the alias and is untouched.
+
+**`get_cache` has no fallback to the default cache, deliberately.** Spec sec. 8: two
+independently written agents both asking for `"sessions"` must not silently share one store the
+moment they are grouped. A missing name is therefore an error naming what *is* registered, not
+an invitation to hand over some other cache. This is the opposite of how components resolve --
+where namespace-then-root is right, because infrastructure is shared on purpose -- and the two
+sit next to each other in the same class, so the module docstring and both docstrings say which
+is which and why.
+
+**One behaviour change: registering a second cache under one name now replaces it and warns,
+where the setter used to raise.** The plan asks for an upsert so a cache can be added after
+startup, and an alias for `add_cache` cannot be stricter than the method it aliases. Replacing
+silently would be worse than either, because the usual way to arrive twice at `"default"` is two
+calls to `with_cache()` -- so it logs at WARNING with both backend types named. Two tests
+asserted the old raise and were rewritten to assert the new behaviour;
+`test_cache_sharing_via_registry.py` now protects the invariant that actually matters -- both
+services still resolve one object, and `get_all_caches()` still has exactly one entry.
+
+`clear()` clears and drops every cache rather than the single one.
+
+`get_or_create_cache` from the plan was **not** written. It is specified as "atomic get-or-create
+protected by an `asyncio.Lock`", but every registry method here is synchronous and every cache is
+registered during `build()`, before a loop exists -- a lock that cannot be awaited protects
+nothing, and nothing in the framework creates a cache lazily for it to protect. When something
+does, it can be added with a mechanism that matches how it is actually called.
+
+### Phase 1, part 3 -- one thread pool per agent, and only if something needs one
+
+`Registry.get_or_create_executor(namespace, max_workers)` returns a namespace's
+`ThreadPoolExecutor`, creating it on first use; `Component.executor` is the property a component
+reaches it through:
+
+```python
+    @cached_property
+    def executor(self) -> ThreadPoolExecutor:
+        return self.registry.get_or_create_executor(self._namespace, self.config.get("executor_workers"))
+```
+
+One pool per namespace, so an agent doing blocking work -- DiskCache, SQLite, a synchronous SDK
+-- cannot exhaust the pool another agent is waiting on. Threads are named
+`blueprint-<namespace>_N`, so a stack dump says which agent a blocked thread belongs to.
+
+**Created on first access, not provisioned in `build()`, which is a departure from the plan and
+required by spec sec. 4.3.** The plan says "the root executor is provisioned in
+`AppBuilder.build()` (not in `with_namespace`) so standalone apps always have one". That would
+add `cpu_count() + 4` idle threads to every application that has no blocking work at all --
+including every single-agent application that exists today -- and works directly against the
+thread budget in #36. Verified: with nothing asking, the process has one thread and
+`_executors` is empty.
+
+**The plan's root fallback is subsumed rather than implemented.** `get_executor` was to fall back
+to the root when a namespace had no pool; with creation on demand a namespace can never be
+missing one, so that branch could never be taken. For the same reason there is no `add_executor`:
+nothing needs to hand a pool in.
+
+**Sizing is per namespace, and the first asker wins.** `executor_workers` is read through
+`Component.config`, which is the namespace's scoped view (C5), so one agent can be sized
+differently from its neighbour. A live pool cannot be resized, so a later component of the same
+namespace passing a different value is ignored rather than raising -- failing an application over
+a number nobody chose deliberately would be worse than using the first one.
+
+**The pools are shut down with the application.** `Registry.shutdown_executors()` waits for
+running work and clears the map, and it is called at the very end of the lifespan shutdown --
+after every `on_shutdown`, because a component may well run its last blocking call there -- and
+from `Registry.clear()`, so a test suite building many applications does not accumulate pools.
+This is not optional tidiness: a `ThreadPoolExecutor`'s workers are non-daemon threads, so
+leaving them running keeps the interpreter alive past the point the container was asked to stop.
+
+No public read accessor for the executors was added; nothing in `src/` needs one, and the two
+tests that check the map is empty read the private attribute rather than growing the API for
+their own convenience.
+
+**Tests.** 1538 unit tests pass (up from 1514), 24 new. `TestNamedCaches` (11) covers lookup by
+name, the absence of a fallback, the error listing what is registered, the alias in both
+directions, `get_all_caches` returning a copy, and `clear` clearing every cache.
+`TestExecutors` (9) covers nothing existing until asked, creation then reuse, isolation between
+namespaces, sizing on the creating call and being ignored afterwards, thread naming, and
+shutdown from both entry points. `TestExecutorBelongsToTheNamespace` (5) covers the component
+side: its own namespace's pool, two agents not sharing, two components of one agent sharing, and
+sizing from the scoped configuration.
+
+**Phase 1 is complete.** `Component.executor` belongs to spec sec. 4.3 rather than to phase 1
+strictly, and was written here because the registry half is unreachable without it -- an
+executor store with no way to reach it is the unused surface this repo keeps out.
+
+### Phase 2 -- a component's registry answers for its own agent
+
+Phase 2 is titled "component namespace awareness", and three of its four bullets were already
+satisfied by earlier work: the `ContextVar` and `Component.__init__` reading it landed in phase 0
+part 2, `Component.executor` in phase 1 part 3, and `shared_registry` was never going to stop
+being a class-level singleton. Its fourth -- passing `namespace=` to `add_component` -- is
+obsolete: phase 1 kept the flat store precisely because P6 had already made the registry name
+namespace-qualified, so the namespace is in the key.
+
+What was actually missing is the half phase 1 enabled and nothing used. Every lookup on `Registry`
+took a `namespace`, and **no caller passed one**, so a grouped process would have resolved
+collaborators at random or refused to choose. Two examples from the framework's own code, both
+written long before namespaces:
+
+```python
+self._client = self.registry.get_component(NATSClient)          # io/api/eventing/nats.py:33
+handlers = sorted(self.registry.get_event_handler())             # handler/handler_chain.py:130
+```
+
+With one transport client per namespace (P6) the first raises "Multiple components of type
+NATSClient found" the moment a second agent joins the process, and the second dispatches one
+agent's event to another agent's handlers. Neither call site may grow a namespace argument,
+because the constraint is that no code names a namespace unless it is about namespaces.
+
+**`Registry.for_namespace(namespace)` returns a view, and `Component.registry` hands each
+component its own.** The mechanism is the one `Config.for_namespace` established in the config
+rework, deliberately: a shallow `copy` sharing `_components`, `_caches` and `_executors` by
+reference -- one registry per process, a view is a lens on it -- differing only in what an
+*omitted* `namespace` argument means.
+
+```python
+    def _effective_namespace(self, namespace: str | None) -> str | None:
+        return self._default_namespace if namespace is None else namespace
+```
+
+- On the application's registry, an omitted namespace still means **every namespace**, so
+  `build()` and the lifespan keep iterating everything. Nothing about a single-agent application
+  changes; `for_namespace("")` returns the registry itself, as `Config.for_namespace("")` does.
+- On a view it means **that agent**, so `self.registry.get_service(OrderService)` resolves this
+  agent's service, and `self.registry.get_service(EventProcessingService)` still finds the shared
+  root one through the namespace-then-root fallback.
+- An explicit argument wins on either.
+
+**Calling `for_namespace` on a view raises**, as on `Config`: a view is one agent's lens, and
+letting it mint another agent's would hand every component a route to its neighbours, which is
+what C6 forbids.
+
+Verified with a service written the way a project writes one -- no namespace anywhere in it:
+
+```
+  orders   self.registry.get_service(OrderService) -> orders_order_service   Audit -> audit
+  billing  self.registry.get_service(OrderService) -> billing_order_service  Audit -> audit
+```
+
+One declaration, two agents, each wiring itself correctly, plus a root-registered `Audit` shared
+by both.
+
+**A hand-rolled resolution was deleted.** `EventPublishingService.on_startup` called
+`resolve_for_namespace(self.registry.get_io_clients(), self.namespace, ...)` by hand, because P6
+needed namespace resolution before the registry could do it. It is now
+`self.registry.get_io_client(IOClientBase)` -- the view resolves it -- which is what P6's own
+changelog predicted would happen to that helper.
+
+**A bug the test rewrite caught, worth recording because the shape recurs.** `get_component`
+gathered its candidates with `self.get_components_by_type(name_or_class, None)`, passing `None`
+to mean "every namespace". On a *view* `None` means *this* namespace, so the resolver was handed
+only the asking agent's components and its root fallback could never fire: a namespaced service
+in a process with one shared root transport failed to find it. Fixed with `_all_of_type`, a
+namespace-blind helper used by the two callers that must not have their argument reinterpreted
+-- the class-resolution path and the message that lists candidates when it cannot choose. The
+six `EventPublishingService` ownership tests were rewritten from a `MagicMock` registry onto a
+**real** one for exactly this reason: the mock version asserted that a stub returned what it was
+told to, and would not have caught this.
+
+While there, the class-lookup failure message stopped printing a class repr:
+"No IOClientBase is registered for namespace 'orders' or at the root" rather than
+"No <class '...IOClientBase'> is registered ...".
+
+**Tests.** 1554 unit tests pass (up from 1538). `TestNamespaceViews` (12) covers the root
+identity, caching, the shared store, the C6 refusal, omitted-means-this-agent, the root fallback
+for both name and class lookups, plural lookups returning one agent, an explicit override, and
+the application registry still seeing everything. `TestRegistryIsScopedToTheComponent` (4) covers
+the component side. The six rewritten ownership tests now exercise the real resolution.
+
+### Still open after phase 2: cache names are not namespace-scoped yet
+
+Spec sec. 8 requires cache *names* to be namespace-scoped by default, with an explicit opt-in for
+genuinely shared caches, so that two agents both asking for `"sessions"` do not silently share a
+store. Phase 1 gave the registry the name dimension that policy needs, and phase 2 gave every
+component a namespace-aware view -- but `get_cache` on a view still resolves the bare name, so
+the policy is not enforced.
+
+It is left open rather than guessed at because the obvious implementation collides with something
+that already exists: `CacheService.get/set/delete` take their own `namespace=` argument, which is
+a *partition inside* a cache and is what a project already uses (`CACHE_NAMESPACE` in two
+examples). So there are two plausible designs and they are not equivalent -- qualify the cache
+*name* on the way in (`orders_sessions`, one backend per agent per name), or prefix the
+*partition* the agent's calls land in (one backend, agent-scoped keys). The first isolates
+storage and multiplies backends; the second keeps one backend and has to compose with the
+developer's own partition argument without either silently winning. That is a decision, not an
+implementation detail.
+
+### Cache names become namespace-scoped (spec sec. 8), and the pod filesystem decides how
+
+Sec. 8's requirement -- two independently written agents both asking for `"sessions"` must not
+silently share a store once grouped -- had two plausible implementations, and the deployment
+constraint settled it rather than taste.
+
+**The constraint.** A pod may write only where its process user is allowed to, and under
+`readOnlyRootFilesystem: true` only where a volume is mounted -- a mount declared in the pod spec,
+not discovered at runtime. `DiskCacheService` is a directory; `RedisCacheService` is a connection.
+So the design that registers **one cache backend per agent per name** multiplies the writable
+paths a group needs, gives each agent its own `size_limit` over one node-backed `emptyDir` (five
+agents at the 1 GB default is 5 GB against one volume, and an `emptyDir` over its limit evicts the
+pod), and turns "add an agent to this group" into a change to the pod spec. The design that
+**prefixes the partition** needs no new path at all.
+
+**So the partition carries the agent.** New `services/infrastructure/agent_scoped_cache.py`:
+`AgentScopedCache` wraps one shared backend and prefixes every call's `namespace` argument with
+the agent, so `orders` writing `"prices"` lands in `orders.prices` and `billing` writing the same
+name lands in `billing.prices`. One directory, one connection, one budget, whatever the group
+size.
+
+`Registry.get_cache` (and the `cache_service` alias) returns that lens **when asked through a
+namespace view**, and the raw backend at the root -- which is unchanged behaviour for every
+single-agent application, and is also sec. 8's "explicit opt-in for genuinely shared caches":
+framework code holding `Component.shared_registry` gets the shared store. The lens is cached per
+name per view. Nothing at a call site changes: a service writing
+`self.registry.cache_service.set(key, value, namespace="prices")` is isolated without naming a
+namespace, because phase 2 already gave it a namespace-aware registry.
+
+The separator is `.`, not `:`: `:` already separates the partition from the hashed key
+(`cache_key_mixin._make_key`) and `list_namespaces` splits on the first one, so `orders:prices`
+would read back as the partition `orders`. A namespace cannot contain `.`, so stripping
+`<agent>.` back off is unambiguous whatever the agent called its own partition.
+
+Three methods needed more than a prefix:
+
+- **`clear(None)` means this agent's partitions, never the whole cache.** The backend's own
+  `clear(None)` would take the neighbours' data with it -- the exact accident this class exists to
+  prevent -- so the lens enumerates the partitions it owns and clears those.
+- **`list_namespaces()`** returns this agent's partitions with the prefix stripped, so an agent
+  sees the names it used.
+- **`close()` raises.** The backend belongs to the process; closing it from one agent's lens would
+  take every other agent's cache down with it, silently.
+
+`get_stats()` forwards the backend's numbers and adds the agent's name: size, hits and eviction
+are properties of the one shared store, and there is nothing per-agent to report.
+
+`ServiceBase.__init__` gained a keyword-only `should_register: bool = True`. `CacheService` is a
+`ServiceBase`, so the lens is a component by inheritance, and one per agent per cache would
+otherwise add a registry entry each. `RestApiBase` has taken the same parameter since before
+namespaces, so this is the existing pattern rather than a new one.
+
+### The same constraint exposed a pre-existing defect: the disk cache cannot create its directory
+
+Read from the generated Dockerfile rather than observed in a cluster, and independent of grouping:
+
+- `cache.cache_dir` defaults to the **relative** `.cache/blueprint`, resolved against the working
+  directory, so `/app/.cache/blueprint` in the image.
+- `DiskCacheService.__init__` creates it at **runtime** (`mkdir(parents=True, exist_ok=True)`).
+- The image does `WORKDIR /app` **before** `USER appuser`, so `/app` is root-owned, and only
+  `src/` and `settings.toml` are `--chown`ed. Creating `/app/.cache` as `appuser` therefore fails
+  with EACCES.
+
+So a container built from the generated Dockerfile, running as the user it declares, with the
+default cache backend, cannot start. It has not been noticed because tests and local runs have a
+writable working directory. Three changes:
+
+- **The image creates the directory and hands it over**:
+  `RUN mkdir -p /app/.cache && chown -R appuser:appuser /app/.cache`. A project scaffolded before
+  this needs the same two lines.
+- **The failure explains itself.** The `mkdir` is wrapped, and an `OSError` becomes a
+  `RuntimeError` naming the path and the four ways out -- create and chown it in the image, mount
+  a volume if the root filesystem is read-only, point `cache.cache_dir` somewhere writable, or use
+  the redis backend, which needs no filesystem. The original error is kept as `__cause__`.
+- **`docs/guides/deployment.md` gained "Writable Cache Directory"**: the ownership requirement,
+  the `readOnlyRootFilesystem` + `emptyDir` manifest with `sizeLimit` matched to
+  `cache.size_limit`, the note that a grouped process needs no additional paths, and redis as the
+  filesystem-free alternative.
+
+**Tests.** 1577 unit tests pass (up from 1554). 21 new in `test_agent_scoped_cache.py`, against a
+**real** `DiskCacheService` rather than a mock, since what is under test is which keys end up
+where: isolation of values, absence rather than a neighbour's value, one backend, the partition
+carrying the agent, per-agent `list_namespaces`, the scoped default partition, per-agent `delete`
+and `claim` (two schedulers must not steal each other's tick slots), both `clear` shapes, the
+`close` refusal, the root-namespace refusal, not registering itself, and the six paths through the
+registry. Two more in `test_disk_cache_service.py` cover the unwritable directory: the message
+names the path and the options, and the original `PermissionError` survives as the cause.
+
 ### Not fixed, found while doing this: `app_environment` in `[default]` selects nothing
 
 The bootstrap pass runs with `environments=False`, so it sees only top-level keys -- `[default]`
@@ -1823,6 +2313,321 @@ mechanism whenever real implementation lands, with lint, typing, tests and docs 
 
 **Motivation.** The feature is delivered across many sessions and unreviewed batches are expensive
 to unpick.
+
+### Phase 3, part 1 -- a namespace can be named at the call site, and a group can be written by hand
+
+Phase 0 part 3 made the namespace ambient, and phase 1 and 2 made the registry answer per
+namespace. What was still missing is the *entry point*: nothing outside `AgentRegistration.apply`
+could put a component in a namespace, and there was no way to assemble a group at all. This step
+adds the three builder-side pieces of phase 3; `with_cache(name=...)` follows as part 2.
+
+**The five `with_*` methods take a keyword-only `namespace`, and it never reaches the component.**
+Their bodies were five copies of "build it if it is a class, adopt it if it is not, rename it if
+asked", so they now share one helper and differ only in the type check `with_handler` performs:
+
+```python
+    def with_handler(
+        self, handler: type[HandlerT] | HandlerT, *, name: str | None = None, namespace: str = ROOT_NAMESPACE, **kwargs: Any
+    ) -> "AppBuilder":
+        if isinstance(handler, type) and not issubclass(handler, EventHandlerBase):
+            raise TypeError(f"Expected EventHandlerBase subclass, got {handler.__name__}")
+        self._register(handler, namespace, kwargs, name=name, method="with_handler")
+        return self
+```
+
+`AppBuilder._register` is where the namespace is turned into a scope rather than an argument:
+
+```python
+        if isinstance(target, type):
+            with _construction_scope(namespace):
+                instance = target(**kwargs)
+```
+
+This is the point of the whole ambient mechanism, and it is why the parameter cannot simply be
+forwarded. The builder passes `**kwargs` straight to the constructor, and a project's component
+takes the arguments its author wrote -- `StrictService(retries=3)`, no namespace anywhere -- so
+`with_service(StrictService, namespace="orders", retries=3)` must construct
+`StrictService(retries=3)` *inside* namespace `orders` and let `Component.__init__` read the
+namespace from the context variable. Forwarding it would be a `TypeError` on every component a
+developer has ever written.
+
+**`_construction_scope` exists because `namespace_scope("")` is not a no-op** -- it *sets* the
+current namespace to the root:
+
+```python
+@contextmanager
+def _construction_scope(namespace: str) -> Iterator[None]:
+    if not namespace:
+        yield
+        return
+    with namespace_scope(namespace):
+        yield
+```
+
+Without that branch this step would have broken the mechanism it is extending.
+`AgentRegistration.apply` opens one `namespace_scope("orders")` and then calls
+`builder.with_service(target, name=...)` with no namespace argument -- so an unconditional
+`namespace_scope(namespace)` would reset every component of every agent back to the root, with no
+error, and every registration applied per agent would have produced a root component. There is a
+test for exactly this (`test_the_default_does_not_reset_an_ambient_namespace`), because the failure
+is invisible: the app builds, and the registry keys are simply wrong.
+
+**An explicit `name=` is now qualified with the namespace the component ended up in:**
+
+```python
+        if name is not None:
+            instance.name = qualified_component_name(namespace_of(instance), name)
+```
+
+A defect, not a refinement. `Component.__init__` qualifies a *derived* name but uses an explicit
+one verbatim, so `AgentRegistration().with_service(OrderService, name="db")` applied to two agents
+registered both as `db` and the second failed with "Component with name db already exists" -- the
+one-declaration-per-group case, which is the primary API. Qualifying costs the caller nothing:
+`Registry._lookup` tries `<namespace>_<name>` before `<name>`, so `get_component("db")` from
+inside the agent still finds it. `namespace_of(instance)` rather than the `namespace` argument,
+because the instance may have come from the ambient scope instead.
+
+**An already-built instance offered to a namespace is refused rather than silently rerouted.**
+A component's namespace and its registry key are fixed by the scope it was constructed in, so
+`with_service(instance, namespace="orders")` cannot do what it says:
+
+```python
+            built_in = namespace_of(target)
+            if namespace and built_in != namespace:
+                raise ValueError(
+                    f"{type(target).__name__} was passed to {method}() as an instance for namespace '{namespace}', "
+                    f"but it was already built in namespace '{built_in or ROOT_LABEL}', and a component cannot change "
+                    ...
+                )
+```
+
+Ignoring the argument would register the component at the root while the caller believed it
+belonged to an agent -- the same trap `AgentRegistration._add` already refuses instances for, and
+the message points the same way: pass the class. An instance built inside the matching scope is
+accepted, since nothing is being changed.
+
+**`NamespaceBuilder` is one agent's view of the builder**, and it holds no build state: five
+`with_*` that delegate with `namespace=` filled in, `with_registration`, and `end()` returning the
+parent. Registering a component therefore still has exactly one implementation, and this class only
+decides which namespace it goes to. It has no `with_cache` -- a cache is process-wide (spec sec. 8),
+and an agent registering its own would duplicate or quietly take over a neighbour's.
+
+**`AppBuilder.with_namespace(name, *, registration=None)`** is the entry point:
+
+```python
+        namespace = validate_namespace(name)
+        if not namespace:
+            raise ValueError("with_namespace('') names no agent: ...")
+        if namespace not in self._namespaces:
+            self._namespaces.append(namespace)
+            logger.info("Hosting agent namespace '%s'", namespace)
+        if registration is None:
+            return NamespaceBuilder(self, namespace)
+        return self.with_registration(registration, namespace)
+```
+
+`with_namespace("")` is refused: the root is the absence of an agent, and returning a block that
+registers into it would be a silent no-op dressed as a declaration. The namespace is recorded
+*before* anything is built, so a registration that fails half way through still leaves the agent
+declared -- the startup log (spec sec. 9.2) and the readiness policy have to be able to say an
+agent was meant to be here.
+
+**Two spec departures, both argued rather than assumed.**
+
+- **The `AppBuilder | NamespaceBuilder` union is kept, but no caller sees it.** Spec sec. 4.2
+  types `with_namespace` as returning the union, which would make every call site narrow a type
+  it already knows statically. Two `@overload`s resolve it instead: `registration=<a
+  registration>` is an `AppBuilder`, `registration` omitted is a `NamespaceBuilder`. The runtime
+  behaviour is exactly what the spec asks for; the union survives only as the implementation
+  signature.
+- **The `config: Config | None` parameter is not accepted.** Spec sec. 4.2 and the plan both list
+  it, and the plan says `with_namespace` should build a `Config` with `agent_scope=name` from the
+  root config's settings files. Config rework step 2 made that obsolete: `Config.for_namespace`
+  returns a view sharing the one loaded tree, and `Component.config` already hands each component
+  the view for its own namespace, which tries `<agent>.<key>` before `<key>` (C5). A `Config`
+  passed here would have no reader -- components do not consult the builder -- so it would be
+  either ignored outright or re-parse the same files once per agent and then be ignored. Accepting
+  a parameter that does nothing is worse than not having it: it reads as per-agent configuration
+  support that is not there. **Needs a spec amendment**; listed under *Open points*.
+
+**`AppBuilder.namespaces`** exposes the declared agents in declaration order, root excluded, so
+phase 6 can iterate them. It lives on the builder because it may not live on the registry:
+`Registry` is reachable from every component (C6), so a `get_known_namespaces()` there would let
+an agent enumerate its neighbours, and grouping is supposed to be invisible from inside. The
+builder is the object that was *told* which agents to host and is not reachable from a component.
+A tagged `with_service(X, namespace="orders")` deliberately does *not* record a namespace: the
+list is what the builder was told to host, not every namespace a component was tagged with.
+
+`NamespaceBuilder` is exported from `blueprint.agents`, since it is a return type callers can hold.
+
+Tests: `tests/unit/agents/app_builder/test_namespace_builder.py`, 36 cases -- the namespace
+qualifying the registry key and reaching the component; the constructor *not* receiving it; the
+ambient namespace surviving the default and being overridden by an explicit one; an explicit name
+qualified, unchanged at the root, and one declaration with an explicit name serving two agents; an
+instance refused for another namespace and accepted for its own; both `with_namespace` forms; the
+root and an illegal namespace refused; `namespaces` order, dedup and its indifference to tagged
+calls; and the block delegating, chaining, closing and carrying constructor arguments.
+
+### Phase 3, part 2 -- a cache has a name, and a name buys it its own store
+
+Phase 1 part 2 gave the registry `add_cache(name, cache)` / `get_cache(name)` and no fallback
+between names. The builder never used any of it: `with_cache()` still went through the
+`cache_service` setter, so a process could hold exactly one cache. This step is the builder side,
+and three defects had to be fixed for it to work at all.
+
+**The signature change, and why the parameter order is the whole point:**
+
+```python
+    def with_cache(self, enabled: bool = True, enable_locking: bool = True, *, name: str = DEFAULT_CACHE_NAME) -> "AppBuilder":
+        if not enabled:
+            logger.info("Caching disabled; cache '%s' is not registered", name)
+            return self
+
+        cache_config = _cache_config_for(self._config.get_cache_config(), name)
+```
+
+`name` is keyword-only and follows the two existing positional parameters, as spec sec. 4.2
+requires. Had it come first, `with_cache(False)` -- which *disables* caching in projects that
+exist today -- would have become a cache named `False` with caching silently switched on, no
+`TypeError` and no warning. `with_cache()`, `with_cache(False)` and `with_cache(True, False)` all
+still mean exactly what they meant, and there are tests for the three of them.
+
+**Turning a name into isolated storage lives in `CacheBackendFactory`, not in the builder.**
+It was written in `app_builder.py` first and moved on review, and the review was right: the
+builder would have been the one place that knew disk caches isolate by directory and Redis caches
+by key prefix. Anyone adding a third backend edits the factory and has no reason to open the
+builder, so their backend would have inherited one store shared across every name -- the exact
+failure the scoping exists to prevent, arrived at by writing new code in the obvious place. So
+`create` takes the cache name and each `_create_*` scopes what its own backend needs:
+
+```python
+    @staticmethod
+    def create(config: CacheConfig, enable_locking: bool = True, name: str = DEFAULT_CACHE_NAME) -> CacheService:
+        CacheBackendFactory._validate_name(name)
+        if config.backend == "redis":
+            return CacheBackendFactory._create_redis(config, enable_locking, name)
+        return CacheBackendFactory._create_disk(config, enable_locking, name)
+```
+
+`create` is the single door through which a cache is built, so the name cannot arrive
+unvalidated and a backend cannot be reached without having answered how it separates one name
+from another. The builder is left with one line and no cache knowledge:
+
+```python
+        cache_service = CacheBackendFactory.create(self._config.get_cache_config(), enable_locking=enable_locking, name=name)
+```
+
+`config` reaches the factory **unscoped**. That matters for the fallback: `_create_redis` scopes
+a key prefix, and when Redis is unreachable it hands `_create_disk` the original config plus the
+name, so the fallback isolates by directory rather than carrying a prefix that means nothing to
+it. Pre-scoping both fields before the branch -- what the first version did -- only worked because
+it scoped fields no chosen backend would read.
+
+The two derivations, each on the backend that needs it. The default name returns the configured
+value untouched, so an existing application's cache directory and Redis keyspace do not move:
+
+```python
+    def _scoped_cache_dir(config: CacheConfig, name: str) -> str:
+        if name == DEFAULT_CACHE_NAME:
+            return config.cache_dir
+        return str(PurePosixPath(config.cache_dir.replace("\\", "/")) / name)
+
+    def _scoped_key_prefix(config: CacheConfig, name: str) -> str:
+        if name == DEFAULT_CACHE_NAME:
+            return config.key_prefix
+        return f"{config.key_prefix}:{name}" if config.key_prefix else name
+```
+
+- **Disk: `<cache_dir>/<name>`, a subdirectory and not a sibling.** The plan says
+  `{base_dir}/{name}` without saying which directory `base_dir` is, and only one reading is always
+  writable: a deployment may mount its volume *at* `cache.cache_dir`, and under
+  `readOnlyRootFilesystem` a sibling of the mount cannot be created -- see "Writable Cache
+  Directory" in `docs/guides/deployment.md`. The cost is that a named cache's directory sits
+  inside the default cache's own store. diskcache ignores directories it did not create, and the
+  alternative fails in production only.
+- **Redis: the name is appended to `cache.key_prefix`.** *Not in the plan, and without it naming a
+  cache would have isolated nothing on Redis.* The disk backend separates caches by directory and
+  Redis has no analogue -- `RedisCacheService` scopes every key by `key_prefix` alone -- so two
+  caches registered as `sessions` and `prompts` against one Redis with one configured prefix would
+  have written the same keys. That is precisely the silent cross-cache sharing spec sec. 8 exists
+  to prevent, and here the name is the only thing meant to tell them apart.
+
+**The cache name is validated, because it is now a filesystem path segment:**
+
+```python
+_ALLOWED_CACHE_NAME = re.compile(r"\A[a-z0-9][a-z0-9_.-]*\Z")
+```
+
+`with_cache(name="../evil")` would otherwise write outside the cache directory entirely. Lower
+case only, and that is not tidiness: a directory whose name differs only by case is one directory
+on a developer's macOS or Windows machine and two on the Linux node, so `Sessions` and `sessions`
+would be one cache locally and two in production. Validation runs before anything is constructed,
+so a refused name never creates a directory.
+
+**Three defects fixed to get here.**
+
+1. **Two caches collided on one registry name.** A `CacheService` is a `ServiceBase` and therefore
+   a `Component`, so it registers itself under a derived name -- and a second `DiskCacheService`
+   raised `Component with name disk_cache_service already exists`. Registering a named cache
+   without a component entry was not an option: the lifespan closes caches by iterating
+   `registry.get_services()`, so an unregistered one would leak its file handle or Redis
+   connection for the life of the process. `DiskCacheService.__init__` and
+   `RedisCacheService.__init__` therefore take `component_name`, forwarded to
+   `super().__init__(name=...)`, and `CacheBackendFactory.create` passes it through:
+
+   ```python
+    @staticmethod
+    def _component_name(name: str) -> str | None:
+        return None if name == DEFAULT_CACHE_NAME else f"cache_{name}"
+   ```
+
+   `None` for the default, so `disk_cache_service` stays the key existing lookups and health
+   entries already use. `cache_<name>` rather than `<class>_<name>` because `fallback_to_local`
+   swaps `RedisCacheService` for `DiskCacheService` at construction -- a registry key that depends
+   on whether Redis answered the startup ping is worse than one that does not name the backend.
+   Both fallback paths therefore produce the same registry name as the Redis service would have.
+
+2. **`with_cache()` as an application's first builder call crashed.** `Component.shared_registry`
+   is `None` until the first `Component.__init__` creates it, and a cache service is what creates
+   it here. Reading the registry before building the service is an `AttributeError` on `None`; the
+   old code happened to read it afterwards. The order is now explicit and commented, because
+   nothing about the line says it matters:
+
+   ```python
+        cache_service = CacheBackendFactory.create(cache_config, enable_locking=enable_locking, component_name=component_name)
+        registry: Registry = Component.shared_registry  # type: ignore[assignment]
+        registry.add_cache(name, cache_service)
+   ```
+
+3. **`registry.add_cache` replaced the `cache_service` setter.** The setter still exists as the
+   spec sec. 8 alias and still reads and writes the `"default"` cache, so `registry.cache_service`
+   keeps working; the builder simply no longer goes through it.
+
+`CacheBackendFactory.create`'s third parameter is `name`, not `component_name`: the registry name
+is derived from the cache name, so there is one name to pass rather than two that must agree.
+
+**Not done here, and deliberately.** Readiness and the management endpoints still see only the
+default cache -- `if registry.has_cache(): health_providers["cache"] = ...` and the `CacheManagementApi`
+mount are both keyed on the default name. Plan phase 6 owns both ("`CacheManagementApi`: one router,
+endpoints accept optional `?name=`" and "`ActuatorApi` cache health: iterates all entries"), so a
+project that registers only a named cache gets no cache health check until then. Nothing regresses:
+those call sites are guarded by `has_cache()` and simply do not fire.
+
+Also noted rather than fixed: `add_cache`'s documented replace-and-warn path is unreachable from
+the builder, because two `with_cache()` calls with one name now collide on the *component* name
+first. That was already true before this change, and the resulting error names the colliding key.
+
+Tests, split the way the code is. `tests/unit/agents/app_builder/test_named_caches.py`, 33 cases,
+covers what is visible through `with_cache`: the default cache keeping its name, directory,
+registry key and `cache_service` alias; `with_cache()` working as an application's first builder
+call; the three positional forms; a named cache getting its own directory (asserted on disk), its
+own registry name, coexisting with the default, and appearing in `get_services()` so the lifespan
+closes it; an unregistered name raising instead of yielding the default; and eleven rejected names.
+`tests/unit/agents/services/infrastructure/test_cache_backend_factory.py` gains 34 cases for the
+isolation itself: the derived registry name and its independence from the backend; the disk
+subdirectory including a Windows separator in the configured path; the Redis prefix, asserted both
+on the derivation and on the kwargs the service is constructed with; both fallback paths isolating
+as disk rather than as Redis; and the name being validated before any directory is created.
 
 ---
 
@@ -1897,6 +2702,19 @@ Everything else remains non-breaking. Specifically:
   Whether Dapr merges the two or delivers twice needs checking against a real sidecar; it belongs on
   the broker-test list.
 - New config keys all default to current behaviour.
+- **`AppBuilder.with_cache` gained a keyword-only `name`, and the three positional forms are
+  unchanged.** `with_cache()`, `with_cache(False)` and `with_cache(True, False)` mean what they
+  always meant, which is why `name` had to come last and be keyword-only (spec sec. 4.2). The
+  default cache keeps its registry key `disk_cache_service`, its configured `cache.cache_dir` and
+  its Redis key prefix, so no existing cache data moves.
+- **`DiskCacheService.__init__` and `RedisCacheService.__init__` gained a trailing optional
+  `component_name`, and `CacheBackendFactory.create` a trailing optional `name`.** Additive and
+  defaulted; existing positional calls are unaffected. `create` derives the component name from
+  the cache name, so callers pass one name rather than two that have to agree.
+- **`AppBuilder.with_*` gained a keyword-only `namespace`, and an explicit `name=` is now qualified
+  with the namespace the component was built in.** At the root -- every single-agent application --
+  `qualified_component_name("", name)` is `name`, so nothing changes. In a namespace the key becomes
+  `<namespace>_<name>`, which is what makes one registration applicable to two agents at all.
 - **`EventHandlingBase._process_cloud_event` takes a third argument, `topic`.** A protected method,
   so this affects only a third-party transport implementation that called it -- of which the repo
   contains two, both updated.
@@ -2022,6 +2840,14 @@ stay keyword-only and last, or an existing `with_cache(False)` would silently be
 
 ## Open points
 
+- **Two spec amendments are outstanding for `with_namespace` (phase 3 part 1).** Spec sec. 4.2
+  types the return as `AppBuilder | NamespaceBuilder` and lists a `config: Config | None`
+  parameter. The union is honoured at runtime but resolved by `@overload` so no caller narrows it;
+  the `config` parameter is **not** accepted, because config rework step 2 left it with no reader
+  -- `Component.config` derives each component's view from the one loaded tree. The spec should
+  say so rather than describing a parameter the implementation refuses. Reasoning in the phase 3
+  part 1 entry above.
+
 - **P0-P5 have landed. P6 is next**, and two requirements for it were settled during P5 (see the
   namespace bullet below). What remains open from P5 is deferred work rather than unfinished work:
   both modes now fire a cron once across three replicas, which was P5's acceptance criterion.
@@ -2144,6 +2970,23 @@ stay keyword-only and last, or an existing `with_cache(False)` would silently be
 - **Nothing observes dead-lettering.** It is logged, but there is no counter, so "how many messages
   did we give up on today" cannot be answered from metrics. It belongs with the telemetry work in
   phase 9, next to `blueprint.events.unhandled`.
+- ~~**Cache names are not namespace-scoped**~~ -- **done**, by prefixing the partition
+  (`AgentScopedCache`). The deployment constraint decided it: a backend per agent per name would
+  multiply the writable paths a group needs and split one `emptyDir`'s budget N ways. Two things
+  it leaves open. The lens is per *registry view*, so framework code that reaches
+  `Component.shared_registry` directly still gets the shared store -- correct today, and worth
+  re-checking whenever a framework component starts caching on an agent's behalf. And nothing
+  migrates keys written before the prefix existed: an application upgrading with a persistent
+  redis cache sees its old entries as absent, which is a cold cache rather than an error, but
+  should be said in the migration guide (phase 10).
+- **The examples are not migrated to `AgentRegistration`, by decision (2026-09-08).** Asked
+  whether to convert one project's `main.py` as proof, the user chose not to touch the examples
+  part-way through the changes, and to revisit them when the integration tests are written --
+  where two real example projects grouped into one process would be a better test of C1 and C5
+  than a fixture written for the purpose. So the "only `main.py` differs" claim currently lives
+  in `test_agent_registration.py` rather than in the tree, and the examples keep passing
+  instances (`with_rest_api(MonitorApi())`), which `AgentRegistration` refuses -- converting them
+  is part of that later work, not a prerequisite for it.
 - **Local NATS and Dapr integration environment.** Everything above is covered by unit tests with
   mocked transports. Once the feature is implemented, stand both brokers up locally (compose file
   plus a CI job) and cover the behaviour that only a real broker exhibits: queue-group distribution

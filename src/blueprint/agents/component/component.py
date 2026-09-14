@@ -12,6 +12,7 @@ from __future__ import annotations
 import functools
 import inspect
 from abc import ABC, ABCMeta, abstractmethod
+from concurrent.futures import ThreadPoolExecutor
 from functools import cached_property
 from typing import Any, TYPE_CHECKING
 from collections.abc import Callable
@@ -20,7 +21,7 @@ from opentelemetry import trace
 
 from ..config import Config
 from ..utils import camel_to_snake
-from .namespace import ROOT_NAMESPACE, qualified_component_name, validate_namespace
+from .namespace import ROOT_NAMESPACE, current_namespace, qualified_component_name, validate_namespace
 
 if TYPE_CHECKING:
     from .registry import Registry
@@ -113,8 +114,12 @@ class Component(ABC, metaclass=_ComponentMeta):
                 owns its uniqueness. It must be supplied here rather than assigned
                 afterwards: registration happens in this constructor, so a second instance
                 of the same class would collide before a rename could run.
-            namespace: The agent this component belongs to; ``""`` (the default) is the root
-                namespace and the whole of a single-agent application.
+            namespace: The agent this component belongs to. Left unset -- which is what every
+                developer-written component does -- it is taken from the ambient
+                ``namespace_scope`` in force during construction, so a handler or service
+                carries no namespace in its own code and reads the same whether it runs alone
+                or beside five other agents. ``""`` is the root namespace and the whole of a
+                single-agent application.
 
         Raises:
             ValueError: if the namespace is not a legal namespace. This is the framework's
@@ -132,7 +137,13 @@ class Component(ABC, metaclass=_ComponentMeta):
 
             Component.init_registry(Registry(Component))
 
-        self._namespace = validate_namespace(namespace or ROOT_NAMESPACE)
+        # A *non-empty* argument wins; anything else defers to the ambient scope. It cannot be
+        # the other way round: ServiceBase, ClientBase, IOClientBase and EventPublishingService
+        # all default this parameter to ROOT_NAMESPACE and forward it unconditionally, so a
+        # developer writing `super().__init__()` in their own service passes an explicit "" --
+        # and treating that as a decision would pin every developer-written component to the
+        # root and make the ambient scope apply to nothing that matters.
+        self._namespace = validate_namespace(namespace or current_namespace())
         self._name = name or qualified_component_name(self._namespace, camel_to_snake(self.__class__.__name__))
         if should_register:
             self.registry.add_component(self.name, self)
@@ -159,8 +170,24 @@ class Component(ABC, metaclass=_ComponentMeta):
 
     @property
     def registry(self) -> Registry:
-        """Get the component registry for accessing other components."""
-        return Component.shared_registry  # type: ignore[return-value]
+        """The component registry, as a view that answers for this component's namespace.
+
+        A namespaced component receives a *view*: an omitted ``namespace`` on any lookup means
+        this agent, resolving its own component first and a root one second. So
+        ``self.registry.get_service(OrderService)`` finds this agent's service while
+        ``self.registry.get_service(EventProcessingService)`` finds the shared root one, and
+        neither call site names a namespace -- which is the point. Two agents can then be built
+        from one declaration and each wire itself correctly.
+
+        A root-namespace component gets the registry itself, unchanged. As with
+        :attr:`config`, that is the definition rather than an optimisation: the root namespace
+        *is* the unscoped registry, so every existing single-agent application resolves exactly
+        what it resolved before.
+        """
+        registry: Registry = Component.shared_registry  # type: ignore[assignment]
+        if not self._namespace:
+            return registry
+        return registry.for_namespace(self._namespace)
 
     @property
     def config(self) -> Config:
@@ -180,6 +207,26 @@ class Component(ABC, metaclass=_ComponentMeta):
         if not self._namespace:
             return Component._shared_config
         return Component._shared_config.for_namespace(self._namespace)
+
+    @cached_property
+    def executor(self) -> ThreadPoolExecutor:
+        """This component's namespace thread pool, for running blocking work off the event loop.
+
+        Use it through ``asyncio.get_running_loop().run_in_executor(self.executor, ...)``. The
+        pool belongs to the namespace, not to the component, so every component of one agent
+        shares one and no agent can exhaust another's.
+
+        Created on first access. A component that never touches this property costs nothing, so
+        an application with no blocking work runs with no extra threads at all -- which is why
+        this is a property rather than something ``build()`` provisions.
+
+        Its size comes from ``executor_workers`` in this component's own configuration, which is
+        namespace-scoped (C5), so one agent can be sized differently from its neighbour. The
+        first component of a namespace to ask is the one that sizes it: a live pool cannot be
+        resized, and the alternative -- rejecting a later disagreeing value -- would fail an
+        application over a number nobody chose deliberately.
+        """
+        return self.registry.get_or_create_executor(self._namespace, self.config.get("executor_workers"))
 
     @cached_property
     def tracer(self) -> trace.Tracer:

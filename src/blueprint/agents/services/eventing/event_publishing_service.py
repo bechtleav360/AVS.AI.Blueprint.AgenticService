@@ -7,7 +7,7 @@ from uuid import uuid4
 from opentelemetry import trace
 
 from ...component.component import traced
-from ...component.namespace import ROOT_NAMESPACE, resolve_for_namespace
+from ...component.namespace import ROOT_NAMESPACE
 from ..service_base import ServiceBase
 from ...clients.io.io_client_base import IOClientBase
 from ...models import GenericCloudEvent
@@ -51,12 +51,14 @@ class EventPublishingService(ServiceBase):
         self._pub_config: EventPublishingConfig | None = None
 
     async def on_startup(self) -> None:
-        """Resolve this namespace's IO client and load event publishing configuration."""
-        self._client = resolve_for_namespace(
-            self.registry.get_io_clients(),
-            self.namespace,
-            description="IO transport client",
-        )
+        """Resolve this namespace's IO client and load event publishing configuration.
+
+        The resolution is the registry view's now: ``self.registry`` answers for this
+        service's namespace, so ``get_io_client`` returns this agent's transport and falls back
+        to a root one. It used to call ``resolve_for_namespace`` here by hand, because P6 needed
+        namespace resolution before the registry could do it.
+        """
+        self._client = self.registry.get_io_client(IOClientBase)
         self._pub_config = self.config.get_event_publishing_config()
 
     async def on_shutdown(self) -> None:

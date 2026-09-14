@@ -1,5 +1,6 @@
 """Unit tests for DiskCacheService."""
 
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -304,3 +305,34 @@ class TestClaim:
         with patch.object(cache_service, "_cache") as broken:
             broken.add.side_effect = OSError("disk gone")
             assert cache_service.claim("slot", 1) is True
+
+
+class TestUnwritableCacheDirectory:
+    """The production failure this cannot create its own directory for."""
+
+    def test_the_error_names_the_path_and_the_options(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A container image with a root-owned workdir, or a read-only root filesystem, both land here."""
+
+        def refuse(*_args: object, **_kwargs: object) -> None:
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(Path, "mkdir", refuse)
+
+        with pytest.raises(RuntimeError, match="could not be created") as error:
+            DiskCacheService(cache_dir=str(tmp_path / "denied"), enable_locking=False)
+
+        message = str(error.value)
+        assert "denied" in message
+        assert "mount a volume" in message
+        assert "redis" in message
+
+    def test_the_original_error_is_kept_as_the_cause(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        def refuse(*_args: object, **_kwargs: object) -> None:
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(Path, "mkdir", refuse)
+
+        with pytest.raises(RuntimeError) as error:
+            DiskCacheService(cache_dir=str(tmp_path / "denied"), enable_locking=False)
+
+        assert isinstance(error.value.__cause__, PermissionError)

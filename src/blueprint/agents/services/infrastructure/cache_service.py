@@ -183,6 +183,7 @@ class DiskCacheService(_CacheKeyMixin, CacheService):
         eviction_policy: str = "least-recently-used",
         enable_locking: bool = True,
         default_ttl: int | None = None,
+        component_name: str | None = None,
     ):
         """Initialize DiskCacheService.
 
@@ -195,10 +196,26 @@ class DiskCacheService(_CacheKeyMixin, CacheService):
                 called without an explicit ``ttl``. ``None`` means no expiration.
                 Mirrors ``RedisCacheService`` so the choice of backend does not
                 silently change TTL behaviour.
+            component_name: Registry name to use instead of the derived ``disk_cache_service``.
+                Needed because a process may hold several named caches (spec sec. 8) and two
+                instances of this class would otherwise collide on the one derived name. The
+                default keeps an existing single-cache application's registry key unchanged.
         """
-        super().__init__()
+        super().__init__(name=component_name)
         self.cache_dir = Path(cache_dir)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            # The common production failure, and the least self-explanatory: a container image
+            # whose working directory is root-owned, or a pod with `readOnlyRootFilesystem: true`
+            # and nothing mounted here. Both surface as an errno from deep inside a constructor,
+            # so the cause and the fix are named here instead.
+            raise RuntimeError(
+                f"Cache directory '{self.cache_dir}' could not be created ({error.strerror}). A container cannot "
+                "create it at runtime unless the path is writable by the user the process runs as: create it in the "
+                "image and chown it, mount a volume there if the root filesystem is read-only, point "
+                "'cache.cache_dir' somewhere writable, or use the redis cache backend, which needs no filesystem."
+            ) from error
 
         self._size_limit = size_limit
         self._eviction_policy = eviction_policy

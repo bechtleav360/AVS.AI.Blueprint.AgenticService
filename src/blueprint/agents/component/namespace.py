@@ -22,6 +22,9 @@ namespace-owned and are therefore kept in one place:
 """
 
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 ROOT_NAMESPACE = ""
@@ -114,6 +117,62 @@ def validate_namespace(namespace: str) -> str:
         )
 
     return namespace
+
+
+_CURRENT_NAMESPACE: ContextVar[str] = ContextVar("blueprint_current_namespace", default=ROOT_NAMESPACE)
+"""The namespace components are being constructed for, or the root when nothing set one.
+
+This is how a component learns its namespace **without the developer knowing namespaces exist**.
+An agent is a directory of handlers, services and clients written the same way whether it runs
+alone or beside five others; the only thing that differs is who builds it. So the namespace is
+ambient during construction rather than an argument threaded through every constructor: a
+developer writing ``class OrderService(ServiceBase)`` with ``super().__init__()`` gets a
+namespaced service without a namespace appearing anywhere in their code.
+
+A ``ContextVar`` rather than a module global because it resets deterministically and is scoped
+to the context that set it. Note the limit: a component constructed in another thread or task
+does not inherit it. Construction happens synchronously inside the builder, so that is the
+correct shape -- and a component built lazily at request time is a root component by
+construction, which is what falling back to the root gives it.
+"""
+
+
+def current_namespace() -> str:
+    """Return the namespace being constructed for, or :data:`ROOT_NAMESPACE`.
+
+    Read by ``Component.__init__``. Outside a :func:`namespace_scope` this is always the root,
+    so a single-agent application behaves exactly as it did before this existed.
+    """
+    return _CURRENT_NAMESPACE.get()
+
+
+@contextmanager
+def namespace_scope(namespace: str) -> Iterator[str]:
+    """Construct every component inside this block for ``namespace``.
+
+    Entered once per agent by whatever applies that agent's registration, and always exited:
+    leaking a namespace would silently attach the next agent -- or the framework's own root
+    components -- to the wrong one, and a registry key, a queue group and a durable name would
+    all be wrong together.
+
+    The namespace is validated on entry rather than at the first component, so an illegal name
+    is reported against the registration that declared it instead of against whichever component
+    happened to be constructed first.
+
+    Args:
+        namespace: The agent to construct for. ``""`` is the root and makes the block a no-op.
+
+    Yields:
+        The namespace in force inside the block.
+
+    Raises:
+        ValueError: if the namespace is not a legal namespace.
+    """
+    token = _CURRENT_NAMESPACE.set(validate_namespace(namespace))
+    try:
+        yield namespace
+    finally:
+        _CURRENT_NAMESPACE.reset(token)
 
 
 def display_segment(value: str, placeholder: str) -> str:

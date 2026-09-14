@@ -5,8 +5,10 @@ import pytest
 from blueprint.agents.component.namespace import (
     ROOT_LABEL,
     ROOT_NAMESPACE,
+    current_namespace,
     display_segment,
     namespace_of,
+    namespace_scope,
     qualified_component_name,
     resolve_for_namespace,
     validate_namespace,
@@ -127,3 +129,48 @@ class TestDisplaySegment:
 
     def test_an_empty_value_becomes_the_placeholder(self) -> None:
         assert display_segment("   ", "<none>") == "<none>"
+
+
+class TestAmbientNamespace:
+    """The scope that lets a developer-written component be namespaced without saying so."""
+
+    def test_the_root_is_in_force_by_default(self) -> None:
+        """A single-agent application never enters a scope, so nothing may change for it."""
+        assert current_namespace() == ROOT_NAMESPACE
+
+    def test_a_scope_sets_the_namespace(self) -> None:
+        with namespace_scope("orders"):
+            assert current_namespace() == "orders"
+
+    def test_the_scope_is_left_on_the_way_out(self) -> None:
+        with namespace_scope("orders"):
+            pass
+        assert current_namespace() == ROOT_NAMESPACE
+
+    def test_the_scope_is_left_even_when_the_block_raises(self) -> None:
+        """A leaked namespace would attach the next agent, or a root component, to the wrong one."""
+        with pytest.raises(RuntimeError):
+            with namespace_scope("orders"):
+                raise RuntimeError("component construction failed")
+        assert current_namespace() == ROOT_NAMESPACE
+
+    def test_scopes_restore_the_previous_namespace_not_the_root(self) -> None:
+        with namespace_scope("orders"):
+            with namespace_scope("billing"):
+                assert current_namespace() == "billing"
+            assert current_namespace() == "orders"
+
+    def test_the_root_scope_is_a_no_op(self) -> None:
+        with namespace_scope(ROOT_NAMESPACE):
+            assert current_namespace() == ROOT_NAMESPACE
+
+    def test_an_illegal_namespace_is_rejected_on_entry(self) -> None:
+        """Reported against the registration that declared it, not the first component built."""
+        with pytest.raises(ValueError, match="legal namespace"):
+            with namespace_scope("Orders"):
+                pass
+        assert current_namespace() == ROOT_NAMESPACE
+
+    def test_the_scope_yields_its_namespace(self) -> None:
+        with namespace_scope("orders") as namespace:
+            assert namespace == "orders"

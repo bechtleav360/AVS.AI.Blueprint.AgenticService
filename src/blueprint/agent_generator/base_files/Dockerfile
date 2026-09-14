@@ -60,6 +60,12 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 COPY --chown=appuser:appuser src ./src
 COPY --chown=appuser:appuser settings.toml ./
 
+# The disk cache backend writes here, and it cannot create this itself: WORKDIR made /app
+# root-owned, so mkdir() as appuser fails with EACCES. Created and handed over at build time,
+# which is also the mount point to use under a read-only root filesystem -- see the
+# "Writable cache directory" section of docs/guides/deployment.md.
+RUN mkdir -p /app/.cache && chown -R appuser:appuser /app/.cache
+
 # Note: secrets.toml is NOT copied into the image.
 # Mount it at runtime via Docker secrets or volume mount.
 # Example (Docker Swarm):
