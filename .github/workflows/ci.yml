@@ -30,14 +30,4 @@ jobs:
         run: mypy src
 
       - name: Run unit tests
-        run: python -m pytest tests/unit -v --tb=short -m "not contract"
-
-      - name: Run live contract tests
-        # Separate step so GITHUB_TOKEN is scoped only here, not to the whole unit
-        # suite, for a single network-dependent drift guard (review, PR #95, finding
-        # 4). Skips gracefully if this repo's GITHUB_TOKEN doesn't have cross-repo
-        # read into service-sessions (a private repo) — that's an org-policy setting,
-        # not this token.
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python -m pytest tests/unit -v --tb=short -m contract
+        run: python -m pytest tests/unit -v --tb=short

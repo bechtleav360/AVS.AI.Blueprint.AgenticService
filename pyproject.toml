@@ -57,7 +57,6 @@ ci = [
     "fakeredis>=2.26.0",
     "redis[hiredis]>=5.0.0",
     "respx>=0.22.0",
-    "pyyaml>=6.0.3",
 ]
 redis = ["redis[hiredis]>=5.0.0"]
 dev = [

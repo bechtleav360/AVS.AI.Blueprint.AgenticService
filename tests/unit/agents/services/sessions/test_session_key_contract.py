@@ -9,50 +9,40 @@ own committed, drift-guarded spec (that repo's ``tests/integration/test_openapi_
 fails its build if the spec and the generated schema disagree), and asserts the request this
 client actually sends satisfies it.
 
-Lives under ``tests/unit/`` rather than ``tests/integration/`` — despite being a contract
-pin — because it has no external dependency (pure ``respx``, same as the rest of
-``test_key_provider.py``) and ``ci.yml`` only ever runs ``pytest tests/unit``; a copy under
-``tests/integration/`` would never actually execute in CI (review, PR #95).
-
 Pinned from ``bechtleav360/avs.ai.idac.service-sessions``, ``docs/openapi.yaml``, path
 ``/internal/jobs/{job_id}/session-key``, from two distinct parts of the spec:
 ``X-Agent-Id`` is a route-level ``parameters`` entry; ``X-Api-Key`` is not a
 ``parameters`` entry at all — it's the global `ApiKey` `securitySchemes` entry
 (`type: apiKey, in: header, name: X-Api-Key`), applied via `security: [ApiKey: []]` both
-globally and on this route (review, PR #95: the previous version of this pin listed both
-under one `parameters` list, which misrepresented where `X-Api-Key` actually comes from).
-Refresh `_PINNED_PARAMETERS`/`_PINNED_SECURITY_HEADER` if either part of the upstream
-contract changes — `test_pin_matches_live_upstream_spec` fails loudly when it does.
+globally and on this route. Refresh `_PINNED_PARAMETERS`/`_PINNED_SECURITY_HEADER` by hand
+if either part of the upstream contract changes.
 
-``test_pin_matches_live_upstream_spec`` fetches upstream's `develop` branch HEAD, not a
-frozen commit (review, PR #95, finding 3): a pin to an immutable SHA can never observe a
-contract change made *after* that commit, so it would stay green forever regardless of
-real drift — inert by construction, the opposite of what its own docstring claimed.
+This pin is hand-maintained, not automatically drift-checked: a live fetch of the upstream
+spec from this repo's CI can't actually authenticate — service-sessions is a private repo,
+and the default `GITHUB_TOKEN` GitHub Actions provides is scoped to the repo the workflow
+runs in, not other private repos in the org, regardless of `permissions:` settings on this
+side. A prior version of this test attempted that live fetch and skipped unconditionally in
+CI as a result — inert by construction, the opposite of the drift guard it claimed to be.
+Actually detecting drift belongs on the service-sessions side, which already has read access
+to its own spec — tracked as bechtleav360/avs.ai.idac.service-sessions#238 (a job there that
+opens an issue/PR here when the relevant part of the contract changes).
 """
 
 from __future__ import annotations
 
-import os
 from typing import Any
 from uuid import uuid4
 
 import httpx
-import pytest
 import respx
-import yaml
 from cachetools import TTLCache
 
 from blueprint.agents.services.sessions.key_provider import SessionKeyProvider
 
-_UPSTREAM_REPO = "bechtleav360/avs.ai.idac.service-sessions"
-_UPSTREAM_REF = "develop"  # moving target, deliberately — see module docstring
-_UPSTREAM_PATH = "docs/openapi.yaml"
-_UPSTREAM_ROUTE = "/internal/jobs/{job_id}/session-key"
-
-# Transcribed by hand rather than parsed from a checked-out copy of the YAML — this repo
-# has no dependency on service-sessions' sources or docs, and a hand-pin makes the "refresh
-# this if the upstream contract changes" note above actually actionable (there is nothing to
-# re-fetch automatically).
+# Transcribed by hand from service-sessions' docs/openapi.yaml rather than parsed from a
+# checked-out copy — this repo has no dependency on service-sessions' sources or docs, and
+# a hand-pin makes the "refresh this if the upstream contract changes" note above actually
+# actionable (there is nothing to re-fetch automatically).
 _PINNED_PARAMETERS: list[dict[str, Any]] = [
     {"name": "X-Agent-Id", "in": "header", "required": True, "schema": {"type": "string"}},
 ]
@@ -64,30 +54,6 @@ _JOB_REMOTE_URL = "http://sessions.local:8001"
 
 def _required_headers() -> set[str]:
     return {p["name"] for p in _PINNED_PARAMETERS if p["in"] == "header" and p["required"]} | {_PINNED_SECURITY_HEADER}
-
-
-def _fetch_upstream_spec() -> dict[str, Any] | None:
-    """Fetch `openapi.yaml` from upstream's `develop` HEAD, or `None` if unreachable.
-
-    service-sessions is a private repo, so this needs a token with read access — uses
-    `GITHUB_TOKEN`/`GH_TOKEN` from the environment if set (Actions always provides
-    `GITHUB_TOKEN` to a job; whether it can read *another* private repo in the org is a
-    separate org-policy setting this test can't control or verify). Any failure to reach
-    or read the spec — no token, no cross-repo grant, network down, repo/path renamed —
-    is a skip, not a failure: this test's job is to catch upstream *contract* drift, not
-    to gate the build on network/infra availability it doesn't own.
-    """
-    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-    headers = {"Accept": "application/vnd.github.raw+json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    url = f"https://api.github.com/repos/{_UPSTREAM_REPO}/contents/{_UPSTREAM_PATH}?ref={_UPSTREAM_REF}"
-    try:
-        response = httpx.get(url, headers=headers, timeout=10.0)
-        response.raise_for_status()
-    except httpx.HTTPError:
-        return None
-    return yaml.safe_load(response.text)
 
 
 def _make_job_provider() -> SessionKeyProvider:
@@ -127,39 +93,3 @@ class TestSessionKeyJobFetchMatchesPublishedContract:
         # string on the actual request is drift, not just the historical `?agent_id=...`
         # shape #94 hit.
         assert not dict(request.url.params), f"contract declares no query params, request sent: {dict(request.url.params)}"
-
-    @pytest.mark.contract
-    def test_pin_matches_live_upstream_spec(self) -> None:
-        """Catches the drift direction the tests above can't: service-sessions changing
-        its published contract without this pin being updated to match (review, PR #95
-        — the hand-copied pin alone only ever catches *this client* drifting from itself).
-        Skips, rather than fails, when the upstream spec can't be reached (see
-        `_fetch_upstream_spec`) — a mismatch is a real failure; unreachable infra isn't.
-
-        Marked `contract` (review, PR #95, finding 4) so `ci.yml` can scope the
-        `GITHUB_TOKEN` it needs to just this test instead of handing it to the entire
-        `tests/unit` suite for one guard.
-        """
-        spec = _fetch_upstream_spec()
-        if spec is None:
-            pytest.skip(
-                "Could not reach upstream service-sessions openapi.yaml (no token/cross-repo access, or network) — pin not verified this run."
-            )
-
-        # Compare only the wire-relevant keys — `description` is documentation, not
-        # contract, and the pin deliberately doesn't carry it (see comment above it).
-        wire_keys = {"name", "in", "required", "schema"}
-        live_params = [
-            {k: v for k, v in p.items() if k in wire_keys}
-            for p in spec["paths"][_UPSTREAM_ROUTE]["get"]["parameters"]
-            if p["in"] == "header"
-        ]
-        assert live_params == _PINNED_PARAMETERS, (
-            f"service-sessions' published header parameters for {_UPSTREAM_ROUTE} no longer "
-            f"match the pin.\nlive: {live_params}\npinned: {_PINNED_PARAMETERS}"
-        )
-
-        live_security_header = spec["components"]["securitySchemes"].get("ApiKey", {}).get("name")
-        assert live_security_header == _PINNED_SECURITY_HEADER, (
-            f"service-sessions' ApiKey securityScheme header changed: live={live_security_header!r}, pinned={_PINNED_SECURITY_HEADER!r}"
-        )
