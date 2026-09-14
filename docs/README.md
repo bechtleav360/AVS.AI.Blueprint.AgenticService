@@ -18,7 +18,7 @@ Blueprint Agents is a Python 3.13+ framework for building AI-powered microservic
 |-------|-------------|
 | [Architecture](concepts/architecture.md) | AppBuilder pattern, component lifecycle, and dependency injection |
 | [Event Processing](concepts/event-processing.md) | Event handler pipeline, message routing, and processing model |
-| [Configuration](concepts/configuration.md) | Dynaconf-based config with `settings.toml` and `secrets.toml` |
+| [Configuration](concepts/configuration.md) | Dynaconf-based config with `settings.toml` and `.secrets.toml` |
 | [Caching](concepts/caching.md) | Declaring caches, the disk and Redis backends, TTL, namespaces, readiness and the management API |
 | [Observability](concepts/observability.md) | Logging, metrics, tracing, and health checks |
 
@@ -53,5 +53,5 @@ Blueprint Agents is a Python 3.13+ framework for building AI-powered microservic
 | Reference | Description |
 |-----------|-------------|
 | [API Reference](reference/api.md) | Public API surface for all framework modules |
-| [Configuration Keys](reference/configuration-keys.md) | Complete list of `settings.toml` and `secrets.toml` keys |
+| [Configuration Keys](reference/configuration-keys.md) | Complete list of `settings.toml` and `.secrets.toml` keys |
 | [Models](reference/models.md) | Built-in Pydantic models and base classes |

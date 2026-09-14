@@ -4,11 +4,12 @@ These tests require a real Redis server. They are skipped automatically
 when Redis is not reachable, so CI does not need a Redis sidecar unless
 you explicitly want to run them.
 
-Run with a local Redis:
-    docker run -d -p 6379:6379 redis:alpine
+Run with the services this directory's compose file stands up:
+    docker compose -f tests/integration/docker-compose.yml up -d
     pytest tests/integration/test_shared_redis_cache.py -v
 """
 
+import json
 import subprocess
 import sys
 import textwrap
@@ -16,8 +17,13 @@ import textwrap
 import pytest
 import redis
 
+from .conftest import COMPOSE_HINT
+
 REDIS_URL = "redis://localhost:6379/0"
 KEY_PREFIX = "pytest_shared_cache"
+
+IMPORT_BUDGET_SECONDS = 60
+"""What the reader subprocess is allowed, almost all of it spent importing. See ``_run_reader``."""
 
 
 # ---------------------------------------------------------------------------
@@ -32,7 +38,7 @@ def redis_url() -> str:
         client.ping()
         client.close()
     except Exception:
-        pytest.skip("Redis is not available at localhost:6379 — skipping integration tests")
+        pytest.skip("Redis is not available at localhost:6379. Start it with: " + COMPOSE_HINT)
     return REDIS_URL
 
 
@@ -65,6 +71,13 @@ def _run_reader(redis_url: str, key: str, namespace: str, key_prefix: str) -> di
     """Spawn a subprocess that creates its own RedisCacheService and reads one key.
 
     Returns the cached value (dict) if the key is found, otherwise None.
+
+    **The timeout is an import budget, not a Redis one.** The child imports
+    ``blueprint.agents`` -- and through it pydantic-ai -- before it touches the cache at all,
+    which measures 11.5s cold on a Windows developer machine. The original 10s therefore failed
+    this test on the first run where Redis was actually up, with a ``TimeoutExpired`` traceback
+    pointing at ``subprocess.py`` rather than at anything in this repository. The read itself is
+    a single round trip to localhost.
     """
     script = textwrap.dedent(f"""
         import json, sys
@@ -76,17 +89,28 @@ def _run_reader(redis_url: str, key: str, namespace: str, key_prefix: str) -> di
             sys.exit(1)
         print(json.dumps(value))
     """)
-    result = subprocess.run(
-        [sys.executable, "-c", script],
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    if result.returncode != 0:
-        return None
     try:
-        import json
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=IMPORT_BUDGET_SECONDS,
+        )
+    except subprocess.TimeoutExpired as expired:
+        raise AssertionError(
+            f"The reader subprocess did not finish within {IMPORT_BUDGET_SECONDS}s. It spends most of that "
+            "importing the framework, so this is a slow machine or a slow import rather than a slow cache."
+        ) from expired
 
+    if result.returncode != 0:
+        # The child exits 1 for a cache miss, which is a legitimate answer, and non-zero for
+        # anything else -- which is not, and used to be reported as a miss. Its stderr is the
+        # only account of what went wrong, so it travels with the None.
+        if result.stderr.strip():
+            raise AssertionError("The reader subprocess failed:\n" + result.stderr.strip())
+        return None
+
+    try:
         return json.loads(result.stdout.strip())
     except Exception:
         return None

@@ -99,6 +99,75 @@ _SUBJECT_UNUSABLE = re.compile(r"[*>\s]")
 """What a subject a component publishes to or subscribes to cannot contain."""
 
 
+def subject_is_covered_by(subject: str, pattern: str) -> bool:
+    """Whether ``pattern`` -- a NATS subject, possibly with wildcards -- already matches ``subject``.
+
+    NATS has two wildcards: ``*`` stands for exactly one token, and ``>`` for one or more and only
+    as the last token. A stream configured with ``orders.>`` therefore already captures
+    ``orders.created``, even though the two strings are not equal.
+
+    This exists because comparing them as strings says otherwise. A stream provisioned by an
+    operator with a wildcard looks, to a set difference, as though it is missing every literal
+    subject the client wants -- so the client asks the server to add them, and the server refuses
+    the update with *subject "orders.>" overlaps with "orders.created"*. What the client then logs
+    is that consumers filtering those subjects will fail to bind, which is false: the wildcard
+    covers them and they bind perfectly well. The message is the defect, not the stream.
+
+    Args:
+        subject: A concrete subject, with no wildcards of its own.
+        pattern: A stream subject, which may have them.
+
+    Returns:
+        Whether a message on ``subject`` would be captured by ``pattern``.
+    """
+    if pattern == subject:
+        return True
+
+    pattern_tokens = pattern.split(".")
+    subject_tokens = subject.split(".")
+
+    for index, token in enumerate(pattern_tokens):
+        if token == ">":
+            # Matches the rest, and there has to be a rest: 'a.>' does not match 'a'.
+            return index < len(subject_tokens)
+        if index >= len(subject_tokens):
+            return False
+        if token != "*" and token != subject_tokens[index]:
+            return False
+
+    return len(pattern_tokens) == len(subject_tokens)
+
+
+def validate_publish_subject(subject: str, *, source: str) -> str:
+    """Return ``subject`` unchanged, or raise if it cannot be published to.
+
+    The sibling of :func:`validate_subject_segment`, for a whole subject rather than one of its
+    segments -- so dots are legal here and only whitespace, ``*`` and ``>`` are not.
+
+    **A wildcard is the one worth naming.** ``orders.*`` is a perfectly good thing to *subscribe*
+    to and a meaningless thing to publish to: NATS treats it as a literal subject, so the message
+    goes to a subject spelled with an asterisk and every subscriber to the pattern misses it.
+    Nothing fails, and nothing arrives. Refusing it at startup is the only place that is cheap.
+
+    Args:
+        subject: The subject something would publish to.
+        source: Where it came from, named in the error so the fix is obvious.
+
+    Raises:
+        ValueError: if the subject is empty or contains whitespace, ``*`` or ``>``.
+    """
+    if not subject:
+        raise ValueError(f"{source} is empty, so there is nothing to publish to.")
+    if _SUBJECT_UNUSABLE.search(subject):
+        raise ValueError(
+            f"{source} is '{subject}', which cannot be published to: whitespace, '*' and '>' are not usable in a "
+            "subject a message is sent to. A wildcard is only meaningful when subscribing -- published, it is "
+            "taken literally, so the message lands on a subject with an asterisk in it and no subscriber to the "
+            "pattern receives it."
+        )
+    return subject
+
+
 def validate_subject_segment(segment: str, *, source: str, subject: str) -> str:
     """Return ``segment`` unchanged, or raise if it cannot appear in a subject.
 

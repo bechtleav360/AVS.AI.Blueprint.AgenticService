@@ -26,7 +26,9 @@ import importlib
 import logging
 import sys
 from collections.abc import Collection, Mapping
+from enum import Enum
 from pathlib import Path
+from types import BuiltinFunctionType, FunctionType, MethodType, ModuleType
 
 from fastapi import FastAPI
 
@@ -36,6 +38,44 @@ from .config import Config
 from .group_config import AgentSpec, GroupConfig, GroupConfigError
 
 logger = logging.getLogger(__name__)
+
+
+SHAREABLE_TYPES: tuple[type, ...] = (
+    type(None),
+    bool,
+    int,
+    float,
+    complex,
+    str,
+    bytes,
+    frozenset,
+    range,
+    Enum,
+    type,
+    FunctionType,
+    BuiltinFunctionType,
+    MethodType,
+    ModuleType,
+)
+"""What one declaration may hand to two agents at once: code, and values that cannot change.
+
+The distinction is **code versus data**. Two agents built from one declaration already share the
+component *class* -- that is what a declaration is -- and a class, a function or a module is
+behaviour rather than something an agent can write into. A list, a dict, a set or an ordinary
+instance is state, and a shared one is a channel between two agents that nothing else in the
+framework would let them open.
+
+Arbitrary instances are refused even when their author considers them immutable: "frozen" is not
+decidable from the object, and the cost of being wrong is silent cross-agent sharing while the
+cost of being conservative is one keyword in a declaration.
+"""
+
+
+def is_shareable(value: object) -> bool:
+    """Whether ``value`` may be handed to more than one agent. See :data:`SHAREABLE_TYPES`."""
+    if isinstance(value, tuple):
+        return all(is_shareable(item) for item in value)
+    return isinstance(value, SHAREABLE_TYPES)
 
 
 class AgentGroup:
@@ -311,6 +351,7 @@ class AgentGroup:
 
         for namespace, builder in self._agents.items():
             self._refuse_what_a_group_cannot_honour(namespace, builder)
+        self._refuse_state_shared_between_agents()
 
         # Before anything is constructed, and before the root builder adopts the configuration:
         # every component reads its keys through its agent's scoped view during build(), so a
@@ -332,6 +373,62 @@ class AgentGroup:
                     declaration.replay(root)
 
         return root.build()
+
+    def _refuse_state_shared_between_agents(self) -> None:
+        """Refuse one declaration handing the same mutable object to two agents.
+
+        A group's central property is that one declaration can serve several agents -- the same
+        ``AppBuilder`` named twice in the map, replayed once per namespace. Replay re-issues the
+        recorded call, and ``_construct`` spreads the recorded ``kwargs`` into the constructor;
+        ``**`` copies the *mapping* and not its values, so both agents are constructed with the
+        very same object::
+
+            declaration = AppBuilder().with_service(Ledger, holdings=[])
+            AgentGroup("finance", {"orders": declaration, "billing": declaration})
+            # orders' ledger and billing's ledger hold one list
+
+        Whatever one agent puts in it, the other reads. That is a channel between two agents that
+        nothing else in the framework would let them open, and it needs no lookup at all.
+
+        **Refused rather than copied.** ``deepcopy`` would close the hole silently and change what
+        the author wrote -- a connection pool or a client passed deliberately would be duplicated
+        per agent, and objects holding a lock or a socket cannot be copied at all, so the failure
+        would arrive later and somewhere else. A refusal arrives at assembly, names the argument,
+        and leaves the decision where it belongs.
+
+        The fix needs no new API: a declaration's target may be a **zero-argument factory**, which
+        is called once per agent, so ``with_service(lambda: Ledger(holdings=[]))`` gives each agent
+        its own. Declaring the component separately per agent works too.
+
+        Only a declaration used by **more than one agent** is checked. A single-agent declaration
+        may carry whatever its author likes, because there is nobody to share it with -- which is
+        *standalone is permissive, the group has rules* applied to the one case that is genuinely
+        about the group.
+
+        Raises:
+            ValueError: naming the agents, the call, the argument and the way out.
+        """
+        by_identity: dict[int, list[str]] = {}
+        builders: dict[int, AppBuilder] = {}
+        for namespace, builder in self._agents.items():
+            by_identity.setdefault(id(builder), []).append(namespace)
+            builders[id(builder)] = builder
+
+        for identity, namespaces in by_identity.items():
+            if len(namespaces) < 2:
+                continue
+            for declaration in builders[identity].declarations:
+                for argument, value in declaration.kwargs.items():
+                    if is_shareable(value):
+                        continue
+                    raise ValueError(
+                        f"One declaration serves agents {', '.join(repr(name) for name in namespaces)}, and its "
+                        f"{declaration.kind} call passes '{argument}' as a {type(value).__name__}, which every one "
+                        "of them would then hold the same object of -- so a value written by one agent is read by "
+                        "the others. Pass a zero-argument factory instead, which is called once per agent "
+                        f"(with_{declaration.kind}(lambda: ...)), or declare this component separately for each "
+                        "agent. Immutable values and classes, functions and modules are shared as they are."
+                    )
 
     @staticmethod
     def _refuse_what_a_group_cannot_honour(namespace: str, builder: AppBuilder) -> None:

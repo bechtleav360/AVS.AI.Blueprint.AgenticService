@@ -1,5 +1,5 @@
 [default]
-app_name = "Health Monitor"
+app_name = "health-monitor"
 app_port = 8000
 app_environment = "development"
 log_level = "INFO"

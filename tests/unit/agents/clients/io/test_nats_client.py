@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from nats.js import api as js_api
 
+from blueprint.agents.clients.io.io_client_base import subject_is_covered_by
 from blueprint.agents.clients.io.nats_client import ConsumerTuning, NATSClient
 from blueprint.agents.models.errors import CriticalHandlerError, InvalidEventError, RetryableHandlerError
 from blueprint.agents.models.events import CloudEvent
@@ -474,13 +475,35 @@ class TestNATSClientPublish:
         mock_nc, mock_js = mock_nats_jetstream
         nats_client._nats_client = mock_nc
         nats_client._client = mock_nc
-        nats_client._use_jetstream = True
+        # The publish mode, not the consumption flag: this used to set _use_jetstream, which is
+        # the coupling the two keys now separate.
+        nats_client._publish_via_jetstream = True
 
         await nats_client.publish("js-topic", cloud_event)
 
         mock_js.publish.assert_awaited_once()
         topic_arg = mock_js.publish.call_args[0][0]
         assert topic_arg == "js-topic"
+
+    async def test_durable_consumption_alone_does_not_make_publishing_durable(
+        self,
+        nats_client: NATSClient,
+        mock_nats_jetstream: tuple,
+        cloud_event: CloudEvent,
+    ) -> None:
+        """The separation, stated: `nats_use_jetstream` is about consumers. A client consuming
+        durably and publishing fire-and-forget is a legitimate shape, and used to be unreachable.
+        """
+        mock_nc, mock_js = mock_nats_jetstream
+        nats_client._nats_client = mock_nc
+        nats_client._client = mock_nc
+        nats_client._use_jetstream = True
+        nats_client._publish_via_jetstream = False
+
+        await nats_client.publish("core-topic", cloud_event)
+
+        mock_js.publish.assert_not_awaited()
+        mock_nc.publish.assert_awaited_once()
 
     async def test_publish_raises_on_nats_error(
         self,
@@ -1626,3 +1649,136 @@ class TestPausingADegradedAgent:
             await subscribed._on_reconnected()
         subscribe_all.assert_not_awaited()
         assert subscribed.subscriptions_ready is False
+
+
+class TestNATSClientPublishMode:
+    """Publishing and consuming are two decisions, and used to share one key.
+
+    ``nats_use_jetstream`` exists so *consumers* can be durable. ``publish()`` read the same
+    flag, so turning durability on for consumption silently made every outbound event a
+    JetStream publish -- which stalls and is dropped when the subject is not in the stream.
+    """
+
+    def test_it_follows_the_consumption_flag_when_unset(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        """No existing deployment changes: unset, the behaviour is exactly what it was."""
+        mock_config.get.side_effect = lambda key, default=None: {"nats_publish_mode": None}.get(key, default)
+        nats_client._use_jetstream = True
+
+        assert nats_client._resolve_publish_mode() is True
+
+    def test_core_can_be_chosen_while_consuming_durably(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        """The case the split exists for: durable consumption, fire-and-forget notifications."""
+        mock_config.get.side_effect = lambda key, default=None: {"nats_publish_mode": "core"}.get(key, default)
+        nats_client._use_jetstream = True
+
+        assert nats_client._resolve_publish_mode() is False
+
+    def test_jetstream_can_be_chosen_while_consuming_from_core(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        mock_config.get.side_effect = lambda key, default=None: {"nats_publish_mode": "JetStream "}.get(key, default)
+        nats_client._use_jetstream = False
+
+        assert nats_client._resolve_publish_mode() is True
+
+    def test_an_unknown_mode_is_refused_with_both_meanings(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        mock_config.get.side_effect = lambda key, default=None: {"nats_publish_mode": "durable"}.get(key, default)
+
+        with pytest.raises(ValueError, match="must be 'core' or 'jetstream'"):
+            nats_client._resolve_publish_mode()
+
+
+class TestNATSClientPublishSubjects:
+    """What the client declares it may publish to, and what the stream therefore carries."""
+
+    @staticmethod
+    def _config(mock_config: MagicMock, **values: object) -> None:
+        mock_config.get.side_effect = lambda key, default=None: values.get(key, default)
+
+    def test_the_configured_topic_mapping_is_the_source(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        """Where an outbound subject is already written down: a HandlerResult is routed by it."""
+        self._config(
+            mock_config,
+            **{"event_publishing.topic_mapping": {"order.validated": {"topic": "orders.validated"}}},
+        )
+
+        assert nats_client._resolve_publish_subjects() == {"orders.validated"}
+
+    def test_an_explicit_list_covers_what_the_mapping_cannot(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        """``publish_event(topic=...)`` bypasses the mapping, so it needs somewhere to be said."""
+        self._config(mock_config, nats_publish_subjects=["audit.trail"])
+
+        assert nats_client._resolve_publish_subjects() == {"audit.trail"}
+
+    def test_a_wildcard_topic_is_refused(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        """Published, a wildcard is taken literally: the message lands on a subject with an
+        asterisk in it and no subscriber to the pattern receives it."""
+        self._config(mock_config, **{"event_publishing.topic_mapping": {"order.validated": {"topic": "orders.*"}}})
+
+        with pytest.raises(ValueError, match="only meaningful when subscribing"):
+            nats_client._resolve_publish_subjects()
+
+    def test_a_greater_than_wildcard_is_refused_too(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        self._config(mock_config, nats_publish_subjects=["orders.>"])
+
+        with pytest.raises(ValueError, match="cannot be published to"):
+            nats_client._resolve_publish_subjects()
+
+    def test_whitespace_is_refused(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        self._config(mock_config, nats_publish_subjects=["orders validated"])
+
+        with pytest.raises(ValueError, match="cannot be published to"):
+            nats_client._resolve_publish_subjects()
+
+    def test_the_stream_carries_what_is_published_durably(self, nats_client: NATSClient) -> None:
+        """The defect this closes: the stream covered what was subscribed and nothing else, so a
+        JetStream publish waited for an acknowledgement no stream would send."""
+        nats_client._topic_callbacks = {"orders.created": AsyncMock()}
+        nats_client._publish_subjects = {"orders.validated"}
+        nats_client._publish_via_jetstream = True
+
+        assert "orders.validated" in nats_client._stream_subjects()
+
+    def test_the_stream_does_not_carry_them_when_publishing_is_fire_and_forget(self, nats_client: NATSClient) -> None:
+        """Core publishing stores nothing, so widening the stream for it would claim subjects
+        this deployment has no reason to own."""
+        nats_client._topic_callbacks = {"orders.created": AsyncMock()}
+        nats_client._publish_subjects = {"orders.validated"}
+        nats_client._publish_via_jetstream = False
+
+        assert "orders.validated" not in nats_client._stream_subjects()
+
+
+class TestStreamSubjectCoverage:
+    """A wildcard on the stream already carries the literals underneath it.
+
+    Compared as strings they look absent, so the client asked the server to add them and the
+    server refused the update as an overlap -- and the client then logged that consumers would
+    fail to bind, when the wildcard means they bind fine. The message was the defect.
+    """
+
+    @pytest.mark.parametrize(
+        ("subject", "pattern", "covered"),
+        [
+            ("orders.created", "orders.created", True),
+            ("orders.created", "orders.>", True),
+            ("orders.created", "orders.*", True),
+            ("orders.created.eu", "orders.>", True),
+            ("orders.created.eu", "orders.*", False),
+            ("orders.created", "billing.>", False),
+            ("orders", "orders.>", False),
+            ("orders.created", "*.created", True),
+            ("orders.created", "orders.created.>", False),
+        ],
+    )
+    def test_coverage(self, subject: str, pattern: str, covered: bool) -> None:
+        assert subject_is_covered_by(subject, pattern) is covered
+
+    def test_a_wildcard_stream_needs_no_widening(self, nats_client: NATSClient) -> None:
+        """The case the harness hits every run: an operator-provisioned `orders.>` stream, and a
+        client subscribing a literal beneath it. Every subject it wants is already carried."""
+        nats_client._topic_callbacks = {"orders.created": AsyncMock()}
+        nats_client._tuning = None
+
+        wanted = {subject for subject in nats_client._stream_subjects() if subject.startswith("orders.")}
+
+        assert wanted, "the client wanted no subjects at all, so this asserts nothing"
+        assert all(subject_is_covered_by(subject, "orders.>") for subject in wanted)

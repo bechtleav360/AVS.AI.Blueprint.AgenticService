@@ -275,14 +275,17 @@ class ActuatorApi(RestApiBase):
         settings = config.settings
         environment = getattr(settings, "current_env", "unknown")
 
+        # One call, both shapes: on the application's own configuration this is the whole tree,
+        # and on a view it is that agent's own resolved keys. The branch used to hand a view
+        # `settings.as_dict()` -- the *unscoped* tree -- while its comment claimed the opposite,
+        # so a scoped actuator would have served every agent's configuration over HTTP.
+        raw_config = config.resolved_settings()
+
+        # The per-agent breakdown is the operator's view of the whole process, so it exists only
+        # on the application's own configuration. Listing neighbours from inside an agent is the
+        # thing C6 exists to prevent, and `config.namespaces` refuses on a view for that reason.
         namespaces: dict[str, dict[str, Any]] = {}
-        if config.is_view:
-            # An agent-scoped actuator reports its own scope and nothing else: resolving for
-            # another namespace is refused on a view (C6), and listing neighbours is the thing
-            # C6 exists to prevent.
-            raw_config = self._as_dict(settings)
-        else:
-            raw_config = config.resolved_settings()
+        if not config.is_view:
             namespaces = {name: self._sanitize_config(config.resolved_settings(name)) for name in config.namespaces}
 
         logger.info(
@@ -299,14 +302,6 @@ class ActuatorApi(RestApiBase):
             namespaces=namespaces,
         )
 
-    @staticmethod
-    def _as_dict(settings: Any) -> dict[str, Any]:
-        """Return the settings tree as a plain dictionary, or ``{}`` if it cannot be read."""
-        try:
-            return dict(settings.as_dict())
-        except AttributeError:  # pragma: no cover - defensive
-            return {}
-
     @RestApiBase.get("/status/llm", response_model=LLMStatus, tags=["Status"], summary="Returns AI provider configuration and diagnostics.")
     async def llm_status(self) -> LLMStatus:
         """Expose AI configuration and provider diagnostics."""
@@ -316,7 +311,9 @@ class ActuatorApi(RestApiBase):
         ai_config_dict = (
             ai_config_model.model_dump()
             if hasattr(ai_config_model, "model_dump")
-            else ai_config_model.dict() if hasattr(ai_config_model, "dict") else {}
+            else ai_config_model.dict()
+            if hasattr(ai_config_model, "dict")
+            else {}
         )
         ai_config = self._sanitize_config(ai_config_dict)
 

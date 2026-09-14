@@ -1,5 +1,5 @@
 [default]
-app_name = "Document Summarizer"
+app_name = "document-summarizer"
 app_port = 8000
 app_environment = "development"
 log_level = "INFO"

@@ -132,8 +132,8 @@ agent's namespace is that name in snake case (`order_processor`).
     services/
   agents.toml          # agent name -> declaration; baked into the image
   settings.toml
-  secrets.toml         # git-ignored
-  secrets.toml.example # committed, so the keys to fill in are known
+  .secrets.toml          # git-ignored
+  .secrets.toml.example  # committed, so the keys to fill in are known
   Dockerfile
   .gitignore
 ```
@@ -703,7 +703,7 @@ Project shape:
 
 - Required directories (`src/`, `tests/`) and files (`settings.toml`, `pyproject.toml`) exist
 - `src/main.py` exists and uses `AppBuilder`
-- `secrets.toml.example` and `secrets.toml` are present
+- `.secrets.toml.example` and `.secrets.toml` are present
 - A `Dockerfile` is present
 
 Group readiness -- what this project must state before it can be hosted beside another agent:

@@ -16,6 +16,8 @@ from pathlib import Path
 
 import pytest
 
+from blueprint.agents.clients.io.io_client_base import validate_subject_segment
+
 EXAMPLES_DIR = Path(__file__).resolve().parents[3] / "examples"
 
 NOT_PROJECTS: dict[str, str] = {
@@ -98,6 +100,24 @@ class TestEveryProjectIsRunnable:
             f"examples/{example.name} declares no app_name. It is the fallback identity for a root-namespace "
             "application -- the NATS queue group among other things -- so an example without one is not runnable."
         )
+
+    @pytest.mark.parametrize("example", project_examples(), ids=example_id)
+    def test_its_app_name_can_be_a_queue_group(self, example: Path) -> None:
+        """Since P1, a root-namespace application's ``app_name`` *is* its NATS queue group, and
+        the dead-letter subject is derived from it -- so a space in it is a subject the broker
+        rejects, and the application raises at subscribe time.
+
+        Every example carried one. Only ``webhook_relay`` was actually broken, because it is the
+        only one on ``event_bus = "nats"``; the other four were an illegal value waiting for
+        somebody to switch bus. An example that demonstrates a value the framework refuses is
+        worse than no example, so this holds all five to what the client will accept.
+        """
+        settings = tomllib.loads((example / "settings.toml").read_text(encoding="utf-8"))
+        names = [settings["app_name"]] if "app_name" in settings else []
+        names += [value["app_name"] for value in settings.values() if isinstance(value, dict) and "app_name" in value]
+
+        for name in names:
+            validate_subject_segment(name, source=f"examples/{example.name} app_name", subject=f"{name}.dead-letter")
 
     @pytest.mark.parametrize("example", project_examples(), ids=example_id)
     def test_it_has_a_readme(self, example: Path) -> None:

@@ -339,7 +339,11 @@ class TestEnvStatus:
         result = await ActuatorApi().env_status()
 
         assert result.namespaces == {}
-        assert result.settings["APP_NAME"] == "root-app"
+        # Its own scope: 'orders' overrides app_name, and this asserted the root's value until
+        # the endpoint actually did what its comment claimed.
+        assert result.settings["APP_NAME"] == "orders"
+        assert result.settings["MODEL_NAME"] == "orders-model"
+        assert "billing" not in {str(key).lower() for key in result.settings}
 
 
 class TestRegisteringChecks:

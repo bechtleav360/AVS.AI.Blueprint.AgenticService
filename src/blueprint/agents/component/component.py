@@ -166,8 +166,9 @@ class Component(ABC, metaclass=_ComponentMeta):
 
         The new name is qualified with this component's namespace, for the same reason the
         constructor qualifies one: a name that does not carry its agent is a name that cannot be
-        told apart from a neighbour's in a log. ``qualified_component_name`` is idempotent, so a
-        caller that has already qualified the name is not punished for it.
+        told apart from a neighbour's in a log. Pass the **bare** name:
+        ``qualified_component_name`` is deliberately *not* idempotent -- see its own docstring
+        for why -- so an already-qualified value is qualified a second time.
 
         Raises:
             ValueError: if the component is not registered under its current name, or if the new

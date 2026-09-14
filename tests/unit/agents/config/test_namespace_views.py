@@ -210,3 +210,33 @@ class TestNamespacesIsRootOnly:
         view = two_agent_config.for_namespace("orders")
         with pytest.raises(RuntimeError, match="not a window on another"):
             view.resolved_settings("billing")
+
+
+class TestAViewResolvesItself:
+    """`resolved_settings` used to refuse on a view outright, which left the one legitimate
+    caller -- an agent-scoped actuator describing its own agent -- with the raw tree instead."""
+
+    def test_a_view_resolves_its_own_scope(self, two_agent_config: Config) -> None:
+        view = two_agent_config.for_namespace("orders")
+
+        resolved = view.resolved_settings()
+
+        assert resolved == two_agent_config.resolved_settings("orders")
+
+    def test_a_view_naming_its_own_scope_is_the_same_answer(self, two_agent_config: Config) -> None:
+        view = two_agent_config.for_namespace("orders")
+
+        assert view.resolved_settings("orders") == view.resolved_settings()
+
+    def test_a_view_cannot_resolve_a_neighbour(self, two_agent_config: Config) -> None:
+        view = two_agent_config.for_namespace("orders")
+
+        with pytest.raises(RuntimeError, match="not a window on another agent"):
+            view.resolved_settings("billing")
+
+    def test_what_a_view_resolves_carries_no_neighbour(self, two_agent_config: Config) -> None:
+        """The property the actuator depends on: the flattening strips the other agents'
+        subsections, which is why it has to be done by the object that knows what they are."""
+        resolved = two_agent_config.for_namespace("orders").resolved_settings()
+
+        assert "billing" not in {str(key).lower() for key in resolved}

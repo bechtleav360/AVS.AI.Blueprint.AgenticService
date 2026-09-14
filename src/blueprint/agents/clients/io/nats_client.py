@@ -23,7 +23,7 @@ from ...io.telemetry.providers import agent_meter
 from ...models.api import ComponentHealth
 from ...models.errors import DeliveryDisposition, disposition_for
 from ...models.events import CloudEvent
-from .io_client_base import IOClientBase, validate_subject_segment
+from .io_client_base import IOClientBase, subject_is_covered_by, validate_publish_subject, validate_subject_segment
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +139,8 @@ class NATSClient(IOClientBase):
         self._nats_client: NatsClient | None = None
         self._js: JetStreamContext | None = None
         self._use_jetstream: bool = False
+        self._publish_via_jetstream: bool = False
+        self._publish_subjects: set[str] = set()
         self._subscriptions: list[Any] = []
         self._topic_callbacks: dict[str, Callable[[CloudEvent[Any]], Awaitable[None]]] = {}
         self._queue_group: str = ""
@@ -259,6 +261,89 @@ class NATSClient(IOClientBase):
             "NATS subscriptions require a queue group: set 'nats_queue_group' or 'app_name'. "
             "Without one every replica processes every message."
         )
+
+    # ------------------------------------------------------------------
+    # Publishing (mode and subjects)
+    # ------------------------------------------------------------------
+
+    def _resolve_publish_mode(self) -> bool:
+        """Whether this client publishes through JetStream. ``False`` means Core NATS.
+
+        **Publishing and consuming are two decisions, and now have two keys.** They used to share
+        ``nats_use_jetstream``: that key exists so *consumers* can be durable, and ``publish()``
+        read the same flag -- so turning durability on for consumption silently made every
+        outbound event a JetStream publish as well. Nobody chose that, and it is the wrong
+        default for an event nothing needs to persist, where a Core publish is cheaper and
+        cannot stall.
+
+        ``nats_publish_mode`` is ``"core"`` or ``"jetstream"``. Unset, it follows
+        ``nats_use_jetstream``, so no existing deployment changes.
+
+        Raises:
+            ValueError: for any other value, naming what each one means.
+        """
+        raw = self.config.get("nats_publish_mode", None)
+        mode = str(raw or "").strip().lower()
+        if not mode:
+            return bool(self._use_jetstream)
+        if mode not in ("core", "jetstream"):
+            raise ValueError(
+                f"Config key 'nats_publish_mode' must be 'core' or 'jetstream', got {raw!r}. 'core' is "
+                "fire-and-forget: the message reaches whoever is subscribed at that moment and is not stored. "
+                "'jetstream' stores it in the stream, so a consumer that was not running still receives it -- and "
+                "it requires the subject to be one this client declares, see 'nats_publish_subjects'."
+            )
+        return mode == "jetstream"
+
+    def _resolve_publish_subjects(self) -> set[str]:
+        """The subjects this client may publish to, declared rather than discovered.
+
+        A JetStream publish is a request/reply: the server stores the message and answers with a
+        ``PubAck``. **If no stream captures the subject, no answer ever comes** -- the publish
+        waits and times out, and ``EventPublishingService.publish_handler_event`` logs it and
+        moves on. A Core NATS subscriber still sees the message, because the publish did go out,
+        so a live listener looks healthy while nothing is stored and a JetStream consumer
+        downstream receives nothing at all. That was the behaviour before this existed:
+        ``_stream_subjects`` covered what the client *subscribed* to and nothing it published to.
+
+        Two sources, because there are two ways an outbound subject is chosen:
+
+        - ``event_publishing.topic_mapping`` -- the configured event-type-to-topic map, which is
+          how a ``HandlerResult`` is routed and so where nearly every outbound subject is already
+          written down;
+        - ``nats_publish_subjects`` -- an explicit list, for a caller that passes ``topic=`` to
+          ``publish_event`` directly and therefore never appears in the mapping.
+
+        Every one is validated, because a wildcard published to is taken literally by NATS: the
+        message lands on a subject with an asterisk in it and no subscriber to the pattern gets
+        it.
+        """
+        subjects: set[str] = set()
+
+        mapping = self.config.get("event_publishing.topic_mapping", {}) or {}
+        if hasattr(mapping, "items"):
+            for event_type, routing in mapping.items():
+                topic = routing.get("topic") if hasattr(routing, "get") else None
+                if topic:
+                    source = f"The topic mapped from event type '{event_type}'"
+                    subjects.add(validate_publish_subject(str(topic), source=source))
+
+        declared = self.config.get("nats_publish_subjects", []) or []
+        if isinstance(declared, list):
+            for subject in declared:
+                subjects.add(validate_publish_subject(str(subject), source="A subject in 'nats_publish_subjects'"))
+
+        return subjects
+
+    @property
+    def publish_subjects(self) -> tuple[str, ...]:
+        """The subjects this client declares it may publish to, sorted."""
+        return tuple(sorted(self._publish_subjects))
+
+    @property
+    def publishes_via_jetstream(self) -> bool:
+        """Whether an outbound event is stored in the stream or sent fire-and-forget."""
+        return self._publish_via_jetstream
 
     # ------------------------------------------------------------------
     # Consumer settings (P3)
@@ -478,6 +563,8 @@ class NATSClient(IOClientBase):
             )
             self._client = self._nats_client
             self._use_jetstream = self.config.get("nats_use_jetstream", False)
+            self._publish_via_jetstream = self._resolve_publish_mode()
+            self._publish_subjects = self._resolve_publish_subjects()
             if self._use_jetstream:
                 try:
                     self._js = self._nats_client.jetstream()
@@ -485,6 +572,7 @@ class NATSClient(IOClientBase):
                 except Exception as e:
                     logger.warning("JetStream initialization failed, falling back to Core NATS: %s", str(e))
                     self._use_jetstream = False
+                    self._publish_via_jetstream = False
 
             if not self._use_jetstream:
                 logger.info("Connected to NATS server (Core NATS) at %s as '%s'", nats_url, self._connection_name)
@@ -651,7 +739,7 @@ class NATSClient(IOClientBase):
         try:
             event_data = json.dumps(dict(event)).encode()
 
-            if self._use_jetstream and client.jetstream():
+            if self._publish_via_jetstream and client.jetstream():
                 ack = await client.jetstream().publish(topic, event_data)
                 logger.debug("Published event to JetStream topic '%s' (seq: %d): %s", topic, ack.seq, event.id)
             else:
@@ -766,6 +854,11 @@ class NATSClient(IOClientBase):
                 subjects.add(f"{topic}.>")
         if self._tuning and self._tuning.dead_letter_subject:
             subjects.add(self._tuning.dead_letter_subject)
+        # What this client publishes, when it publishes durably. Without these the stream has
+        # no subject matching the outbound message, so the publish waits for an acknowledgement
+        # that never comes -- see _resolve_publish_subjects.
+        if self._publish_via_jetstream:
+            subjects |= self._publish_subjects
         return subjects
 
     async def _provision_stream(self) -> None:
@@ -792,8 +885,11 @@ class NATSClient(IOClientBase):
             logger.info("Created JetStream stream '%s' with subjects %s", stream, sorted(wanted))
             return
 
+        # Not a set difference: a stream an operator provisioned as 'orders.>' already captures
+        # 'orders.created', and asking the server to add the literal is refused as an overlap --
+        # which used to be reported as "consumers will fail to bind" when they bind fine.
         existing = set(info.config.subjects or [])
-        missing = wanted - existing
+        missing = {subject for subject in wanted if not any(subject_is_covered_by(subject, pattern) for pattern in existing)}
         if not missing:
             return
 

@@ -17,9 +17,11 @@ from .part_generators import (
     InitPartGenerator,
     MainPartGenerator,
     MapperPartGenerator,
+    PyprojectPartGenerator,
+    SecretsPartGenerator,
     ServicePartGenerator,
     SettingsPartGenerator,
-    SecretsPartGenerator,
+    TestsPartGenerator,
 )
 
 logger = logging.getLogger(__name__)
@@ -357,12 +359,28 @@ class AgentGenerator:
             # Create settings.toml
             SettingsPartGenerator(self.config, self.template_dir, "").create_file(out)
 
-            # Create secrets.toml with API key placeholder, and the template it is copied from.
+            # Create .secrets.toml with API key placeholder, and the template it is copied from.
             # Both into the project: create_file() with no argument writes relative to the current
             # working directory, so `asbs setup` left the secrets file wherever it was run from and
             # the project it scaffolded had none.
             SecretsPartGenerator(self.config, self.template_dir, "").create_file(out)
             SecretsPartGenerator(self.config, self.template_dir, "", example=True).create_file(out)
+
+            # pyproject.toml, and ONLY if the project has none. `asbs` is installed into the
+            # project's own environment, so by the time it can run there is usually a pyproject
+            # already -- somebody's, with their dependencies in it. Writing over that would be
+            # this tool destroying the file that made it runnable. The generated tests do not
+            # need it either: tests/conftest.py puts the project root on the path itself.
+            if not (Path(out) / "pyproject.toml").exists():
+                PyprojectPartGenerator(self.config, self.template_dir, "").create_file(out)
+            else:
+                logger.info("pyproject.toml already exists; leaving it alone")
+
+            # A tests/ directory: `asbs validate` requires one, so a scaffolded project used to
+            # fail the validation of the tool that made it.
+            TestsPartGenerator(self.config, self.template_dir, "tests", part="conftest").create_file(out)
+            TestsPartGenerator(self.config, self.template_dir, "tests", part="declaration").create_file(out)
+            TestsPartGenerator(self.config, self.template_dir, "tests", part="mapper").create_file(out)
 
             # Create __init__ files with imports
             InitPartGenerator(self.config, self.template_dir, "src", out).create_file(out)

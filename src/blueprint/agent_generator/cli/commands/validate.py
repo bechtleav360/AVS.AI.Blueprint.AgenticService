@@ -68,16 +68,25 @@ def run(args: Namespace) -> None:
         else:
             print(f"✓ Found {file_name}")
 
-    # Check for secrets template
-    secrets_example = project_dir / "secrets.toml.example"
-    secrets_file = project_dir / "secrets.toml"
+    # Check for secrets template. The leading dot is what DEFAULT_SETTINGS_FILES names, so a
+    # file without it is loaded by nothing -- which is why an undotted one is reported as the
+    # rename it needs rather than as a file that is simply missing.
+    secrets_example = project_dir / ".secrets.toml.example"
+    secrets_file = project_dir / ".secrets.toml"
+    undotted = project_dir / "secrets.toml"
     if not secrets_example.is_file():
-        warnings.append("Missing secrets.toml.example template")
+        warnings.append("Missing .secrets.toml.example template")
     else:
-        print("✓ Found secrets.toml.example")
+        print("✓ Found .secrets.toml.example")
 
     if not secrets_file.is_file():
-        warnings.append("Missing secrets.toml (copy from secrets.toml.example)")
+        if undotted.is_file():
+            warnings.append(
+                "Found secrets.toml, which nothing loads: the framework reads '.secrets.toml'. "
+                "Rename it (git mv secrets.toml .secrets.toml) or its keys are invisible at startup."
+            )
+        else:
+            warnings.append("Missing .secrets.toml (copy from .secrets.toml.example)")
 
     # Check for main.py
     main_file = project_dir / "src" / "main.py"

@@ -2,12 +2,46 @@
 
 import argparse
 import sys
+from typing import TextIO
 
 from .commands import claude, create, dev, setup, validate
 
 
+def use_utf8(stream: TextIO) -> None:
+    """Make ``stream`` able to carry the glyphs this CLI prints, or degrade instead of dying.
+
+    Every command prints check marks, warning signs and box drawing. Python encodes stdout with
+    the locale encoding, which on Windows is cp1252, and cp1252 has none of those characters --
+    so the first line of output raised ``UnicodeEncodeError``. Mid-command: ``asbs create
+    handler`` died after writing the handler file and before registering it in ``main.py``,
+    leaving the project half-edited.
+
+    Two steps, because they fail for different reasons. UTF-8 is the fix and works wherever the
+    stream can be reconfigured at all. ``errors="replace"`` is the fallback for a stream that
+    refuses -- a redirected handle Python has already committed to an encoding, say -- where a
+    lost glyph is a ``?`` in a log rather than an abandoned command.
+
+    This changes only what the CLI *prints*. Everything it *writes* stays ASCII, which is the
+    repository's rule for source, and ``tests/unit/agent_generator`` asserts it of the generated
+    project rather than leaving it to this docstring.
+    """
+    reconfigure = getattr(stream, "reconfigure", None)
+    if reconfigure is None:  # pragma: no cover - a stream replaced by something simpler
+        return
+    try:
+        reconfigure(encoding="utf-8", errors="replace")
+    except (ValueError, OSError, AttributeError):
+        try:
+            reconfigure(errors="replace")
+        except (ValueError, OSError, AttributeError):  # pragma: no cover - nothing left to try
+            pass
+
+
 def main() -> None:
     """Entry point for the asbc CLI command."""
+    use_utf8(sys.stdout)
+    use_utf8(sys.stderr)
+
     parser = argparse.ArgumentParser(
         prog="asbs",
         description="Agentic Service Blueprint Shell - CLI for Blueprint Agents framework",
@@ -24,12 +58,12 @@ def main() -> None:
     )
     setup_parser.add_argument(
         "project_name",
-        help="Name of the project to create (e.g., 'invoice-processor')",
+        help="This agent's name: its app_name, its namespace in agents.toml and its class prefix (e.g. 'invoice-processor')",
     )
     setup_parser.add_argument(
         "--output-dir",
         default=".",
-        help="Parent directory where project will be created (default: current directory)",
+        help="Directory to scaffold into, which is the project itself (default: current directory)",
     )
     setup_parser.add_argument(
         "--overwrite",
