@@ -399,6 +399,16 @@ class SessionsBus(Component, CloudEventProcessorMixin):
                     # visible failure. Confirmed as the actual mechanism behind #94's silent
                     # "job never progresses past pending" symptom.
                     logger.exception("Unexpected HTTP error processing job %s: %s", job_id, e)
+                    # Cancel rather than leave pending: unlike RetryableHandlerError, a non-403
+                    # HTTP error from the key fetch (404 unknown/expired job, 422 malformed,
+                    # 5xx) is not something a later SSE reconnect or retry will resolve on its
+                    # own — leaving the job pending forever just hides the failure one layer
+                    # deeper than before this fix (review, PR #95).
+                    await self._cancel_invalid_job(
+                        session_id,
+                        job_id,
+                        InvalidEventError(status="upstream_http_error", reason=f"Unexpected HTTP error: {e}"),
+                    )
 
             except Exception as e:
                 logger.exception("Unexpected error processing job %s: %s", job_id, e)

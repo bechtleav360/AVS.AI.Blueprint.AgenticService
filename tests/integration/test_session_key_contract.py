@@ -54,6 +54,9 @@ def _make_job_provider() -> SessionKeyProvider:
     return provider
 
 
+# Not marked @pytest.mark.integration — this whole file is fully offline (respx-mocked
+# httpx, no real service-sessions instance) and must run in the offline CI matrix, same
+# convention as test_sessions_startup_resilience.py.
 class TestSessionKeyJobFetchMatchesPublishedContract:
     def test_pinned_contract_declares_no_query_parameters(self) -> None:
         """Sanity-check the pin itself: the published contract has zero query params.
