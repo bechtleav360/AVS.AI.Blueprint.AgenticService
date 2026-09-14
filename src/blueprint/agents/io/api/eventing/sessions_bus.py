@@ -16,6 +16,7 @@ from httpx_sse import ServerSentEvent, SSEError, aconnect_sse
 from opentelemetry import trace
 
 from ....component.component import Component
+from ....component.namespace import ROOT_NAMESPACE
 from ....models.errors import InvalidEventError, RetryableHandlerError
 from ....models.events import GenericCloudEvent
 from ....models.sessions import JobNotification
@@ -37,9 +38,16 @@ class SessionsBus(Component, CloudEventProcessorMixin):
     with the standard Component registry.
     """
 
-    def __init__(self) -> None:
-        """Initialize the sessions event bus."""
-        super().__init__()
+    def __init__(self, namespace: str = ROOT_NAMESPACE) -> None:
+        """Initialize the sessions event bus for one agent.
+
+        Args:
+            namespace: The agent whose jobs this bus dispatches; ``""`` is the root, which is
+                the whole of a single-agent application. The namespace reaches
+                ``_dispatch_cloud_event`` from here, so a job notification is offered to that
+                agent's handlers and no other's.
+        """
+        super().__init__(namespace=namespace)
 
         # SSE connection
         self._sse_task: asyncio.Task[None] | None = None
