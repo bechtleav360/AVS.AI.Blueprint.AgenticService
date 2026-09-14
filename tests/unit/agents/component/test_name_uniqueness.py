@@ -186,3 +186,33 @@ class TestARenameNeverLosesAComponent:
 
         with pytest.raises(ValueError, match="does not exist"):
             planner.name = "something"
+
+
+class TestBaseName:
+    """The unqualified half of a name, kept because it cannot be recovered from the qualified one."""
+
+    def test_it_is_the_derived_name_at_the_root(self, config: Config) -> None:
+        planner = Planner()
+        assert (planner.name, planner.base_name) == ("planner", "planner")
+
+    def test_it_drops_the_namespace(self, config: Config) -> None:
+        with namespace_scope("orders"):
+            planner = Planner()
+        assert (planner.name, planner.base_name) == ("orders_planner", "planner")
+
+    def test_an_explicit_name_is_kept_unqualified(self, config: Config) -> None:
+        with namespace_scope("orders"):
+            planner = Planner(name="scheduler")
+        assert (planner.name, planner.base_name) == ("orders_scheduler", "scheduler")
+
+    def test_it_follows_a_rename(self, config: Config) -> None:
+        with namespace_scope("orders"):
+            planner = Planner()
+        planner.name = "scheduler"
+        assert (planner.name, planner.base_name) == ("orders_scheduler", "scheduler")
+
+    def test_a_base_name_starting_with_its_namespace_is_not_stripped(self, config: Config) -> None:
+        """``qualified_component_name`` is not idempotent, which is why the half is stored."""
+        with namespace_scope("billing"):
+            handler = BillingHandler()
+        assert (handler.name, handler.base_name) == ("billing_billing_handler", "billing_handler")

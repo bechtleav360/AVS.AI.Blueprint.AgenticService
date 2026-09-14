@@ -65,9 +65,10 @@ def calls() -> list[str]:
 def two_agent_config(tmp_path: Path) -> Config:
     """A root and two agents, one of which enables deduplication and the other does not.
 
-    A cache is registered as well, because ``orders`` opts into deduplication and a chain
-    refuses to resolve that policy with nowhere to keep the markers. It also puts the
-    agent-scoped cache lens in the dispatch path, which is where it will actually be used.
+    A cache is registered as well, and **for ``orders``** rather than at the root, because
+    ``orders`` is the agent that opts into deduplication and a chain refuses to resolve that
+    policy with nowhere to keep the markers. A root cache would not do: a cache belongs to the
+    agent that declared it and no other agent can reach it (spec sec. 8).
     """
     settings = tmp_path / "settings.toml"
     content = """
@@ -88,10 +89,10 @@ def two_agent_config(tmp_path: Path) -> Config:
     config = Config(settings_files=[str(settings)], root_path=str(tmp_path))
     Component.configure(config)
 
-    cache = CacheBackendFactory.create(CacheConfig(cache_dir=str(tmp_path / "cache")))
+    cache = CacheBackendFactory.create(CacheConfig(cache_dir=str(tmp_path / "cache")), namespace="orders")
     registry = Component.shared_registry
     assert registry is not None
-    registry.add_cache(DEFAULT_CACHE_NAME, cache)
+    registry.add_cache(DEFAULT_CACHE_NAME, cache, namespace="orders")
     return config
 
 

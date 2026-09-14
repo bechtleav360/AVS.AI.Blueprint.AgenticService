@@ -72,6 +72,17 @@ class EventHandlerBase(Component, ABC):
         super().__init__()
         self._priority = priority
 
+    @property
+    def priority(self) -> int:
+        """Execution priority; lower numbers are tried first.
+
+        Public because the ordering rule is enforced from outside this class:
+        ``AppBuilder.build()`` compares two handlers' priorities to decide whether the order
+        they were declared in still decides which of them is tried first, and ``__lt__``
+        answers only the sorting question, not that one.
+        """
+        return self._priority
+
     @traced("event")
     async def can_handle(self, event: GenericCloudEvent, context: dict[str, Any]) -> bool:
         """Framework method that adds tracing around capability checks.

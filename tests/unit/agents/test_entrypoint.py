@@ -13,7 +13,7 @@ from unittest.mock import patch
 import pytest
 
 from blueprint.agents import entrypoint
-from blueprint.agents.app_builder import AgentRegistration, AppBuilder
+from blueprint.agents.app_builder import AppBuilder
 from blueprint.agents.config import Config
 from blueprint.agents.component.component import Component
 from blueprint.agents.services.service_base import ServiceBase
@@ -29,7 +29,8 @@ class OrderService(ServiceBase):
         pass
 
 
-order_registration = AgentRegistration().with_service(OrderService)
+# What a project's main.py contains: an AppBuilder that has never been built.
+order_declaration = AppBuilder().with_service(OrderService)
 
 
 @pytest.fixture(autouse=True)
@@ -54,7 +55,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     what the container's ``WORKDIR`` provides. So this fixture reproduces the container's shape
     rather than passing paths the real entry point has no parameter for.
     """
-    (tmp_path / "agents.toml").write_text(f'[agents.order]\nmodule = "{_THIS}:order_registration"\n')
+    (tmp_path / "agents.toml").write_text(f'[agents.order]\nmodule = "{_THIS}:order_declaration"\n')
     (tmp_path / "settings.toml").write_text('[development]\napp_environment = "development"\napp_name = "the-process"\napp_port = 8000\n')
     monkeypatch.chdir(tmp_path)
     return tmp_path
@@ -163,17 +164,21 @@ class TestItIsRunnableAsAModule:
 class TestOneDeclarationServesBothDeploymentShapes:
     """The same module, run standalone and run as a group -- spec sec. 11's single ``main.py``.
 
-    ``order_registration`` above is the whole of what a project's ``main.py`` needs to contain:
-    no ``AppBuilder``, no ``Config``, no ``run_app``, no ``if __name__``, no namespace and no
-    group. These cases prove that one such module serves both shapes, so there is nothing to
-    keep in sync between them.
+    ``order_declaration`` above is the whole of what a project's ``main.py`` needs to contain:
+    one unbuilt ``AppBuilder``, and no ``Config``, no ``run_app``, no ``if __name__``, no
+    namespace and no group. These cases prove that one such module serves both shapes, so
+    there is nothing to keep in sync between them.
     """
 
     def test_the_declaration_runs_standalone(self, project: Path) -> None:
-        """What an existing main.py does, unchanged: build it at the root and serve it."""
+        """What a migrated main.py does: build the declaration at the root and serve it.
+
+        A builder separate from ``order_declaration`` only because a builder builds once and
+        this file exercises both shapes; a real process runs one of them.
+        """
         config = Config(settings_files=["settings.toml"])
 
-        app = AppBuilder(config).with_registration(order_registration).build()
+        app = AppBuilder().with_service(OrderService).build(config)
 
         assert app is not None
         assert component_names() == ["order_service"]
@@ -187,7 +192,7 @@ class TestOneDeclarationServesBothDeploymentShapes:
 
     def test_the_same_declaration_runs_beside_another_agent(self, project: Path) -> None:
         (project / "agents.toml").write_text(
-            f'[agents.order]\nmodule = "{_THIS}:order_registration"\n\n[agents.billing]\nmodule = "{_THIS}:order_registration"\n'
+            f'[agents.order]\nmodule = "{_THIS}:order_declaration"\n\n[agents.billing]\nmodule = "{_THIS}:order_declaration"\n'
         )
 
         entrypoint.build_group_app(environ={"BLUEPRINT_AGENTS": "order,billing"})
