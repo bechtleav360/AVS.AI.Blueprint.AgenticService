@@ -90,7 +90,7 @@ $ asbs create handler order_placed
 ✓ Created handler: src/handlers/order_placed_handler.py
 ✓ Auto-registered in src/main.py
   - Added import: from src.handlers.order_placed_handler import OrderPlacedHandler
-  - Added registration: .with_handler(OrderPlacedHandler())
+  - Added registration: .with_handler(OrderPlacedHandler)
 ```
 
 ---
@@ -135,13 +135,44 @@ asbs setup <project-name>
 asbs setup my-ai-service
 ```
 
-The generated `main.py` contains the minimal application bootstrap:
+The generated `main.py` is a **declaration**, not an application. Nothing is constructed until
+something calls `build()`, which is what lets the same file be served on its own and be hosted
+alongside other agents in one process:
 
 ```python
-from blueprint.agents import AppBuilder, Config
+from blueprint.agents.agent import AgentBuilder
+from blueprint.agents.app_builder import AppBuilder
 
-app = AppBuilder(Config()).build()
+from .services import MyAiServiceService
+
+my_ai_service_agent = (
+    AgentBuilder(runtime_name="my_ai_service_agent")
+    .with_model_from_config()
+    .with_system_prompt("my_ai_service_agent_system")
+)
+
+agent = (
+    AppBuilder()
+    .with_service(MyAiServiceService)
+    .with_agent(my_ai_service_agent, name="my_ai_service_agent")
+)
 ```
+
+Components are registered as **classes**, not instances: a component constructed on the `with_*`
+line is constructed before any namespace exists and belongs to the root for ever, which is why a
+group refuses one.
+
+`asbs setup` also writes `agents.toml`, which maps the agent's name to that declaration:
+
+```toml
+[agents.my_ai_service]
+module = "src.main:agent"
+```
+
+That name is the agent's identity everywhere outside the file -- the NATS queue group, part of the
+JetStream durable name, the cache partition, the OpenTelemetry `service.name` and the `/api/<name>`
+route prefix -- so changing it after the first deploy is a consumer migration. The project is run
+with `python -m blueprint.agents.entrypoint`, which reads that map and the deployment's group.
 
 ---
 
@@ -178,7 +209,7 @@ Handler names are converted to `<Name>Handler` format:
 
 The created handler is automatically:
 - Imported in `src/main.py`
-- Registered with `.with_handler(OrderPlacedHandler())`
+- Registered with `.with_handler(OrderPlacedHandler)`
 
 If auto-registration fails, manual registration instructions are provided.
 
@@ -256,7 +287,7 @@ Service names are converted to `<Name>Service` format:
 
 The created service is automatically:
 - Imported in `src/main.py`
-- Registered with `.with_service(InvoiceProcessorService())`
+- Registered with `.with_service(InvoiceProcessorService)`
 
 ### Examples
 
@@ -338,7 +369,7 @@ API names are converted to `<Name>Api` format with an accompanying models file:
 
 The created API is automatically:
 - Imported in `src/main.py` (both models and API)
-- Registered with `.with_rest_api(OrderManagementApi())`
+- Registered with `.with_rest_api(OrderManagementApi)`
 
 ### Examples
 
@@ -447,7 +478,7 @@ Agent names are converted to `<Name>` format (no "Agent" suffix in class name, b
 The created agent is automatically:
 - Imported in `src/main.py`
 - Agent instance created before `app =`
-- Registered with `.with_agent(<name>_agent)`
+- Registered with `.with_agent(<name>_agent, name="<name>_agent")`
 - Configuration added to `settings.toml`
 
 ### Examples
@@ -543,7 +574,7 @@ Scheduler names are converted to `<Name>Scheduler` format:
 
 The created scheduler is automatically:
 - Imported in `src/main.py`
-- Registered with `.with_scheduler(CleanupScheduler())`
+- Registered with `.with_scheduler(CleanupScheduler)`
 
 ### Cron Expressions
 
@@ -627,20 +658,50 @@ class CleanupScheduler(SchedulerBase):
 
 ## asbs validate
 
-Validate the project structure and configuration files. Checks for required directories, valid `settings.toml` entries, correct component registrations, and import consistency.
+Validate the project structure and configuration. Reads files only -- it never imports the
+project -- and reports what it finds in three grades: **issues** (the project will not start, exit
+status 1), **warnings** (it will start, and something is missing) and **notices** (a decision the
+framework must not make for you).
 
 ```bash
-asbs validate
+asbs validate [<project-dir>]
 ```
 
 ### Checks Performed
 
-- Required project directories exist (`src/`, `tests/`)
-- `settings.toml` contains required configuration keys
-- `secrets.toml` is present and not committed to version control
-- All referenced components can be imported
-- No duplicate component names
-- Port configuration is valid
+Project shape:
+
+- Required directories (`src/`, `tests/`) and files (`settings.toml`, `pyproject.toml`) exist
+- `src/main.py` exists and uses `AppBuilder`
+- `secrets.toml.example` and `secrets.toml` are present
+- A `Dockerfile` is present
+
+Group readiness -- what this project must state before it can be hosted beside another agent:
+
+- `agents.toml` exists; without it the project cannot be run by
+  `python -m blueprint.agents.entrypoint`, and the three changes that make it hostable are named
+- Every `[agents.<name>]` entry has a `module` written as `"package.module:attribute"`
+- Every agent name is a legal namespace (`[a-z][a-z0-9_]*` -- no dashes), because it becomes the
+  queue group, the durable, the cache partition and the telemetry `service.name`
+- Every declared module exists in the project and assigns the attribute the map names
+- Once there is more than one agent: each ships its own `settings.toml` beside its declaration,
+  and declares no process-scope key (`app_port`, `event_bus`, `envvar_prefix`, ...) there, since
+  one process binds one port and speaks one bus
+
+Schedulers:
+
+- `scheduler_mode` is set when `src/schedulers/` holds anything, and is one of `in_process` or
+  `event` -- it has no default, and `build()` fails without it
+- In `event` mode, `event_bus` is set; and a notice that **nothing in this project generates the
+  `CronJob`** that must publish the tick. A scheduler waiting for a tick nobody publishes reports
+  itself healthy and never runs, which nothing else reports
+- In `in_process` mode, a notice when `src/main.py` declares no cache: each tick is claimed in the
+  agent's own cache so that one replica runs it, and with no cache every replica runs every tick
+
+Delivery:
+
+- A notice when handlers exist and `idempotency_enabled` is not declared either way. Delivery is
+  at-least-once, so the decision is the author's to make and the framework will not make it
 
 ### Example
 
@@ -649,29 +710,46 @@ asbs validate
 ```
 
 ```
-[OK] Project structure is valid
-[OK] settings.toml configuration is valid
-[OK] secrets.toml is present
-[WARN] secrets.toml is not in .gitignore
-[OK] All components import successfully
-[OK] No duplicate component names detected
+Validating Blueprint Agents project: /work/my-ai-service
+
+[ok] Found agents.toml (1 agent(s): my_ai_service)
+
+============================================================
+
+Notices (1):
+  - 'scheduler_mode' is 'event', so no timer runs in this process: each tick
+    arrives as an event on '<agent>.scheduler.<scheduler name>', published by an external
+    CronJob. ...
 ```
 
 ---
 
 ## asbs dev
 
-Run the application in development mode with hot reload enabled. Uses `uvicorn` under the hood.
+Run this project's agents in development mode with hot reload, **under the namespaces they are
+deployed under**. A development server at the root namespace would serve `/api/orders/{id}` where
+production serves `/api/order/orders/{id}`, and would consume under a different queue group, so
+every local URL and every local integration test would differ from the deployed one.
+
+With an `agents.toml`, it serves the group through
+`uvicorn blueprint.agents.entrypoint:create_group_app --factory --reload`. Without one -- a project
+written before the agent map, which builds its own application -- it serves `src.main:app` exactly
+as it always did.
 
 ```bash
-asbs dev [--port <port>]
+asbs dev [--agents <a,b>] [--host <host>] [--port <port>]
 ```
 
 ### Options
 
-| Flag             | Description                      | Default |
-|------------------|----------------------------------|---------|
-| `--port <port>`  | Port to bind the server to       | `8000`  |
+| Flag               | Description                                                 | Default          |
+|--------------------|-------------------------------------------------------------|------------------|
+| `--agents <a,b>`   | Comma-separated agents to host                              | every agent in `agents.toml` |
+| `--host <host>`    | Host to bind the server to                                  | `127.0.0.1`      |
+| `--port <port>`    | Port to bind the server to                                  | `8000`           |
+
+`BLUEPRINT_GROUP` or `BLUEPRINT_AGENTS` already set in the environment always wins: a developer
+reproducing a particular deployment is not overridden by a default read out of the agent map.
 
 ### Example
 
@@ -723,19 +801,21 @@ Run `asbs setup <project-name>` to scaffold a complete project if needed.
 **Solution:**
 Verify `src/main.py` contains:
 - Import statements at the top
-- `AppBuilder(config)` instantiation
-- `.build()` call
+- An assignment whose right-hand side opens a parenthesis, with `AppBuilder(` on the next line
+- A closing `)` in the first column -- or, in a project that still builds its own application, a
+  `.build()` call
+
+That is what the CLI looks for when it rewrites the chain: it is a line-oriented editor for a file
+the generator wrote in a known shape, not a parser, and it reports a file it cannot read rather
+than guessing at one.
 
 Example valid structure:
 ```python
-from blueprint.agents import AppBuilder, Config
+from blueprint.agents.app_builder import AppBuilder
 
-config = Config(...)
-
-app = (
-    AppBuilder(config)
+agent = (
+    AppBuilder()
     # Components added here
-    .build()
 )
 ```
 
@@ -743,16 +823,18 @@ app = (
 
 If auto-registration fails, the CLI displays instructions. Follow this pattern for each component type:
 
+Every registration is the **class**, not an instance of it, and the declaration ends without a
+`build()` call -- the host builds it.
+
 #### Handler
 ```python
 # In src/main.py
 
-from src.handlers.order_placed_handler import OrderPlacedHandler
+from .handlers import OrderPlacedHandler
 
-app = (
-    AppBuilder(config)
-    .with_handler(OrderPlacedHandler())
-    .build()
+agent = (
+    AppBuilder()
+    .with_handler(OrderPlacedHandler)
 )
 ```
 
@@ -760,12 +842,11 @@ app = (
 ```python
 # In src/main.py
 
-from src.services.invoice_processor_service import InvoiceProcessorService
+from .services import InvoiceProcessorService
 
-app = (
-    AppBuilder(config)
-    .with_service(InvoiceProcessorService())
-    .build()
+agent = (
+    AppBuilder()
+    .with_service(InvoiceProcessorService)
 )
 ```
 
@@ -773,13 +854,11 @@ app = (
 ```python
 # In src/main.py
 
-from src.models.order_management_models import OrderManagementRequest, OrderManagementResponse
-from src.api.order_management_api import OrderManagementApi
+from .api import OrderManagementApi
 
-app = (
-    AppBuilder(config)
-    .with_rest_api(OrderManagementApi())
-    .build()
+agent = (
+    AppBuilder()
+    .with_rest_api(OrderManagementApi)
 )
 ```
 
@@ -787,27 +866,35 @@ app = (
 ```python
 # In src/main.py
 
-from src.agents.document_analyzer_agent import build_document_analyzer_agent
+from blueprint.agents.agent import AgentBuilder
 
-document_analyzer_agent: AgentRuntime = build_document_analyzer_agent(config)
+document_analyzer_agent = (
+    AgentBuilder(runtime_name="document_analyzer_agent")
+    .with_model_from_config()
+    .with_system_prompt("document_analyzer_agent_system")
+)
 
-app = (
-    AppBuilder(config)
-    .with_agent(document_analyzer_agent)
-    .build()
+agent = (
+    AppBuilder()
+    .with_agent(document_analyzer_agent, name="document_analyzer_agent")
 )
 ```
+
+The `AgentBuilder` is left **unbuilt**. `AppBuilder.build()` calls
+`agent.build(config.for_namespace(<this agent>))`, so the model, prompt and metrics come from this
+agent's own configuration view; building it here would bind it to whatever configuration happened
+to be in scope at that line, which in a group is a neighbour's. The `name=` is the registry key
+services resolve the runtime by.
 
 #### Scheduler
 ```python
 # In src/main.py
 
-from src.schedulers.cleanup_scheduler import CleanupScheduler
+from .schedulers import CleanupScheduler
 
-app = (
-    AppBuilder(config)
-    .with_scheduler(CleanupScheduler())
-    .build()
+agent = (
+    AppBuilder()
+    .with_scheduler(CleanupScheduler)
 )
 ```
 
@@ -821,19 +908,18 @@ Register dependencies **before** dependents in the AppBuilder chain:
 4. Schedulers last (use services)
 
 ```python
-app = (
-    AppBuilder(config)
+agent = (
+    AppBuilder()
     # 1. Services
-    .with_service(OrderService())
-    .with_service(PaymentService())
+    .with_service(OrderService)
+    .with_service(PaymentService)
     # 2. Handlers and APIs
-    .with_handler(OrderPlacedHandler())
-    .with_rest_api(OrderApi())
+    .with_handler(OrderPlacedHandler)
+    .with_rest_api(OrderApi)
     # 3. Agents
-    .with_agent(analyzer_agent)
+    .with_agent(analyzer_agent, name="analyzer_agent")
     # 4. Schedulers
-    .with_scheduler(CleanupScheduler())
-    .build()
+    .with_scheduler(CleanupScheduler)
 )
 ```
 

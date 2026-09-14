@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .part_generators import (
+    AgentMapPartGenerator,
     APIPartGenerator,
     CopyPartGenerator,
     DomainModelPartGenerator,
@@ -335,8 +336,20 @@ class AgentGenerator:
                     f"{self.config['agent_layer'][agent_name]['runtime_name']}_instruction.prompt",
                 ).create_file(out)
 
+            # Create the agent map. Without it nothing can resolve this project's agent name to
+            # its declaration, so `python -m blueprint.agents.entrypoint` -- the image's command --
+            # would refuse to start.
+            AgentMapPartGenerator(self.config, self.template_dir, "").create_file(out)
+
             # Create Dockerfile
-            CopyPartGenerator(self.config, self.template_dir, "", "Dockerfile", "Dockerfile").create_file(out)
+            CopyPartGenerator(
+                self.config,
+                self.template_dir,
+                "",
+                "Dockerfile",
+                "Dockerfile",
+                template_vars={"agent_namespace": AgentMapPartGenerator.agent_namespace(self.config)},
+            ).create_file(out)
 
             # Create .gitignore
             CopyPartGenerator(self.config, self.template_dir, "", "template_for_git_ignore.txt", ".gitignore").create_file(out)

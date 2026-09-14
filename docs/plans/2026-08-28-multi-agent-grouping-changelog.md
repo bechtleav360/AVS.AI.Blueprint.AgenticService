@@ -5961,8 +5961,334 @@ it is about instead.
 
 ---
 
+### Phase 10, step 1 -- a scaffolded project is a group of one, in every environment
+
+Phase 10 adds no framework behaviour; it makes what phases 0-9 built usable by someone who has
+only ever written a single-agent service. Its first step is the one everything else documents:
+**what `asbs setup` produces**. A guide written against the old scaffold would document a shape
+the framework no longer hosts, so the generator goes first and the guides follow it.
+
+The decision behind the whole step is the plan's: *every newly scaffolded agent has a real
+namespace in every environment*. A development server at the root namespace would serve
+`/api/orders/{id}` where production serves `/api/order/orders/{id}`, and would consume under a
+different queue group -- so every local URL and every local integration test would differ from
+the deployed one, in a way nothing reports. `namespace = ""` is therefore reserved for
+pre-migration agents, and a new project is a group of one from the first `asbs dev`.
+
+#### `src/main.py` is a declaration, and nothing else
+
+`base_files/src/main.txt` lost its `Config(...)` block and its `app = ...build()`; what it now
+carries is `imports` and `agent_declaration`. `MainPartGenerator._generate_agent_declaration`
+(replacing `_generate_agents_and_app_initialization`) writes:
+
+```python
+invoice_processor_agent = (
+    AgentBuilder(runtime_name="invoice_processor_agent")
+    .with_model_from_config()
+    .with_system_prompt("invoice_processor_agent_system")
+)
+
+agent = (
+    AppBuilder()
+    .with_service(InvoiceProcessorService)
+    .with_agent(invoice_processor_agent, name="invoice_processor_agent")
+    .with_handler(InvoiceProcessorHandler)
+    .with_rest_api(InvoiceProcessorApi)
+)
+```
+
+Four things changed in that, and each is load-bearing:
+
+- **`AppBuilder()` with no configuration, and no `build()`.** The module's product is the
+  builder. The host -- `python -m blueprint.agents.entrypoint` -- supplies the configuration and
+  builds it inside the namespace the deployment gave it.
+- **Classes, not instances.** `with_service(InvoiceProcessorService)` rather than
+  `...Service()`. A component constructed on the `with_*` line is constructed before any
+  namespace exists and belongs to the root for ever, which is exactly why `AgentGroup` refuses an
+  already-built instance (spec sec. 4.2). The class form is constructed by `build()` inside the
+  agent's own scope and works in both shapes.
+- **An unbuilt `AgentBuilder`, with no `config` and no `.build(...)`.** `AppBuilder.build()`
+  calls `agent.build(config.for_namespace(<agent>))`, so the model, prompt and metrics come from
+  this agent's own configuration view (C5). The old template built the runtime at that line
+  against whichever `Config` was in scope -- in a group, a neighbour's.
+- **The runtime's name moved to `with_agent(..., name=...)`** from `AgentBuilder.build(name=...)`.
+  It is the registry key the generated service resolves the runtime by
+  (`registry.get_agent("invoice_processor_agent")`), and `AppBuilder` qualifies it with the
+  agent's namespace, so two agents' runtimes cannot collide on it.
+
+The runtime stays a **module-level variable** rather than being inlined into `with_agent`, and
+that is not style: `asbs create` rewrites the chain line by line, so a registration spanning
+several lines would lose its continuation lines on the next `asbs create`. The chain is also
+emitted in `sort_components` order (services, agents, handlers, REST APIs) so the first
+`asbs create` does not reorder everything and make its own diff unreadable.
+
+One quiet fix came with it: the system prompt was named from the agent's *class* name
+(`camel_to_snake(agent_name) + "_system"`) while the prompt file is written from its
+`runtime_name`. They coincide for everything `asbs setup` generates and diverge for any other
+generator config. It now reads `runtime_name` on both sides.
+
+#### `agents.toml` -- the map the image's command reads
+
+New `base_files/agents_toml.txt` and `AgentMapPartGenerator`, written to the project root:
+
+```toml
+[agents.invoice_processor]
+module = "src.main:agent"
+```
+
+Without it `python -m blueprint.agents.entrypoint` cannot resolve an agent name to code at all --
+`GroupConfig._read_agent_map` refuses to start -- so a generated project that lacked one could
+not be run by its own Dockerfile.
+
+The agent's name is **derived and validated, never repaired**: `AgentMapPartGenerator.agent_namespace`
+is the project name in snake case, passed through the framework's own `validate_namespace`. It
+becomes the queue group, part of the durable name, the cache partition, the telemetry
+`service.name` and the `/api/<agent>` prefix, so a name quietly rewritten to fit would be four
+different names for one agent. A project name that does not survive the derivation (a leading
+digit, say) fails the generator with the reason, at the one moment the name is still free to
+change. That is also why this module is the generator's first import of `blueprint.agents`: the
+alphabet has one definition, and a copy of the regex here would drift from it.
+
+#### The Dockerfile runs the entry point, and bakes no group
+
+`ENTRYPOINT ["uvicorn", "src.main:app", ...]` became
+`ENTRYPOINT ["python", "-m", "blueprint.agents.entrypoint"]`, `agents.toml` is copied into the
+image beside `settings.toml`, and a comment block above the entry point gives the two supported
+ways to say which agents a process hosts (`-e BLUEPRINT_AGENTS=...`, or a mounted group file
+plus `BLUEPRINT_GROUP`). **No group file is generated and none is copied in**: one image serves
+every group, so which agents run is a Deployment edit rather than a rebuild. With neither
+supplied the process stops before binding the port and says which is missing, which is what the
+entry point was built to do.
+
+The Dockerfile is therefore no longer copied verbatim -- `CopyPartGenerator` gained an optional
+`template_vars`, and the Dockerfile is rendered with the agent's real name. A placeholder in a
+`docker run` line is a command that looks runnable and is not.
+
+The **dev stage** keeps hot reload, through a new
+`entrypoint.create_group_app()`: `build_group_app` returns `(app, config)` because `main()` needs
+the configuration to decide host and port, and uvicorn's `--factory` wants the application alone.
+Reload needs an *import string* rather than a built object (which is why `run_app` never enables
+it), so `uvicorn blueprint.agents.entrypoint:create_group_app --factory --reload` is the only
+shape that reloads a group. A resolution failure propagates there rather than becoming an exit
+status: the caller is a developer's terminal, not Kubernetes. The dev stage also sets
+`ENV BLUEPRINT_AGENTS` -- a development default, in that stage only, where the project is
+bind-mounted anyway.
+
+#### `asbs dev` runs the group, and `asbs create` writes the new shape
+
+`dev.py` picks its target from what the project contains. With an `agents.toml` it runs the
+group factory under the agents' real namespaces; without one, but with a `src/main.py`, it serves
+`src.main:app` exactly as before, because a project written before the agent map still builds its
+own application and is deployed at the root namespace too -- the two still agree. With neither it
+stops and names both files.
+
+Which agents: `--agents` if given, otherwise every agent in the map (the map is the complete list
+of what the project holds; picking one of several would be the tool deciding which agent is the
+interesting one). It sets `BLUEPRINT_AGENTS` in its own environment so the child inherits it --
+but **only when the environment names no group already**. A developer who has exported
+`BLUEPRINT_GROUP` or `BLUEPRINT_AGENTS` is reproducing a particular deployment, and defaulting
+over that would quietly serve something else.
+
+`asbs create` had to follow, and would otherwise have corrupted the file it edits.
+`extract_component_registrations` located the chain's end by its `.build()` line, which a
+declaration-only `main.py` does not have; the fallback for "no `.build()`" appends the
+registration to the end of the file, and the re-sort drops every line between the builder and the
+end. New `_closing_parenthesis_index` reads the `)` in the first column as the other way a chain
+ends. `add_component_registration_to_main` now emits the class rather than `Class()`, for the
+same reason the generator does. And `create_agent` wrote
+`{name}: AgentRuntime = (AgentBuilder(config=config, ...).build(name=...))` anchored on a literal
+`app = (` line: the anchor does not exist in the new file, so the declaration went silently
+missing while the registration referring to it was still added. New `insert_before_declaration`
+matches the *shape* -- an assignment opening a parenthesis, with `AppBuilder(` on the next line --
+so it finds `agent = (` and `app = (` alike, and `create_agent` now writes an unbuilt
+`AgentBuilder` with the import added if it is absent.
+
+Three of `create_agent`'s printed next steps were false and are gone: it claimed to have added
+`from src.agents.<module> import build_<agent>` and told the reader to add the same import to
+`src/agents/__init__.py`, but this command writes no module -- an agent runtime is a builder in
+`main.py` plus two prompt files. `module_name` went with them.
+
+`asbs validate` lost its "src/main.py does not appear to use Config" warning, which is now
+backwards: a `main.py` that mentions `Config` is the pre-declaration shape. The rest of
+`validate`'s group gates belong to a later step of this phase.
+
+#### Tests
+
+`tests/unit/agent_generator/generator/test_generated_project.py` is new (14 cases) and is the
+first test of the generator's *output*. It generates the project into a temporary directory and
+**imports** the declaration -- parsing is not the claim; the claim is that the framework can host
+it -- then asserts the builder is unbuilt, that importing it puts nothing in the shared registry,
+that every component is declared as a class, that the runtime carries the name the generated
+service resolves it by, that `agents.toml` names a legal namespace and a module that really
+resolves to an `AppBuilder`, and that the production stage of the Dockerfile bakes no group and
+contains no placeholder. `src` is removed from `sys.modules` around each import: the repository
+has a directory of that name too.
+
+`tests/unit/agent_generator/cli/utils/test_main_py_editing.py` is new (9 cases), covering both
+chain shapes through `extract_component_registrations`, `add_component_registration_to_main` and
+`insert_before_declaration`. `test_dev.py` was rewritten for the two targets and the environment
+precedence. Eight assertions in `test_naming_utils.py` and `test_component_ordering.py` pinned
+the instance form and now pin the class form.
+
+2865 unit tests pass, zero failures.
+
+---
+
+### Phase 10, step 2 -- `asbs validate` says what a project has not said
+
+There is deliberately **no `asbs migrate`**: `main.py` is the developer's own declaration, and a
+tool that rewrites it either guesses at intent or fails on anything hand-edited. What replaces it
+is a checklist plus a `validate` that names what is missing, which is what this step builds.
+
+`validate` keeps its three grades and gains a fourth block feeding them. **Issues** mean the
+project will not start (exit 1), **warnings** mean it will start and something is missing,
+**notices** are a decision the framework must not make for the author. New `_group_findings`
+returns one list of each, and `run()` extends the existing three with them -- so the summary, the
+exit status and the output format are unchanged.
+
+#### The agent map, checked where the answer is a line in a terminal
+
+`_read_agent_map` checks the same shape `GroupConfig._read_agent_map` refuses to start on:
+
+```python
+        module = entry.get("module") if isinstance(entry, dict) else None
+        if not module or not isinstance(module, str):
+            issues.append(f"Agent '{name}' in {AGENT_MAP_FILE} has no 'module'. ...")
+            continue
+        if ":" not in module:
+            issues.append(... 'does not say which attribute to read. Write it as "package.module:attribute"')
+            continue
+        try:
+            validate_namespace(name)
+        except ValueError as exc:
+            issues.append(f"Agent '{name}' in {AGENT_MAP_FILE} cannot be a namespace: {exc}")
+```
+
+The name goes through the framework's own `validate_namespace` rather than a copy of the rule, for
+the reason the rule exists: a name repaired differently by the queue group, the durable, the cache
+partition and the telemetry resource is four names for one agent, and `order-eu` is refused here
+rather than in a crash-looping pod.
+
+`_declaration_issues` then resolves the module **against the filesystem, not by importing it**:
+`_module_file` tries `<path>.py` and `<path>/__init__.py`, and a regex asserts the module assigns
+the attribute the map names.
+
+```python
+    if not re.search(rf"^{re.escape(attribute)}\s*=", text, re.MULTILINE):
+        return [f"Agent '{name}' points at '{module}', but ... assigns no '{attribute}'. ..."]
+```
+
+Importing would run the module, which needs the project's dependencies installed and is a
+different failure from the one being looked for. What that costs is precision -- this reads text --
+and what it buys is a `validate` that works in a checkout.
+
+A project with **no** `agents.toml` gets a warning, not an issue, and the warning is the migration
+checklist: the three changes (declaration, Dockerfile command, map entry) and the sentence that
+the name chosen becomes the queue group and the route prefix, so changing it after the first
+deploy is a consumer migration. A project deployed on its own is not broken.
+
+#### Settings that would not survive being grouped
+
+`_settings_scope_warnings` reports the two things that go wrong when an agent moves in beside
+another, neither of which raises:
+
+- Its `settings.toml` is read from the directory its **declaration** lives in, so one written
+  anywhere else is merged into no scope at all -- every key it reads would come from the group's
+  shared file.
+- A process-scope key under one agent's scope is dropped with a warning at startup, because one
+  process binds one port, speaks one bus and loads one environment. The list is imported
+  (`PROCESS_SCOPE_KEYS`) rather than restated.
+
+Two exemptions, and both are about the same fact -- the process's own settings file is not a
+fragment. A project hosted **alone** is the process, so nothing is reported for it at all; and an
+agent declared at the project root in a group (`main:agent` rather than `src.main:agent`) has its
+settings file *at* the process's, which `Config.merge_agent_settings` recognises and leaves at the
+root:
+
+```python
+    fragment = source.parent / SETTINGS_FILE
+    if fragment == project_dir / SETTINGS_FILE:
+        return []
+```
+
+That second one was found by asking what `main:agent` -- the shape the plan's own migration bullet
+writes -- would do to the check.
+
+#### The scheduler gap, which is the reason this step existed
+
+From the changelog's open points: *"a mode and a transport with nothing publishing does not
+[fail]. Validate is where it should be caught."* `_scheduler_findings` covers the three states of a
+project with anything under `src/schedulers/`:
+
+- **No `scheduler_mode`** -> issue. It has no default because neither value is safe to inherit, so
+  `build()` fails; reported here only to report it earlier, with both values and what each costs.
+- **`"event"`** -> a notice that no timer runs, the tick must arrive on
+  `<agent>.scheduler.<scheduler name>` from an external `CronJob`, and **nothing in this project
+  generates one**. A notice rather than an issue because nothing here can tell whether the CronJob
+  exists -- the deployment knows, and it is outside this project. That is exactly why it is said:
+  a scheduler waiting for a tick nobody publishes reports itself healthy and never runs.
+  `event_bus` unset in that mode *is* an issue, because wiring raises at startup.
+- **`"in_process"` with no `.with_cache(` in `main.py`** -> a notice that every replica will run
+  every tick. Each tick is claimed in the agent's own cache so one replica runs it; with no cache
+  to claim in, the claim is a no-op.
+
+The crontab needs nothing here: P5 already validates it at startup in event mode
+(`validate_crontab`, called from `wire()`), which is where the declaration is.
+
+Two small shared helpers replaced duplicated code rather than adding any: `_load_settings` and
+`_declares` are what `_idempotency_notice` and `_declares_idempotency` were doing inline, and
+`_value_of` is `_declares` returning the value. All three treat a key set in *any* Dynaconf
+environment as set -- which environment is in force is a runtime decision this command cannot make,
+and the checks ask whether the author has decided something, not what today's value is.
+
+#### `docs/guides/cli-reference.md`
+
+Four sections were made wrong by step 1 and are corrected here rather than left to accumulate: the
+generated `main.py` (it claimed `app = AppBuilder(Config()).build()`, which was never what the
+generator wrote), `asbs validate`'s checks and output, `asbs dev`'s flags and what it serves, and
+every manual-registration example -- classes rather than instances, no `build()`, and the
+`AgentBuilder` left unbuilt with the reason. The auto-registration troubleshooting section now
+describes the shape the CLI actually looks for.
+
+**The rest of that file still needs reading against the code.** It documents `validate` checks that
+have never existed, and it is the last of the audit's fiction documents; it belongs with the guides
+in step 3.
+
+#### Tests
+
+`tests/unit/agent_generator/cli/commands/test_validate_group_gates.py` is new (21 cases) and drives
+`_group_findings` against real project trees in `tmp_path`: every malformed agent map, a package
+declaration as well as a module one, both settings exemptions, the fragment naming exactly the
+process-scope keys it declares and not the scoped ones, and each of the scheduler states. 2886 unit
+tests pass, zero failures.
+
+---
+
 ## Open points
 
+- **`docs/guides/cli-reference.md` still documents checks that have never existed.** Four of its
+  sections were corrected in phase 10 step 2, because step 1 made them wrong; the rest was already
+  fiction before either -- `asbs validate` checks named there ("All referenced components can be
+  imported", "No duplicate component names", "secrets.toml is not in .gitignore") have no
+  implementation, and its output format is invented. It is the last of the audit's fiction
+  documents and belongs with the guides in step 3.
+- **`asbs` crashes on a Windows console.** Every command prints check marks, warning signs and
+  box-drawing characters (`setup.py`, `create.py`, `validate.py`), and on a console whose encoding
+  is cp1252 -- the Windows default -- the first one raises `UnicodeEncodeError` mid-command, after
+  files have already been written. `asbs create handler` dies after writing the handler but before
+  registering it in `main.py`. Found while probing phase 10 step 1 against a generated project.
+  It is also a standing rule violation: source files are ASCII only. The fix is a sweep of the
+  CLI's output glyphs, which is its own step rather than a drive-by inside a step about the
+  generated project's shape.
+- **`asbs create` writes absolute imports into a file that uses relative ones.** A generated
+  `main.py` imports `from .handlers import ...`; `asbs create handler` appends
+  `from src.handlers.order_placed_handler import OrderPlacedHandler`. Both resolve, so nothing
+  fails -- but the two styles in one file are how a later refactor breaks one of them.
+- **The migration guide must carry the cache key layout change.** The cache key layout changed
+  twice (`AgentScopedCache`, then phase 8b step 5's per-agent stores), so an application upgrading
+  with a persistent Redis cache or a mounted disk cache sees its old entries as absent -- a cold
+  cache rather than an error. Recorded here again because phase 10 owns the guide and this is the
+  bullet most easily lost.
 - **Two spec amendments from phase 9, both because the spec's wording latches.** Spec C4 says a
   degraded namespace's transport client is *closed*. Implemented as a **pause** -- subscriptions
   drained, connection kept -- because a closed client reports itself unhealthy for ever, so the
@@ -6034,10 +6360,12 @@ it is about instead.
     are simulated in one process against one `DiskCacheService` directory, which exercises the
     set-if-absent path but not file locking across genuinely separate processes, nor Redis under
     contention. Both belong on the broker/integration list below.
-  - **`asbs validate` says nothing about schedulers.** A project in `"event"` mode with no
-    generated `CronJob` is the remaining silent-failure case -- the missing `event_bus` and the
-    missing mode both fail at startup now, but a mode and a transport with nothing publishing
-    does not. Validate is where it should be caught.
+  - ~~**`asbs validate` says nothing about schedulers.**~~ **Done in phase 10 step 2.** A
+    project in `"event"` mode is now told that nothing here generates the `CronJob` that must
+    publish its tick, a missing mode and a missing `event_bus` are both reported before startup,
+    and `"in_process"` with no cache is told that every replica will run every tick. What stays
+    outside `validate`'s reach is whether the `CronJob` actually exists -- the deployment knows
+    that, and this project cannot -- which is why it is a notice rather than a gate.
 - ~~**The settings-fragment merge has two unanswered questions, both raised by step 3a.**~~
   **Answered 2026-09-10 (D5), and by dissolving the questions rather than deciding them.** A
   group's settings supply *defaults only*, and each agent's own `settings.toml` merges under that
