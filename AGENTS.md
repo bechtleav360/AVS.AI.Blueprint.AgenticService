@@ -215,12 +215,22 @@ cannot be traced back to a commit.
 
 ## Testing conventions
 
-- **`tests/unit` needs nothing running.** `tests/integration` may, and anything requiring an
-  external service is marked `@pytest.mark.integration` (`pytest.ini`, `--strict-markers`).
+- **`tests/unit` needs nothing running, and a test that needs something running lives in
+  `tests/integration`.** The `integration` marker is applied **by location**, from
+  `tests/integration/conftest.py`, so the directory and the marker cannot drift apart and nobody
+  has to remember a decorator. What that cannot enforce, and a review must, is the other half:
+  a test needing nothing is in the wrong directory even though the marker will be attached to it.
+  *Failure:* the split was enforced three ways at once and agreed with itself in none of them --
+  CI selected by directory, three tests carried the marker by hand, and `tests/integration` sat
+  red and unread for a year (#80).
+- **A test that reaches for a service it does not need is not offline, it is lucky.** Its result
+  then depends on what happens to be listening on the developer's machine. Turn the reach off
+  explicitly -- `health_check_dapr = false` is there for exactly this -- rather than relying on
+  the connection being refused.
 - **Every package under `tests/unit/agents/` has a `TESTS.md`** listing each file, the class
   under test, and what is covered; the one at the top level covers the files that sit directly in
-  it. It is updated with the tests, not after them. (`tests/unit/agent_generator/` and
-  `tests/integration/` have none yet.)
+  it. It is updated with the tests, not after them. (`tests/unit/agent_generator/`,
+  `tests/unit/examples/` and `tests/integration/` have none yet.)
 - **Probe against real objects.** Every real defect this framework's grouping work surfaced was
   found by testing against a real `Registry`, a real `Config` and a real cache rather than a
   mock. *Failure:* a mock registry answers every lookup and hides resolution bugs by

@@ -6666,7 +6666,12 @@ durable survival across reconnect and the shutdown drain are specified, implemen
   in `test_agent_registration.py` rather than in the tree, and the examples keep passing
   instances (`with_rest_api(MonitorApi())`), which `AgentRegistration` refuses -- converting them
   is part of that later work, not a prerequisite for it.
-- **Local NATS and Dapr integration environment.** Everything above is covered by unit tests with
+- **Local NATS and Dapr integration environment.** **Now tracked in its own document:**
+  `docs/plans/2026-09-11-broker-integration-tests.md` holds the plan, the running record and
+  the chores, and its step 0 settled #80 -- `tests/integration/` was not run by CI and sat at
+  29 failures, so nothing added there would have meant anything. The original text follows,
+  because it is the list of what only a real broker can settle.
+  Everything above is covered by unit tests with
   mocked transports. Once the feature is implemented, stand both brokers up locally (compose file
   plus a CI job) and cover the behaviour that only a real broker exhibits: queue-group distribution
   across replicas, ack/nak/term and redelivery after `ack_wait`, JetStream durable survival across

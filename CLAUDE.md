@@ -11,17 +11,25 @@ each with the failure it prevents -- shared across all AI assistants and every h
 # Install in editable mode with dev deps
 uv pip install -e ".[dev]"
 
-# Run all tests (bare pytest not in PATH — always use uv run)
+# Run everything CI runs: tests/unit needs nothing running (bare pytest is not in PATH)
+uv run pytest tests/unit
+
+# Everything, including tests/integration, which needs the services it names
 uv run pytest tests/
 
-# Skip integration tests (no external services needed)
+# Everything that needs no external service. tests/integration is marked by location
+# (tests/integration/conftest.py), so this deselects the whole directory rather than the
+# three tests that happened to carry the decorator.
 uv run pytest tests/ -m "not integration"
+
+# Only the tests that need services running
+uv run pytest tests/ -m integration
 
 # Run a single test
 uv run pytest tests/unit/agents/app_builder/test_app_builder.py::TestClass::test_name -v
 
 # Run tests with coverage
-uv run pytest tests/ --cov=blueprint.agents --cov-report=html
+uv run pytest tests/unit --cov=blueprint.agents --cov-report=html
 
 # Lint / format / type-check
 ruff check src/ tests/
