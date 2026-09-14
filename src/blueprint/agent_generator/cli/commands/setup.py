@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from ...generator.generator import AgentGenerator
+from ...generator.part_generators import AgentMapPartGenerator
 from ...generator.part_generators.part_generator_base import PartGeneratorBase
 
 logger = logging.getLogger(__name__)
@@ -160,19 +161,28 @@ def run(args: Namespace) -> None:
             print("  │   ├── api/")
             print("  │   ├── models/")
             print("  │   └── prompts/")
+            print("  ├── agents.toml")
             print("  ├── settings.toml")
             print("  ├── secrets.toml")
             print("  ├── Dockerfile")
             print("  └── .gitignore")
 
+            namespace = AgentMapPartGenerator.agent_namespace(config)
             print("\nNext steps:")
             print(f"  1. cd {project_name}")
             print("  2. Review and edit the generated files")
             print("  3. Add your LLM API key to secrets.toml")
             print("     (A secrets.toml with a placeholder has been created for you)")
             print("  4. Install dependencies: pip install -e .")
-            print("  5. Run the service: uvicorn src.main:app --reload")
-            print("  6. View API docs at: http://localhost:8000/docs")
+            print("  5. Run the service: asbs dev")
+            print(f"  6. View API docs at: http://localhost:8000/docs (this agent's routes are under /api/{namespace})")
+
+            print("\nsrc/main.py declares this agent; it does not build an application.")
+            print(f"agents.toml names it '{namespace}', and that name is its identity on the broker,")
+            print("in telemetry and in its routes -- change it now if you are going to, because")
+            print("changing it after the first deploy is a consumer migration.")
+            print("The deployment decides which agents a process hosts:")
+            print(f"  docker run -e BLUEPRINT_AGENTS={namespace} <image>")
 
         finally:
             # Clean up temporary config file

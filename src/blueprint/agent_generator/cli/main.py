@@ -144,7 +144,11 @@ def main() -> None:
     dev_parser = subparsers.add_parser(
         "dev",
         help="Start development server",
-        description="Run the application with hot reload",
+        description="Run this project's agents with hot reload, under the namespaces they deploy under",
+    )
+    dev_parser.add_argument(
+        "--agents",
+        help="Comma-separated agents to host (default: every agent in agents.toml)",
     )
     dev_parser.add_argument(
         "--port",

@@ -58,6 +58,37 @@ def build_group_app(*, environ: dict[str, str] | None = None) -> tuple[FastAPI, 
     return app, config
 
 
+def create_group_app(*, environ: dict[str, str] | None = None) -> FastAPI:
+    """Return this process's group as an application, for a server that imports it.
+
+    ``build_group_app`` returns the configuration as well, because :func:`main` needs it to
+    decide the host, port and worker count it serves on. A reloading server has no use for
+    that half and cannot accept it: uvicorn's ``--factory`` calls the named object and expects
+    the application back, so ``uvicorn blueprint.agents.entrypoint:create_group_app --factory
+    --reload`` is what this exists for, and it is what ``asbs dev`` runs.
+
+    Auto-reload needs an *import string* rather than a built object, which is why this cannot
+    be done by calling :func:`build_group_app` from a project's own module: uvicorn imports the
+    target itself in each worker, after every edit (see ``run_app``, which for that reason never
+    enables reload).
+
+    A resolution failure is left to propagate here rather than being turned into an exit status.
+    The caller is a developer's terminal, not Kubernetes, and a traceback naming the file and the
+    line is more use there than the one-line message a crash-looping pod needs.
+
+    Args:
+        environ: The environment to resolve the group from, for tests.
+
+    Returns:
+        The application this process's group assembles to.
+
+    Raises:
+        GroupConfigError: if the group cannot be resolved or a critical agent cannot be loaded.
+    """
+    app, _ = build_group_app(environ=environ)
+    return app
+
+
 def main(*, environ: dict[str, str] | None = None) -> int:
     """Serve this process's group, or fail with a message and a non-zero status.
 

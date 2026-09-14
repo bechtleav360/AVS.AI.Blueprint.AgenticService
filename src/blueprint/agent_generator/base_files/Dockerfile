@@ -31,7 +31,16 @@ RUN uv pip install --system --no-cache ".[dev]" ipython debugpy pytest
 ENV PYTHONPATH="/app/src"
 ENV DYNACONF_ENVIRONMENT="development"
 
-CMD ["python", "-m", "debugpy", "--listen", "0.0.0.0:5678", "--wait-for-client", "-m", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+# A development default, and only in this stage: the production image bakes no group, so
+# which agents it runs stays a deployment decision. This stage expects the project to be
+# bind-mounted at /app, which is also where agents.toml is read from.
+ENV BLUEPRINT_AGENTS="agent_namespace"
+
+# src/main.py declares an agent; it does not build one, so there is no `src.main:app` to
+# serve. The framework's factory resolves this process's group and returns the application,
+# which is what lets uvicorn reload it -- reload needs an import string, not a built object.
+# BLUEPRINT_AGENTS above is a development default; a deployment sets its own.
+CMD ["python", "-m", "debugpy", "--listen", "0.0.0.0:5678", "--wait-for-client", "-m", "uvicorn", "blueprint.agents.entrypoint:create_group_app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 
 # ============================================================================
 # Production - Minimal runtime image
@@ -60,6 +69,11 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 COPY --chown=appuser:appuser src ./src
 COPY --chown=appuser:appuser settings.toml ./
 
+# The agent map belongs to the image -- it lists the agents this image contains and where
+# their declarations live. The group file does NOT: which of those agents a process runs is
+# a deployment decision, so it arrives as a mount or as BLUEPRINT_AGENTS. See the ENTRYPOINT.
+COPY --chown=appuser:appuser agents.toml ./
+
 # The disk cache backend writes here, and it cannot create this itself: WORKDIR made /app
 # root-owned, so mkdir() as appuser fails with EACCES. Created and handed over at build time,
 # which is also the mount point to use under a read-only root filesystem -- see the
@@ -87,4 +101,13 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 
 EXPOSE 8000
 
-ENTRYPOINT ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# One command for every deployment. Which agents this process hosts is injected at container
+# start, never baked in, so regrouping is a Deployment edit rather than a rebuild:
+#
+#   docker run -e BLUEPRINT_AGENTS=agent_namespace <image>
+#   docker run -v ./deployment-groups.yaml:/app/deployment-groups.yaml:ro \n#              -e BLUEPRINT_GROUP=<group> <image>
+#
+# With neither, the process stops before binding the port and says which of the two is
+# missing -- a crash-loop with a readable message rather than a pod that passes its probes
+# while a queue goes unconsumed.
+ENTRYPOINT ["python", "-m", "blueprint.agents.entrypoint"]
