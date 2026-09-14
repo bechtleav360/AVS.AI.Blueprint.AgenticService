@@ -170,6 +170,32 @@ class TestCancelJob:
 
 
 # ---------------------------------------------------------------------------
+# fail_job
+# ---------------------------------------------------------------------------
+
+
+class TestFailJob:
+    async def test_posts_to_fail_endpoint(self, started_api_client: SessionsApiClient, mock_http_client: AsyncMock) -> None:
+        await started_api_client.fail_job(_SESSION_ID, _JOB_ID, _SESSION_KEY, error={"message": "boom", "code": "ValueError"})
+        url = mock_http_client.post.call_args[0][0]
+        assert url.endswith(f"/sessions/{_SESSION_ID}/jobs/{_JOB_ID}/fail")
+
+    async def test_error_wrapped_in_payload(self, started_api_client: SessionsApiClient, mock_http_client: AsyncMock) -> None:
+        await started_api_client.fail_job(_SESSION_ID, _JOB_ID, _SESSION_KEY, error={"message": "boom", "code": "ValueError"})
+        json_payload = mock_http_client.post.call_args[1]["json"]
+        assert json_payload == {"error": {"message": "boom", "code": "ValueError"}}
+
+    async def test_passes_session_key_header(self, started_api_client: SessionsApiClient, mock_http_client: AsyncMock) -> None:
+        await started_api_client.fail_job(_SESSION_ID, _JOB_ID, _SESSION_KEY, error={"message": "boom"})
+        headers = mock_http_client.post.call_args[1]["headers"]
+        assert headers["X-Session-Key"] == _SESSION_KEY
+
+    async def test_raises_when_not_initialized(self, api_client: SessionsApiClient) -> None:
+        with pytest.raises(ValueError, match="not initialized"):
+            await api_client.fail_job(_SESSION_ID, _JOB_ID, _SESSION_KEY, error={"message": "x"})
+
+
+# ---------------------------------------------------------------------------
 # register_agent
 # ---------------------------------------------------------------------------
 

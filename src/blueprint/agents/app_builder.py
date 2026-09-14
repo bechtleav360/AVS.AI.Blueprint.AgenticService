@@ -956,9 +956,17 @@ class AppBuilder:
             description=resolved_config.get("app_description", ""),
             version=resolved_config.get("app_version", "0.0.0"),
             lifespan=self._create_lifespan_manager(),
-            docs_url="/docs",
-            redoc_url="/redoc",
-            openapi_url="/openapi.json",
+            # Configurable so a consumer can disable a route (docs_url = "@none" in
+            # settings.toml) before FastAPI.__init__ ever registers it (#191) rather
+            # than mutating app.router.routes after construction. Set at the root of
+            # settings.toml, not under an agent_scope block — Config._scoped_get()
+            # treats an explicit None from a scoped key as "not set" and falls back
+            # to the root value, so a scoped override here would be silently ignored.
+            # Note FastAPI itself only registers docs_url/redoc_url when openapi_url
+            # is also set — disabling openapi_url disables all three.
+            docs_url=resolved_config.get("docs_url", "/docs"),
+            redoc_url=resolved_config.get("redoc_url", "/redoc"),
+            openapi_url=resolved_config.get("openapi_url", "/openapi.json"),
         )
 
         self._build_rest_endpoints(app, registry)

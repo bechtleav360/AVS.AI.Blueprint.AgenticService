@@ -1,7 +1,10 @@
 # Changelog
 ## [Unreleased]
 
-## [0.7.0] - 2026-09-14
+### Added
+- **`AppBuilder.build()` now sources `docs_url`/`redoc_url`/`openapi_url` from config** (#191, defaults unchanged: `/docs`, `/redoc`, `/openapi.json`). Previously these were hardcoded at `FastAPI()` construction, so a consumer could not disable the built-in `/docs` route without mutating `app.router.routes` after the fact — fragile because it depends on FastAPI's internal route-registration shape (bechtleav360/avs.ai.idac.service-sessions#191). Set `docs_url = "@none"` (Dynaconf's `None` cast) in `settings.toml` to opt out before the route is ever registered. Set at the root of `settings.toml`, not under an `agent_scope` block (`Config._scoped_get()` falls back to the root value when a scoped lookup is `None`). Note FastAPI only registers `docs_url`/`redoc_url` when `openapi_url` is also set, so disabling `openapi_url` disables all three.
+
+## [0.9.0] - 2026-09-14
 
 **Multi-agent grouping.** How many agents share a process becomes a *deployment* parameter rather
 than an architectural commitment. An agent's code is identical whether it runs alone or beside
@@ -33,16 +36,6 @@ Full migration path, including the one decision to get right before the first de
 - **Per-agent observability.** `service.name` per agent, `blueprint_namespace_up{agent}`, a
   readiness entry and health checks attributed per agent, `blueprint.scheduler.tick_age_seconds`,
   `blueprint.events.dead_lettered`, `blueprint.events.unhandled` and `blueprint.events.duplicate`.
-- **`SessionKeyProvider` gains a `"job"` source** (#76). `env`/`config` only ever supported one
-  static key for every session, which cannot work for consumers whose session keys are generated
-  fresh per session and actually validated (encryption enforced) — the gap live-reproduced as
-  `ValueError: Environment variable SESSION_KEY not set` immediately after a job dispatch
-  (bechtleav360/avs.ai.project.pida#385). `source = "job"` fetches the key via
-  `GET {session_key_remote_url}/internal/jobs/{job_id}/session-key?agent_id=<this agent's own id>`
-  (bechtleav360/avs.ai.idac.service-sessions#194 Finding 2 / #196), threading a new optional
-  `job_id` parameter through `get_session_key` from `SessionsBus`'s three call sites. A 409 (job
-  already claimed by a different `agent_id`) raises the new `SessionKeyClaimConflictError`, distinct
-  from the 404/`httpx.HTTPStatusError` case. `env`/`config`/`vault`/`remote` sources are unaffected.
 - **`CacheService.claim`** — set-if-absent, atomic on both backends (`add` on disk, `SET NX EX` on
   Redis). This is the compare-and-set primitive the deduplication work flagged as missing.
 - **Named caches.** `with_cache(name=...)`, `/cache/*` endpoints take `?name=`, and `/readiness`
@@ -186,6 +179,24 @@ Full migration path, including the one decision to get right before the first de
   operational task the framework does not perform.
 - `size` in the cache statistics counts TTL metadata entries, so a cache holding two values reports
   `4`. Documented as-is rather than changed, because a reported metric is somebody's dashboard.
+
+## [0.8.0] - 2026-09-07
+
+### Added
+- **`Config.get_sessions_config()` typed accessor for the `[sessions_service]` block** (#87). `Config` already exposed a typed getter for every other config block (`get_ai_config`, `get_cache_config`, `get_observability_config`, `get_event_publishing_config`, `get_prompt_config`, `get_nats_subscription_config`) — sessions was the one gap, even though `SessionsServiceConfig` already shipped. The new getter reads and validates the block against `SessionsServiceConfig`, so downstream agents running in `event_bus = "sessions"` mode can retire the local wrappers they hand-rolled to read the raw `sessions_service` sub-dict (which duplicated the framework's field/default contract and drifted from upstream defaults). Behaviour on an **absent** block is `None` (not an error) — REST-only agents never configure sessions, so absence graceful-degrades rather than raising; a **present but invalid** block (e.g. missing a required `base_url` / `api_key` / `agent_id`) fails fast as a `ConfigError`. Validation errors report field/type only — never the offending input value — so a mistyped `api_key` cannot leak a secret into logs or the error message. Unblocks bechtleav360/avs.ai.idac.agents-document-classifier#44.
+
+## [0.7.0] - 2026-09-04
+
+### Added
+- **`SessionsJobHandler` can now mark a job `FAILED`** (#72). `SessionsApiClient` gains `fail_job(session_id, job_id, session_key, error)`, posting a `JobError`-shaped `{"message", "code"}` to the svc-sessions `/fail` endpoint (running→failed, live since 2026-06-24) — the write-side counterpart to the already-generic read side. A new overridable hook `SessionsJobHandler.failure_of(result) -> JobError | None` lets a handler whose `process()` returns a failure *without raising* route that result to `fail_job` instead of `complete_job`; it defaults to `None` (complete), so existing consumers are unchanged until they override it. This unblocks `document-analyser`, whose `AnalyseBatchHandler` computes an internal "failed" outcome and returns it normally (bechtleav360/avs.ai.idac.agents-document-analyser#167, #169). Supersedes the `fail_job`-specific part of #41, whose "jmes-validator-only" premise never applied to `SessionsJobHandler` consumers. The error shape is a new `JobError` `TypedDict` (`blueprint.agents.models.sessions`), so a mistyped key is caught by mypy at the construction site rather than at runtime. The shared terminal-write retry knobs are now `TERMINAL_MAX_ATTEMPTS` / `TERMINAL_RETRY_BACKOFF_SECONDS` (they retry both `complete_job` and `fail_job`); the former `COMPLETE_*` names remain as read-only deprecated aliases (see the ⚠️ note under _Changed_).
+- **`SessionKeyProvider` gains a `"job"` source** (#76). `env`/`config` only ever supported one static key for every session, which cannot work for consumers whose session keys are generated fresh per session and actually validated (encryption enforced) — the gap live-reproduced as `ValueError: Environment variable SESSION_KEY not set` immediately after a job dispatch (bechtleav360/avs.ai.project.pida#385). `source = "job"` fetches the key via `GET {session_key_remote_url}/internal/jobs/{job_id}/session-key?agent_id=<this agent's own id>` (bechtleav360/avs.ai.idac.service-sessions#194 Finding 2 / #196), threading a new optional `job_id` parameter through `get_session_key` from `SessionsBus`'s three call sites. A 409 (job already claimed by a different `agent_id`) raises the new `SessionKeyClaimConflictError`, distinct from the 404/`httpx.HTTPStatusError` case. `env`/`config`/`vault`/`remote` sources are unaffected.
+
+### Changed
+- **⚠️ BREAKING (behavioural, non-opt-in) — an unrecoverable exception from `process()` now marks the job `FAILED` instead of `COMPLETED`** (#72). Previously `ValueError` and any other non-retryable, non-`InvalidEventError` exception were routed to `complete_job` with an error-shaped result (`{"status": "failed", "error": ...}`), leaving the job's top-level status `COMPLETED`. They now route to `fail_job` (svc-sessions `FAILED`). This applies to **all** consumers on upgrade (unlike the opt-in `failure_of` hook), with **no consumer code change required to be affected**. Two consequences to check before upgrading: (1) svc-sessions spawns pipeline-downstream jobs only on `COMPLETED`, so a step that previously ran through despite an error now **halts its chain** instead of silently continuing on bad data; (2) a consumer that reads a failed job's `result` body sees only `error.message`/`error.code` for these cases (verified: no known consumer does — see PR #79). Deprecated retry knobs `COMPLETE_MAX_ATTEMPTS` / `COMPLETE_RETRY_BACKOFF_SECONDS` are now **read-only** aliases of `TERMINAL_MAX_ATTEMPTS` / `TERMINAL_RETRY_BACKOFF_SECONDS`; overriding the old names no longer changes retry behaviour — tune the `TERMINAL_*` names instead.
+
+### Fixed
+- **`SessionsJobHandler`: setting the deprecated `COMPLETE_MAX_ATTEMPTS` / `COMPLETE_RETRY_BACKOFF_SECONDS` class attributes on a subclass now raises `TypeError` at class-definition time** instead of silently shadowing the read-only alias property — a stale pre-0.7.0 override previously kept reading back its own value while `TERMINAL_*`-based retry logic ignored it entirely. Tune `TERMINAL_MAX_ATTEMPTS` / `TERMINAL_RETRY_BACKOFF_SECONDS` instead.
+- **`SessionsJobHandler.failure_of()` raising an exception now maps through the same outcome table as a raise from `process()` itself** (e.g. fails the job via `fail_job`) instead of propagating out of `handle_event` uncaught, which previously left the job stuck `RUNNING` with no terminal write and no redelivery.
 
 ## [0.6.4] - 2026-07-29
 
