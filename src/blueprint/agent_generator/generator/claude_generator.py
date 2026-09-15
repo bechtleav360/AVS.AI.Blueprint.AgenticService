@@ -112,9 +112,14 @@ class ClaudeGenerator:
         print("\nNext steps:")
         print("  1. Open the project in Claude Code — it will pick up src/CLAUDE.md automatically.")
         print("  2. Use slash commands:")
-        print("       /new-agent-service   /add-component")
+        print("       /new-agent-service      /add-component")
+        print("       /blueprint-cli          /blueprint-config")
+        print("       /blueprint-events       /blueprint-multi-agent")
+        print("       /blueprint-testing      /blueprint-deployment")
+        print("       /blueprint-troubleshooting")
         print("  3. Use agents:")
         print("       @blueprint-architect   @blueprint-builder")
+        print("  4. The framework docs are on disk; find them with 'asbs docs'.")
 
     # ------------------------------------------------------------------
     # Private helpers

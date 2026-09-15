@@ -2,6 +2,40 @@
 ## [Unreleased]
 
 ### Added
+
+- **The documentation ships inside the package.** The user-facing guides moved from the repository
+  root to `src/blueprint/agent_generator/docs/` and are now installed with the wheel, so a
+  developer or an AI assistant working in a consuming project can read them with no network access.
+  Previously `README.md` became the wheel's `METADATA` while the 21 documentation pages it links to
+  stayed behind in the repository, and every one of those links resolved to nothing once installed.
+- **`asbs docs`** locates the packaged documentation: `asbs docs` lists every page, `asbs docs
+  <topic>` prints the path to one, `asbs docs <topic> --cat` prints its contents, and `--root`
+  prints the directory. A bare page name is accepted when it is unambiguous.
+- **Seven Claude Code skills**, installed by `asbs claude` alongside the two that already existed:
+  `blueprint-cli`, `blueprint-config`, `blueprint-events`, `blueprint-multi-agent`,
+  `blueprint-testing`, `blueprint-deployment` and `blueprint-troubleshooting`. Each carries the
+  rules that are expensive to get wrong and points at the packaged page for the rest, rather than
+  restating it -- the docs stay the single source of truth.
+- **`LICENSE`** (MIT). The repository claimed MIT in its classifiers and linked a `LICENSE` file
+  that did not exist; the license is now declared as an SPDX expression and ships in the wheel.
+
+### Changed
+
+- **`docs/guides/cli-reference.md` is an index**, with one page per command under `guides/cli/`
+  (`setup`, `create`, `validate`, `dev`, `claude`, plus `naming` and `auto-registration`). It was a
+  single 1,023-line page, which meant reading about one flag cost the whole file.
+- **Migrating an existing agent into a group is its own page**,
+  `guides/multi-agent-migration.md`, split out of `guides/multi-agent-setup.md`.
+- **`README.md` links are absolute.** Relative links do not resolve on the PyPI project page or in
+  the installed `METADATA`. The CI badge pointed at an unrelated repository.
+
+### Fixed
+
+- **`pytest` and `pytest-asyncio` are no longer runtime dependencies.** They were listed in
+  `[project.dependencies]`, so every consumer installed the test suite's tooling in production.
+  They remain in the `ci` extra.
+
+### Added
 - **`AppBuilder.build()` now sources `docs_url`/`redoc_url`/`openapi_url` from config** (#191, defaults unchanged: `/docs`, `/redoc`, `/openapi.json`). Previously these were hardcoded at `FastAPI()` construction, so a consumer could not disable the built-in `/docs` route without mutating `app.router.routes` after the fact — fragile because it depends on FastAPI's internal route-registration shape (bechtleav360/avs.ai.idac.service-sessions#191). Set `docs_url = "@none"` (Dynaconf's `None` cast) in `settings.toml` to opt out before the route is ever registered. Set at the root of `settings.toml`, not under an `agent_scope` block (`Config._scoped_get()` falls back to the root value when a scoped lookup is `None`). Note FastAPI only registers `docs_url`/`redoc_url` when `openapi_url` is also set, so disabling `openapi_url` disables all three.
 
 ## [0.9.0] - 2026-09-14
@@ -13,7 +47,7 @@ all of this — see **Breaking** for the exceptions, which are listed in the ord
 hit them.
 
 Full migration path, including the one decision to get right before the first deploy:
-[`docs/guides/multi-agent-setup.md`](docs/guides/multi-agent-setup.md). The normative spec is
+[`guides/multi-agent-setup.md`](src/blueprint/agent_generator/docs/guides/multi-agent-setup.md). The normative spec is
 `docs/specs/2026-08-28-multi-agent-grouping.md`.
 
 ### Added

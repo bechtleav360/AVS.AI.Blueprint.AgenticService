@@ -4,7 +4,7 @@ import argparse
 import sys
 from typing import TextIO
 
-from .commands import claude, create, dev, setup, validate
+from .commands import claude, create, dev, docs, setup, validate
 
 
 def use_utf8(stream: TextIO) -> None:
@@ -137,6 +137,28 @@ def main() -> None:
         help="Enable verbose logging",
     )
 
+    # Docs command
+    docs_parser = subparsers.add_parser(
+        "docs",
+        help="Locate the framework documentation shipped with the package",
+        description="Print the path to a documentation page, or list every page",
+    )
+    docs_parser.add_argument(
+        "topic",
+        nargs="?",
+        help="Page to locate, e.g. 'guides/multi-agent-setup' or 'caching' (default: list all)",
+    )
+    docs_parser.add_argument(
+        "--cat",
+        action="store_true",
+        help="Print the page contents instead of its path",
+    )
+    docs_parser.add_argument(
+        "--root",
+        action="store_true",
+        help="Print the documentation root directory and exit",
+    )
+
     # Validate command
     validate_parser = subparsers.add_parser(
         "validate",
@@ -187,6 +209,8 @@ def main() -> None:
             create.run(args)
         elif args.command == "claude":
             claude.run(args)
+        elif args.command == "docs":
+            docs.run(args)
         elif args.command == "validate":
             validate.run(args)
         elif args.command == "dev":

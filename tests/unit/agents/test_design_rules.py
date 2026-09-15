@@ -904,12 +904,7 @@ EXCLUDED_FROM_THE_REPOSITORY = ("docs/adr", "CLAUDE.local.md")
 it, and ``CLAUDE.local.md`` is one developer's machine. Neither is scanned, so that this guard
 gives the same answer everywhere."""
 
-KNOWN_GAPS: dict[tuple[str, str], str] = {
-    ("README.md", "LICENSE"): (
-        "README states the MIT licence and pyproject.toml carries the MIT classifier, but no LICENSE file has ever "
-        "been committed. Adding one is a legal artefact and a human decision, not a documentation fix."
-    ),
-}
+KNOWN_GAPS: dict[tuple[str, str], str] = {}
 """References that are known not to resolve, each with why it has not been fixed.
 
 Listed rather than silently tolerated, and held to being genuinely broken by

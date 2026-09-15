@@ -243,6 +243,22 @@ model_temperature = 0.5
 
 **.secrets.toml** (never commit): `model_api_key = "sk-..."`
 
+## Documentation
+
+The full framework documentation ships inside the installed package -- no network needed. Locate a
+page with `asbs docs`, then read it:
+
+```bash
+asbs docs                                      # list every page
+asbs docs guides/multi-agent-setup             # print the path to one page
+asbs docs reference/configuration-keys --cat   # print its contents
+```
+
+Prefer the matching skill (`blueprint-cli`, `blueprint-config`, `blueprint-events`,
+`blueprint-multi-agent`, `blueprint-testing`, `blueprint-deployment`,
+`blueprint-troubleshooting`); each one carries the rules that matter and points at the page for the
+detail. **Never guess a configuration key or a CLI flag** -- the reference is on disk.
+
 ## CLI (`asbs`)
 
 ```bash
@@ -254,6 +270,7 @@ asbs create agent <name>                           # Add AgentRuntime
 asbs create scheduler <name> [--cron CRON]         # Add Scheduler
 asbs validate                                      # Validate project structure
 asbs dev [--port 8000]                             # Run dev server
+asbs docs [<topic>] [--cat]                        # Locate the framework documentation
 ```
 
 **IMPORTANT:** Always use `asbs create` when adding components for consistent naming and imports.
