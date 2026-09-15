@@ -475,7 +475,7 @@ class SessionsBus(Component, CloudEventProcessorMixin):
         below, because it means the job is stuck at `pending` with no remaining
         remediation path in this pass, not just this one attempt failing.
         """
-        logger.error("Invalid job %s: %s. Cancelling.", job_id, error)
+        logger.error("Invalid job %s: %s. Attempting cancellation.", job_id, error)
         if session_key is None:
             try:
                 session_key = await self._require_key_provider().get_session_key(session_id, job_id=job_id)
