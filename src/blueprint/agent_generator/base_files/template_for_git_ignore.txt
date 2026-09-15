@@ -142,8 +142,8 @@ cython_debug/
 # Generated Dapr components (from templates)
 custom/dapr/components/rabbitmq-pubsub.yaml
 
-# Secrets
-**/secrets.toml
+# Secrets. Named exactly, not as a glob: the committed example template shares the prefix.
+**/.secrets.toml
 .env.rabbitmq
 uv.lock
 

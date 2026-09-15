@@ -1,19 +1,17 @@
 """
 app_name
 app_description
-"""
 
-from pathlib import Path
+This file is a *declaration*, not an application: every ``with_*`` call records what this
+agent is made of, and nothing is constructed until something calls ``build()``. That is what
+lets the same file be served on its own and be hosted alongside other agents in one process --
+the host decides the configuration and the namespace each component is built in, and this file
+never mentions either.
+
+Run it with ``python -m blueprint.agents.entrypoint``, which reads ``agents.toml`` to find
+this declaration and the deployment's group to decide which agents the process hosts.
+"""
 
 imports
 
-# Initialize config
-config = Config(
-    settings_files=[
-        "settings.toml",
-        "secrets.toml",
-    ],
-    root_path=Path(__file__).parent.parent
-)
-
-agents_and_app_initialization
+agent_declaration

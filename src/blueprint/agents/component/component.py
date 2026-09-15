@@ -12,6 +12,7 @@ from __future__ import annotations
 import functools
 import inspect
 from abc import ABC, ABCMeta, abstractmethod
+from concurrent.futures import ThreadPoolExecutor
 from functools import cached_property
 from typing import Any, TYPE_CHECKING
 from collections.abc import Callable
@@ -19,34 +20,60 @@ from collections.abc import Callable
 from opentelemetry import trace
 
 from ..config import Config
+from ..io.telemetry.providers import agent_tracer
 from ..utils import camel_to_snake
+from .namespace import ROOT_LABEL, ROOT_NAMESPACE, current_namespace, qualified_component_name, validate_namespace
 
 if TYPE_CHECKING:
     from .registry import Registry
 
 
 class _ComponentMeta(ABCMeta):
-    """Metaclass owning class-level config/registry state and their one-time initialisation."""
+    """Metaclass owning class-level config/registry state and their one-time initialisation.
 
-    shared_config: Config | None = None
+        Both attributes are private, and the asymmetry between them is deliberate.
+
+        ``_shared_config`` has **no** public read path. The only way for a component to reach
+        configuration is the instance property ``Component.config``, which returns that component's
+        own namespace view (C5) and logs any read of the raw tree. A public class-level accessor
+        would defeat both: it hands out the *unscoped loader*, so an agent reads its neighbours'
+        keys with no scoping and no warning. Note that ``configure()`` assigns through ``cls``, so
+        the value lands on ``Component`` itself and a public name would also be reachable as
+        ``self.<name>`` -- the easiest thing to type, and a silent bypass.
+
+    ``shared_registry`` stays **public**, and not out of inconsistency: nothing is protected by
+        hiding it. Looking up collaborators is the registry's whole purpose, every component already
+        reaches it through the public instance property, and ``AppBuilder`` needs it before any
+        component instance exists. A class-level property named ``registry`` was tried and reverted --
+        it collides with the instance property of the same name, which mypy resolves in preference to
+        the metaclass one.
+    """
+
+    _shared_config: Config | None = None
     shared_registry: Registry | None = None
-
-    @property
-    def config(cls) -> Config | None:
-        return cls.shared_config
-
-    @property
-    def registry(cls) -> Registry | None:
-        return cls.shared_registry
 
     def configure(cls, config: Config) -> None:
         """Inject configuration once for all components. Called by AppBuilder.build().
 
         Raises RuntimeError if called more than once.
         """
-        if cls.shared_config is not None:
+        if cls._shared_config is not None:
             raise RuntimeError("Config is already set — can only be configured once")
-        cls.shared_config = config
+        cls._shared_config = config
+
+    def has_config(cls) -> bool:
+        """Whether configuration has been injected, without handing out the loader."""
+        return cls._shared_config is not None
+
+    def reset_shared_state(cls) -> None:
+        """Drop the injected config and registry. For test isolation only.
+
+        Exists so that tests do not have to assign to the private attributes: the class-level
+        state is process-wide and one-time, so a suite that builds more than one application has
+        to clear it between cases.
+        """
+        cls._shared_config = None
+        cls.shared_registry = None
 
     def init_registry(cls, value: Registry) -> None:
         """Initialise the shared registry. Called lazily on the first Component.__init__().
@@ -76,8 +103,34 @@ class Component(ABC, metaclass=_ComponentMeta):
     Components must NOT access self.config in __init__ — use on_startup() instead.
     """
 
-    def __init__(self, should_register: bool = True) -> None:
-        """Initialize the component."""
+    def __init__(self, should_register: bool = True, name: str | None = None, namespace: str = ROOT_NAMESPACE) -> None:
+        """Initialize the component.
+
+        Args:
+            should_register: Whether to add this instance to the shared registry.
+            name: Registry name to use instead of the derived one. Passed by subclasses
+                whose instances are not unique per class *and* not distinguished by a
+                namespace -- ``AIClientBase`` naming itself after its provider, for example.
+                An explicit name wins over the namespace-qualified one, so the caller then
+                owns its uniqueness. It must be supplied here rather than assigned
+                afterwards: registration happens in this constructor, so a second instance
+                of the same class would collide before a rename could run.
+            namespace: The agent this component belongs to. Left unset -- which is what every
+                developer-written component does -- it is taken from the ambient
+                ``namespace_scope`` in force during construction, so a handler or service
+                carries no namespace in its own code and reads the same whether it runs alone
+                or beside five other agents. ``""`` is the root namespace and the whole of a
+                single-agent application.
+
+        Raises:
+            ValueError: if the namespace is not a legal namespace. This is the framework's
+                single gate for that: every component passes through this constructor,
+                including the eight that opt out of registration, and it runs before the
+                name is derived and before registration, so an illegal namespace cannot
+                reach a registry key, a queue group, a durable name or a telemetry resource.
+                Validated here rather than in ``Registry.add_component`` for those two
+                reasons -- coverage of unregistered components, and ordering.
+        """
 
         if Component.shared_registry is None:
             # Import here to avoid circular dependency
@@ -85,7 +138,20 @@ class Component(ABC, metaclass=_ComponentMeta):
 
             Component.init_registry(Registry(Component))
 
-        self._name = camel_to_snake(self.__class__.__name__)
+        # A *non-empty* argument wins; anything else defers to the ambient scope. It cannot be
+        # the other way round: ServiceBase, ClientBase, IOClientBase and EventPublishingService
+        # all default this parameter to ROOT_NAMESPACE and forward it unconditionally, so a
+        # developer writing `super().__init__()` in their own service passes an explicit "" --
+        # and treating that as a decision would pin every developer-written component to the
+        # root and make the ambient scope apply to nothing that matters.
+        self._namespace = validate_namespace(namespace or current_namespace())
+        # An explicit name is qualified exactly like a derived one. It used to be taken
+        # verbatim, which made a component's registry key -- the name that appears in every log
+        # line, health entry and span -- say nothing about which agent it belonged to. Two
+        # agents in a group each with a 'planner' were then one indistinguishable 'planner' in
+        # the logs, and the second one to register collided on the key.
+        self._base_name = name or camel_to_snake(self.__class__.__name__)
+        self._name = qualified_component_name(self._namespace, self._base_name)
         if should_register:
             self.registry.add_component(self.name, self)
 
@@ -96,26 +162,122 @@ class Component(ABC, metaclass=_ComponentMeta):
 
     @name.setter
     def name(self, value: str) -> None:
-        """Set the component name. Also updates the name in the component registry."""
-        self.registry.update_component_name(self._name, value)
-        self._name = value
+        """Rename the component, in the registry as well as on the instance.
+
+        The new name is qualified with this component's namespace, for the same reason the
+        constructor qualifies one: a name that does not carry its agent is a name that cannot be
+        told apart from a neighbour's in a log. Pass the **bare** name:
+        ``qualified_component_name`` is deliberately *not* idempotent -- see its own docstring
+        for why -- so an already-qualified value is qualified a second time.
+
+        Raises:
+            ValueError: if the component is not registered under its current name, or if the new
+                name is already taken -- see ``Registry.update_component_name``.
+        """
+        qualified = qualified_component_name(self._namespace, value)
+        self.registry.update_component_name(self._name, qualified)
+        self._name = qualified
+        self._base_name = value
+
+    @property
+    def base_name(self) -> str:
+        """The name without its namespace: what this component is called *within* its agent.
+
+        Kept because :attr:`name` cannot be un-qualified afterwards --
+        ``qualified_component_name`` is deliberately not idempotent, so stripping a prefix from
+        a name is guesswork ("does ``billing_handler`` in agent ``billing`` carry a prefix or
+        not?"). Anything that has to render the pair itself needs the two halves separately: the
+        readiness payload does, where an entry reads ``orders.nats_client`` rather than
+        ``orders.orders_nats_client``.
+        """
+        return self._base_name
+
+    @property
+    def namespace(self) -> str:
+        """The agent this component belongs to; ``""`` for the root namespace.
+
+        Owned by ``Component`` rather than by the bases that first needed it, so that the
+        namespace cannot be assigned after the validation gate in ``__init__`` has run.
+        """
+        return self._namespace
 
     @property
     def registry(self) -> Registry:
-        """Get the component registry for accessing other components."""
-        return Component.shared_registry  # type: ignore[return-value]
+        """The component registry, as a view that answers for this component's namespace.
+
+        A namespaced component receives a *view*: an omitted ``namespace`` on any lookup means
+        this agent, resolving its own component first and a root one second. So
+        ``self.registry.get_service(OrderService)`` finds this agent's service while
+        ``self.registry.get_service(EventProcessingService)`` finds the shared root one, and
+        neither call site names a namespace -- which is the point. Two agents can then be built
+        from one declaration and each wire itself correctly.
+
+        A root-namespace component gets the registry itself, unchanged. As with
+        :attr:`config`, that is the definition rather than an optimisation: the root namespace
+        *is* the unscoped registry, so every existing single-agent application resolves exactly
+        what it resolved before.
+        """
+        registry: Registry = Component.shared_registry  # type: ignore[assignment]
+        if not self._namespace:
+            return registry
+        return registry.for_namespace(self._namespace)
 
     @property
     def config(self) -> Config:
-        """Get the configuration linked to this component."""
-        if Component.shared_config is None:
+        """Get the configuration linked to this component, scoped to its namespace (C5).
+
+        A namespaced component receives a *view*: ``get`` and the typed getters resolve
+        ``<namespace>.<key>`` before the root key, so prompts, model choice and limits become
+        per-agent while infrastructure keys stay shared. The view shares the loaded tree, so
+        this costs one dictionary lookup, not another parse of the settings files.
+
+        A root-namespace component gets the configuration object itself, unchanged. That is not
+        an optimisation but the definition: the root namespace *is* the unscoped configuration,
+        so every existing single-agent application reads exactly what it read before.
+        """
+        if Component._shared_config is None:
             raise RuntimeError(f"Config not linked to component '{self._name}'")
-        return Component.shared_config
+        if not self._namespace:
+            return Component._shared_config
+        return Component._shared_config.for_namespace(self._namespace)
+
+    @cached_property
+    def executor(self) -> ThreadPoolExecutor:
+        """This component's namespace thread pool, for running blocking work off the event loop.
+
+        Use it through ``asyncio.get_running_loop().run_in_executor(self.executor, ...)``. The
+        pool belongs to the namespace, not to the component, so every component of one agent
+        shares one and no agent can exhaust another's.
+
+        Created on first access. A component that never touches this property costs nothing, so
+        an application with no blocking work runs with no extra threads at all -- which is why
+        this is a property rather than something ``build()`` provisions.
+
+        Its size comes from ``executor_workers`` in this component's own configuration, which is
+        namespace-scoped (C5), so one agent can be sized differently from its neighbour. The
+        first component of a namespace to ask is the one that sizes it: a live pool cannot be
+        resized, and the alternative -- rejecting a later disagreeing value -- would fail an
+        application over a number nobody chose deliberately.
+        """
+        return self.registry.get_or_create_executor(self._namespace, self.config.get("executor_workers"))
 
     @cached_property
     def tracer(self) -> trace.Tracer:
-        """OTel tracer named after the concrete class."""
-        return trace.get_tracer(type(self).__qualname__)
+        """OTel tracer named after the concrete class, on **this agent's** provider (C2).
+
+        The provider decides the ``service.name`` a span is exported under, so a component of
+        agent ``orders`` must not record on the root's: its spans would arrive under the group's
+        service name, and a dashboard keyed on the agent would lose them the day the agent was
+        grouped. :func:`agent_tracer` resolves the namespace's provider and falls back to the
+        global one, which is what a root component and an application with telemetry disabled
+        both get.
+
+        Cached, and therefore resolved at first use rather than at construction -- which is the
+        only reason this works: components are constructed by ``build()``, and the providers do
+        not exist until the lifespan's ``configure_tracing`` call, which runs before anything
+        else in startup.
+        """
+        return agent_tracer(self._namespace, type(self).__qualname__)
 
     @abstractmethod
     async def on_startup(self) -> None:
@@ -163,6 +325,12 @@ def traced(*extract: str) -> Callable[..., Any]:
 
     Span name is auto-prefixed with the component's name:
         ``{self.name}.{method.__name__}``
+
+    Every span carries ``agent`` -- the namespace of the component the method belongs to, or
+    ``<root>``. The provider already stamps ``service.name`` on the resource, so this is
+    redundant for a span that reaches an exporter; it is not redundant for the failure C7 cares
+    about, where a span is *in flight* when the process dies and the only record of whose work
+    it was is what the span itself carries.
 
     Each name in ``extract`` refers to a parameter of the decorated method:
 
@@ -216,6 +384,7 @@ def traced(*extract: str) -> Callable[..., Any]:
                 span_name = f"{self.name}.{func.__name__}"
                 with self.tracer.start_as_current_span(span_name) as span:
                     if span.is_recording():
+                        span.set_attribute("agent", self._namespace or ROOT_LABEL)
                         _stamp_from_args(span, self, args, kwargs)
                     try:
                         return await func(self, *args, **kwargs)
@@ -231,6 +400,7 @@ def traced(*extract: str) -> Callable[..., Any]:
                 span_name = f"{self.name}.{func.__name__}"
                 with self.tracer.start_as_current_span(span_name) as span:
                     if span.is_recording():
+                        span.set_attribute("agent", self._namespace or ROOT_LABEL)
                         _stamp_from_args(span, self, args, kwargs)
                     try:
                         return func(self, *args, **kwargs)

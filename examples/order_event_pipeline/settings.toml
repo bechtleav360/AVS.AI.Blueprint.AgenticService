@@ -1,5 +1,5 @@
 [default]
-app_name = "Order Event Pipeline"
+app_name = "order-event-pipeline"
 app_port = 8000
 app_environment = "development"
 log_level = "INFO"

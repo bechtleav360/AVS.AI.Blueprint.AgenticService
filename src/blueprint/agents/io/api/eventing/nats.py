@@ -1,10 +1,11 @@
 """NATS eventing implementation using NATSClient."""
 
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ....clients.io.nats_client import NATSClient
-from ....models.errors import CriticalHandlerError, InvalidEventError, RetryableHandlerError
+from ....component.namespace import ROOT_LABEL, ROOT_NAMESPACE
 from ....models.events import CloudEvent
 from ..rest_api_base import RestApiBase
 from .event_handling_base import EventHandlingBase
@@ -13,107 +14,113 @@ logger = logging.getLogger(__name__)
 
 
 class NatsEventing(EventHandlingBase):
-    """Implements event handling using NATS via NATSClient."""
+    """Implements event handling using NATS via NATSClient.
 
-    def __init__(self) -> None:
-        super().__init__(should_register=False)
+    ``on_startup`` collects the full topic→callback mapping from all registered
+    handlers and config, then hands it to ``NATSClient.subscribe()``.  The client
+    owns connection, retry, reconnect, and subscription-readiness tracking.
+
+    The callback lets every exception through. A handler failure is the only way a
+    failure reaches the transport -- ``ProcessingStatus`` has no failure value -- and
+    the transport edge is what turns it into a nak or a term (spec sec. 7.2). Catching
+    one here would acknowledge the event as successfully processed.
+
+    One endpoint per agent
+    ~~~~~~~~~~~~~~~~~~~~~~
+    This component belongs to a namespace and subscribes on behalf of that agent alone: it
+    reads that agent's handlers, that agent's ``nats_subscriptions``, and that agent's
+    ``NATSClient``. A process hosting three agents therefore holds three of these, and each
+    ``(namespace, topic)`` pair ends up with its own subscription and its own consumer, which
+    is what spec sec. 7.6 requires.
+
+    **Topic deduplication is per agent, and only per agent.** Two agents subscribing to the
+    same topic both want the event, so there is no cross-agent "first declaration wins" --
+    which would silently disable one agent's subscription, and could not be observed by its
+    author running it alone. Deduplication happens inside one of these components, so it
+    cannot reach across namespaces by construction.
+    """
+
+    def __init__(self, namespace: str = ROOT_NAMESPACE) -> None:
+        """Initialize the NATS endpoint for one agent.
+
+        Args:
+            namespace: The agent this endpoint subscribes for. ``""`` is the root, which is
+                the whole of a single-agent application.
+        """
+        super().__init__(should_register=False, namespace=namespace)
         self._client: NATSClient | None = None
 
     async def on_startup(self) -> None:
-        """Fetch the registered NATSClient and auto-subscribe to declared topics.
+        """Subscribe this agent's topics through this agent's client."""
+        self._client = self.registry.get_component(NATSClient, namespace=self.namespace)
 
-        Topics are collected from two sources (handler-declared topics first,
-        then config-declared topics). Duplicates are silently dropped — the
-        first occurrence wins, so handler declarations take priority.
+        topic_callbacks: dict[str, Callable[[CloudEvent[Any]], Awaitable[None]]] = {
+            topic: self._make_event_callback(topic) for topic in self._declared_topics()
+        }
+
+        if topic_callbacks:
+            logger.info(
+                "Namespace '%s' subscribes to %d topic(s): %s",
+                self.namespace or ROOT_LABEL,
+                len(topic_callbacks),
+                ", ".join(topic_callbacks),
+            )
+            await self._client.subscribe(topic_callbacks)
+        else:
+            logger.info("NatsEventing: no auto-subscriptions configured for namespace '%s'", self.namespace or ROOT_LABEL)
+
+    def _declared_topics(self) -> list[str]:
+        """Return the topics this agent subscribes to, in declaration order.
+
+        Two sources, in this order: the ``get_subscribed_topics()`` of this agent's handlers,
+        then the ``nats_subscriptions`` config list. Both are scoped to this agent without
+        anything here saying so -- ``self.registry`` and ``self.config`` are already this
+        namespace's views, so the config key resolves ``<agent>.nats_subscriptions`` before
+        falling back to the shared list (C5), and the handler query is filtered below.
+
+        The namespace is named explicitly in the handler query for the reason it is named in
+        ``HandlerChain._handlers``: on the root registry an omitted namespace means *every*
+        namespace, so the root endpoint would otherwise subscribe to every agent's topics and
+        deliver them all through the root chain.
         """
-        self._client = self.registry.get_component(NATSClient)
-
-        seen: dict[str, None] = {}
-        for handler in self.registry.get_event_handler():
+        topics: dict[str, None] = {}
+        for handler in self.registry.get_event_handler(namespace=self.namespace):
             for topic in handler.get_subscribed_topics():
-                if topic and topic not in seen:
-                    seen[topic] = None
+                if topic:
+                    topics[topic] = None
         for topic in self.config.get_nats_subscription_config():
-            if topic and topic not in seen:
-                seen[topic] = None
-
-        if not seen:
-            logger.info("NatsEventing: no auto-subscriptions configured")
-            return
-
-        for topic in seen:
-            await self._subscribe_to_topic(topic)
-
-    async def _subscribe_to_topic(self, topic: str) -> None:
-        """Subscribe to a single NATS topic using the standard processing callback.
-
-        Extracted as a method so the closure correctly captures ``topic`` by
-        value at call time, avoiding the loop late-binding pitfall.
-        """
-        if not self._client:
-            raise RuntimeError("NATS client not initialized")
-
-        async def _process_event(event: CloudEvent[Any]) -> None:
-            try:
-                context = {"nats_topic": topic}
-                processing_result = await self._process_cloud_event(event, context)
-                logger.debug(
-                    "Processed CloudEvent %s on topic %s with status %s",
-                    event.id,
-                    topic,
-                    processing_result.status.value,
-                )
-            except (RetryableHandlerError, InvalidEventError, CriticalHandlerError) as exc:
-                logger.error("Event processing failed: %s", str(exc), exc_info=True)
-
-        await self._client.subscribe(topic, _process_event)
-        logger.info("NatsEventing: auto-subscribed to topic '%s'", topic)
+            if topic:
+                topics[topic] = None
+        return list(topics)
 
     async def on_shutdown(self) -> None:
-        """No shutdown actions required — NATSClient lifecycle is managed separately."""
+        pass
 
-    @RestApiBase.post("/nats/subscribe/{topic}", tags=["nats"])
-    async def subscribe(self, topic: str, queue_group: str | None = None) -> dict[str, Any]:
-        """Subscribe to a NATS topic.
+    def _make_event_callback(self, topic: str) -> Callable[[CloudEvent[Any]], Awaitable[None]]:
+        """Return an async callback that routes an incoming event through the handler chain."""
 
-        Args:
-            topic: The topic to subscribe to
-            queue_group: Optional queue group
-
-        Returns:
-            Success message
-        """
-        if not self._client:
-            raise RuntimeError("NATS client not initialized")
-
-        # Callback to process incoming events
         async def _process_event(event: CloudEvent[Any]) -> None:
-            try:
-                context = {"nats_topic": topic}
-                processing_result = await self._process_cloud_event(event, context)
-                logger.debug(
-                    "Processed CloudEvent %s on topic %s with status %s",
-                    event.id,
-                    topic,
-                    processing_result.status.value,
-                )
-            except (RetryableHandlerError, InvalidEventError, CriticalHandlerError) as exc:
-                logger.error("Event processing failed: %s", str(exc), exc_info=True)
-                # NATS handles retries/acks via client
+            context = {"nats_topic": topic}
+            processing_result = await self._process_cloud_event(event, context, topic)
+            logger.debug(
+                "Processed CloudEvent %s on topic %s with status %s",
+                event.id,
+                topic,
+                processing_result.status.value,
+            )
 
-        await self._client.subscribe(topic, _process_event)
-        return {"message": f"Subscribed to topic {topic}"}
+        return _process_event
 
     @RestApiBase.post("/events/{topic}", tags=["nats"])
     async def publish(self, topic: str, event: CloudEvent[Any]) -> dict[str, Any]:
         """Publish a CloudEvent to a NATS topic.
 
         Args:
-            topic: The topic to publish to
-            event: The CloudEvent to publish
+            topic: The topic to publish to.
+            event: The CloudEvent to publish.
 
         Returns:
-            Success message
+            Success message.
         """
         if not self._client:
             raise RuntimeError("NATS client not initialized")

@@ -6,12 +6,44 @@ debug = true
 model_provider = "vllm"
 model_base_url = "https://avs-vllm.q14.net/v1"
 
-[default.logging]
-level = "DEBUG"
-format = "json"
+# Event deduplication is off by default: a handler may be run more than once for the
+# same event, because delivery is at-least-once and an acknowledgement can always be
+# lost. Turn it on only after deciding it is what your handlers need -- see the DECIDE
+# comment in src/handlers/. idempotency_ttl is required when it is enabled, and must
+# outlast the broker redelivery window (nats_ack_wait * nats_max_deliver on JetStream).
+# idempotency_enabled = true
+# idempotency_ttl = 1500
 
-[default.observability]
+# Required as soon as a scheduler is registered -- it has no default, because neither
+# value is safe to inherit. "event" starts no in-process timer: the tick arrives as an
+# event on <app_name>.scheduler.<scheduler_name>, published by an external CronJob, so
+# exactly one replica runs it -- and it needs event_bus set. "in_process" runs an
+# APScheduler timer in the process and claims each tick in the cache so one replica
+# runs it; it is right for local development and plain Docker, and it needs
+# .with_cache() or every replica runs every tick.
+scheduler_mode = "in_process"
+
+# Set this to publish events without consuming any -- a scheduler that reports what
+# it did, for instance. A handler already implies a client, so only publish-only
+# applications need it. Needs event_bus, and subscribes to nothing.
+# event_publishing_enabled = true
+
+# Logging and telemetry. These are flat keys, not sections: the framework reads
+# log_level, log_format, otel_enabled and token_metrics_enabled from the top level
+# of the environment table, so a [default.logging] or [default.observability]
+# section would be read by nothing at all.
+#
+# log_level and log_format describe the process. If this project is later hosted as
+# one agent of a group, the group's own settings file decides both and these two are
+# reported and ignored -- one process configures logging once.
+log_level = "DEBUG"
+log_format = "text"
+
+# otel_enabled turns OpenTelemetry on and needs otel_endpoint to have somewhere to
+# send to. token_metrics_enabled adds per-call token and latency metrics on top, and
+# is read only when otel_enabled is true.
 otel_enabled = false
+# otel_endpoint = "http://localhost:4317"
 token_metrics_enabled = true
 
 agent_runtime_configs

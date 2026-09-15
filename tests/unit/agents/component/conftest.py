@@ -28,7 +28,7 @@ def concrete_component() -> ConcreteComponent:
 def reset_component_state() -> Generator[None]:
     """Reset shared class-level state and patch correlation context for every test.
 
-    _ComponentMeta stores shared_config and shared_registry as class-level attributes
+    _ComponentMeta stores the config and registry as class-level attributes
     on Component. Without this reset, state leaks between tests.
     """
     with patch(
@@ -36,5 +36,4 @@ def reset_component_state() -> Generator[None]:
         return_value=MagicMock(),
     ):
         yield
-    Component.shared_config = None
-    Component.shared_registry = None
+    Component.reset_shared_state()

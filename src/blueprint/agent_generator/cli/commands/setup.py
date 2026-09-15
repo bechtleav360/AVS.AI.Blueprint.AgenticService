@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from ...generator.generator import AgentGenerator
+from ...generator.part_generators import AgentMapPartGenerator
 from ...generator.part_generators.part_generator_base import PartGeneratorBase
 
 logger = logging.getLogger(__name__)
@@ -116,24 +117,32 @@ def run(args: Namespace) -> None:
     print("=== Blueprint Agents Project Setup ===")
     print("This will create a complete project structure with handlers, services, APIs, and agents.")
 
-    # Get project name, sanitizing it to a valid Python class name
+    # The name is this agent's *identity*, not a directory to create.
+    #
+    # `asbs` is installed into the project's own virtual environment, so by the time it can be
+    # run at all the project directory exists and somebody is standing in it. Scaffolding into a
+    # `<Name>/` subdirectory would put the source one level below the environment that has to
+    # import it. The name is what `create_basic_config` derives everything else from: `app_name`,
+    # the agent namespace in `agents.toml`, the class names and the prompt filenames.
+    #
+    # This used to compute a `project_path = output_dir / project_name`, guard `--overwrite`
+    # with it and print it as the location -- while handing the generator `output_dir`. So the
+    # directory it protected was never created, and the location it printed was never written to.
     project_name = PartGeneratorBase.to_class_name(args.project_name)
     output_dir = Path(args.output_dir).absolute()
-    project_path = output_dir / project_name
 
-    # Check if output directory exists
     if not output_dir.exists():
         print(f"Error: Output directory does not exist: {output_dir}", file=sys.stderr)
         sys.exit(1)
 
-    # Check if project already exists
-    if project_path.exists() and not args.overwrite:
-        print(f"Error: Project directory already exists: {project_path}", file=sys.stderr)
-        print("Use --overwrite to overwrite existing files", file=sys.stderr)
+    existing = [path.name for path in (output_dir / "src", output_dir / "agents.toml", output_dir / "settings.toml") if path.exists()]
+    if existing and not args.overwrite:
+        print(f"Error: {output_dir} already contains a scaffolded project ({', '.join(existing)})", file=sys.stderr)
+        print("Use --overwrite to write over it", file=sys.stderr)
         sys.exit(1)
 
-    print(f"\nCreating project: {project_name}")
-    print(f"Location: {project_path}")
+    print(f"\nScaffolding agent: {project_name}")
+    print(f"Location: {output_dir}")
 
     try:
         # Create basic configuration
@@ -152,7 +161,7 @@ def run(args: Namespace) -> None:
 
             print("\n✓ Project created successfully!")
             print("\nProject structure:")
-            print(f"  {project_name}/")
+            print(f"  {output_dir.name}/   (this directory)")
             print("  ├── src/")
             print("  │   ├── main.py")
             print("  │   ├── handlers/")
@@ -160,19 +169,28 @@ def run(args: Namespace) -> None:
             print("  │   ├── api/")
             print("  │   ├── models/")
             print("  │   └── prompts/")
+            print("  ├── tests/")
+            print("  ├── agents.toml")
             print("  ├── settings.toml")
-            print("  ├── secrets.toml")
+            print("  ├── .secrets.toml")
             print("  ├── Dockerfile")
             print("  └── .gitignore")
 
+            namespace = AgentMapPartGenerator.agent_namespace(config)
             print("\nNext steps:")
-            print(f"  1. cd {project_name}")
-            print("  2. Review and edit the generated files")
-            print("  3. Add your LLM API key to secrets.toml")
-            print("     (A secrets.toml with a placeholder has been created for you)")
-            print("  4. Install dependencies: pip install -e .")
-            print("  5. Run the service: uvicorn src.main:app --reload")
-            print("  6. View API docs at: http://localhost:8000/docs")
+            print("  1. Review and edit the generated files")
+            print("  2. Add your LLM API key to .secrets.toml")
+            print("     (A .secrets.toml with a placeholder has been created for you)")
+            print("  3. Run the generated tests: pytest")
+            print("  4. Run the service: asbs dev")
+            print(f"  5. View API docs at: http://localhost:8000/docs (this agent's routes are under /api/{namespace})")
+
+            print("\nsrc/main.py declares this agent; it does not build an application.")
+            print(f"agents.toml names it '{namespace}', and that name is its identity on the broker,")
+            print("in telemetry and in its routes -- change it now if you are going to, because")
+            print("changing it after the first deploy is a consumer migration.")
+            print("The deployment decides which agents a process hosts:")
+            print(f"  docker run -e BLUEPRINT_AGENTS={namespace} <image>")
 
         finally:
             # Clean up temporary config file

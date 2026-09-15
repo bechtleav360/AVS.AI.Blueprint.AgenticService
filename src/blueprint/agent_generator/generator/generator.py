@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .part_generators import (
+    AgentMapPartGenerator,
     APIPartGenerator,
     CopyPartGenerator,
     DomainModelPartGenerator,
@@ -16,15 +17,13 @@ from .part_generators import (
     InitPartGenerator,
     MainPartGenerator,
     MapperPartGenerator,
+    PyprojectPartGenerator,
+    SecretsPartGenerator,
     ServicePartGenerator,
     SettingsPartGenerator,
-    SecretsPartGenerator,
+    TestsPartGenerator,
 )
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", handlers=[logging.StreamHandler(sys.stdout)]
-)
 logger = logging.getLogger(__name__)
 
 
@@ -339,8 +338,20 @@ class AgentGenerator:
                     f"{self.config['agent_layer'][agent_name]['runtime_name']}_instruction.prompt",
                 ).create_file(out)
 
+            # Create the agent map. Without it nothing can resolve this project's agent name to
+            # its declaration, so `python -m blueprint.agents.entrypoint` -- the image's command --
+            # would refuse to start.
+            AgentMapPartGenerator(self.config, self.template_dir, "").create_file(out)
+
             # Create Dockerfile
-            CopyPartGenerator(self.config, self.template_dir, "", "Dockerfile", "Dockerfile").create_file(out)
+            CopyPartGenerator(
+                self.config,
+                self.template_dir,
+                "",
+                "Dockerfile",
+                "Dockerfile",
+                template_vars={"agent_namespace": AgentMapPartGenerator.agent_namespace(self.config)},
+            ).create_file(out)
 
             # Create .gitignore
             CopyPartGenerator(self.config, self.template_dir, "", "template_for_git_ignore.txt", ".gitignore").create_file(out)
@@ -348,8 +359,28 @@ class AgentGenerator:
             # Create settings.toml
             SettingsPartGenerator(self.config, self.template_dir, "").create_file(out)
 
-            # Create secrets.toml with API key placeholder
-            SecretsPartGenerator(self.config, self.template_dir, "").create_file()
+            # Create .secrets.toml with API key placeholder, and the template it is copied from.
+            # Both into the project: create_file() with no argument writes relative to the current
+            # working directory, so `asbs setup` left the secrets file wherever it was run from and
+            # the project it scaffolded had none.
+            SecretsPartGenerator(self.config, self.template_dir, "").create_file(out)
+            SecretsPartGenerator(self.config, self.template_dir, "", example=True).create_file(out)
+
+            # pyproject.toml, and ONLY if the project has none. `asbs` is installed into the
+            # project's own environment, so by the time it can run there is usually a pyproject
+            # already -- somebody's, with their dependencies in it. Writing over that would be
+            # this tool destroying the file that made it runnable. The generated tests do not
+            # need it either: tests/conftest.py puts the project root on the path itself.
+            if not (Path(out) / "pyproject.toml").exists():
+                PyprojectPartGenerator(self.config, self.template_dir, "").create_file(out)
+            else:
+                logger.info("pyproject.toml already exists; leaving it alone")
+
+            # A tests/ directory: `asbs validate` requires one, so a scaffolded project used to
+            # fail the validation of the tool that made it.
+            TestsPartGenerator(self.config, self.template_dir, "tests", part="conftest").create_file(out)
+            TestsPartGenerator(self.config, self.template_dir, "tests", part="declaration").create_file(out)
+            TestsPartGenerator(self.config, self.template_dir, "tests", part="mapper").create_file(out)
 
             # Create __init__ files with imports
             InitPartGenerator(self.config, self.template_dir, "src", out).create_file(out)
@@ -383,8 +414,18 @@ def main(config_path: str, output_dir: str) -> None:
 
 
 def cli() -> None:
-    """Command line interface for the generator."""
+    """Command line interface for the generator.
+
+    Logging is configured here rather than at module level: this function is an entry point, so
+    it is the application. Configured on import, it would install a root handler for anything
+    that merely imports ``AgentGenerator`` -- which is what ``asbs setup`` does, and its own
+    ``basicConfig`` (and with it ``--verbose``) would then silently do nothing.
+    """
     import argparse
+
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", handlers=[logging.StreamHandler(sys.stdout)]
+    )
 
     parser = argparse.ArgumentParser(description="Generate an agent microservice from a template.")
     parser.add_argument("config", help="Path to the JSON configuration file")

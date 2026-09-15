@@ -1,4 +1,5 @@
 from .main_part_generator import MainPartGenerator
+from .agent_map_part_generator import AgentMapPartGenerator
 from .api_part_generator import APIPartGenerator
 from .service_part_generator import ServicePartGenerator
 from .init_part_generator import InitPartGenerator
@@ -6,10 +7,13 @@ from .models_part_generator import DTOPartGenerator, DomainModelPartGenerator, M
 from .handler_part_generator import HandlerPartGenerator
 from .copy_part_generator import CopyPartGenerator
 from .settings_part_generator import SettingsPartGenerator
+from .pyproject_part_generator import PyprojectPartGenerator
 from .secrets_part_generator import SecretsPartGenerator
+from .tests_part_generator import TestsPartGenerator
 
 __all__ = [
     "MainPartGenerator",
+    "AgentMapPartGenerator",
     "APIPartGenerator",
     "ServicePartGenerator",
     "InitPartGenerator",
@@ -19,5 +23,7 @@ __all__ = [
     "HandlerPartGenerator",
     "CopyPartGenerator",
     "SettingsPartGenerator",
+    "PyprojectPartGenerator",
     "SecretsPartGenerator",
+    "TestsPartGenerator",
 ]

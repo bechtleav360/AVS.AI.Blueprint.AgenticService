@@ -2,12 +2,46 @@
 
 import argparse
 import sys
+from typing import TextIO
 
-from .commands import claude, create, dev, setup, validate
+from .commands import claude, create, dev, docs, setup, validate
+
+
+def use_utf8(stream: TextIO) -> None:
+    """Make ``stream`` able to carry the glyphs this CLI prints, or degrade instead of dying.
+
+    Every command prints check marks, warning signs and box drawing. Python encodes stdout with
+    the locale encoding, which on Windows is cp1252, and cp1252 has none of those characters --
+    so the first line of output raised ``UnicodeEncodeError``. Mid-command: ``asbs create
+    handler`` died after writing the handler file and before registering it in ``main.py``,
+    leaving the project half-edited.
+
+    Two steps, because they fail for different reasons. UTF-8 is the fix and works wherever the
+    stream can be reconfigured at all. ``errors="replace"`` is the fallback for a stream that
+    refuses -- a redirected handle Python has already committed to an encoding, say -- where a
+    lost glyph is a ``?`` in a log rather than an abandoned command.
+
+    This changes only what the CLI *prints*. Everything it *writes* stays ASCII, which is the
+    repository's rule for source, and ``tests/unit/agent_generator`` asserts it of the generated
+    project rather than leaving it to this docstring.
+    """
+    reconfigure = getattr(stream, "reconfigure", None)
+    if reconfigure is None:  # pragma: no cover - a stream replaced by something simpler
+        return
+    try:
+        reconfigure(encoding="utf-8", errors="replace")
+    except (ValueError, OSError, AttributeError):
+        try:
+            reconfigure(errors="replace")
+        except (ValueError, OSError, AttributeError):  # pragma: no cover - nothing left to try
+            pass
 
 
 def main() -> None:
     """Entry point for the asbc CLI command."""
+    use_utf8(sys.stdout)
+    use_utf8(sys.stderr)
+
     parser = argparse.ArgumentParser(
         prog="asbs",
         description="Agentic Service Blueprint Shell - CLI for Blueprint Agents framework",
@@ -24,12 +58,12 @@ def main() -> None:
     )
     setup_parser.add_argument(
         "project_name",
-        help="Name of the project to create (e.g., 'invoice-processor')",
+        help="This agent's name: its app_name, its namespace in agents.toml and its class prefix (e.g. 'invoice-processor')",
     )
     setup_parser.add_argument(
         "--output-dir",
         default=".",
-        help="Parent directory where project will be created (default: current directory)",
+        help="Directory to scaffold into, which is the project itself (default: current directory)",
     )
     setup_parser.add_argument(
         "--overwrite",
@@ -103,28 +137,26 @@ def main() -> None:
         help="Enable verbose logging",
     )
 
-    # Windsurf command
-    windsurf_parser = subparsers.add_parser(
-        "windsurf",
-        help="Generate Windsurf IDE integration files",
-        description="Create .windsurf/ directory with rules and workflows",
+    # Docs command
+    docs_parser = subparsers.add_parser(
+        "docs",
+        help="Locate the framework documentation shipped with the package",
+        description="Print the path to a documentation page, or list every page",
     )
-    windsurf_parser.add_argument(
-        "output_dir",
+    docs_parser.add_argument(
+        "topic",
         nargs="?",
-        default=".",
-        help="Project root directory (default: current directory)",
+        help="Page to locate, e.g. 'guides/multi-agent-setup' or 'caching' (default: list all)",
     )
-    windsurf_parser.add_argument(
-        "--overwrite",
+    docs_parser.add_argument(
+        "--cat",
         action="store_true",
-        help="Overwrite existing files",
+        help="Print the page contents instead of its path",
     )
-    windsurf_parser.add_argument(
-        "--verbose",
-        "-v",
+    docs_parser.add_argument(
+        "--root",
         action="store_true",
-        help="Enable verbose logging",
+        help="Print the documentation root directory and exit",
     )
 
     # Validate command
@@ -144,7 +176,11 @@ def main() -> None:
     dev_parser = subparsers.add_parser(
         "dev",
         help="Start development server",
-        description="Run the application with hot reload",
+        description="Run this project's agents with hot reload, under the namespaces they deploy under",
+    )
+    dev_parser.add_argument(
+        "--agents",
+        help="Comma-separated agents to host (default: every agent in agents.toml)",
     )
     dev_parser.add_argument(
         "--port",
@@ -173,6 +209,8 @@ def main() -> None:
             create.run(args)
         elif args.command == "claude":
             claude.run(args)
+        elif args.command == "docs":
+            docs.run(args)
         elif args.command == "validate":
             validate.run(args)
         elif args.command == "dev":

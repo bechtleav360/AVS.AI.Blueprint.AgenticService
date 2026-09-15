@@ -1,9 +1,10 @@
 """Unit tests for EventProcessingService."""
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from blueprint.agents.component.namespace import ROOT_NAMESPACE
 from blueprint.agents.models.events import GenericCloudEvent, HandlerResult
 from blueprint.agents.models.result import ProcessingStatus
 from blueprint.agents.services.eventing.event_processing_service import EventProcessingService
@@ -119,12 +120,53 @@ class TestUnwrapDaprEvent:
 # ---------------------------------------------------------------------------
 
 
+class StubbedHandler:
+    """Just enough handler for the chain map: a namespace, an ordering, and no declarations.
+
+    A bare ``MagicMock`` will not do any more: a chain builds its dispatch index at startup,
+    which sorts the handlers and reads their declarations.
+    """
+
+    def __init__(self, namespace: str) -> None:
+        self.namespace = namespace
+        self.name = f"{namespace}_handler"
+
+    def __lt__(self, other: "StubbedHandler") -> bool:
+        return False
+
+    def get_handled_event_types(self) -> list[str]:
+        return []
+
+
 class TestLifecycle:
-    async def test_on_startup_is_noop(self, event_processing_service: EventProcessingService) -> None:
+    async def test_on_startup_starts_the_root_chain(self, event_processing_service: EventProcessingService) -> None:
+        chain = MagicMock()
+        chain.on_startup = AsyncMock()
+        event_processing_service._handler_chains = {ROOT_NAMESPACE: chain}
+
         await event_processing_service.on_startup()
 
-    async def test_on_shutdown_is_noop(self, event_processing_service: EventProcessingService) -> None:
+        chain.on_startup.assert_awaited_once()
+
+    async def test_on_startup_builds_a_chain_for_every_namespace_with_handlers(
+        self, event_processing_service: EventProcessingService, mock_registry: MagicMock
+    ) -> None:
+        """Built at startup, not on first delivery: a bad dedup window must fail the pod."""
+        mock_registry.get_event_handler.return_value = [StubbedHandler("orders"), StubbedHandler("billing")]
+
+        await event_processing_service.on_startup()
+
+        assert sorted(event_processing_service._handler_chains) == [ROOT_NAMESPACE, "billing", "orders"]
+
+    async def test_on_shutdown_stops_every_chain(self, event_processing_service: EventProcessingService) -> None:
+        root, orders = MagicMock(), MagicMock()
+        root.on_shutdown, orders.on_shutdown = AsyncMock(), AsyncMock()
+        event_processing_service._handler_chains = {ROOT_NAMESPACE: root, "orders": orders}
+
         await event_processing_service.on_shutdown()
+
+        root.on_shutdown.assert_awaited_once()
+        orders.on_shutdown.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
