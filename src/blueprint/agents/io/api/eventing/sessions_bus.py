@@ -19,7 +19,7 @@ from ....component.component import Component
 from ....models.errors import InvalidEventError, RetryableHandlerError
 from ....models.events import GenericCloudEvent
 from ....models.sessions import JobNotification
-from ....services.sessions import SessionKeyProvider, SessionsApiClient
+from ....services.sessions import SessionKeyClaimConflictError, SessionKeyProvider, SessionsApiClient
 from .cloud_event_processor_mixin import CloudEventProcessorMixin
 
 logger = logging.getLogger(__name__)
@@ -430,6 +430,13 @@ class SessionsBus(Component, CloudEventProcessorMixin):
                     logger.warning("Retryable upstream HTTP error for job %s: %s. Job remains pending.", job_id, e)
                 else:
                     await self._cancel_on_terminal_http_error(session_id, job_id, e, session_key=session_key)
+
+            except SessionKeyClaimConflictError as e:
+                # Expected multi-consumer race, not a bug: another agent instance already
+                # claimed this job's session key (409 from the "job" source). Logged at
+                # `warning`, not `exception`/`critical` — there's nothing to cancel or
+                # remediate here, the job is simply someone else's to process now.
+                logger.warning("Job %s already claimed by another agent instance: %s", job_id, e)
 
             except Exception as e:
                 logger.exception("Unexpected error processing job %s: %s", job_id, e)
