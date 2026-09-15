@@ -376,6 +376,15 @@ class SessionsBus(Component, CloudEventProcessorMixin):
         """Convert the notification to a CloudEvent and dispatch it, applying
         sessions-specific error handling. Each recovery policy lives in its own
         helper so this method stays a thin dispatcher.
+
+        Design note shared by every branch below (and by ``_retry_with_fresh_key``)
+        that logs-and-cancels instead of re-raising: a `raise` inside one of these
+        `except` clauses would propagate straight out of this method's try/except
+        (peer `except` clauses are never consulted for it), and this coroutine only
+        ever runs as a fire-and-forget task (``_spawn_tracked``) whose result
+        nothing awaits — an escaping exception here becomes an unretrieved task
+        exception, not a caller-visible failure. Confirmed as the actual mechanism
+        behind #94's silent "job never progresses past pending" symptom.
         """
         session_id = notification.session_id
         job_id = notification.job_id
@@ -420,30 +429,7 @@ class SessionsBus(Component, CloudEventProcessorMixin):
                     # whole except-block exists to fix.
                     logger.warning("Retryable upstream HTTP error for job %s: %s. Job remains pending.", job_id, e)
                 else:
-                    # Must log here, not re-raise: a `raise` inside this except clause would
-                    # propagate straight out of the try/except (peer `except Exception` below
-                    # is never consulted for it), and this coroutine only ever runs as a
-                    # fire-and-forget task (`_spawn_tracked`) whose result nothing awaits — an
-                    # escaping exception here is an unretrieved task exception, not a caller-
-                    # visible failure. Confirmed as the actual mechanism behind #94's silent
-                    # "job never progresses past pending" symptom.
-                    logger.exception("Unexpected HTTP error processing job %s: %s", job_id, e)
-                    # Cancel rather than leave pending: a non-403, non-retryable HTTP error
-                    # from the key fetch (404 unknown/expired job, 409, 422 contract drift) is
-                    # not something a later SSE reconnect or retry will resolve on its own —
-                    # leaving the job pending forever just hides the failure one layer deeper
-                    # than before this fix. `session_key` is still None here when *this very
-                    # error* came from the get_session_key call above (rather than from
-                    # dispatch) — _cancel_invalid_job retries that fetch exactly once (a
-                    # concurrent job may have populated the cache since) and escalates at
-                    # `critical` if that also fails, rather than repeating the same failure
-                    # again beyond that one reasonable retry.
-                    await self._cancel_invalid_job(
-                        session_id,
-                        job_id,
-                        InvalidEventError(status="non_retryable_http_error", reason=f"Unexpected HTTP error: {e}"),
-                        session_key=session_key,
-                    )
+                    await self._cancel_on_terminal_http_error(session_id, job_id, e, session_key=session_key)
 
             except Exception as e:
                 logger.exception("Unexpected error processing job %s: %s", job_id, e)
@@ -512,6 +498,42 @@ class SessionsBus(Component, CloudEventProcessorMixin):
         except Exception as cancel_error:
             logger.error("Failed to cancel job %s: %s", job_id, cancel_error)
 
+    async def _cancel_on_terminal_http_error(
+        self,
+        session_id: UUID,
+        job_id: UUID,
+        error: httpx.HTTPStatusError,
+        session_key: str | None,
+    ) -> None:
+        """Log and cancel on a non-403, non-retryable ``httpx.HTTPStatusError``.
+
+        Logging (rather than re-raising) here follows the same rationale as every
+        other log-and-cancel branch in ``_process_job_notification`` — see that
+        method's docstring for why raising would silently vanish as an unretrieved
+        task exception instead of surfacing.
+
+        No separate log call here for the error itself: ``_cancel_invalid_job``
+        below already logs "Invalid job ... Cancelling." with this error's text in
+        the reason, and logging it a second time up here produced two log lines
+        per incident for no added information.
+        """
+        # Cancel rather than leave pending: a non-403, non-retryable HTTP error
+        # from the key fetch (404 unknown/expired job, 409, 422 contract drift) is
+        # not something a later SSE reconnect or retry will resolve on its own —
+        # leaving the job pending forever just hides the failure one layer deeper
+        # than before this fix. `session_key` is still None here when *this very
+        # error* came from the get_session_key call above (rather than from
+        # dispatch) — _cancel_invalid_job retries that fetch exactly once (a
+        # concurrent job may have populated the cache since) and escalates at
+        # `critical` if that also fails, rather than repeating the same failure
+        # again beyond that one reasonable retry.
+        await self._cancel_invalid_job(
+            session_id,
+            job_id,
+            InvalidEventError(status="non_retryable_http_error", reason=f"Unexpected HTTP error: {error}"),
+            session_key=session_key,
+        )
+
     async def _retry_with_fresh_key(
         self,
         event: GenericCloudEvent,
@@ -559,10 +581,9 @@ class SessionsBus(Component, CloudEventProcessorMixin):
         logger.error("Retry failed for job %s: %s", job_id, retry_error)
         # Cancel directly rather than raising InvalidEventError: this method is called
         # from inside _process_job_notification's `except httpx.HTTPStatusError` clause,
-        # so a raise here would propagate straight out of that try/except (peer `except
-        # InvalidEventError` above it is never consulted) — the same unretrieved-task-
-        # exception trap the non-403 branch has. Report the original 403 in the reason
-        # (that is what the operator needs to see).
+        # so the same unretrieved-task-exception trap applies here — see that method's
+        # docstring. Report the original 403 in the reason (that is what the operator
+        # needs to see).
         await self._cancel_invalid_job(
             session_id,
             job_id,
