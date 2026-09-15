@@ -35,8 +35,8 @@ scaffolder that generates projects against it. Inside the framework:
 | `config/` | `Config` (Dynaconf), the logging manager |
 | `models/` | Pydantic models: events, configuration, API payloads, status |
 
-Prose for users lives in `docs/`: `docs/concepts/architecture.md` for the assembly model,
-`docs/concepts/event-processing.md` for the dispatch pipeline, `docs/concepts/configuration.md`
+Prose for users lives in `docs/`: `src/blueprint/agent_generator/docs/concepts/architecture.md` for the assembly model,
+`src/blueprint/agent_generator/docs/concepts/event-processing.md` for the dispatch pipeline, `src/blueprint/agent_generator/docs/concepts/configuration.md`
 for settings, `docs/guides/` for deployment, testing and the CLI. Specifications and plans are in
 `docs/specs/` and `docs/plans/`; a feature's changelog beside its plan is the running record of
 what was done and why.

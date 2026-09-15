@@ -15,6 +15,8 @@ a runtime setting rather than an architectural commitment.
 
 ---
 
+---
+
 ## Read this first: which of the two are you doing?
 
 Everything below splits along one question, and the answers differ in ways that matter:
@@ -22,7 +24,7 @@ Everything below splits along one question, and the answers differ in ways that 
 | | You are here if | What changes |
 |---|---|---|
 | **A. A new project** | You are running `asbs setup` today | Nothing to migrate. Your agent has a real namespace from the first run |
-| **B. An existing single-agent project** | You have a `main.py` that builds and serves an application | Three files change, and your **broker-side identity changes once** -- see [What changes](#what-changes-and-what-does-not) |
+| **B. An existing single-agent project** | You have a `main.py` that builds and serves an application | Three files change, and your **broker-side identity changes once** -- see [Migrating an Existing Agent into a Group](multi-agent-migration.md) |
 
 A third answer is legitimate and costs nothing: **do nothing.** An existing project that is
 deployed on its own keeps working, unchanged, indefinitely. There is no deprecation here.
@@ -114,105 +116,6 @@ that describe the *process* -- `app_port`, `app_host`, `app_workers`, `app_envir
 the rest -- belong in the group's own settings file: one process binds one port, speaks one bus and
 answers one readiness probe, so a copy under one agent's scope is read by nothing. `asbs validate`
 names them if you leave them there.
-
----
-
-## B. Migrating an existing single-agent project
-
-Three files change, and nothing else. Read
-[the one decision to get right first](#the-one-decision-to-get-right-first) before you start: one
-of the three is a name you cannot cheaply change afterwards.
-
-### 1. `src/main.py` -- remove two things, add nothing
-
-Before:
-
-```python
-config = Config(settings_files=["settings.toml", ".secrets.toml"])
-
-app = (
-    AppBuilder(config)
-    .with_service(OrderService)
-    .with_handler(OrderValidationHandler)
-    .with_rest_api(OrderApi)
-    .with_cache()
-    .build()
-)
-```
-
-After -- **the same builder**, minus its `config` argument and minus the `.build()`:
-
-```python
-agent = (
-    AppBuilder()
-    .with_service(OrderService)
-    .with_handler(OrderValidationHandler)
-    .with_rest_api(OrderApi)
-    .with_cache()
-)
-```
-
-Every `with_*` call stays exactly where it was. `with_cache()` included. That is the point of there
-being one builder class: migration removes two things and adds none, because the declaration and
-the application builder are the same object.
-
-If the agent is **also** still to be served on its own, add a factory -- optional, and it repeats no
-component:
-
-```python
-def create_app():
-    return agent.build(Config(settings_files=["settings.toml", ".secrets.toml"]))
-```
-
-Two things the module must not do, because it is imported into a shared runtime: construct clients
-or other components at import time, and call `logging.basicConfig()`. Configuration and logging
-belong to the process that hosts the declaration.
-
-If you are passing **instances** anywhere -- `with_rest_api(OrderApi())` -- change them to classes.
-An instance is constructed at that line, before any namespace exists, so it belongs to the root for
-ever; a group refuses one at assembly and names the agent and the fix.
-
-### 2. `Dockerfile` -- one command
-
-```diff
--CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
-+CMD ["python", "-m", "blueprint.agents.entrypoint"]
-```
-
-and copy the map into the image beside your settings:
-
-```dockerfile
-COPY --chown=appuser:appuser agents.toml ./
-```
-
-### 3. `agents.toml` -- a new file
-
-```toml
-[agents.order]
-module = "src.main:agent"
-```
-
-Required even for a group of one: it is the only thing that turns an agent's name into code. There
-is discovery by convention nowhere in this, deliberately -- a set of agents that depends on what
-happens to be importable makes a renamed directory a silently removed agent.
-
-### 4. Check it
-
-```bash
-asbs validate
-```
-
-It reads the map, holds the name to the namespace alphabet, confirms the module exists and assigns
-the attribute you named, and reports anything about schedulers or settings that would not survive
-the move. It never imports your project.
-
-### One declaration, three ways to run it
-
-| Shape | Command |
-|---|---|
-| Standalone, unmigrated | `uvicorn src.main:app` |
-| Standalone, migrated (with `create_app`) | `uvicorn src.main:create_app --factory` |
-| Grouped, including a group of one | `python -m blueprint.agents.entrypoint` |
 
 ---
 
@@ -422,6 +325,7 @@ wants `idempotency_enabled`. NATS has no such coupling -- each agent has its own
 
 ## See also
 
+- [Migrating an Existing Agent into a Group](multi-agent-migration.md) -- moving a project you already have
 - [CLI Reference](cli-reference.md) -- `asbs setup`, `asbs dev`, `asbs validate` in full
 - [Deployment](deployment.md) -- images, Helm, probes, scaling
 - [Caching](../concepts/caching.md) -- named caches, per-agent stores, the management endpoints

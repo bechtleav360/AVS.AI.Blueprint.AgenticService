@@ -16,6 +16,9 @@ If the user provided a description, extract from it:
 - **What LLM agents it needs** (names, purposes, expected outputs)
 - **What REST endpoints it exposes** (if any)
 - **What scheduled tasks it runs** (if any)
+- **Whether it runs alone or in a group** -- one agent per process is the default and the safest
+  shape. If several agents should share one process, the name you choose becomes a namespace that
+  is expensive to change later: read the `blueprint-multi-agent` skill before running `asbs setup`.
 
 If any of these are unclear, ask the user ONE focused question before proceeding.
 
@@ -54,7 +57,22 @@ Ensure `settings.toml` has:
 
 Ensure `.secrets.toml` has placeholder keys for any required API keys.
 
-## Step 6: Verification
+## Step 6: Reference
+
+The framework documentation ships with the package. Load a page only when the step needs it:
+
+```bash
+asbs docs                                   # list every page
+asbs docs getting-started --cat             # the end-to-end first-project walkthrough
+asbs docs guides/cli/setup --cat            # what asbs setup generates
+asbs docs reference/configuration-keys --cat  # exact settings.toml key names
+asbs docs guides/multi-agent-setup --cat    # if this project is a group
+```
+
+Related skills: `blueprint-cli`, `blueprint-config`, `blueprint-events`, `blueprint-multi-agent`,
+`blueprint-testing`, `blueprint-troubleshooting`.
+
+## Step 7: Verification
 
 - Run `asbs validate` to check project structure
 - Verify all imports resolve correctly

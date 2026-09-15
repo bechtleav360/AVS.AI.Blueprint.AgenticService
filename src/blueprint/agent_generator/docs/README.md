@@ -40,8 +40,9 @@ Blueprint Agents is a Python 3.13+ framework for building AI-powered microservic
 
 | Guide | Description |
 |-------|-------------|
-| [CLI Reference](guides/cli-reference.md) | Full reference for the `asbs` command-line tool |
-| [Multi-Agent Setup](guides/multi-agent-setup.md) | Running several agents in one process, and migrating an existing one into a group |
+| [CLI Reference](guides/cli-reference.md) | Index of the `asbs` command-line tool; one page per command |
+| [Multi-Agent Setup](guides/multi-agent-setup.md) | Running several agents in one process |
+| [Multi-Agent Migration](guides/multi-agent-migration.md) | Moving an existing single-agent project into a group |
 | [Testing](guides/testing.md) | Unit testing, integration testing, and test fixtures |
 | [Deployment](guides/deployment.md) | Docker builds, environment configuration, and production setup |
 | [Troubleshooting](guides/troubleshooting.md) | Common issues, debugging tips, and FAQ |
@@ -55,3 +56,18 @@ Blueprint Agents is a Python 3.13+ framework for building AI-powered microservic
 | [API Reference](reference/api.md) | Public API surface for all framework modules |
 | [Configuration Keys](reference/configuration-keys.md) | Complete list of `settings.toml` and `.secrets.toml` keys |
 | [Models](reference/models.md) | Built-in Pydantic models and base classes |
+
+---
+
+## Where these docs live
+
+These pages ship inside the installed package, at
+``blueprint/agent_generator/docs/``. That is deliberate: a developer or an AI assistant working
+against the framework can read them without network access. `asbs claude` installs skills that
+reference them by path.
+
+To find them in an environment that has the package installed:
+
+```bash
+python -c "import blueprint.agent_generator as g, pathlib; print(pathlib.Path(g.__file__).parent / 'docs')"
+```
