@@ -365,11 +365,9 @@ class TestProcessJobNotification:
         case — see test_retryable_http_error_leaves_job_pending_without_cancelling below.
 
         The old `else: raise` inside `except httpx.HTTPStatusError` re-raised the original
-        exception. Since that ran inside an except clause, it propagated straight out of
-        the entire try/except (peer `except Exception` below was never consulted) — and
-        since this coroutine only ever runs as a fire-and-forget task (`_spawn_tracked`)
-        whose result nothing awaits, the exception died silently as an unretrieved task
-        exception. This is the actual mechanism behind #94's "job never progresses past
+        exception instead of logging it — see `_process_job_notification`'s docstring for
+        why that would have died silently as an unretrieved task exception rather than
+        surfacing. This is the actual mechanism behind #94's "job never progresses past
         pending" symptom, for any wire-contract drift, not just the one #94 diagnosed.
         """
         response_mock = MagicMock()
