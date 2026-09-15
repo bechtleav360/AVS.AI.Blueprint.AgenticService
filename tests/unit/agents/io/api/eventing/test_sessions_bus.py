@@ -295,6 +295,58 @@ class TestProcessJobNotification:
         assert call_kwargs["job_id"] == notification.job_id
         assert "Session key invalid" in call_kwargs["reason"]
 
+    @pytest.mark.parametrize("status_code", [500, 502, 503, 504, 408, 429, 401])
+    async def test_403_retry_hits_retryable_http_error_leaves_job_pending(
+        self,
+        started_sessions_bus: SessionsBus,
+        notification: JobNotification,
+        caplog: pytest.LogCaptureFixture,
+        status_code: int,
+    ) -> None:
+        """A 403-retry that itself fails with a retryable status (5xx/408/429/401) must
+        leave the job pending, not cancel it (review, #95) — the same classification the
+        main dispatch path's non-403 branch already applies. Canceling a retry that failed
+        on a transient upstream blip would turn a recoverable retry into permanent job
+        loss, exactly the failure mode the retryable/non-retryable split exists to prevent.
+        """
+        first_403 = MagicMock()
+        first_403.status_code = 403
+        retry_response = MagicMock()
+        retry_response.status_code = status_code
+        retry_err = httpx.HTTPStatusError(str(status_code), request=MagicMock(), response=retry_response)
+        started_sessions_bus._dispatch_cloud_event = AsyncMock(  # type: ignore[method-assign]
+            side_effect=[httpx.HTTPStatusError("403", request=MagicMock(), response=first_403), retry_err]
+        )
+
+        with caplog.at_level("WARNING"):
+            await started_sessions_bus._process_job_notification(notification)
+
+        started_sessions_bus._api_client.cancel_job.assert_not_awaited()
+        assert "remains pending" in caplog.text
+
+    async def test_403_retry_hits_retryable_handler_error_leaves_job_pending(
+        self,
+        started_sessions_bus: SessionsBus,
+        notification: JobNotification,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Same as above, but the retry's failure is a RetryableHandlerError rather than
+        an HTTP status — must also leave the job pending, not cancel it (review, #95)."""
+        first_403 = MagicMock()
+        first_403.status_code = 403
+        started_sessions_bus._dispatch_cloud_event = AsyncMock(  # type: ignore[method-assign]
+            side_effect=[
+                httpx.HTTPStatusError("403", request=MagicMock(), response=first_403),
+                RetryableHandlerError(status="transient", reason="retry hit a retryable error"),
+            ]
+        )
+
+        with caplog.at_level("WARNING"):
+            await started_sessions_bus._process_job_notification(notification)
+
+        started_sessions_bus._api_client.cancel_job.assert_not_awaited()
+        assert "remains pending" in caplog.text
+
     async def test_non_403_http_error_is_logged_not_raised(
         self,
         started_sessions_bus: SessionsBus,
@@ -388,7 +440,7 @@ class TestProcessJobNotification:
         assert started_sessions_bus._key_provider.get_session_key.await_count == 2
         started_sessions_bus._api_client.cancel_job.assert_not_awaited()
         assert "Cannot cancel job" in caplog.text
-        assert "remain pending indefinitely" in caplog.text
+        assert "remains pending" in caplog.text
 
     async def test_unexpected_error_is_logged_not_raised(
         self,
