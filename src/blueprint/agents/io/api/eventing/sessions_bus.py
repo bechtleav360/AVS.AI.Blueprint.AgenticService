@@ -30,7 +30,7 @@ def _is_retryable_http_status(status_code: int) -> bool:
     """5xx/408/429/401 — a transient or operator-fixable fault, not evidence the job
     itself is invalid. Shared by every place that classifies an ``httpx.HTTPStatusError``
     for cancel-vs-retry, so the decision can't drift between call sites the way it did
-    between the main dispatch path and the 403-retry path (review, #95): 5xx/408/429 are
+    between the main dispatch path and the 403-retry path (#95): 5xx/408/429 are
     the upstream-blip case (service-sessions deploy/restart, LB blip, rate limit); 401 is
     a missing/invalid ``X-Api-Key``, systemic across every job this agent handles rather
     than specific to this one, and canceling it wouldn't even take effect — ``cancel_job``
@@ -548,7 +548,7 @@ class SessionsBus(Component, CloudEventProcessorMixin):
             retry_error = exc
 
         if retryable:
-            # Same classification as the main dispatch path (review, #95): a retry that
+            # Same classification as the main dispatch path (#95): a retry that
             # hits a retryable error must stay pending, not cancel — canceling here would
             # turn a job that failed its retry on a transient fault into permanent job
             # loss, exactly the case the retryable/non-retryable split exists to prevent,

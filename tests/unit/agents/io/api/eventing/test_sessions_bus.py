@@ -14,6 +14,11 @@ from blueprint.agents.models.errors import InvalidEventError, RetryableHandlerEr
 from blueprint.agents.models.result import ProcessingResult, ProcessingStatus
 from blueprint.agents.models.sessions import JobNotification
 
+# Mirrors _is_retryable_http_status's own set — pinned once here rather than repeated as
+# an identical parametrize literal on both tests that exercise it (main dispatch path and
+# 403-retry path), so the two can't drift out of sync with each other or the source.
+_RETRYABLE_STATUS_CODES = [500, 502, 503, 504, 408, 429, 401]
+
 # ---------------------------------------------------------------------------
 # Shared fixtures
 # ---------------------------------------------------------------------------
@@ -295,7 +300,7 @@ class TestProcessJobNotification:
         assert call_kwargs["job_id"] == notification.job_id
         assert "Session key invalid" in call_kwargs["reason"]
 
-    @pytest.mark.parametrize("status_code", [500, 502, 503, 504, 408, 429, 401])
+    @pytest.mark.parametrize("status_code", _RETRYABLE_STATUS_CODES)
     async def test_403_retry_hits_retryable_http_error_leaves_job_pending(
         self,
         started_sessions_bus: SessionsBus,
@@ -304,7 +309,7 @@ class TestProcessJobNotification:
         status_code: int,
     ) -> None:
         """A 403-retry that itself fails with a retryable status (5xx/408/429/401) must
-        leave the job pending, not cancel it (review, #95) — the same classification the
+        leave the job pending, not cancel it (#95) — the same classification the
         main dispatch path's non-403 branch already applies. Canceling a retry that failed
         on a transient upstream blip would turn a recoverable retry into permanent job
         loss, exactly the failure mode the retryable/non-retryable split exists to prevent.
@@ -331,7 +336,7 @@ class TestProcessJobNotification:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Same as above, but the retry's failure is a RetryableHandlerError rather than
-        an HTTP status — must also leave the job pending, not cancel it (review, #95)."""
+        an HTTP status — must also leave the job pending, not cancel it (#95)."""
         first_403 = MagicMock()
         first_403.status_code = 403
         started_sessions_bus._dispatch_cloud_event = AsyncMock(  # type: ignore[method-assign]
@@ -381,7 +386,7 @@ class TestProcessJobNotification:
         assert call_kwargs["job_id"] == notification.job_id
         assert "Unexpected HTTP error" in call_kwargs["reason"]
 
-    @pytest.mark.parametrize("status_code", [500, 502, 503, 504, 408, 429, 401])
+    @pytest.mark.parametrize("status_code", _RETRYABLE_STATUS_CODES)
     async def test_retryable_http_error_leaves_job_pending_without_cancelling(
         self,
         started_sessions_bus: SessionsBus,
