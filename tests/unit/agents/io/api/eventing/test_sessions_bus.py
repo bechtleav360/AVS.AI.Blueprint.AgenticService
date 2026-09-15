@@ -13,6 +13,7 @@ from blueprint.agents.io.api.eventing.sessions_bus import SessionsBus
 from blueprint.agents.models.errors import InvalidEventError, RetryableHandlerError
 from blueprint.agents.models.result import ProcessingResult, ProcessingStatus
 from blueprint.agents.models.sessions import JobNotification
+from blueprint.agents.services.sessions import SessionKeyClaimConflictError
 
 # Mirrors _is_retryable_http_status's own set — pinned once here rather than repeated as
 # an identical parametrize literal on both tests that exercise it (main dispatch path and
@@ -457,6 +458,27 @@ class TestProcessJobNotification:
             await started_sessions_bus._process_job_notification(notification)
 
         assert "Unexpected error" in caplog.text
+
+    async def test_session_key_claim_conflict_is_logged_as_warning_not_exception(
+        self,
+        started_sessions_bus: SessionsBus,
+        notification: JobNotification,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A `"job"` source 409 (another agent instance already claimed this job) is an
+        expected multi-consumer race, not a bug — it must not be logged as an unexpected
+        error (with a traceback via `logger.exception`), and there is nothing to cancel.
+        """
+        started_sessions_bus._key_provider.get_session_key = AsyncMock(
+            side_effect=SessionKeyClaimConflictError(f"job {notification.job_id}'s session key was already claimed by a different agent")
+        )
+
+        with caplog.at_level("WARNING"):
+            await started_sessions_bus._process_job_notification(notification)
+
+        assert "already claimed" in caplog.text
+        assert "Unexpected error" not in caplog.text
+        started_sessions_bus._api_client.cancel_job.assert_not_awaited()
 
     async def test_pipeline_id_forwarded_to_context(
         self,
