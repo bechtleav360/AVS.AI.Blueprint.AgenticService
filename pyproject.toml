@@ -131,6 +131,15 @@ extend-exclude = '''
 [tool.ruff]
 target-version = "py313"
 line-length = 140
+# The packaged documentation lives under src/ so it ships in the wheel, which puts it in reach of
+# "ruff format src". Ruff formats Python code blocks inside Markdown, and the examples in these
+# pages are wrapped on purpose -- a fluent AppBuilder chain is one call per line because that is
+# what makes the shape readable. Formatting them collapses each chain onto a single 140-column
+# line, which is worse prose and not what the reader is being shown.
+extend-exclude = [
+    "src/blueprint/agent_generator/docs",
+    "src/blueprint/agent_generator/claude_docs",
+]
 lint.select = [
     "E", # pycodestyle errors
     "W", # pycodestyle warnings
