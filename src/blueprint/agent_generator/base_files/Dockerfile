@@ -69,10 +69,21 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 COPY --chown=appuser:appuser src ./src
 COPY --chown=appuser:appuser settings.toml ./
 
-# The agent map belongs to the image -- it lists the agents this image contains and where
-# their declarations live. The group file does NOT: which of those agents a process runs is
-# a deployment decision, so it arrives as a mount or as BLUEPRINT_AGENTS. See the ENTRYPOINT.
-COPY --chown=appuser:appuser agents.toml ./
+# The agent map belongs to the image, not to the agent -- it says which agents an image
+# contains, which is a packaging decision. So it is written here rather than copied from the
+# agent's directory: the agent carries no agents.toml, and is therefore the same directory
+# whether it is built alone like this or dropped into a group image that maps several.
+#
+# root = "." because this image contains exactly one agent and it was copied to /app. In a
+# group image each agent has its own subdirectory, and root names it.
+#
+# The group file does NOT belong here: which of an image's agents a process runs is a
+# deployment decision, so it arrives as a mount or as BLUEPRINT_AGENTS. See the ENTRYPOINT.
+COPY --chown=appuser:appuser <<AGENT_MAP /app/agents.toml
+[agents.agent_namespace]
+root   = "."
+module = "src.main:agent"
+AGENT_MAP
 
 # The disk cache backend writes here, and it cannot create this itself: WORKDIR made /app
 # root-owned, so mkdir() as appuser fails with EACCES. Created and handed over at build time,

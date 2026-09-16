@@ -55,7 +55,9 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     what the container's ``WORKDIR`` provides. So this fixture reproduces the container's shape
     rather than passing paths the real entry point has no parameter for.
     """
-    (tmp_path / "agents.toml").write_text(f'[agents.order]\nmodule = "{_THIS}:order_declaration"\n')
+    (tmp_path / "order").mkdir(exist_ok=True)
+    (tmp_path / "billing").mkdir(exist_ok=True)
+    (tmp_path / "agents.toml").write_text(f'[agents.order]\nroot = "order"\nmodule = "{_THIS}:order_declaration"\n')
     (tmp_path / "settings.toml").write_text('[development]\napp_environment = "development"\napp_name = "the-process"\napp_port = 8000\n')
     monkeypatch.chdir(tmp_path)
     return tmp_path
@@ -138,7 +140,7 @@ class TestMain:
         assert "not-in-this-image" in capsys.readouterr().err
 
     def test_a_critical_agent_that_cannot_be_loaded_exits_non_zero(self, project: Path) -> None:
-        (project / "agents.toml").write_text('[agents.order]\nmodule = "no.such.module:registration"\n')
+        (project / "agents.toml").write_text('[agents.order]\nroot = "order"\nmodule = "no.such.module:registration"\n')
 
         with patch.object(entrypoint, "run_app") as run:
             status = entrypoint.main(environ={"BLUEPRINT_AGENTS": "order"})
@@ -192,7 +194,7 @@ class TestOneDeclarationServesBothDeploymentShapes:
 
     def test_the_same_declaration_runs_beside_another_agent(self, project: Path) -> None:
         (project / "agents.toml").write_text(
-            f'[agents.order]\nmodule = "{_THIS}:order_declaration"\n\n[agents.billing]\nmodule = "{_THIS}:order_declaration"\n'
+            f'[agents.order]\nroot = "order"\nmodule = "{_THIS}:order_declaration"\n\n[agents.billing]\nroot = "billing"\nmodule = "{_THIS}:order_declaration"\n'
         )
 
         entrypoint.build_group_app(environ={"BLUEPRINT_AGENTS": "order,billing"})

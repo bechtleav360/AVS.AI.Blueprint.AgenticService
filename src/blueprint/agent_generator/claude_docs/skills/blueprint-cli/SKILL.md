@@ -13,14 +13,15 @@ than writing component files by hand** - it applies the naming rules and registe
 ## Commands
 
 ```bash
-asbs setup <project_name>                          # Scaffold a complete project
+asbs setup <project_name>                          # Scaffold one agent
+asbs setup --group                                 # Scaffold the image's files instead
 asbs create handler <name> [--event-type TYPE]     # Add EventHandler
 asbs create service <name>                         # Add Service
 asbs create api <name>                             # Add RestApi
 asbs create agent <name>                           # Add AgentRuntime
 asbs create scheduler <name> [--cron CRON]         # Add Scheduler
-asbs validate                                      # Check structure and configuration
-asbs dev [--port 8000]                             # Dev server with reload
+asbs validate [--group]                            # Check one agent, or a whole image
+asbs dev [--name NAME] [--port 8000]               # Dev server with reload
 asbs docs [<topic>] [--cat]                        # Locate the framework docs
 ```
 
@@ -47,4 +48,9 @@ For the end-to-end workflow of a first project, read `asbs docs getting-started 
   before the handlers, agents and APIs that resolve them.
 - **Names are normalised, not rejected.** `order-placed`, `OrderPlaced` and `order_placed` all
   produce the same handler. Agent *namespaces* are the exception - see `blueprint-multi-agent`.
-- After any `create`, run `asbs validate` before calling the work done.
+- After any `create`, run `asbs validate` before calling the work done. In a repository that
+  hosts several agents, `asbs validate --group` checks the map and every agent it points at.
+- **`asbs setup` has two modes.** `--group` writes the image's files (an empty agent map, the
+  process settings, a group Dockerfile) and creates no agent. Without it, one agent is created
+  in the current directory -- the same command whether it will run alone or in a group.
+- **A scaffolded agent has no `agents.toml`**, deliberately: see `blueprint-multi-agent`.

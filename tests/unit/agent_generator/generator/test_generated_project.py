@@ -131,24 +131,40 @@ class TestTheGeneratedDeclaration:
 
 
 class TestTheAgentMap:
-    """``agents.toml`` is how the image's command finds the declaration."""
+    """The map is the *image's*, so a scaffolded agent does not carry one.
 
-    def test_it_names_the_agent_and_its_declaration(self, project: Path) -> None:
-        document = tomllib.loads((project / "agents.toml").read_text(encoding="utf-8"))
+    It says which agents an image contains, which is a packaging decision -- an agent that
+    shipped one would be an agent that knows whether it is running alone, and in a group only
+    the image's own map is read. The single-agent Dockerfile writes it instead.
+    """
 
-        assert document["agents"] == {AGENT_NAMESPACE: {"module": "src.main:agent"}}
+    def test_the_agent_does_not_carry_one(self, project: Path) -> None:
+        assert not (project / "agents.toml").exists()
+
+    def test_the_dockerfile_writes_one_naming_this_agent(self, project: Path) -> None:
+        dockerfile = (project / "Dockerfile").read_text(encoding="utf-8")
+
+        assert f"[agents.{AGENT_NAMESPACE}]" in dockerfile
+        assert 'root   = "."' in dockerfile
+        assert 'module = "src.main:agent"' in dockerfile
+
+    def test_the_map_the_dockerfile_writes_parses(self, project: Path) -> None:
+        """It is written into the image verbatim, so a typo here is a pod that will not start."""
+        dockerfile = (project / "Dockerfile").read_text(encoding="utf-8")
+        body = dockerfile.split("<<AGENT_MAP /app/agents.toml")[1].split("AGENT_MAP")[0]
+
+        document = tomllib.loads(body)
+
+        assert document["agents"] == {AGENT_NAMESPACE: {"root": ".", "module": "src.main:agent"}}
 
     def test_the_agent_name_is_a_legal_namespace(self, project: Path) -> None:
         """It becomes a queue group, a durable, a cache partition and a service.name."""
-        document = tomllib.loads((project / "agents.toml").read_text(encoding="utf-8"))
-
-        for name in document["agents"]:
+        for name in (AGENT_NAMESPACE,):
             assert validate_namespace(name) == name
 
     def test_the_module_it_names_is_the_one_that_declares_the_agent(self, project: Path) -> None:
         """The map is only useful if it resolves, and it is written by hand from here on."""
-        document = tomllib.loads((project / "agents.toml").read_text(encoding="utf-8"))
-        module_path, _, attribute = document["agents"][AGENT_NAMESPACE]["module"].partition(":")
+        module_path, _, attribute = "src.main:agent".partition(":")
 
         saved_path = list(sys.path)
         saved_modules = {name: module for name, module in sys.modules.items() if name == "src" or name.startswith("src.")}
@@ -275,11 +291,18 @@ class TestTheGeneratedSettingsAreRead:
 
         assert config.get_observability_config().token_metrics_enabled is False
 
-    def test_the_log_level_is_the_one_the_file_states(self, project: Path, tmp_path: Path) -> None:
-        config = self._loaded(project, tmp_path, log_level='"WARNING"')
+    def test_the_process_wide_logging_keys_are_left_commented_out(self, project: Path) -> None:
+        """They describe the process, not this agent.
 
-        assert config.get_observability_config().log_level == "WARNING"
-        assert config.get("log_format") == "text"
+        In a group they are dropped before the merge with a warning, so a scaffolded agent that
+        set them would make every group it joined complain about a file the scaffolder wrote.
+        Commented out rather than absent, because a single-agent deployment does want them and
+        the agent's directory is the image there.
+        """
+        body = (project / "settings.toml").read_text(encoding="utf-8")
+
+        assert "# log_level = " in body
+        assert "# log_format = " in body
 
     def test_no_table_is_written_that_nothing_reads(self, project: Path) -> None:
         """The framework reads these four flat. A section of the same name is dead weight that
@@ -315,11 +338,20 @@ class TestTheProjectTheEntryPointBuilds:
 
         monkeypatch.chdir(project)
         sys.path.insert(0, str(project))
+        # The map is the image's file, written by the Dockerfile rather than shipped in the
+        # agent -- so the fixture writes what that Dockerfile writes, which is also what makes
+        # this the shape the container actually runs.
+        map_file = project / "agents.toml"
+        map_file.write_text(
+            f'[agents.{AGENT_NAMESPACE}]{chr(10)}root   = "."{chr(10)}module = "src.main:agent"{chr(10)}',
+            encoding="utf-8",
+        )
         try:
             app, _ = build_group_app(environ={"BLUEPRINT_AGENTS": AGENT_NAMESPACE, "BLUEPRINT_GROUP": "test"})
             yield app
         finally:
             Component.reset_shared_state()
+            map_file.unlink(missing_ok=True)
             for name in [name for name in sys.modules if name == "src" or name.startswith("src.")]:
                 del sys.modules[name]
             sys.modules.update(saved_modules)
@@ -394,7 +426,7 @@ class TestTheImage:
     def test_the_agent_map_is_in_the_image(self, project: Path) -> None:
         dockerfile = (project / "Dockerfile").read_text(encoding="utf-8")
 
-        assert "COPY --chown=appuser:appuser agents.toml ./" in dockerfile
+        assert "<<AGENT_MAP /app/agents.toml" in dockerfile
 
     def test_no_group_is_baked_into_the_production_image(self, project: Path) -> None:
         """One image serves every group; the group arrives at container start."""
@@ -415,7 +447,7 @@ class TestAnUnusableProjectNameIsRefused:
     """A name that cannot be a namespace fails the generator rather than the deployment."""
 
     def test_a_leading_digit_is_refused_with_the_reason(self) -> None:
-        from blueprint.agent_generator.generator.part_generators import AgentMapPartGenerator
+        from blueprint.agent_generator.generator.part_generators.part_generator_base import PartGeneratorBase
 
         with pytest.raises(ValueError, match="cannot be used"):
-            AgentMapPartGenerator.agent_namespace({"name": "2ndAgent"})
+            PartGeneratorBase.agent_namespace({"name": "2ndAgent"})

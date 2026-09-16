@@ -33,11 +33,15 @@ scheduler_mode = "in_process"
 # of the environment table, so a [default.logging] or [default.observability]
 # section would be read by nothing at all.
 #
-# log_level and log_format describe the process. If this project is later hosted as
-# one agent of a group, the group's own settings file decides both and these two are
-# reported and ignored -- one process configures logging once.
-log_level = "DEBUG"
-log_format = "text"
+# log_level and log_format describe the *process*, not this agent, so they are
+# commented out here: one process configures logging once, and a value set under an
+# agent is dropped before the merge with a warning naming the value actually used.
+#
+# Uncomment them only while this agent is deployed on its own, where its directory is
+# also the image. In a group they belong in the image's settings.toml, beside
+# agents.toml -- `asbs validate --group` reports them if they are left here.
+# log_level = "DEBUG"
+# log_format = "text"
 
 # otel_enabled turns OpenTelemetry on and needs otel_endpoint to have somewhere to
 # send to. token_metrics_enabled adds per-call token and latency metrics on top, and

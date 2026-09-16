@@ -58,7 +58,15 @@ def main() -> None:
     )
     setup_parser.add_argument(
         "project_name",
-        help="This agent's name: its app_name, its namespace in agents.toml and its class prefix (e.g. 'invoice-processor')",
+        nargs="?",
+        help="This agent's name: its app_name, the namespace it is mapped under and its class prefix "
+        "(e.g. 'invoice-processor'). Omitted with --group, which creates no agent.",
+    )
+    setup_parser.add_argument(
+        "--group",
+        action="store_true",
+        help="Create the image's files instead of an agent: an empty agent map, the process settings and a "
+        "group Dockerfile. Run it at the top of the repository, then create each agent in its own directory.",
     )
     setup_parser.add_argument(
         "--output-dir",
@@ -169,7 +177,12 @@ def main() -> None:
         "project_dir",
         nargs="?",
         default=".",
-        help="Project directory to validate (default: current directory)",
+        help="Directory to validate (default: current directory)",
+    )
+    validate_parser.add_argument(
+        "--group",
+        action="store_true",
+        help="Validate an image rather than a single agent: the agent map, and every agent it points at.",
     )
 
     # Dev command
@@ -177,6 +190,11 @@ def main() -> None:
         "dev",
         help="Start development server",
         description="Run this project's agents with hot reload, under the namespaces they deploy under",
+    )
+    dev_parser.add_argument(
+        "--name",
+        help="The name to serve a single agent under (default: this directory's name). An agent "
+        "directory carries no agent map, so the name comes from whoever hosts it.",
     )
     dev_parser.add_argument(
         "--agents",

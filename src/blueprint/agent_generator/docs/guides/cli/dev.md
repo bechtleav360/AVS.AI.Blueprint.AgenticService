@@ -38,3 +38,27 @@ INFO:     Started reloader process
 ```
 
 The development server watches for file changes in the `src/` directory and automatically restarts when modifications are detected.
+
+---
+
+## Running a single agent
+
+An agent directory carries no `agents.toml`, so there is nothing there to name it. `asbs dev`
+supplies the name instead -- from `--name`, or the directory's own name:
+
+```bash
+cd agents/some_topic/my_agent
+asbs dev                    # serves it as "my_agent"
+asbs dev --name orders      # serves it as "orders"
+```
+
+The map it needs is written outside the project for that run and removed afterwards. Nothing is
+created in the agent's directory: an `agents.toml` left behind there is exactly the file an
+agent must not carry.
+
+The name decides the route prefix, so `/api/my_agent/...` here and `/api/<map key>/...` in a
+group image. If they differ, development and production differ -- `asbs validate --group` says
+so when a map key does not match its directory name.
+
+Where an `agents.toml` *is* present -- an image's directory -- `asbs dev` hosts the agents it
+names, as before.

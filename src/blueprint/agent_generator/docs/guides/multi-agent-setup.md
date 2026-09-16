@@ -64,19 +64,23 @@ file be served alone and be hosted beside other agents. Note that components are
 **classes**, not instances: a component constructed on the `with_*` line is constructed before any
 namespace exists and belongs to the root for ever, which is why a group refuses one.
 
-**`agents.toml` maps the agent's name to that declaration.**
+**The agent carries no `agents.toml`, and that is the point.**
 
-```toml
-[agents.order_processor]
-module = "src.main:agent"
-```
+The agent map says which agents an *image* contains, which is a packaging decision. An agent that
+carried one would be an agent that knows whether it is running alone -- and in a group only the
+image's own map is read, so the copy would be dead weight that reads as authoritative. `asbs
+validate --group` refuses one found inside an agent.
 
-This file is **baked into the image**: it says what the image contains. It does not say which of
-those agents any particular process runs -- that is the deployment's decision, and it arrives
-separately.
+Whoever hosts the agent supplies its name:
 
-The `Dockerfile` runs `python -m blueprint.agents.entrypoint`, which reads `agents.toml`, works out
-this process's group, and serves it.
+| Host | Where the name comes from |
+|---|---|
+| Its own `Dockerfile` | a one-agent map written into the image, with `root = "."` |
+| A group image | an entry in the repository's `agents.toml` |
+| `asbs dev` | `--name`, defaulting to the directory's name |
+
+The `Dockerfile` runs `python -m blueprint.agents.entrypoint`, which reads that map, works out this
+process's group, and serves it.
 
 ### Running it
 
@@ -98,24 +102,85 @@ docker run -e BLUEPRINT_AGENTS=order_processor -p 8000:8000 order-processor
 
 ### Adding a second agent to the same image
 
-Put the second agent's code in its own package, give it its own declaration module and its own
-`settings.toml` **beside that module**, and add it to the map:
+An agent is the same directory whether it runs alone or beside twenty others, so there is no
+second way to create one: you create the *image*, then create each agent inside it exactly as
+you would on its own.
+
+At the top of the repository:
+
+```bash
+asbs setup --group
+```
+
+That writes the image's files and nothing else: an empty `agents.toml`, a `settings.toml` for
+the process-wide keys, and a group `Dockerfile`. No agent is created and none is named.
+
+Then each agent, in its own directory, at whatever depth suits the repository:
+
+```bash
+mkdir -p agents/some_topic/order_processor
+cd agents/some_topic/order_processor
+asbs setup order-processor
+```
+
+and one entry per agent in the image's `agents.toml`:
 
 ```toml
 [agents.order_processor]
-module = "src.order_processor.main:agent"
+root   = "agents/some_topic/order_processor"
+module = "agents.some_topic.order_processor.src.main:agent"
 
 [agents.billing]
-module = "src.billing.main:agent"
+root   = "agents/billing"
+module = "agents.billing.src.main:agent"
 ```
 
-Each agent's `settings.toml` is read from the directory its declaration lives in and merged under
-that agent's own scope, so both may write plain top-level keys and neither sees the other's. Keys
-that describe the *process* -- `app_port`, `app_host`, `app_workers`, `app_environment`,
-`envvar_prefix`, `event_bus`, `log_level`, `log_format`, `readiness_policy`, `nats_stream_name` and
-the rest -- belong in the group's own settings file: one process binds one port, speaks one bus and
-answers one readiness probe, so a copy under one agent's scope is read by nothing. `asbs validate`
-names them if you leave them there.
+**Both keys are required, and `root` is not derived from `module`.** `root` says where the
+agent's files are -- its `settings.toml` and its `src/prompts` -- relative to the directory
+`agents.toml` is in. `module` says how its code imports. They answer different questions and can
+legitimately differ, and a root guessed from where a declaration happens to sit is right for one
+layout and silently wrong for every other. An agent whose settings file was looked for in the
+wrong place does not fail: it runs on the group's defaults and says nothing.
+
+Nesting is free. `root` is stated, so no rule has to guess how deep an agent sits.
+
+The resulting repository:
+
+```
+agents.toml             # which agents this image contains
+settings.toml           # the process: app_port, event_bus, log_level
+Dockerfile              # the group image
+agents/
+  billing/
+    settings.toml       # this agent, and only this agent
+    .secrets.toml
+    Dockerfile          # optional: builds this agent alone
+    src/
+      main.py
+      prompts/
+  some_topic/
+    order_processor/
+      ...
+```
+
+Each agent directory is exactly what `asbs setup` writes on its own, so moving one into its own
+repository means deleting its line from this map -- nothing inside the directory changes. An
+agent may keep its own `Dockerfile` to be built as a single-agent image at the same time.
+
+**Process-wide keys belong in the image's `settings.toml`:** `app_port`, `app_host`,
+`app_workers`, `app_environment`, `envvar_prefix`, `event_bus`, `log_level`, `log_format`,
+`readiness_policy`, `nats_stream_name` and the rest. One process binds one port, speaks one bus
+and configures logging once, so a copy under an agent is dropped before the merge with a warning
+naming the value actually used. `asbs validate --group` reports them.
+
+Check the whole image against what is on disk:
+
+```bash
+asbs validate --group
+```
+
+It resolves every `root`, reports which `settings.toml` each agent reads, and refuses a file
+that sits where the framework will not look for it.
 
 ---
 

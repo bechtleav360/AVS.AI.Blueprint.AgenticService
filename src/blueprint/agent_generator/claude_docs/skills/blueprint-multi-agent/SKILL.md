@@ -18,6 +18,54 @@ two is an edit to a Deployment, not a rebuild.
 | Existing single-agent project joining a group | `asbs docs guides/multi-agent-migration --cat` |
 | Leave it standalone | Nothing changes. There is no deprecation - this is a legitimate answer |
 
+## The layout, which is not negotiable
+
+An agent is **the same directory** alone or in a group -- that is what lets it move between
+repositories untouched:
+
+```
+my_agent/
+  settings.toml        # beside src/, never inside it
+  .secrets.toml
+  Dockerfile           # optional: builds this agent alone
+  src/
+    main.py            # the declaration
+    prompts/
+```
+
+It carries **no `agents.toml`**. The map says which agents an *image* contains; an agent holding
+one would be an agent that knows whether it is running alone. Whoever hosts it supplies the name:
+a group image's map, a single-agent image's Dockerfile, or `asbs dev --name`.
+
+The image, at the top of the repository:
+
+```
+agents.toml            # the map
+settings.toml          # process-wide keys only
+Dockerfile             # the group image
+agents/...             # the agent directories, at any depth
+```
+
+Create them with two distinct modes -- `asbs setup --group` for the image, `asbs setup <name>`
+inside each agent's directory. The agent command is identical to the standalone one.
+
+## The map states both keys
+
+```toml
+[agents.my_agent]
+root   = "agents/some_topic/my_agent"
+module = "agents.some_topic.my_agent.src.main:agent"
+```
+
+**Both are required and neither is derived from the other.** `root` is where the agent's files are
+(its `settings.toml`, its `src/prompts`), relative to the directory `agents.toml` is in; `module`
+is how its code imports. A root guessed from where the declaration sits is right for one layout and
+silently wrong for the rest -- and an agent whose settings were looked for in the wrong place does
+not fail, it runs on the group's defaults and says nothing.
+
+Run `asbs validate --group` after editing the map. It resolves every root, reports which
+`settings.toml` each agent reads, and refuses a file that sits where nothing will read it.
+
 ## The decision to get right first
 
 **The agent's name in `agents.toml` is its identity everywhere outside that file.** It becomes the

@@ -556,7 +556,8 @@ def group_with_agent(name: str) -> Callable[[], None]:
 
 def group_config_with_agent(name: str, tmp_path: Path, config: Config) -> Callable[[], None]:
     """The deployment route to the same name: an agent map and a group naming it."""
-    (tmp_path / "agents.toml").write_text(f'[agents."{name}"]\nmodule = "a.module:declaration"\n')
+    (tmp_path / "the_agent").mkdir(exist_ok=True)
+    (tmp_path / "agents.toml").write_text(f'[agents."{name}"]\nroot = "the_agent"\nmodule = "a.module:declaration"\n')
 
     def resolve() -> None:
         GroupConfig.resolve(config, environ={"BLUEPRINT_AGENTS": name})

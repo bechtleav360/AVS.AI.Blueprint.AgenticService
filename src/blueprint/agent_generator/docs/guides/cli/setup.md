@@ -34,7 +34,6 @@ agent's namespace is that name in snake case (`order_processor`).
     models/<name>/     # dto.py, domain_models.py, mapper.py
     prompts/
     services/
-  agents.toml          # agent name -> declaration; baked into the image
   settings.toml
   .secrets.toml          # git-ignored
   .secrets.toml.example  # committed, so the keys to fill in are known
@@ -42,9 +41,14 @@ agent's namespace is that name in snake case (`order_processor`).
   .gitignore
 ```
 
-There is no `tests/` directory and no `pyproject.toml`: the scaffolder writes source, settings and
-the image, and the packaging and test layout are the project's own. `asbs validate` reports both as
-missing, which is a reminder rather than a defect in the scaffold.
+There is no `agents.toml`. The agent map says which agents an *image* contains, which is a
+packaging decision -- an agent that carried one would be an agent that knows whether it is running
+alone. The generated `Dockerfile` writes a one-agent map into its own image; a group image maps it
+in the repository's `agents.toml`; `asbs dev` supplies the name from the directory. `asbs validate
+--group` refuses one found inside an agent.
+
+A `pyproject.toml` is written only if the directory has none: `asbs` runs from the project's own
+environment, so by then there is usually one already, with somebody's dependencies in it.
 
 ## Example
 
@@ -90,3 +94,39 @@ That name is the agent's identity everywhere outside the file -- the NATS queue 
 JetStream durable name, the cache partition, the OpenTelemetry `service.name` and the `/api/<name>`
 route prefix -- so changing it after the first deploy is a consumer migration. The project is run
 with `python -m blueprint.agents.entrypoint`, which reads that map and the deployment's group.
+
+---
+
+## asbs setup --group
+
+The other mode. It writes the *image's* files and creates no agent:
+
+```bash
+asbs setup --group
+```
+
+```
+agents.toml     # empty: this image contains no agents yet
+settings.toml   # the process: app_port, app_host, event_bus, log_level
+Dockerfile      # the group image
+.gitignore
+```
+
+No agent is created and none is named, because which agents an image contains is decided one
+`asbs setup <name>` at a time, in whatever directories suit the repository. An image with no
+agents cannot start -- the process refuses rather than binding a port and consuming nothing --
+so add an entry per agent before deploying it:
+
+```bash
+mkdir -p agents/some_topic/my_agent
+cd agents/some_topic/my_agent
+asbs setup my_agent
+```
+
+```toml
+[agents.my_agent]
+root   = "agents/some_topic/my_agent"
+module = "agents.some_topic.my_agent.src.main:agent"
+```
+
+Both keys are required. See [Multi-Agent Setup](../multi-agent-setup.md).

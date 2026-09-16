@@ -186,6 +186,7 @@ class Config:
 
         self._validation_errors: list[str] = []
         self._root_path = Path(root_path) if root_path else Path.cwd()
+        self._agent_roots: dict[str, Path] = {}
         self._agent_scope = agent_scope
         self._is_view = False
         self._views: dict[str, Config] = {}
@@ -467,8 +468,40 @@ class Config:
         view._is_view = True
         view._views = {}
         view._loader = self
+        # An agent's files are its own. Without this the view reports the *process* root, which
+        # is one directory for the whole group and therefore right for at most one agent -- so
+        # prompts resolved under it silently found a neighbour's file, or none.
+        agent_root = self._agent_roots.get(namespace)
+        if agent_root is not None:
+            view._root_path = agent_root
         self._views[namespace] = view
         return view
+
+    def set_agent_root(self, namespace: str, root: Path | str) -> None:
+        """Record where one agent's own files live, for the view that agent reads through.
+
+        Called by :class:`~blueprint.agents.agent_group.AgentGroup` before any view is taken,
+        with the ``root`` that agent's entry in the agent map states. Standalone applications
+        never call it: there is one agent, and the process root is already its root.
+
+        Args:
+            namespace: The agent the root belongs to.
+            root: That agent's own directory.
+
+        Raises:
+            RuntimeError: if called on a view. Which directory an agent reads from is the
+                process's to decide, not a neighbour's.
+        """
+        if self._is_view:
+            raise RuntimeError(
+                f"Namespace '{self._agent_scope}' tried to set an agent root. Roots come from the agent map, and are "
+                "applied by the group before any agent has a view."
+            )
+        resolved = Path(root)
+        self._agent_roots[namespace] = resolved
+        cached = self._views.get(namespace)
+        if cached is not None:
+            cached._root_path = resolved
 
     @property
     def agent_scope(self) -> str | None:

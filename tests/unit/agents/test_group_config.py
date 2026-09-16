@@ -18,14 +18,19 @@ from blueprint.agents.group_config import AgentSpec, GroupConfig, GroupConfigErr
 
 AGENT_MAP = """
 [agents.invoice]
+root   = "agents/invoice"
 module = "agents.invoice.declaration:registration"
 
 [agents.order]
+root   = "agents/order"
 module = "agents.order.declaration:registration"
 
 [agents.dunning]
+root   = "agents/dunning"
 module = "agents.dunning.declaration:registration"
 """
+
+AGENT_ROOTS = ("agents/invoice", "agents/order", "agents/dunning")
 
 GROUP_FILE = """
 groups:
@@ -41,6 +46,8 @@ groups:
 def project(tmp_path: Path) -> Config:
     """A project root with an agent map, a group file and a settings tree."""
     (tmp_path / "agents.toml").write_text(AGENT_MAP)
+    for relative in AGENT_ROOTS:
+        (tmp_path / relative).mkdir(parents=True)
     (tmp_path / "deployment-groups.yaml").write_text(GROUP_FILE)
     settings = tmp_path / "settings.toml"
     settings.write_text('[development]\napp_environment = "development"\napp_name = "the-process"\n')
@@ -54,11 +61,16 @@ class TestFromTheGroupFile:
         assert group.name == "finance"
         assert group.agent_names == ("invoice", "order")
 
-    def test_the_agents_module_comes_from_the_image(self, project: Config) -> None:
+    def test_the_agents_module_comes_from_the_image(self, project: Config, tmp_path: Path) -> None:
         """What an agent *is* belongs to the image; only which agents run is the deployment's."""
         group = GroupConfig.resolve(project, environ={"BLUEPRINT_GROUP": "finance"})
 
-        assert group.agents[0] == AgentSpec(name="invoice", module="agents.invoice.declaration:registration", critical=True)
+        assert group.agents[0] == AgentSpec(
+            name="invoice",
+            module="agents.invoice.declaration:registration",
+            root=(tmp_path / "agents/invoice").resolve(),
+            critical=True,
+        )
 
     def test_a_declared_cache_list_is_read_by_nothing(self, project: Config) -> None:
         """A cache belongs to the agent that declared it (D3), so a group declares none.
@@ -79,6 +91,8 @@ class TestFromTheGroupFile:
 
     def test_a_single_group_file_needs_no_group_name(self, tmp_path: Path) -> None:
         (tmp_path / "agents.toml").write_text(AGENT_MAP)
+        for relative in AGENT_ROOTS:
+            (tmp_path / relative).mkdir(parents=True, exist_ok=True)
         (tmp_path / "deployment-groups.yaml").write_text("groups:\n  - name: only\n    agents: [invoice]\n")
         settings = tmp_path / "settings.toml"
         settings.write_text('[development]\napp_environment = "development"\n')
@@ -128,6 +142,8 @@ class TestFromTheEnvironmentAlone:
     def test_agents_can_come_from_the_environment_with_no_file(self, tmp_path: Path) -> None:
         """The docker run and CI shape: no file, no mount."""
         (tmp_path / "agents.toml").write_text(AGENT_MAP)
+        for relative in AGENT_ROOTS:
+            (tmp_path / relative).mkdir(parents=True, exist_ok=True)
         settings = tmp_path / "settings.toml"
         settings.write_text('[development]\napp_environment = "development"\n')
         config = Config(settings_files=[str(settings)], root_path=str(tmp_path))
@@ -149,6 +165,8 @@ class TestFromTheEnvironmentAlone:
 
     def test_no_agents_anywhere_is_an_error(self, tmp_path: Path) -> None:
         (tmp_path / "agents.toml").write_text(AGENT_MAP)
+        for relative in AGENT_ROOTS:
+            (tmp_path / relative).mkdir(parents=True, exist_ok=True)
         settings = tmp_path / "settings.toml"
         settings.write_text('[development]\napp_environment = "development"\n')
         config = Config(settings_files=[str(settings)], root_path=str(tmp_path))
@@ -264,7 +282,7 @@ class TestAgentNamesAreAgentNames:
 class TestTheValueObject:
     def test_it_performs_no_io_once_constructed(self) -> None:
         """Constructed literally, so a test states a composition instead of arranging files."""
-        group = GroupConfig(name="finance", agents=(AgentSpec(name="invoice", module="pkg:reg"),))
+        group = GroupConfig(name="finance", agents=(AgentSpec(name="invoice", module="pkg:reg", root=Path("agents/invoice")),))
 
         assert (group.name, group.agent_names) == ("finance", ("invoice",))
 

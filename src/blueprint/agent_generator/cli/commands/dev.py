@@ -1,17 +1,25 @@
 """Dev command - start development server."""
 
+import ast
+import atexit
 import logging
 import os
+import re
+import tempfile
 import subprocess
 import sys
 import tomllib
 from argparse import Namespace
 from pathlib import Path
 
+from blueprint.agents.component.namespace import validate_namespace
+
 logger = logging.getLogger(__name__)
 
 AGENT_MAP_FILE = "agents.toml"
+DECLARATION_ENTRY_POINT = "src/main.py"
 LEGACY_ENTRY_POINT = "src/main.py"
+AGENT_MAP_ENV = "BLUEPRINT_AGENT_MAP"
 
 GROUP_FACTORY = "blueprint.agents.entrypoint:create_group_app"
 LEGACY_APP = "src.main:app"
@@ -34,6 +42,14 @@ def run(args: Namespace) -> None:
     """
     agent_map = Path(AGENT_MAP_FILE)
     if agent_map.is_file():
+        command = _group_command(args, agent_map)
+    elif Path(DECLARATION_ENTRY_POINT).is_file() and _declares_an_agent(Path(DECLARATION_ENTRY_POINT)):
+        # An agent directory carries no agents.toml: the map says which agents an *image*
+        # contains, and an agent does not know whether it is one of several. So the map this
+        # run needs is written here, outside the project, rather than expected in it -- the
+        # framework still resolves agents through an explicit map, this one is just supplied by
+        # the dev server instead of committed.
+        agent_map = _temporary_agent_map(args)
         command = _group_command(args, agent_map)
     elif Path(LEGACY_ENTRY_POINT).is_file():
         # A project scaffolded before the agent map existed still builds its own application in
@@ -135,3 +151,61 @@ def _agents_in_map(agent_map: Path) -> list[str]:
         print(f"Error: {agent_map} declares no [agents.<name>] entries, so there is nothing to serve", file=sys.stderr)
         sys.exit(1)
     return [str(name) for name in agents]
+
+
+def _declares_an_agent(entry_point: Path) -> bool:
+    """Report whether ``entry_point`` assigns a module-level ``agent``.
+
+    Read rather than imported: importing it here would construct the declaration twice, once in
+    this process and once in uvicorn's, and a declaration is not something to build for a
+    question about its shape.
+    """
+    try:
+        module = ast.parse(entry_point.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return False
+    return any(
+        isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "agent" for target in node.targets)
+        for node in module.body
+    )
+
+
+def _dev_agent_name(args: Namespace) -> str:
+    """Return the name this agent runs under while developing.
+
+    ``--name``, or the directory's own name. The agent itself does not carry one: the name is
+    its identity on the broker, in telemetry and in its routes, and who supplies it depends on
+    who is hosting it -- a group image's map, a single-agent image's Dockerfile, or this.
+
+    Raises:
+        SystemExit: if neither yields a legal namespace, because a repaired name would be a
+            different agent under the same directory.
+    """
+    requested = (getattr(args, "name", "") or "").strip() or Path.cwd().name
+    candidate = re.sub(r"[-\s]+", "_", requested).lower()
+    try:
+        return validate_namespace(candidate)
+    except ValueError as exc:
+        print(f"Error: '{requested}' cannot be an agent name: {exc}", file=sys.stderr)
+        print("Pass --name with a name matching [a-z][a-z0-9_]*", file=sys.stderr)
+        sys.exit(1)
+
+
+def _temporary_agent_map(args: Namespace) -> Path:
+    """Write a one-agent map for this run and point the framework at it.
+
+    Written outside the project on purpose. Writing an ``agents.toml`` into the directory would
+    leave behind exactly the file an agent must not carry, and a developer who then committed it
+    would have an agent that names itself.
+    """
+    name = _dev_agent_name(args)
+    handle = tempfile.NamedTemporaryFile("w", suffix="-agents.toml", delete=False, encoding="utf-8")
+    with handle as written:
+        written.write(f'[agents.{name}]\nroot   = "."\nmodule = "src.main:agent"\n')
+    path = Path(handle.name)
+    os.environ[AGENT_MAP_ENV] = str(path)
+    atexit.register(lambda: path.unlink(missing_ok=True))
+    print(f"No {AGENT_MAP_FILE} here, which is how an agent directory should look.")
+    print(f"Serving it as '{name}' (from {'--name' if getattr(args, 'name', '') else 'the directory name'}).")
+    print(f"Its routes are under /api/{name}.")
+    return path
