@@ -4,6 +4,13 @@
 **Companion (server contract):** bechtleav360/avs.ai.idac.service-sessions#196
 **Status:** spec r4 — supersedes r3 (server contract changed again; see below)
 
+**Erratum (#94):** r4 below specifies `agent_id` as a query parameter (`?agent_id=...`). The
+server contract (service-sessions#194/#203) actually reads it from the `X-Agent-Id` header —
+deliberately, to keep it out of access logs (service-sessions#198) — so every implementation
+following this spec as written got `422 Unprocessable Content`. Treat every `?agent_id=...`
+example below as `X-Agent-Id: ...` (header) instead; left unedited below as the historical
+record of what r4 actually specified.
+
 ## Goal
 
 Give `SessionKeyProvider` a working source for consumers whose session keys are generated fresh
@@ -51,6 +58,7 @@ also drifted from the actual code.
 
 **New source: `"job"`.** Fetches the key via
 `GET {remote_url}/internal/jobs/{job_id}/session-key?agent_id=<this agent's own id>`
+(⚠ see erratum above — `agent_id` is actually the `X-Agent-Id` header, not a query param)
 (`X-Api-Key` auth), per service-sessions#196's current contract:
 
 ```python
@@ -135,7 +143,8 @@ async def _get_from_job(self, job_id: UUID | None) -> str:
 ## Acceptance criteria
 
 - **AC-1** `get_session_key(session_id, job_id=X)` with `source="job"` and a cache miss calls
-  `GET {remote_url}/internal/jobs/{X}/session-key?agent_id=<self>` and returns the key.
+  `GET {remote_url}/internal/jobs/{X}/session-key?agent_id=<self>` (⚠ see erratum above —
+  actually the `X-Agent-Id` header) and returns the key.
 - **AC-2** A subsequent call for the same `session_id` hits the cache and makes no HTTP call.
 - **AC-3** `source="job"` with no `job_id` raises `ValueError` before any network call.
 - **AC-4** `agent_id` unset raises `ValueError` before any network call.
