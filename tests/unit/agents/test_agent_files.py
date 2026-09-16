@@ -27,7 +27,7 @@ import pytest
 from blueprint.agents.agent.prompt_loader import PromptLoader
 from blueprint.agents.agent_group import AgentGroup
 from blueprint.agents.component.component import Component
-from blueprint.agents.config import Config
+from blueprint.agents.config import Config, ConfigError
 from blueprint.agents.group_config import GroupConfig, GroupConfigError
 
 DECLARATION = "from blueprint.agents.app_builder import AppBuilder\nagent = AppBuilder()\n"
@@ -261,3 +261,42 @@ class TestMisplacedFilesAreRefused:
 
         with pytest.raises(GroupConfigError, match="belongs to the image"):
             resolve(image, "alpha")
+
+
+class TestAFragmentNeverNamesItsOwnAgent:
+    """An agent's settings file becomes that agent's scope, so it must not scope keys itself.
+
+    Found in a real migration: a project whose settings.toml already carried
+    ``[default.risk_identifier]`` merged without complaint, nested every key to
+    ``risk_identifier.risk_identifier.*``, and surfaced much later as "No model name for
+    runtime agent 'risk_identifier_agent' configured" -- a message naming the agent and not
+    the file that caused it.
+    """
+
+    def test_a_section_named_after_the_agent_is_refused(self, tmp_path: Path) -> None:
+        config = process_config(tmp_path)
+        fragment = tmp_path / "agent.toml"
+        fragment.write_text('[default.orders]\nmodel_name = "m"\n\n', encoding="utf-8")
+
+        with pytest.raises(ConfigError, match="its own name"):
+            config.merge_agent_settings("orders", fragment)
+
+    def test_the_unprefixed_form_serves_both_shapes(self, tmp_path: Path) -> None:
+        """Plain [default] is the fix, and it resolves standalone too."""
+        config = process_config(tmp_path)
+        fragment = tmp_path / "agent.toml"
+        fragment.write_text('[default]\nmodel_name = "m"\n\n', encoding="utf-8")
+
+        config.merge_agent_settings("orders", fragment)
+
+        assert config.for_namespace("orders").get("model_name") == "m"
+
+    def test_a_table_that_is_not_the_agents_name_is_left_alone(self, tmp_path: Path) -> None:
+        """[cache] is this agent's cache configuration, not a scope."""
+        config = process_config(tmp_path)
+        fragment = tmp_path / "agent.toml"
+        fragment.write_text('[default]\nmodel_name = "m"\n\n[cache]\nbackend = "disk"\n\n', encoding="utf-8")
+
+        config.merge_agent_settings("orders", fragment)
+
+        assert config.for_namespace("orders").get("model_name") == "m"

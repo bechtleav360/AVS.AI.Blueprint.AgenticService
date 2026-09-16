@@ -615,6 +615,7 @@ class Config:
             raise ConfigError(f"The settings file of agent '{namespace}' ({resolved}) could not be read: {exc}") from exc
 
         fragment = self._layer_fragment(document)
+        self._refuse_self_scoped_fragment(namespace, resolved, fragment)
         fragment = self._drop_process_scope_keys(namespace, resolved, fragment)
         if not fragment:
             logger.debug("The settings file of agent '%s' (%s) contributes nothing", namespace, resolved)
@@ -662,6 +663,41 @@ class Config:
             if name not in ("default", self._environment.lower(), "global"):
                 layered.setdefault(name, values)
         return layered
+
+    @staticmethod
+    def _refuse_self_scoped_fragment(namespace: str, path: Path, fragment: dict[str, Any]) -> None:
+        """Refuse a fragment that already scopes its keys under the agent's own name.
+
+        This file *becomes* the agent's scope when it is merged, so a ``[default.<agent>]``
+        section inside it nests to ``<agent>.<agent>.*`` and every key in it is unreachable.
+
+        Refused rather than flattened, and refused here rather than left to surface later,
+        because of where the symptom appears otherwise: the merge succeeds, and the failure
+        arrives as something like "No model name for runtime agent 'x_agent' configured" --
+        which names the agent and says nothing about the settings file that caused it.
+
+        A standalone project may legitimately carry the prefix, because the scoped view falls
+        back to root keys and both shapes then resolve. Plain ``[default]`` is what serves
+        both, which is why the fix is to unprefix rather than to keep two files.
+
+        Args:
+            namespace: The agent whose scope this fragment becomes.
+            path: The file, for the message.
+            fragment: Its keys, already layered.
+
+        Raises:
+            ConfigError: naming the section, what it would become, and the fix.
+        """
+        own = [key for key in fragment if str(key).lower() == namespace.lower()]
+        if not own:
+            return
+        raise ConfigError(
+            f"The settings file of agent '{namespace}' ({path}) scopes keys under '{own[0]}' -- its own name. "
+            f"This file becomes that agent's scope when it is merged, so those keys would nest as "
+            f"'{namespace}.{own[0]}.*' and nothing would read them. Write them at the top level, or under a "
+            f"plain [default] section: an agent's own file never names the agent. That form serves the project "
+            "standalone too, because a scoped lookup falls back to the root key."
+        )
 
     def _drop_process_scope_keys(self, namespace: str, path: Path, fragment: dict[str, Any]) -> dict[str, Any]:
         """Return ``fragment`` without the keys an agent cannot set, warning about each.

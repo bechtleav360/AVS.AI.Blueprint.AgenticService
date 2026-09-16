@@ -135,6 +135,7 @@ def _agent_findings(image_root: Path, name: str, entry: Any, claimed: dict[Path,
     settings = root / "settings.toml"
     if settings.is_file():
         print(f"[ok] {name}: settings from {declared_root}/settings.toml")
+        issues.extend(_self_scoped_issues(name, settings))
         warnings.extend(_process_key_warnings(name, settings))
     else:
         print(f"[--] {name}: no settings.toml of its own; it reads the image's")
@@ -147,6 +148,37 @@ def _agent_findings(image_root: Path, name: str, entry: Any, claimed: dict[Path,
         )
 
     return issues, warnings, notices
+
+
+def _self_scoped_issues(name: str, settings: Path) -> list[str]:
+    """Report an agent settings file that scopes keys under the agent's own name.
+
+    The file becomes that agent's scope when merged, so a ``[default.<agent>]`` section in it
+    nests to ``<agent>.<agent>.*`` and nothing reads those keys. The runtime refuses it; this
+    says so without starting the process, because the symptom otherwise arrives far from the
+    cause -- as a missing model name, naming the agent rather than the file.
+    """
+    try:
+        document = tomllib.loads(settings.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return []  # reported by the caller's own read
+
+    found = [
+        f"[{section}.{key}]"
+        for section, value in document.items()
+        if isinstance(value, dict)
+        for key in value
+        if str(key).lower() == name.lower()
+    ]
+    found += [f"[{key}]" for key, value in document.items() if isinstance(value, dict) and str(key).lower() == name.lower()]
+    if not found:
+        return []
+    return [
+        f"Agent '{name}' scopes its own settings under its own name ({', '.join(sorted(set(found)))}). That file "
+        f"becomes the agent's scope when it is merged, so those keys nest as '{name}.{name}.*' and nothing reads "
+        "them. Write them at the top level or under a plain [default] -- which also works standalone, because a "
+        "scoped lookup falls back to the root key."
+    ]
 
 
 def _process_key_warnings(name: str, settings: Path) -> list[str]:
