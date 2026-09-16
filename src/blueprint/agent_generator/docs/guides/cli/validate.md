@@ -63,3 +63,30 @@ Notices (1):
     arrives as an event on '<agent>.scheduler.<scheduler name>', published by an external
     CronJob. ...
 ```
+
+---
+
+## asbs validate --group
+
+Validates an *image* rather than a single agent: the agent map, and every agent directory it
+points at. Run it where `agents.toml` is.
+
+```bash
+asbs validate --group
+```
+
+It checks, per agent:
+
+- `root` and `module` are both present -- neither is derived from the other
+- `root` resolves to a directory, inside the image, not shared with another agent
+- no file sits where the framework will not read it (a `settings.toml` under `src/`, an
+  `agents.toml` inside an agent)
+- which `settings.toml` each agent actually reads, printed, so "is it picking mine up?" is
+  answerable without starting the process
+- process-wide keys left in an agent's settings, which are dropped before the merge
+- whether the map key matches the directory name, since `asbs dev` defaults to the latter
+
+Exit status is 1 when anything would stop the image starting, 0 otherwise.
+
+Most of these were, until recently, things the process did silently: none of them stops a pod
+starting and passing its probes, which is what made them expensive to find.

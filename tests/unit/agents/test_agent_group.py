@@ -85,8 +85,14 @@ def config(tmp_path: Path) -> Config:
     return Config(settings_files=[str(settings)], root_path=str(tmp_path))
 
 
-def spec(name: str, attribute: str, *, critical: bool = True) -> AgentSpec:
-    return AgentSpec(name=name, module=f"{_THIS}:{attribute}", critical=critical)
+def spec(name: str, attribute: str, *, critical: bool = True, root: Path | None = None) -> AgentSpec:
+    """A spec for a declaration in this module.
+
+    ``root`` is where the agent's own files would be. These cases are about composition rather
+    than about files, so it defaults to a directory that does not exist: nothing is read from it,
+    and an agent that ships no settings is the ordinary case.
+    """
+    return AgentSpec(name=name, module=f"{_THIS}:{attribute}", root=root or Path("agents") / name, critical=critical)
 
 
 def component_names() -> list[str]:
@@ -283,13 +289,17 @@ class TestTheGroupsCaches:
 
 class TestLoadingADeclaration:
     def test_a_missing_module_fails_a_critical_agent(self) -> None:
-        group = GroupConfig(name="finance", agents=(AgentSpec(name="order", module="no.such.module:declaration"),))
+        group = GroupConfig(
+            name="finance", agents=(AgentSpec(name="order", module="no.such.module:declaration", root=Path("agents") / "order"),)
+        )
 
         with pytest.raises(GroupConfigError, match="could not be loaded and is critical"):
             AgentGroup.from_config(group)
 
     def test_the_failure_names_the_agent_and_the_module(self) -> None:
-        group = GroupConfig(name="finance", agents=(AgentSpec(name="order", module="no.such.module:declaration"),))
+        group = GroupConfig(
+            name="finance", agents=(AgentSpec(name="order", module="no.such.module:declaration", root=Path("agents") / "order"),)
+        )
 
         with pytest.raises(GroupConfigError, match=r"'order'.*no\.such\.module"):
             AgentGroup.from_config(group)
@@ -304,7 +314,7 @@ class TestLoadingADeclaration:
 
     @pytest.mark.parametrize("module", ["no_colon_at_all", ":declaration", "module.path:"])
     def test_a_malformed_declaration_path_is_refused(self, module: str) -> None:
-        group = GroupConfig(name="finance", agents=(AgentSpec(name="order", module=module),))
+        group = GroupConfig(name="finance", agents=(AgentSpec(name="order", module=module, root=Path("agents") / "order"),))
 
         with pytest.raises(GroupConfigError, match="is not a valid declaration path"):
             AgentGroup.from_config(group)
@@ -314,7 +324,7 @@ class TestLoadingADeclaration:
         group = GroupConfig(
             name="finance",
             agents=(
-                AgentSpec(name="order", module="no.such.module:declaration", critical=False),
+                AgentSpec(name="order", module="no.such.module:declaration", root=Path("agents") / "order", critical=False),
                 spec("billing", "billing_declaration"),
             ),
         )
@@ -329,7 +339,7 @@ class TestLoadingADeclaration:
         group = GroupConfig(
             name="finance",
             agents=(
-                AgentSpec(name="order", module="no.such.module:declaration", critical=False),
+                AgentSpec(name="order", module="no.such.module:declaration", root=Path("agents") / "order", critical=False),
                 spec("billing", "billing_declaration"),
             ),
         )
@@ -342,7 +352,10 @@ class TestLoadingADeclaration:
         """There is no partial build to unwind, so it fails rather than half-wiring the group."""
         group = GroupConfig(
             name="finance",
-            agents=(AgentSpec(name="order", module="no.such.module:declaration"), spec("billing", "billing_declaration")),
+            agents=(
+                AgentSpec(name="order", module="no.such.module:declaration", root=Path("agents") / "order"),
+                spec("billing", "billing_declaration"),
+            ),
         )
 
         with pytest.raises(GroupConfigError):
@@ -369,7 +382,8 @@ class TestNoIoOfItsOwn:
 
 class TestResolve:
     def test_it_resolves_and_loads_in_one_call(self, tmp_path: Path) -> None:
-        (tmp_path / "agents.toml").write_text(f'[agents.order]\nmodule = "{_THIS}:order_declaration"\n')
+        (tmp_path / "order").mkdir(exist_ok=True)
+        (tmp_path / "agents.toml").write_text(f'[agents.order]\nroot = "order"\nmodule = "{_THIS}:order_declaration"\n')
         settings = tmp_path / "settings.toml"
         settings.write_text('[development]\napp_environment = "development"\napp_port = 8000\n')
         config = Config(settings_files=[str(settings)], root_path=str(tmp_path))
@@ -388,7 +402,8 @@ class TestResolve:
             AgentGroup.resolve(config, environ={"BLUEPRINT_AGENTS": "order"})
 
     def test_it_returns_a_group_ready_to_assemble(self, tmp_path: Path) -> None:
-        (tmp_path / "agents.toml").write_text(f'[agents.order]\nmodule = "{_THIS}:order_declaration"\n')
+        (tmp_path / "order").mkdir(exist_ok=True)
+        (tmp_path / "agents.toml").write_text(f'[agents.order]\nroot = "order"\nmodule = "{_THIS}:order_declaration"\n')
         settings = tmp_path / "settings.toml"
         settings.write_text('[development]\napp_environment = "development"\napp_port = 8000\n')
         config = Config(settings_files=[str(settings)], root_path=str(tmp_path))
@@ -482,17 +497,30 @@ class TestEachAgentsOwnSettings:
     group -- where the file is looked for, and that it is merged early enough to be read.
     """
 
-    def test_the_file_is_looked_for_beside_the_declaration_module(self) -> None:
-        """One rule an author can see: the settings.toml in the agent's own directory."""
-        group = GroupConfig(name="finance", agents=(AgentSpec(name="order", module=f"{_THIS}:order_declaration"),))
+    def test_the_file_is_read_from_the_root_the_map_states(self, tmp_path: Path) -> None:
+        """Stated, not derived: the agent map's ``root`` is the whole rule.
+
+        The declaration module lives in this test package; the agent's files live in a
+        directory that has nothing to do with it. Deriving the one from the other is what
+        looked in the wrong place for every layout that nests differently.
+        """
+        agent_root = tmp_path / "agents" / "some_topic" / "order"
+        agent_root.mkdir(parents=True)
+        (agent_root / "settings.toml").write_text('model_name = "orders-own-model"')
+        group = GroupConfig(
+            name="finance",
+            agents=(spec("order", "order_declaration", root=agent_root),),
+            image_root=tmp_path,
+        )
 
         resolved = AgentGroup.from_config(group)
 
-        assert resolved.settings["order"] == Path(__file__).parent / "settings.toml"
+        assert resolved.settings["order"] == agent_root / "settings.toml"
+        assert resolved.roots["order"] == agent_root
 
     def test_an_agent_that_ships_none_is_simply_an_agent_without_settings(self, config: Config) -> None:
-        """This test package has no settings.toml, so the path resolves to nothing to merge."""
-        group = GroupConfig(name="finance", agents=(AgentSpec(name="order", module=f"{_THIS}:order_declaration"),))
+        """A root with no settings.toml in it is an agent that has none, not an error."""
+        group = GroupConfig(name="finance", agents=(spec("order", "order_declaration"),))
 
         AgentGroup.from_config(group).assemble(config)
 

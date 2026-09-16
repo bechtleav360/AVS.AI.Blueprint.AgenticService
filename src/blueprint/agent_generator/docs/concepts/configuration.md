@@ -233,3 +233,51 @@ size_limit = 1073741824
 eviction_policy = "least-recently-used"
 default_ttl = 3600
 ```
+
+---
+
+## Where an agent's settings file lives
+
+**Beside `src/`, in the agent's own directory.** The same place whether the agent runs alone or
+as one of twenty -- that sameness is what lets the directory move between its own repository
+and a group image untouched.
+
+```
+my_agent/
+  settings.toml      <- here
+  .secrets.toml
+  src/
+    main.py
+    prompts/
+```
+
+In a group, the image's `agents.toml` states that directory with `root`, and the file is merged
+under the agent's own scope -- so the agent keeps writing plain keys and never learns that a
+scope exists. It is **stated, never derived**: a root guessed from where the declaration module
+happens to sit is right for one layout and silently wrong for every other, and an agent whose
+settings file was looked for in the wrong place does not fail. It runs on the group's defaults
+and says nothing.
+
+A `settings.toml` inside `src/` is **refused**, not ignored, for that reason.
+
+### Keys an agent cannot set
+
+Some keys describe the *process*, and one process has one of each: `app_port`, `app_host`,
+`app_workers`, `app_environment`, `envvar_prefix`, `event_bus`, `log_level`, `log_format`,
+`suppress_noisy_loggers`, `health_check_interval_seconds`, `readiness_policy`,
+`nats_stream_name`.
+
+They belong in the image's own `settings.toml`, beside `agents.toml`. Set in an agent's file
+they are dropped before the merge, with a warning naming the value the process uses instead --
+dropped rather than obeyed, because merging them under an agent's scope would file them where
+nothing reads them. `asbs validate --group` reports them without starting anything.
+
+A standalone agent is its own image, so its directory is both and the distinction does not
+arise -- which is why the scaffolded `settings.toml` carries those keys commented out rather
+than absent.
+
+### Prompts
+
+Resolved under the same root: `<agent>/src/prompts` and `<agent>/prompts`. Before `root` was
+stated, they resolved against the *process* working directory -- one directory for a whole
+group, and therefore right for at most one agent.

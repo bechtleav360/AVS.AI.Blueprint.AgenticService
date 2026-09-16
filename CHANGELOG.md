@@ -1,6 +1,56 @@
 # Changelog
 ## [Unreleased]
 
+### Fixed
+
+- **A grouped agent's own `settings.toml` was never read.** The group looked for it beside the
+  *declaration module* -- inside `src/` -- while every scaffolded project writes it beside `src/`,
+  so the file existed, looked right, and was never opened. Nothing failed: the agent ran on the
+  group's defaults and said so nowhere. It is now read from the directory the agent map states.
+- **Prompts resolved against the process working directory.** One directory for a whole group, so
+  it was right for at most one agent; the others found nothing, or found a neighbour's prompt of
+  the same name. Each agent's configuration view now reports its own directory as the package
+  root, so `<agent>/src/prompts` resolves exactly as it does standalone.
+- **A scaffolded agent no longer ships process-wide keys.** `log_level` and `log_format` were
+  written into every agent's `settings.toml`, so every group one joined dropped them with a
+  warning about a file the scaffolder itself wrote. They are now commented out, with the reason.
+
+### Added
+
+- **`root` in the agent map**, required per agent, relative to the directory `agents.toml` is in.
+  Stated rather than derived: a root guessed from where a declaration happens to sit is right for
+  one layout and silently wrong for every other, and nesting an agent at any depth now costs
+  nothing. A missing `root`, one that escapes the image, one that is not a directory, and two
+  agents sharing one are each refused at startup, naming the agent.
+- **Misplaced files are refused, not ignored** (`blueprint.agents.layout`). One table of artefacts
+  with a single legal location, enforced at group assembly and reported by `asbs validate
+  --group`: `settings.toml` and `.secrets.toml` beside `src/`, `agents.toml` at the image root.
+  `Dockerfile` is deliberately absent from it -- an agent may own one while living in a group
+  repository. Adding an artefact is one tuple.
+- **`asbs setup --group`** writes the image's files -- an empty agent map, the process settings
+  and a group Dockerfile -- and creates no agent.
+- **`asbs validate --group`** validates an image: every `root`, each agent's layout, misplaced
+  files, process-wide keys left in an agent, and which `settings.toml` each agent actually reads.
+- **`asbs dev --name`**, and `asbs dev` no longer needs an `agents.toml` in an agent's directory.
+  It writes the one-agent map outside the project for that run.
+
+### Breaking
+
+- **`root` is required in `agents.toml`.** Every existing entry needs one line added; a map
+  without it refuses to start rather than guessing. For an image that copied one agent to `/app`,
+  that is `root = "."`.
+- **`asbs setup` no longer writes `agents.toml` into an agent.** The map says which agents an
+  *image* contains, which is a packaging decision -- an agent carrying one is an agent that knows
+  whether it is running alone. The single-agent `Dockerfile` writes a one-agent map into its own
+  image instead. Existing projects keep working; delete the file when the agent joins a group,
+  where it is refused.
+- **The `src/<agent>/main.py` group layout is retired.** An agent is now the same directory alone
+  or in a group -- `<agent>/settings.toml` beside `<agent>/src/` -- which is what lets it move
+  between repositories untouched. Multi-agent grouping has only ever shipped in 0.9.0 alphas, so
+  nothing stable depended on the old shape.
+- **`AgentMapPartGenerator` is gone.** It generated a file that is no longer written; its
+  `agent_namespace` helper moved to `PartGeneratorBase`.
+
 ### Added
 
 - **The documentation ships inside the package.** The user-facing guides moved from the repository

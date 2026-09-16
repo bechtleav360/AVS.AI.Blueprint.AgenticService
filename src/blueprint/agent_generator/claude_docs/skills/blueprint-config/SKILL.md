@@ -49,6 +49,19 @@ These fail at startup rather than guess, so they must be set deliberately:
 - **`event_publishing_enabled`** - consuming and publishing are separate concerns. A handler implies
   a transport client; a scheduler does not.
 
+## Where the file goes
+
+**Beside `src/`, in the agent's own directory** -- never inside `src/`, which is refused rather
+than ignored. The same place alone or in a group.
+
+In a group the image's `agents.toml` states that directory with `root`, and process-wide keys
+(`app_port`, `app_host`, `app_environment`, `envvar_prefix`, `event_bus`, `log_level`,
+`log_format`, `readiness_policy`, `nats_stream_name`, ...) belong in the **image's**
+`settings.toml`, beside `agents.toml`. Set in an agent's file they are dropped before the merge
+with a warning naming the value actually used.
+
+`asbs validate --group` reports all of this without starting anything.
+
 ## Reading config at runtime
 
 Resolve configuration in `on_startup()`, never in `__init__` - `self.config` is not linked until

@@ -76,26 +76,60 @@ and copy the map into the image beside your settings:
 COPY --chown=appuser:appuser agents.toml ./
 ```
 
-## 3. `agents.toml` -- a new file
+## 3. The image's `agents.toml` -- one entry, not a new file here
+
+The entry goes in the **image's** map, at the top of the repository that builds the image --
+not in the agent's directory. The map says which agents an image contains, which is a packaging
+decision; an agent that carried one would be an agent that knows whether it is running alone.
+`asbs validate --group` refuses one found inside an agent.
+
+If the repository has no image files yet, create them once:
+
+```bash
+asbs setup --group
+```
+
+Then add this agent:
 
 ```toml
 [agents.order]
-module = "src.main:agent"
+root   = "agents/order"
+module = "agents.order.src.main:agent"
 ```
 
-Required even for a group of one: it is the only thing that turns an agent's name into code. There
-is discovery by convention nowhere in this, deliberately -- a set of agents that depends on what
-happens to be importable makes a renamed directory a silently removed agent.
+**Both keys are required.** `root` is the agent's own directory, relative to the directory
+`agents.toml` is in -- the one holding its `settings.toml` and its `src/`. `module` is how its
+code imports. Neither is derived from the other: a root guessed from where the declaration sits
+is right for one layout and silently wrong for the rest, and an agent whose settings were looked
+for in the wrong place does not fail, it runs on the group's defaults without saying so.
+
+Nothing inside the agent's directory moves. Its `settings.toml` stays beside `src/`, exactly
+where it was when the project ran on its own -- that sameness is what lets the directory move
+back out again untouched.
+
+Required even for a group of one: it is the only thing that turns an agent's name into code.
+There is discovery by convention nowhere in this, deliberately -- a set of agents that depends
+on what happens to be importable makes a renamed directory a silently removed agent. Renaming
+or moving an agent directory means updating its entry here, and until you do, the process
+refuses to start rather than quietly dropping the agent.
+
+### Process-wide keys move up
+
+If the project's `settings.toml` sets `app_port`, `app_host`, `app_environment`, `event_bus`,
+`log_level`, `log_format` or the other keys that describe the process, they belong in the
+**image's** `settings.toml` now. One process has one of each, so a copy under an agent is
+dropped before the merge with a warning naming the value actually used.
 
 ## 4. Check it
 
 ```bash
-asbs validate
+asbs validate              # inside the agent's directory: the agent itself
+asbs validate --group      # at the top: the map, and every agent it points at
 ```
 
-It reads the map, holds the name to the namespace alphabet, confirms the module exists and assigns
-the attribute you named, and reports anything about schedulers or settings that would not survive
-the move. It never imports your project.
+`--group` resolves every `root`, reports which `settings.toml` each agent actually reads, refuses a
+file sitting where the framework will not look for it, and names process-wide keys left in an
+agent. Neither imports your project.
 
 ## One declaration, three ways to run it
 
