@@ -60,6 +60,11 @@ In a group the image's `agents.toml` states that directory with `root`, and proc
 `settings.toml`, beside `agents.toml`. Set in an agent's file they are dropped before the merge
 with a warning naming the value actually used.
 
+**The file must never name its own agent.** It becomes that agent's scope when merged, so
+`[default.orders]` inside the orders agent's file nests to `orders.orders.*` and nothing reads it.
+Refused at merge. Use plain `[default]` -- it resolves standalone too, since a scoped lookup falls
+back to the root key.
+
 `asbs validate --group` reports all of this without starting anything.
 
 ## Reading config at runtime

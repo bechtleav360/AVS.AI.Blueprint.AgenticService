@@ -107,6 +107,30 @@ Nothing inside the agent's directory moves. Its `settings.toml` stays beside `sr
 where it was when the project ran on its own -- that sameness is what lets the directory move
 back out again untouched.
 
+### One thing inside the file may have to change
+
+The location does not move; the *contents* might. This file **becomes** the agent's scope when it
+is merged, so it must not scope keys itself:
+
+```toml
+# Wrong in a group: nests to risk_identifier.risk_identifier.*, and nothing reads it
+[default.risk_identifier]
+model_name = "..."
+
+# Right, and works standalone too
+[default]
+model_name = "..."
+```
+
+A standalone project may well carry the prefixed form today, because a scoped lookup falls back to
+the root key and both resolve. Once the file is merged under the agent's namespace the prefix nests
+a second time and every key under it becomes unreachable -- which surfaces far from the cause, as
+something like `No model name for runtime agent 'risk_identifier_agent' configured`, naming the
+agent rather than the file.
+
+The merge refuses this outright, and `asbs validate --group` reports it without starting anything.
+Unprefixing to plain `[default]` serves both shapes, so there is no second file to keep.
+
 Only for a group. Running this agent on its own needs no map at all -- `uvicorn
 src.main:create_app --factory` builds the declaration directly. In a group the map is the only
 thing that turns an agent's name into code.

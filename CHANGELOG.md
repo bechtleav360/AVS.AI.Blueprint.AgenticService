@@ -3,6 +3,14 @@
 
 ### Fixed
 
+- **An agent settings file that scoped keys under the agent's own name merged into nothing.**
+  `[default.<agent>]` in that agent's own `settings.toml` nested to `<agent>.<agent>.*` once the
+  file was merged under the agent's namespace, so every key in it was unreachable -- and the
+  failure surfaced far from the cause, as `No model name for runtime agent '<agent>_agent'
+  configured`, naming the agent rather than the file. Found migrating a real project. It is now
+  refused at merge, naming the section and the fix, and `asbs validate --group` reports it without
+  starting anything. Plain `[default]` serves both shapes: standalone resolves it because a scoped
+  lookup falls back to the root key.
 - **A grouped agent's own `settings.toml` was never read.** The group looked for it beside the
   *declaration module* -- inside `src/` -- while every scaffolded project writes it beside `src/`,
   so the file existed, looked right, and was never opened. Nothing failed: the agent ran on the

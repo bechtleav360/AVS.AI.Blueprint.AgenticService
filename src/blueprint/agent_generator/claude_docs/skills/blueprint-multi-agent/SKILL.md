@@ -63,6 +63,11 @@ is how its code imports. A root guessed from where the declaration sits is right
 silently wrong for the rest -- and an agent whose settings were looked for in the wrong place does
 not fail, it runs on the group's defaults and says nothing.
 
+**Migrating an existing agent: check the file's contents, not just its place.** An agent's
+`settings.toml` becomes its scope when merged, so a `[default.<agent>]` section inside it nests to
+`<agent>.<agent>.*` and is read by nothing -- surfacing later as a missing model name that blames
+the agent, not the file. Unprefix to plain `[default]`; that serves both shapes.
+
 Run `asbs validate --group` after editing the map. It resolves every root, reports which
 `settings.toml` each agent reads, and refuses a file that sits where nothing will read it.
 

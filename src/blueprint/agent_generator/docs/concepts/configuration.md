@@ -260,6 +260,19 @@ and says nothing.
 
 A `settings.toml` inside `src/` is **refused**, not ignored, for that reason.
 
+### The file must not name its own agent
+
+It *becomes* that agent's scope when merged, so a section named after the agent nests twice:
+
+```toml
+[default.orders]     # in the orders agent's own file -> orders.orders.*, read by nothing
+```
+
+Refused at merge, and reported by `asbs validate --group`. Write the keys at the top level or under
+a plain `[default]`; that form resolves standalone as well, because a scoped lookup falls back to
+the root key. Other top-level tables are untouched -- `[cache]` is this agent's cache
+configuration, not a scope.
+
 ### Keys an agent cannot set
 
 Some keys describe the *process*, and one process has one of each: `app_port`, `app_host`,
