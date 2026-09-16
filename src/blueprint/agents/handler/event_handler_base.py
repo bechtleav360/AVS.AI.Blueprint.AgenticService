@@ -10,6 +10,9 @@ Custom implementations MUST override the abstract methods:
 Handlers can also declare published event types by overriding:
 - `get_published_event_types()` - Return (success_event_type, error_event_type)
 - `get_subscribed_topics()` - Return list of NATS topics to auto-subscribe on startup
+- `get_handled_event_types()` - Return the event types this handler accepts, so the
+  dispatch index can skip it for everything else
+- `get_runtime_name()` - Return which agent runtime should serve this event
 
 The framework provides automatic OpenTelemetry tracing for all handlers.
 """
@@ -68,6 +71,17 @@ class EventHandlerBase(Component, ABC):
         """
         super().__init__()
         self._priority = priority
+
+    @property
+    def priority(self) -> int:
+        """Execution priority; lower numbers are tried first.
+
+        Public because the ordering rule is enforced from outside this class:
+        ``AppBuilder.build()`` compares two handlers' priorities to decide whether the order
+        they were declared in still decides which of them is tried first, and ``__lt__``
+        answers only the sorting question, not that one.
+        """
+        return self._priority
 
     @traced("event")
     async def can_handle(self, event: GenericCloudEvent, context: dict[str, Any]) -> bool:
@@ -160,6 +174,75 @@ class EventHandlerBase(Component, ABC):
         """
 
         return None
+
+    def get_runtime_name(self, event: GenericCloudEvent, context: dict[str, Any]) -> str | None:
+        """Declare which agent runtime should serve this event, or ``None`` to let the framework decide.
+
+        Called between :meth:`can_handle_event` saying yes and :meth:`handle_event` running, so
+        what it returns is resolved and put in ``context`` under ``"runtime"`` (the
+        ``AgentRuntime``) and ``"runtime_name"`` (its registry name) **before** the handler runs.
+        A handler that wants a particular runtime for a particular event therefore reads it from
+        the context it is handed rather than looking it up -- and in a grouped process it gets
+        its *own* agent's runtime without naming a namespace anywhere.
+
+        Per event rather than per handler, because the choice can depend on the payload: one
+        handler routing to a fast model or a thorough one on the same event type is the case
+        this exists for.
+
+        **Returning ``None`` is the normal case.** With exactly one agent runtime in this
+        handler's namespace, that one is provided -- which is what a single-agent application
+        has in practice. With several and no declaration, nothing is provided and the ambiguity
+        is reported once: there is no basis for the framework to choose between them.
+
+        Args:
+            event: The event about to be handled.
+            context: The processing context, already carrying ``request_id`` and whatever
+                ``runtime_name`` the caller of ``process_event`` asked for.
+
+        Returns:
+            The registry name of the runtime to use, or ``None`` to let the framework decide.
+
+        Example::
+
+            def get_runtime_name(self, event, context):
+                return "thorough" if event.data.get("priority") == "high" else "fast"
+        """
+
+        return None
+
+    def get_handled_event_types(self) -> list[str]:
+        """Declare the event types this handler accepts, or nothing to be offered every event.
+
+        This is a **selection hint, not a selector**. :meth:`can_handle_event` remains the
+        decision: a declared handler is still asked, and may still say no. What the declaration
+        buys is that handlers which cannot possibly want an event are not asked at all, so a
+        process hosting many handlers does not run every one of them against every delivery.
+
+        **The default is an empty list, and that means "offer me everything".** It is not
+        "offer me nothing", and the difference is the most destructive mistake available here:
+        no handler in this framework or in any scaffolded project declares anything today, so a
+        dispatch index that read an empty declaration as an empty set would silence every
+        handler that exists -- and because an unhandled event is acknowledged rather than
+        retried (spec sec. 7.2), the events would be consumed and discarded rather than piling
+        up somewhere visible.
+
+        **Exact event types only -- no wildcards.** A declaration is matched by equality, so
+        ``"orders.*"`` would be a type no event ever has and the handler would never run.
+        Declarations are checked when the index is built and a wildcard is rejected there, at
+        startup, rather than being silently ignored. A handler that selects a *family* of event
+        types should declare nothing and keep deciding in ``can_handle_event``.
+
+        Returns:
+            The event types this handler accepts, exactly as they appear in ``event.type``.
+            Empty (the default) means every event is offered to it.
+
+        Example::
+
+            def get_handled_event_types(self) -> list[str]:
+                return ["order.created", "order.cancelled"]
+        """
+
+        return []
 
     def get_subscribed_topics(self) -> list[str]:
         """Declare the NATS topics this handler subscribes to.

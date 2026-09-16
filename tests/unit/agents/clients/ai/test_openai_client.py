@@ -36,7 +36,7 @@ class TestOpenAIClientConnection:
 
 class TestOpenAIClientPubSub:
     async def test_subscribe_is_noop(self, openai_client: OpenAIClient) -> None:
-        await openai_client.subscribe("topic", AsyncMock())  # must not raise
+        await openai_client.subscribe({"topic": AsyncMock()})  # must not raise
 
     async def test_publish_is_noop(self, openai_client: OpenAIClient) -> None:
         await openai_client.publish("topic", MagicMock())  # must not raise

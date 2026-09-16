@@ -39,7 +39,7 @@ from pathlib import Path
 from blueprint.agents import AppBuilder, Config, AgentBuilder
 
 config = Config(
-    settings_files=["settings.toml", "secrets.toml"],
+    settings_files=["settings.toml", ".secrets.toml"],
     root_path=Path(__file__).parent.parent,
 )
 
@@ -89,6 +89,7 @@ class OrderHandler(EventHandlerBase):
 ```
 
 - Return `None` → pass to next handler. Return `HandlerResult` → publish event, stop chain.
+- **Delivery is at-least-once.** The same event can reach `handle_event` more than once (lost ack, pod restart, rolling deploy). Either make the method safe to repeat, or set `idempotency_enabled = true` **and** `idempotency_ttl = <seconds>` in `settings.toml` -- the framework then skips an event whose id and source it has already dispatched, within that window. Off by default on purpose: only you know whether replaying your side effects is acceptable.
 - **`self.extract_payload(event, ModelType)`** — validates `event.data` against a Pydantic model and returns a typed instance. Raises `InvalidEventError` if data is missing or invalid (the framework handles this automatically).
 
 ### Service
@@ -155,14 +156,28 @@ class CleanupScheduler(SchedulerBase):
 
     async def on_startup(self) -> None:
         self._service = self.registry.get_service(CleanupService)
+        await super().on_startup()  # required: without it the scheduler never runs
 
     async def on_shutdown(self) -> None:
-        pass
+        await super().on_shutdown()
 
     async def tick(self) -> None:
         """Called on each cron interval."""
         await self._service.cleanup()
 ```
+
+- **Override `on_startup` only if you also call `super().on_startup()`.** The base class is
+  what starts the timer, wires the tick handler and registers `POST /api/<name>/trigger`.
+- **`scheduler_mode` decides what calls `tick()`, and it is required.** It has no default:
+  registering a scheduler without setting it fails at startup, because neither value is safe to
+  inherit silently. `"event"` starts no timer in the process -- the tick arrives as an ordinary
+  event on `<app_name>.scheduler.<scheduler_name>`, published by an external `CronJob`, so the
+  queue group already guarantees that exactly one replica runs it; it needs `event_bus` set to
+  `"dapr"` or `"nats"`. `"in_process"` runs an APScheduler timer in **every** replica and
+  claims each tick in the cache so one replica runs it -- so it needs `.with_cache()` to fire a
+  tick once. Without a cache every replica runs every tick, and startup says so.
+- The crontab stays declared here in both modes; it is what the `CronJob` is generated from.
+- **A scheduler that wants to *publish* an event needs `event_publishing_enabled = true`.** Consuming and publishing are separate: a handler implies a transport client, a scheduler does not. The key creates the client and subscribes to nothing, and it needs `event_bus` set.
 
 ### AgentRuntime (via AgentBuilder)
 
@@ -213,12 +228,36 @@ model_provider = "openai"
 model_name = "gpt-4"
 model_max_tokens = 2000
 
+# Event deduplication -- off by default, both keys required to switch it on.
+# idempotency_enabled = true
+# idempotency_ttl = 1500          # seconds; must outlast the broker redelivery window
+
+# Required once a scheduler is registered; no default. "in_process" runs a timer in
+# every replica; "event" takes the tick as an event and needs event_bus set.
+scheduler_mode = "in_process"
+
 [default.runtimes.my_agent]     # Per-agent overrides
 model_name = "gpt-4-turbo"
 model_temperature = 0.5
 ```
 
-**secrets.toml** (never commit): `model_api_key = "sk-..."`
+**.secrets.toml** (never commit): `model_api_key = "sk-..."`
+
+## Documentation
+
+The full framework documentation ships inside the installed package -- no network needed. Locate a
+page with `asbs docs`, then read it:
+
+```bash
+asbs docs                                      # list every page
+asbs docs guides/multi-agent-setup             # print the path to one page
+asbs docs reference/configuration-keys --cat   # print its contents
+```
+
+Prefer the matching skill (`blueprint-cli`, `blueprint-config`, `blueprint-events`,
+`blueprint-multi-agent`, `blueprint-testing`, `blueprint-deployment`,
+`blueprint-troubleshooting`); each one carries the rules that matter and points at the page for the
+detail. **Never guess a configuration key or a CLI flag** -- the reference is on disk.
 
 ## CLI (`asbs`)
 
@@ -231,6 +270,7 @@ asbs create agent <name>                           # Add AgentRuntime
 asbs create scheduler <name> [--cron CRON]         # Add Scheduler
 asbs validate                                      # Validate project structure
 asbs dev [--port 8000]                             # Run dev server
+asbs docs [<topic>] [--cat]                        # Locate the framework documentation
 ```
 
 **IMPORTANT:** Always use `asbs create` when adding components for consistent naming and imports.
@@ -241,7 +281,7 @@ asbs dev [--port 8000]                             # Run dev server
 - All I/O must be `async`/`await`
 - `%s`-style args in log calls, not f-strings
 - Pydantic validation at system boundaries
-- Secrets via `secrets.toml` — never hardcoded
+- Secrets via `.secrets.toml` — never hardcoded
 - Context managers (`async with`) for external resources
 - **No `assert` statements in production code** — `assert` is only permitted in test files (`tests/`)
 - **All imports at the top of the file** — never inside methods, functions, or classes

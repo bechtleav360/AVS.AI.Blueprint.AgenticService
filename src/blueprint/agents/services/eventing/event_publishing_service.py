@@ -7,6 +7,7 @@ from uuid import uuid4
 from opentelemetry import trace
 
 from ...component.component import traced
+from ...component.namespace import ROOT_NAMESPACE
 from ..service_base import ServiceBase
 from ...clients.io.io_client_base import IOClientBase
 from ...models import GenericCloudEvent
@@ -21,17 +22,43 @@ class EventPublishingService(ServiceBase):
 
     Uses IOClientBase for transport-agnostic publishing (Dapr, NATS, etc.).
     Topic-to-event-type mapping is resolved from application configuration.
-    The active IO client is resolved from the registry in on_startup().
+    The IO client is resolved from the registry in on_startup().
+
+    Namespace ownership
+    ~~~~~~~~~~~~~~~~~~~
+    One publishing service per namespace, publishing on **its own** namespace's client
+    (spec sec. 6). Sharing one service across namespaces would send every agent's
+    outbound events down one connection, which makes outbound traffic unattributable
+    and defeats the reason the connections are named in the first place.
+
+    A namespace with no client of its own falls back to the root one, so a namespaced
+    agent in a process that has a single shared transport keeps working.
     """
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, namespace: str = ROOT_NAMESPACE) -> None:
+        """Initialize the publishing service for one namespace.
+
+        Args:
+            namespace: The agent whose events this service publishes; ``""`` for the
+                root namespace, which keeps the unqualified registry name.
+
+        Raises:
+            ValueError: if the namespace is not a legal namespace. Validated by
+                ``Component``, which is the single gate for it.
+        """
+        super().__init__(namespace=namespace)
         self._client: IOClientBase | None = None
         self._pub_config: EventPublishingConfig | None = None
 
     async def on_startup(self) -> None:
-        """Resolve IO client from registry and load event publishing configuration."""
-        self._client = self.registry.get_component(IOClientBase)
+        """Resolve this namespace's IO client and load event publishing configuration.
+
+        The resolution is the registry view's now: ``self.registry`` answers for this
+        service's namespace, so ``get_io_client`` returns this agent's transport and falls back
+        to a root one. It used to call ``resolve_for_namespace`` here by hand, because P6 needed
+        namespace resolution before the registry could do it.
+        """
+        self._client = self.registry.get_io_client(IOClientBase)
         self._pub_config = self.config.get_event_publishing_config()
 
     async def on_shutdown(self) -> None:

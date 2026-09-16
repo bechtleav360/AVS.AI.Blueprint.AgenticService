@@ -5,6 +5,7 @@ from typing import Any, TYPE_CHECKING
 from collections.abc import Awaitable, Callable
 
 from ..component.component import Component
+from ..component.namespace import ROOT_NAMESPACE
 from ..models.events import CloudEvent
 
 if TYPE_CHECKING:
@@ -26,9 +27,16 @@ class ClientBase(Component, ABC):
     config values), not establish the connection.
     """
 
-    def __init__(self) -> None:
-        """Initialize the client."""
-        super().__init__()
+    def __init__(self, name: str | None = None, namespace: str = ROOT_NAMESPACE) -> None:
+        """Initialize the client.
+
+        Args:
+            name: Registry name to use instead of the derived one. Forwarded to
+                ``Component``, which registers under it.
+            namespace: The agent this client belongs to; ``""`` for the root namespace.
+                Forwarded to ``Component``, which validates it and qualifies the name.
+        """
+        super().__init__(name=name, namespace=namespace)
         self._client: Any = None
 
     async def _get_connected_client(self) -> Any:
@@ -68,8 +76,13 @@ class ClientBase(Component, ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def subscribe(self, topic: str, callback: Callable[[CloudEvent[Any]], Awaitable[None]]) -> None:
-        """Subscribe to a topic with a callback for incoming events."""
+    async def subscribe(self, topic_callbacks: dict[str, Callable[[CloudEvent[Any]], Awaitable[None]]]) -> None:
+        """Register all topic→callback mappings and begin the managed connection + subscription cycle.
+
+        Implementations must be non-blocking: store the mapping and start a
+        background retry task, then return immediately. The ``subscriptions_ready``
+        property reports whether the cycle has completed successfully.
+        """
         raise NotImplementedError
 
     @abstractmethod

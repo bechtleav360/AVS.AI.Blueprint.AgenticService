@@ -41,7 +41,7 @@ class MyHandler(EventHandlerBase):
 - Every public method needs a docstring (one-liner is fine for simple methods)
 - Use `%s`-style args in log calls, not f-strings (deferred formatting)
 - Validate all external input with Pydantic at system boundaries
-- Never hardcode secrets — use environment variables via `secrets.toml`
+- Never hardcode secrets — use environment variables via `.secrets.toml`
 - **No `assert` statements in production code** — `assert` is only permitted in test files (`tests/`)
 - **All imports at the top of the file** — never inside methods, functions, or classes
 

@@ -240,5 +240,5 @@ Add to `settings.toml`:
 8. **Services contain ALL business logic** — one method per responsibility, not one giant method
 9. **Handlers and APIs are thin delegation layers** — they call service methods
 10. **Context managers for HTTP clients, files, DB connections**
-11. **Secrets in `secrets.toml`** — never hardcoded
+11. **Secrets in `.secrets.toml`** — never hardcoded
 12. **System prompt is static** (no dynamic inputs) — **instruction prompt has dynamic inputs**

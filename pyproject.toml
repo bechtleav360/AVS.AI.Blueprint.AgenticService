@@ -6,18 +6,19 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "avs-blueprint-agents"
-version = "0.8.0"
+version = "0.9.0a5"
 description = "Microservice blueprint for creating agents"
 authors = [
     { name = "Blueprint Team", email = "patrick.maue@bechtle.com" },
     { name = "Blueprint Team", email = "jan.weber@bechtle.com" }
 ]
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.13"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.13",
     "Typing :: Typed",
@@ -41,8 +42,7 @@ dependencies = [
     "diskcache-rs>=0.4.4",
     "nats-py>=2.13.1",
     "croniter>=6.0.0",
-    "pytest",
-    "pytest-asyncio"
+    "pyyaml>=6.0"
 ]
 
 [project.optional-dependencies]
@@ -108,7 +108,7 @@ packages = [
 
 [tool.setuptools.package-data]
 "blueprint.agents" = ["py.typed"]
-"blueprint.agent_generator" = ["base_files/**/*", "assistant_integrations/**/*", "claude_docs/**/*"]
+"blueprint.agent_generator" = ["base_files/**/*", "assistant_integrations/**/*", "claude_docs/**/*", "docs/**/*"]
 
 [tool.black]
 line-length = 140
@@ -131,6 +131,15 @@ extend-exclude = '''
 [tool.ruff]
 target-version = "py313"
 line-length = 140
+# The packaged documentation lives under src/ so it ships in the wheel, which puts it in reach of
+# "ruff format src". Ruff formats Python code blocks inside Markdown, and the examples in these
+# pages are wrapped on purpose -- a fluent AppBuilder chain is one call per line because that is
+# what makes the shape readable. Formatting them collapses each chain onto a single 140-column
+# line, which is worse prose and not what the reader is being shown.
+extend-exclude = [
+    "src/blueprint/agent_generator/docs",
+    "src/blueprint/agent_generator/claude_docs",
+]
 lint.select = [
     "E", # pycodestyle errors
     "W", # pycodestyle warnings
@@ -171,6 +180,7 @@ module = [
     "croniter",
     "dapr.*",
     "nats.*",
+    "yaml",
 ]
 ignore_missing_imports = true
 
