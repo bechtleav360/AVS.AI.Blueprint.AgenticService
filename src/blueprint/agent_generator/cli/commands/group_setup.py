@@ -43,6 +43,24 @@ log_level = "DEBUG"
 """
 
 
+GROUP_PYPROJECT = """[project]
+name = "agent-group"
+version = "0.1.0"
+description = "An image hosting several Blueprint agents"
+requires-python = ">=3.13"
+dependencies = [
+    "avs-blueprint-agents",
+]
+
+# One dependency set for the image. The agents are imported from this directory rather than
+# installed -- their module paths in agents.toml are relative to it -- so what belongs here is
+# whatever third-party packages their code needs, not the agents themselves.
+
+[tool.setuptools]
+packages = []
+"""
+
+
 def scaffold_group(output_dir: Path, overwrite: bool) -> None:
     """Write the image-level files into ``output_dir``.
 
@@ -55,6 +73,10 @@ def scaffold_group(output_dir: Path, overwrite: bool) -> None:
         "agents.toml": BASE_FILES / "group_agents_toml.txt",
         "Dockerfile": BASE_FILES / "group_Dockerfile",
         ".gitignore": BASE_FILES / "template_for_git_ignore.txt",
+        # Load-bearing, not tidy-up: the group image copies the whole agents/ tree, and Docker's
+        # build context is the filesystem rather than the repository -- so without this every
+        # agent's .secrets.toml is baked into a layer.
+        ".dockerignore": BASE_FILES / "template_for_docker_ignore.txt",
     }
 
     written: list[str] = []
@@ -66,6 +88,15 @@ def scaffold_group(output_dir: Path, overwrite: bool) -> None:
             continue
         target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
         written.append(name)
+
+    pyproject = output_dir / "pyproject.toml"
+    if pyproject.exists():
+        # Never written over: by the time `asbs` can run, this is usually somebody's file with
+        # their dependencies in it, and it is what made this tool runnable.
+        skipped.append("pyproject.toml")
+    else:
+        pyproject.write_text(GROUP_PYPROJECT, encoding="utf-8")
+        written.append("pyproject.toml")
 
     settings = output_dir / "settings.toml"
     if settings.exists() and not overwrite:

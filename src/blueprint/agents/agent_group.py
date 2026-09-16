@@ -31,7 +31,7 @@ from types import BuiltinFunctionType, FunctionType, MethodType, ModuleType
 
 from fastapi import FastAPI
 
-from .app_builder import AppBuilder
+from .app_builder import AppBuilder, refuse_constructed_components
 from .component.namespace import namespace_scope, validate_namespace
 from .config import Config
 from .group_config import AgentSpec, GroupConfig, GroupConfigError
@@ -231,7 +231,7 @@ class AgentGroup:
 
             # Before the agent is hosted, not after: an agent whose files are where they cannot
             # be read from would otherwise run on the group's defaults and say nothing.
-            misplaced = check_agent_layout(spec.root, group.image_root)
+            misplaced = check_agent_layout(spec.root)
             if misplaced:
                 cls._skip_or_raise(spec, " ".join(item.describe(spec.name) for item in misplaced))
                 continue
@@ -472,14 +472,4 @@ class AgentGroup:
                 "the group hands each agent its own scoped view of the process's configuration when it builds it."
             )
 
-        for declaration in builder.declarations:
-            if not declaration.is_built:
-                continue
-            raise ValueError(
-                f"{type(declaration.target).__name__} was passed to with_{declaration.kind}() as an instance by "
-                f"agent '{namespace}', and a group cannot place it: it was constructed at that line, before the "
-                "group existed, so its namespace and its registry key are already the root's -- and two agents "
-                f"declaring one would collide on that key. Pass the class -- with_{declaration.kind}("
-                f"{type(declaration.target).__name__}, ...) with its constructor arguments as keyword arguments -- "
-                "or a callable returning it, so the group builds it inside this agent's namespace."
-            )
+        refuse_constructed_components(builder, namespace)

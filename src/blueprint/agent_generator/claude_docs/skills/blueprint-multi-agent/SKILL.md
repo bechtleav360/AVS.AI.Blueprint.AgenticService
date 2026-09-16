@@ -83,11 +83,16 @@ separates the parts of a durable name, so `orders-eu` on topic `created` and `or
 
 ## Three ways to run one declaration
 
-| Shape | Command |
-|---|---|
-| Standalone, unmigrated | `uvicorn src.main:app` |
-| Standalone, migrated (with `create_app`) | `uvicorn src.main:create_app --factory` |
-| Grouped, including a group of one | `python -m blueprint.agents.entrypoint` |
+| Shape | Command | Needs group config? |
+|---|---|---|
+| Standalone, from before the split | `uvicorn src.main:app` | no |
+| Standalone | `uvicorn src.main:create_app --factory` | no |
+| One agent of a group | `python -m blueprint.agents.entrypoint` | yes: an agent map and a group |
+
+A standalone agent declares **nothing** group-related -- no agent map, no group, no namespace. A
+group of one is still a group, and an agent must not have to declare itself one to run alone.
+Its components are built at the root namespace, so the routes are the ones the API declares;
+hosted in a group, the same directory gains an `/api/<agent>` prefix.
 
 ## Before promising the move is free
 

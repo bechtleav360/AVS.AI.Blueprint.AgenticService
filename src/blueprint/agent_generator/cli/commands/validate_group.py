@@ -126,7 +126,7 @@ def _agent_findings(image_root: Path, name: str, entry: Any, claimed: dict[Path,
         return issues, warnings, notices
     claimed[root] = name
 
-    for misplaced in check_agent_layout(root, image_root):
+    for misplaced in check_agent_layout(root):
         issues.append(misplaced.describe(name))
 
     if not (root / "src").is_dir():

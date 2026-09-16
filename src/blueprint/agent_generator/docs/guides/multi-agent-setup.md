@@ -79,8 +79,9 @@ Whoever hosts the agent supplies its name:
 | A group image | an entry in the repository's `agents.toml` |
 | `asbs dev` | `--name`, defaulting to the directory's name |
 
-The `Dockerfile` runs `python -m blueprint.agents.entrypoint`, which reads that map, works out this
-process's group, and serves it.
+The generated `Dockerfile` runs `uvicorn src.main:create_app --factory`: one agent, served directly,
+with no map and no group involved. A group image runs `python -m blueprint.agents.entrypoint`
+instead, which reads that image's map, works out this process's group, and serves it.
 
 ### Running it
 

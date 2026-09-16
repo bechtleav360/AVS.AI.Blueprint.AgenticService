@@ -23,6 +23,7 @@ AGENT_MAP_ENV = "BLUEPRINT_AGENT_MAP"
 
 GROUP_FACTORY = "blueprint.agents.entrypoint:create_group_app"
 LEGACY_APP = "src.main:app"
+STANDALONE_FACTORY = "src.main:create_app"
 
 AGENTS_ENV = "BLUEPRINT_AGENTS"
 GROUP_ENV = "BLUEPRINT_GROUP"
@@ -41,25 +42,31 @@ def run(args: Namespace) -> None:
         args: Parsed command-line arguments
     """
     agent_map = Path(AGENT_MAP_FILE)
-    if agent_map.is_file():
+    entry = Path(DECLARATION_ENTRY_POINT)
+    requested_name = (getattr(args, "name", "") or "").strip()
+
+    if requested_name and entry.is_file():
+        # Explicitly asked for the grouped shape: serve the agent under the namespace it will
+        # have in an image, so the routes match production. The map is written outside the
+        # project -- an agents.toml left in an agent directory is the one file it must not have.
+        command = _group_command(args, _temporary_agent_map(args))
+    elif agent_map.is_file():
         command = _group_command(args, agent_map)
-    elif Path(DECLARATION_ENTRY_POINT).is_file() and _declares_an_agent(Path(DECLARATION_ENTRY_POINT)):
-        # An agent directory carries no agents.toml: the map says which agents an *image*
-        # contains, and an agent does not know whether it is one of several. So the map this
-        # run needs is written here, outside the project, rather than expected in it -- the
-        # framework still resolves agents through an explicit map, this one is just supplied by
-        # the dev server instead of committed.
-        agent_map = _temporary_agent_map(args)
-        command = _group_command(args, agent_map)
-    elif Path(LEGACY_ENTRY_POINT).is_file():
-        # A project scaffolded before the agent map existed still builds its own application in
-        # src/main.py. It is served the way it always was, at the root namespace, because that
-        # is the namespace it is deployed under too -- the two still agree.
-        print(f"No {AGENT_MAP_FILE}; serving {LEGACY_APP} at the root namespace.")
+    elif _declares(entry, "create_app"):
+        # A standalone agent, served through its own factory. Nothing group-related is
+        # involved: no map, no group, no namespace -- a group of one is still a group, and an
+        # agent must not have to declare itself one to run alone.
+        print("Serving this agent on its own (src.main:create_app), at the root namespace.")
+        print("Use --name <agent> to serve it under the namespace a group image would give it.")
+        command = _uvicorn_command(args, STANDALONE_FACTORY, factory=True)
+    elif entry.is_file() and _declares(entry, "app"):
+        # A project from before the declaration split, which builds its own application. It is
+        # served the way it always was, and goes on working.
+        print(f"No {AGENT_MAP_FILE} and no create_app(); serving {LEGACY_APP} at the root namespace.")
         command = _legacy_command(args)
     else:
-        print(f"Error: neither {AGENT_MAP_FILE} nor {LEGACY_ENTRY_POINT} found", file=sys.stderr)
-        print("Make sure you're in a Blueprint Agents project directory", file=sys.stderr)
+        print(f"Error: no {AGENT_MAP_FILE}, and {DECLARATION_ENTRY_POINT} defines neither create_app nor app", file=sys.stderr)
+        print("Make sure you are in a Blueprint Agents project directory", file=sys.stderr)
         sys.exit(1)
 
     print(f"Starting development server on {args.host}:{args.port}")
@@ -153,8 +160,8 @@ def _agents_in_map(agent_map: Path) -> list[str]:
     return [str(name) for name in agents]
 
 
-def _declares_an_agent(entry_point: Path) -> bool:
-    """Report whether ``entry_point`` assigns a module-level ``agent``.
+def _declares(entry_point: Path, name: str) -> bool:
+    """Report whether ``entry_point`` defines ``name`` at module level.
 
     Read rather than imported: importing it here would construct the declaration twice, once in
     this process and once in uvicorn's, and a declaration is not something to build for a
@@ -164,10 +171,12 @@ def _declares_an_agent(entry_point: Path) -> bool:
         module = ast.parse(entry_point.read_text(encoding="utf-8"))
     except (OSError, SyntaxError):
         return False
-    return any(
-        isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "agent" for target in node.targets)
-        for node in module.body
-    )
+    for node in module.body:
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return True
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == name for t in node.targets):
+            return True
+    return False
 
 
 def _dev_agent_name(args: Namespace) -> str:

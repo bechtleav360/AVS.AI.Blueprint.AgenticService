@@ -8,10 +8,34 @@ lets the same file be served on its own and be hosted alongside other agents in 
 the host decides the configuration and the namespace each component is built in, and this file
 never mentions either.
 
-Run it with ``python -m blueprint.agents.entrypoint``, which reads ``agents.toml`` to find
-this declaration and the deployment's group to decide which agents the process hosts.
+Two ways to run it, and this directory is identical in both:
+
+- **On its own**, which is what the generated ``Dockerfile`` does::
+
+      uvicorn src.main:create_app --factory
+
+  ``create_app`` below builds this declaration with this directory's own settings. Nothing
+  group-related is involved: no agent map, no group file, no namespace. The components are
+  built at the root namespace, so the routes are the ones the API declares.
+
+- **As one agent of a group**, where an image's ``agents.toml`` names this module and
+  ``python -m blueprint.agents.entrypoint`` builds the same declaration under this agent's
+  namespace -- which is where the routes gain their ``/api/<agent>`` prefix. Nothing in this
+  directory changes to make that work; the image's map points at it.
 """
 
 imports
 
 agent_declaration
+
+
+def create_app():
+    """Build this agent as an application of its own.
+
+    Only for running it standalone. A group never calls this: it builds the declaration above
+    itself, once per hosted agent, inside that agent's namespace.
+
+    Returns:
+        The FastAPI application, with every component built at the root namespace.
+    """
+    return agent.build(Config(settings_files=["settings.toml", ".secrets.toml"], root_path=str(Path(__file__).parent.parent)))

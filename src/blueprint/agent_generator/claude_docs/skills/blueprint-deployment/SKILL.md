@@ -19,10 +19,19 @@ Stateless design.
 The image is the same whether it hosts one agent or ten. What differs is the command and the agent
 map - see `blueprint-multi-agent`. Changing the mix is an edit to a Deployment, not a rebuild.
 
-| Shape | Command |
-|---|---|
-| Standalone | `uvicorn src.main:app` (or `src.main:create_app --factory` once migrated) |
-| Grouped, including a group of one | `python -m blueprint.agents.entrypoint` |
+| Shape | Command | Needs group config? |
+|---|---|---|
+| Standalone | `uvicorn src.main:create_app --factory` | no |
+| Standalone, from before the split | `uvicorn src.main:app` | no |
+| One agent of a group | `python -m blueprint.agents.entrypoint` | yes: an agent map and a group |
+
+The two images differ in what they copy, not only in how they run. The group image copies the whole
+`agents/` tree -- every agent it contains, since which of them a process runs is decided at startup
+-- plus `agents.toml` and the process `settings.toml`. A single-agent image copies one agent and no
+map at all.
+
+**Both need a `.dockerignore`.** `.gitignore` does not apply to a build context, so a wholesale
+`COPY agents ./agents` bakes every agent's `.secrets.toml` into a layer. `asbs setup` writes one.
 
 ## The two that break under replicas
 

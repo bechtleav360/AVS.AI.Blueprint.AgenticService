@@ -75,8 +75,9 @@ MISPLACED: tuple[ExpectedArtifact, ...] = (
         wrong=("", "src"),
         reason=(
             "The agent map belongs to the image, not to an agent: it says which agents an image contains, which is "
-            "a packaging decision. An agent that carries one is an agent that knows whether it is running alone, "
-            "and it is read from the image root regardless, so this copy changes nothing."
+            "a packaging decision. An agent that carries one is an agent that knows whether it is running alone. "
+            "An agent served on its own needs no map at all -- 'uvicorn src.main:create_app --factory' builds this "
+            "declaration directly, because a group of one is still a group."
         ),
     ),
 )
@@ -84,28 +85,19 @@ MISPLACED: tuple[ExpectedArtifact, ...] = (
 entry is one tuple, and both the runtime refusal and ``asbs validate`` pick it up."""
 
 
-def check_agent_layout(root: Path, image_root: Path) -> list[MisplacedArtifact]:
+def check_agent_layout(root: Path) -> list[MisplacedArtifact]:
     """Return every artefact of ``root`` that is somewhere it cannot be read from.
 
     Args:
         root: The agent's own directory, as the agent map's ``root`` names it.
-        image_root: The directory the agent map itself lives in. A standalone agent *is* its own
-            image, so the two are the same directory and the image's own files sit beside the
-            agent legitimately -- which is why this is a parameter rather than an assumption.
 
     Returns:
         One entry per misplaced file, in the order :data:`MISPLACED` declares them. Empty when
         the layout is right, which is the only case that starts.
     """
     found: list[MisplacedArtifact] = []
-    is_own_image = root.resolve() == image_root.resolve()
     for artifact in MISPLACED:
         for wrong in artifact.wrong:
-            # An image-level file at the agent's root is only misplaced when that root is not
-            # also the image root. Standalone, one directory wears both hats and the file is
-            # exactly where it belongs.
-            if artifact.expected is None and not wrong and is_own_image:
-                continue
             candidate = root / wrong / artifact.filename if wrong else root / artifact.filename
             if not candidate.is_file():
                 continue

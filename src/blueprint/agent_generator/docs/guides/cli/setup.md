@@ -93,7 +93,8 @@ module = "src.main:agent"
 That name is the agent's identity everywhere outside the file -- the NATS queue group, part of the
 JetStream durable name, the cache partition, the OpenTelemetry `service.name` and the `/api/<name>`
 route prefix -- so changing it after the first deploy is a consumer migration. The project is run
-with `python -m blueprint.agents.entrypoint`, which reads that map and the deployment's group.
+with `uvicorn src.main:create_app --factory`, which needs no map and no group. A group image runs
+`python -m blueprint.agents.entrypoint` instead, and maps this directory from its own `agents.toml`.
 
 ---
 
