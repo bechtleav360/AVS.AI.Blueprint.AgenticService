@@ -20,11 +20,26 @@ from ....component.namespace import ROOT_LABEL, ROOT_NAMESPACE
 from ....models.errors import InvalidEventError, RetryableHandlerError
 from ....models.events import GenericCloudEvent
 from ....models.sessions import JobNotification
-from ....services.sessions import SessionKeyProvider, SessionsApiClient
+from ....services.sessions import SessionKeyClaimConflictError, SessionKeyProvider, SessionsApiClient
 from .cloud_event_processor_mixin import CloudEventProcessorMixin
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
+
+
+def _is_retryable_http_status(status_code: int) -> bool:
+    """5xx/408/429/401 — a transient or operator-fixable fault, not evidence the job
+    itself is invalid. Shared by every place that classifies an ``httpx.HTTPStatusError``
+    for cancel-vs-retry, so the decision can't drift between call sites the way it did
+    between the main dispatch path and the 403-retry path (#95): 5xx/408/429 are
+    the upstream-blip case (service-sessions deploy/restart, LB blip, rate limit); 401 is
+    a missing/invalid ``X-Api-Key``, systemic across every job this agent handles rather
+    than specific to this one, and canceling it wouldn't even take effect — ``cancel_job``
+    would send the same bad key and 401 in turn. Canceling any of these turns a transient
+    fault into permanent job loss, strictly worse than leaving it ``pending`` for
+    redelivery to retry once the fault clears.
+    """
+    return status_code >= 500 or status_code in (401, 408, 429)
 
 
 class SessionsBus(Component, CloudEventProcessorMixin):
@@ -396,6 +411,15 @@ class SessionsBus(Component, CloudEventProcessorMixin):
         """Convert the notification to a CloudEvent and dispatch it, applying
         sessions-specific error handling. Each recovery policy lives in its own
         helper so this method stays a thin dispatcher.
+
+        Design note shared by every branch below (and by ``_retry_with_fresh_key``)
+        that logs-and-cancels instead of re-raising: a `raise` inside one of these
+        `except` clauses would propagate straight out of this method's try/except
+        (peer `except` clauses are never consulted for it), and this coroutine only
+        ever runs as a fire-and-forget task (``_spawn_tracked``) whose result
+        nothing awaits — an escaping exception here becomes an unretrieved task
+        exception, not a caller-visible failure. Confirmed as the actual mechanism
+        behind #94's silent "job never progresses past pending" symptom.
         """
         session_id = notification.session_id
         job_id = notification.job_id
@@ -408,6 +432,11 @@ class SessionsBus(Component, CloudEventProcessorMixin):
 
             event = self._convert_to_cloud_event(notification)
 
+            # Tracked across the whole try block (not just the happy path) so a cancel
+            # triggered below can reuse an already-obtained key instead of blindly
+            # repeating the fetch — including when that repeat would hit the exact
+            # same failure the original error came from.
+            session_key: str | None = None
             try:
                 session_key = await self._require_key_provider().get_session_key(session_id, job_id=job_id)
                 context = self._build_context(session_id, job_id, session_key, pipeline_id=notification.pipeline_id)
@@ -417,15 +446,32 @@ class SessionsBus(Component, CloudEventProcessorMixin):
                     logger.warning("No handler found for job type %s (job_id=%s)", job_type, job_id)
 
             except InvalidEventError as e:
-                await self._cancel_invalid_job(session_id, job_id, e)
+                await self._cancel_invalid_job(session_id, job_id, e, session_key=session_key)
 
             except RetryableHandlerError as e:
                 logger.warning("Retryable error for job %s: %s. Job remains pending.", job_id, e)
 
             except httpx.HTTPStatusError as e:
-                if e.response.status_code != 403:
-                    raise
-                await self._retry_with_fresh_key(event, session_id, job_id, e, pipeline_id=notification.pipeline_id)
+                status_code = e.response.status_code
+                if status_code == 403:
+                    await self._retry_with_fresh_key(event, session_id, job_id, e, pipeline_id=notification.pipeline_id)
+                elif _is_retryable_http_status(status_code):
+                    # Treat exactly like RetryableHandlerError: log and leave pending for
+                    # redelivery to retry — an operator fixing the key or the upstream blip
+                    # resolving both make the job recoverable on the next delivery. Canceling
+                    # here would turn a passing 503 into permanent job loss on every upstream
+                    # deploy, strictly worse than #94's original "stuck pending" symptom this
+                    # whole except-block exists to fix.
+                    logger.warning("Retryable upstream HTTP error for job %s: %s. Job remains pending.", job_id, e)
+                else:
+                    await self._cancel_on_terminal_http_error(session_id, job_id, e, session_key=session_key)
+
+            except SessionKeyClaimConflictError as e:
+                # Expected multi-consumer race, not a bug: another agent instance already
+                # claimed this job's session key (409 from the "job" source). Logged at
+                # `warning`, not `exception`/`critical` — there's nothing to cancel or
+                # remediate here, the job is simply someone else's to process now.
+                logger.warning("Job %s already claimed by another agent instance: %s", job_id, e)
 
             except Exception as e:
                 logger.exception("Unexpected error processing job %s: %s", job_id, e)
@@ -450,10 +496,41 @@ class SessionsBus(Component, CloudEventProcessorMixin):
             "pipeline_id": pipeline_id,
         }
 
-    async def _cancel_invalid_job(self, session_id: UUID, job_id: UUID, error: InvalidEventError) -> None:
-        logger.error("Invalid job %s: %s. Cancelling.", job_id, error)
+    async def _cancel_invalid_job(self, session_id: UUID, job_id: UUID, error: InvalidEventError, session_key: str | None = None) -> None:
+        """Cancel *job_id*, reusing *session_key* if the caller already has one.
+
+        Re-fetching unconditionally (the pre-fix behavior) meant that when the
+        triggering error was itself a `get_session_key` failure, this method
+        repeated that exact same call and hit the exact same failure — silently,
+        under the generic `except Exception` below, indistinguishable from an
+        ordinary transient cancel failure (reproduced against #94's own
+        originating case: a 422 from the job-scoped key-fetch). When the caller
+        passes `session_key=None`, this method still retries the fetch exactly
+        once below — a concurrent job may have populated the cache since the
+        caller's own attempt failed — rather than looping on the same failure
+        again beyond that one reasonable retry. Only when that retry *also*
+        fails is there truly no key available: service-sessions' cancel endpoint
+        requires a real `X-Session-Key` (confirmed against
+        avs.ai.idac.service-sessions' `cancel_job` route), so there is no way to
+        authenticate a cancel here without a server-side change out of this
+        client's scope. That's logged at `critical`, not the routine `error` level
+        below, because it means the job is stuck at `pending` with no remaining
+        remediation path in this pass, not just this one attempt failing.
+        """
+        logger.error("Invalid job %s: %s. Attempting cancellation.", job_id, error)
+        if session_key is None:
+            try:
+                session_key = await self._require_key_provider().get_session_key(session_id, job_id=job_id)
+            except Exception as key_error:
+                logger.critical(
+                    "Cannot cancel job %s: no session key could be obtained (%s). "
+                    "Job remains pending with no remediation from this pass — a later "
+                    "redelivery may still succeed if the key fetch failure was transient.",
+                    job_id,
+                    key_error,
+                )
+                return
         try:
-            session_key = await self._require_key_provider().get_session_key(session_id, job_id=job_id)
             await self._require_api_client().cancel_job(
                 session_id=session_id,
                 job_id=job_id,
@@ -462,6 +539,42 @@ class SessionsBus(Component, CloudEventProcessorMixin):
             )
         except Exception as cancel_error:
             logger.error("Failed to cancel job %s: %s", job_id, cancel_error)
+
+    async def _cancel_on_terminal_http_error(
+        self,
+        session_id: UUID,
+        job_id: UUID,
+        error: httpx.HTTPStatusError,
+        session_key: str | None,
+    ) -> None:
+        """Log and cancel on a non-403, non-retryable ``httpx.HTTPStatusError``.
+
+        Logging (rather than re-raising) here follows the same rationale as every
+        other log-and-cancel branch in ``_process_job_notification`` — see that
+        method's docstring for why raising would silently vanish as an unretrieved
+        task exception instead of surfacing.
+
+        No separate log call here for the error itself: ``_cancel_invalid_job``
+        below already logs "Invalid job ... Cancelling." with this error's text in
+        the reason, and logging it a second time up here produced two log lines
+        per incident for no added information.
+        """
+        # Cancel rather than leave pending: a non-403, non-retryable HTTP error
+        # from the key fetch (404 unknown/expired job, 409, 422 contract drift) is
+        # not something a later SSE reconnect or retry will resolve on its own —
+        # leaving the job pending forever just hides the failure one layer deeper
+        # than before this fix. `session_key` is still None here when *this very
+        # error* came from the get_session_key call above (rather than from
+        # dispatch) — _cancel_invalid_job retries that fetch exactly once (a
+        # concurrent job may have populated the cache since) and escalates at
+        # `critical` if that also fails, rather than repeating the same failure
+        # again beyond that one reasonable retry.
+        await self._cancel_invalid_job(
+            session_id,
+            job_id,
+            InvalidEventError(status="non_retryable_http_error", reason=f"Unexpected HTTP error: {error}"),
+            session_key=session_key,
+        )
 
     async def _retry_with_fresh_key(
         self,
@@ -476,18 +589,52 @@ class SessionsBus(Component, CloudEventProcessorMixin):
         logger.warning("Stale session key for session %s; refreshing and retrying", session_id)
         key_provider = self._require_key_provider()
         key_provider.invalidate_cache(session_id)
+        # Tracked across the try block for the same reason as _process_job_notification's
+        # own `session_key` local: lets the cancel fallback below reuse it instead of
+        # repeating a fetch that may have been the retry's own point of failure.
+        session_key: str | None = None
+        retryable = False
+        # Python deletes an `except ... as name` binding when its suite exits, so the
+        # caught exception is copied into this plain local to stay usable below.
+        retry_error: Exception | None = None
         try:
             session_key = await key_provider.get_session_key(session_id, job_id=job_id)
             context = self._build_context(session_id, job_id, session_key, pipeline_id=pipeline_id)
             await self._dispatch_cloud_event(event, context)
-        except Exception as retry_error:
-            logger.error("Retry failed for job %s: %s", job_id, retry_error)
-            # Report the original 403 in the reason (that is what the operator needs to see);
-            # chain from retry_error so the proximate failure is preserved in the traceback.
-            raise InvalidEventError(
+            return
+        except RetryableHandlerError as exc:
+            retryable = True
+            retry_error = exc
+        except httpx.HTTPStatusError as exc:
+            retryable = _is_retryable_http_status(exc.response.status_code)
+            retry_error = exc
+        except Exception as exc:
+            retry_error = exc
+
+        if retryable:
+            # Same classification as the main dispatch path (#95): a retry that
+            # hits a retryable error must stay pending, not cancel — canceling here would
+            # turn a job that failed its retry on a transient fault into permanent job
+            # loss, exactly the case the retryable/non-retryable split exists to prevent,
+            # just on this sibling path instead.
+            logger.warning("Retryable error on retry for job %s: %s. Job remains pending.", job_id, retry_error)
+            return
+
+        logger.error("Retry failed for job %s: %s", job_id, retry_error)
+        # Cancel directly rather than raising InvalidEventError: this method is called
+        # from inside _process_job_notification's `except httpx.HTTPStatusError` clause,
+        # so the same unretrieved-task-exception trap applies here — see that method's
+        # docstring. Report the original 403 in the reason (that is what the operator
+        # needs to see).
+        await self._cancel_invalid_job(
+            session_id,
+            job_id,
+            InvalidEventError(
                 status="invalid_session_key",
                 reason=f"Session key invalid: {original_error}",
-            ) from retry_error
+            ),
+            session_key=session_key,
+        )
 
     def _convert_to_cloud_event(self, notification: JobNotification) -> GenericCloudEvent:
         """Convert a job notification to CloudEvent format.
