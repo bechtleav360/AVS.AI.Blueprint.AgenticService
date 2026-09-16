@@ -136,15 +136,20 @@ class TestEachAgentReadsItsOwnFiles:
         assert config.for_namespace("beta").get_package_root() == two_agents / "services/beta"
 
 
-class TestStandalone:
-    """One agent whose root is the image root: the shape ``asbs setup`` writes."""
+class TestAStandaloneAgentIsNotAGroupOfOne:
+    """An agent served on its own has no map, so nothing can sit at its root claiming otherwise.
 
-    @pytest.fixture
-    def solo(self, image: Path) -> Path:
+    A group of one is still a group. Requiring an agent to declare itself one in order to run
+    alone put the group's own file inside the agent -- which is the thing an agent must never
+    carry, because carrying it is knowing whether it is running alone. Standalone is served by
+    the declaration's own ``create_app`` factory instead, and this rule needs no exception.
+    """
+
+    def test_an_agent_mapped_at_the_image_root_is_refused(self, image: Path) -> None:
+        """The old group-of-one shape: the agent flattened into the image, map beside it."""
         (image / "src" / "prompts").mkdir(parents=True)
         (image / "src" / "__init__.py").write_text("", encoding="utf-8")
         (image / "src" / "main.py").write_text(DECLARATION, encoding="utf-8")
-        (image / "src" / "prompts" / "system.prompt").write_text("SOLO PROMPT", encoding="utf-8")
         write_map(
             image,
             """
@@ -153,19 +158,9 @@ class TestStandalone:
             module = "src.main:agent"
             """,
         )
-        return image
 
-    def test_it_resolves(self, solo: Path) -> None:
-        group = resolve(solo, "solo")
-
-        assert group.roots["solo"] == solo
-
-    def test_its_agent_map_is_not_treated_as_misplaced(self, solo: Path) -> None:
-        """Standalone, one directory is both the agent and the image, so the map belongs there."""
-        config = process_config(solo)
-        AgentGroup.from_config(GroupConfig.resolve(config, environ={"BLUEPRINT_AGENTS": "solo"})).assemble(config)
-
-        assert PromptLoader.load_prompt("system", config.for_namespace("solo")) == "SOLO PROMPT"
+        with pytest.raises(GroupConfigError, match="belongs to the image"):
+            resolve(image, "solo")
 
 
 class TestTheMapStatesTheRoot:

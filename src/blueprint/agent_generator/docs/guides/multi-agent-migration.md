@@ -107,7 +107,9 @@ Nothing inside the agent's directory moves. Its `settings.toml` stays beside `sr
 where it was when the project ran on its own -- that sameness is what lets the directory move
 back out again untouched.
 
-Required even for a group of one: it is the only thing that turns an agent's name into code.
+Only for a group. Running this agent on its own needs no map at all -- `uvicorn
+src.main:create_app --factory` builds the declaration directly. In a group the map is the only
+thing that turns an agent's name into code.
 There is discovery by convention nowhere in this, deliberately -- a set of agents that depends
 on what happens to be importable makes a renamed directory a silently removed agent. Renaming
 or moving an agent directory means updating its entry here, and until you do, the process
@@ -133,11 +135,16 @@ agent. Neither imports your project.
 
 ## One declaration, three ways to run it
 
-| Shape | Command |
-|---|---|
-| Standalone, unmigrated | `uvicorn src.main:app` |
-| Standalone, migrated (with `create_app`) | `uvicorn src.main:create_app --factory` |
-| Grouped, including a group of one | `python -m blueprint.agents.entrypoint` |
+| Shape | Command | Needs group config? |
+|---|---|---|
+| Standalone, from before the split | `uvicorn src.main:app` | no |
+| Standalone | `uvicorn src.main:create_app --factory` | no |
+| One agent of a group | `python -m blueprint.agents.entrypoint` | yes: an agent map and a group |
+
+A standalone agent declares **nothing** group-related -- no agent map, no group, no namespace. A
+group of one is still a group, and an agent must not have to declare itself one to run alone.
+Its components are built at the root namespace, so the routes are the ones the API declares;
+hosted in a group, the same directory gains an `/api/<agent>` prefix.
 
 ---
 

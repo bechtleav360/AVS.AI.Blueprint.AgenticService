@@ -17,6 +17,24 @@
 
 ### Added
 
+- **A standalone agent declares nothing group-related.** `asbs setup` writes a `create_app()`
+  factory beside the declaration, and the generated Dockerfile serves it with
+  `uvicorn src.main:create_app --factory` -- no agent map, no group, no namespace. A group of one
+  is still a group, and requiring an agent to declare itself one in order to run alone is what put
+  the group's own file inside the agent. The same directory is still hosted by a group image
+  without changing a line; its components simply gain that agent's namespace, and with it the
+  `/api/<agent>` route prefix.
+- **`.dockerignore`**, written by both `asbs setup` and `asbs setup --group`. Not tidy-up: the
+  group image copies the whole `agents/` tree, because which agents a process runs is decided at
+  startup rather than at build time -- and Docker's build context is the filesystem, not the
+  repository, so `**/.secrets.toml` being in `.gitignore` did nothing to keep real keys out of a
+  layer.
+- **`asbs setup --group` writes a `pyproject.toml`** as well. The group Dockerfile's builder stage
+  installs from one, so without it the image could not be built.
+- **The declaration rules apply to `create_app` too.** A component registered as an already-built
+  instance is refused when a *host* builds a declaration -- `create_app()` or a group -- because an
+  agent that works standalone only because nobody checked is an agent that fails the day it joins a
+  group. The older shape, `AppBuilder(config)` built in place, stays permissive and keeps working.
 - **`root` in the agent map**, required per agent, relative to the directory `agents.toml` is in.
   Stated rather than derived: a root guessed from where a declaration happens to sit is right for
   one layout and silently wrong for every other, and nesting an agent at any depth now costs
@@ -39,6 +57,12 @@
 - **`root` is required in `agents.toml`.** Every existing entry needs one line added; a map
   without it refuses to start rather than guessing. For an image that copied one agent to `/app`,
   that is `root = "."`.
+- **The standalone image no longer runs the group entry point.** It serves
+  `src.main:create_app` directly. An existing project keeps working: `uvicorn src.main:app` is
+  still served for a pre-split `main.py`, and a project that wants the old command can keep it.
+- **`agents.toml` inside an agent is refused unconditionally**, with no exception for an agent
+  mapped at the image root. That shape only existed to let a standalone agent be a group of one,
+  which it no longer has to be.
 - **`asbs setup` no longer writes `agents.toml` into an agent.** The map says which agents an
   *image* contains, which is a packaging decision -- an agent carrying one is an agent that knows
   whether it is running alone. The single-agent `Dockerfile` writes a one-agent map into its own

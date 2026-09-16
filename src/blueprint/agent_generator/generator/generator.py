@@ -357,6 +357,11 @@ class AgentGenerator:
             # Create .gitignore
             CopyPartGenerator(self.config, self.template_dir, "", "template_for_git_ignore.txt", ".gitignore").create_file(out)
 
+            # Create .dockerignore. Not tidy-up: .secrets.toml holds real keys during development
+            # and git ignores it, but Docker's build context is the filesystem rather than the
+            # repository, so without this a COPY bakes them into a layer.
+            CopyPartGenerator(self.config, self.template_dir, "", "template_for_docker_ignore.txt", ".dockerignore").create_file(out)
+
             # Create settings.toml
             SettingsPartGenerator(self.config, self.template_dir, "").create_file(out)
 

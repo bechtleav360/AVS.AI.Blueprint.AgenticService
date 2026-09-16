@@ -139,6 +139,48 @@ class Declaration:
         getattr(builder, f"with_{self.kind}")(*arguments, name=self.name, **self.kwargs)
 
 
+def refuse_constructed_components(builder: "AppBuilder", agent: str | None = None) -> None:
+    """Refuse a declaration that registered an already-constructed component.
+
+    A component built on the ``with_*`` line is constructed before its host exists, so its
+    namespace and registry key are the root's for ever. A group cannot place it; and a
+    declaration served on its own through ``create_app()`` is the same shape as one a group
+    hosts, so it is held to the same rule -- an agent that only works standalone because it
+    was never checked is an agent that fails the day it joins a group.
+
+    The old shape -- ``AppBuilder(config)`` built in place -- is deliberately **not** subject
+    to this. That application constructs its own components knowing it is the only one in the
+    process, and it goes on working indefinitely.
+
+    Args:
+        builder: The declaration to check.
+        agent: The agent it belongs to, when a group is asking, for the message.
+
+    Raises:
+        ValueError: naming the component, the call and the fix.
+    """
+    for declaration in builder.declarations:
+        if not declaration.is_built:
+            continue
+        target = type(declaration.target).__name__
+        whose = f"by agent '{agent}' " if agent else ""
+        consequence = (
+            "it was constructed at that line, before the group existed, so its namespace and its registry key "
+            "are already the root's -- and two agents declaring one would collide on that key."
+            if agent
+            else (
+                "it was constructed at that line, before this declaration had a host, so its namespace and "
+                "registry key are fixed. The same declaration hosted in a group would be refused, and this "
+                "is the same rule applied where it is still cheap to fix."
+            )
+        )
+        raise ValueError(
+            f"{target} was passed to with_{declaration.kind}() as an instance {whose}-- {consequence} "
+            f"Pass the class -- with_{declaration.kind}({target}, ...) with its constructor arguments as "
+            "keyword arguments -- or a callable returning it, so it is built inside its own namespace."
+        )
+
+
 class AppBuilder:
     """Builds the FastAPI application with a fluent interface.
 
@@ -873,6 +915,11 @@ class AppBuilder:
                 "components of the first are still in the process-wide registry, so a test doing this wants "
                 "Component.reset_shared_state() between cases."
             )
+        # A declaration being built by a host -- create_app(), or a group -- rather than an
+        # application that carries its own configuration. Same shape, same rules.
+        if config is not None:
+            refuse_constructed_components(self)
+
         self._built = True
         resolved_config = self._resolve_config(config)
 
