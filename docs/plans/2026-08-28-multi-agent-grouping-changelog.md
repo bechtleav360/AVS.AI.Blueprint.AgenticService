@@ -7342,3 +7342,13 @@ keep the readable names -- nothing reads those.
   licence is a legal artefact and somebody's decision rather than a documentation fix. Whoever
   settles it removes that entry, which a guard case then requires.
 - **#80** -- the failing example tests and the unenforced test split.
+- ~~**Breaking change #12 was missing from the list: `Component.shared_config` →
+  `Component._shared_config`.**~~ **Closed.** Found during a real compatibility pass against
+  `bechtleav360/avs.ai.project.pida`'s `graph-api` test suite (issue #97): its `conftest.py` reset
+  shared state between test cases via `Component.shared_config = None`, which is a silent no-op
+  under the rename described above -- the real state lives on `_shared_config` now -- so
+  `Component.configure()`'s "already set" guard tripped starting from the second test in the run,
+  16 of 27 tests failing, with nothing in the error naming this rename. The rename itself was
+  correct and already reasoned through above; only its absence from the numbered breaking-changes
+  list was the gap. Added as breaking change 12 in `CHANGELOG.md`'s `[0.9.0]` entry, with the
+  one-line fix (`Component.reset_shared_state()` in place of the old assignment).
