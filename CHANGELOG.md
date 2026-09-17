@@ -234,6 +234,17 @@ Full migration path, including the one decision to get right before the first de
     the framework's file list is untouched, so no existing deployment changes. `asbs validate`
     reports an undotted file as the rename it needs. An already-scaffolded project should rename its
     file.
+12. **`Component.shared_config` is now private (`Component._shared_config`)**, with
+    `Component.reset_shared_state()` as the one supported way to clear it. The old attribute was
+    public and writable but read by nothing outside `_ComponentMeta`, so hiding it looked like
+    code-only cleanup. It is not: a test suite that rebuilds its `AppBuilder` app once per test case
+    and resets state between cases with the old `Component.shared_config = None` now silently
+    no-ops, since the real state lives on `_shared_config` — `Component.configure()`'s "already set"
+    guard then trips starting from the second test in the run, with an error that does not name this
+    rename. **Any project resetting shared state between test cases must switch to
+    `Component.reset_shared_state()`** in its fixtures; this also clears `shared_registry`, which
+    stays public and is otherwise unaffected. A project that never resets shared state between
+    builds is unaffected.
 
 ### Fixed
 
