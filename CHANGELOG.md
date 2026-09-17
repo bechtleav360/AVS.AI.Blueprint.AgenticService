@@ -1,5 +1,5 @@
 # Changelog
-## [Unreleased]
+## [0.9.0] - 2026-09-17
 
 ### Fixed
 - **`SessionKeyProvider`'s `"job"` source now sends `agent_id` as the `X-Agent-Id` header, not a query parameter** (#94). Since #76/#78 (0.7.0), `_get_from_job` sent `agent_id` via `params={"agent_id": ...}` on `GET /internal/jobs/{job_id}/session-key`, but the server (service-sessions#194/#203) reads it from `X-Agent-Id` specifically — deliberately, to keep it out of access logs (service-sessions#198). Every call to this endpoint therefore got `422 Unprocessable Content` ("X-Agent-Id header required"), and every job dispatched to a `session_key_source="job"` consumer silently never progressed past `pending` — root-caused investigating bechtleav360/avs.ai.project.vera#177. No behavior change for `env`/`config`/`vault`/`remote` sources.
