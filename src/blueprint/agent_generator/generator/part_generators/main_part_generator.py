@@ -37,10 +37,13 @@ class MainPartGenerator(PartGeneratorBase):
     def _generate_main_imports(self) -> str:
         """Generate import statements for main.py."""
 
-        lines = []
+        # Path and Config are for create_app(), which serves this agent on its own: it anchors
+        # the settings to this directory rather than to whatever the process's cwd happens to be.
+        lines = ["from pathlib import Path", ""]
         if self.config["agent_layer"]:
             lines.append("from blueprint.agents.agent import AgentBuilder")
         lines.append("from blueprint.agents.app_builder import AppBuilder")
+        lines.append("from blueprint.agents.config import Config")
 
         lines.append("")
 

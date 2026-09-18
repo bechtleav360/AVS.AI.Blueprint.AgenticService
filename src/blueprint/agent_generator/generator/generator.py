@@ -7,8 +7,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from .part_generators.part_generator_base import PartGeneratorBase
 from .part_generators import (
-    AgentMapPartGenerator,
     APIPartGenerator,
     CopyPartGenerator,
     DomainModelPartGenerator,
@@ -338,10 +338,11 @@ class AgentGenerator:
                     f"{self.config['agent_layer'][agent_name]['runtime_name']}_instruction.prompt",
                 ).create_file(out)
 
-            # Create the agent map. Without it nothing can resolve this project's agent name to
-            # its declaration, so `python -m blueprint.agents.entrypoint` -- the image's command --
-            # would refuse to start.
-            AgentMapPartGenerator(self.config, self.template_dir, "").create_file(out)
+            # No agent map here. It says which agents an *image* contains, which is a packaging
+            # decision, so an agent that carried one would be an agent that knows whether it is
+            # running alone -- and in a group only the image's own map is read, so the copy would
+            # be dead weight that looks authoritative. The standalone Dockerfile writes a
+            # one-agent map into its image; `asbs setup --group` writes the image-level one.
 
             # Create Dockerfile
             CopyPartGenerator(
@@ -350,11 +351,16 @@ class AgentGenerator:
                 "",
                 "Dockerfile",
                 "Dockerfile",
-                template_vars={"agent_namespace": AgentMapPartGenerator.agent_namespace(self.config)},
+                template_vars={"agent_namespace": PartGeneratorBase.agent_namespace(self.config)},
             ).create_file(out)
 
             # Create .gitignore
             CopyPartGenerator(self.config, self.template_dir, "", "template_for_git_ignore.txt", ".gitignore").create_file(out)
+
+            # Create .dockerignore. Not tidy-up: .secrets.toml holds real keys during development
+            # and git ignores it, but Docker's build context is the filesystem rather than the
+            # repository, so without this a COPY bakes them into a layer.
+            CopyPartGenerator(self.config, self.template_dir, "", "template_for_docker_ignore.txt", ".dockerignore").create_file(out)
 
             # Create settings.toml
             SettingsPartGenerator(self.config, self.template_dir, "").create_file(out)

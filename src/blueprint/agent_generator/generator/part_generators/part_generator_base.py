@@ -41,6 +41,34 @@ class PartGeneratorBase:
         parts = re.split(r"[^a-zA-Z0-9]", name)
         return "".join(part[0].upper() + part[1:] if part else "" for part in parts if part)
 
+    @classmethod
+    def agent_namespace(cls, config: dict[str, Any]) -> str:
+        """Return the namespace this project's agent is deployed under.
+
+        The project name in snake case. Derived rather than asked for, because a project that
+        has exactly one agent has no second name to give it.
+
+        The agent itself never stores this: whoever hosts it supplies the name -- a group
+        image's agent map, a single-agent image's Dockerfile, or ``asbs dev``. It is derived
+        here only to write those, and to tell the author what the name will be.
+
+        Raises:
+            ValueError: if the project name does not survive the derivation as a legal
+                namespace -- a leading digit, for instance. Refused rather than repaired: a
+                name rewritten differently by the queue group, the durable, the cache
+                partition and the telemetry resource is four names for one agent.
+        """
+        from blueprint.agents.component.namespace import validate_namespace
+
+        namespace = cls.camel_to_snake(config["name"])
+        try:
+            return validate_namespace(namespace)
+        except ValueError as exc:
+            raise ValueError(
+                f"Project name '{config['name']}' gives the agent namespace '{namespace}', which cannot be "
+                f"used: {exc} Choose a project name whose snake_case form matches [a-z][a-z0-9_]*."
+            ) from exc
+
     @staticmethod
     def camel_to_snake(name: str) -> str:
         """

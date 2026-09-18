@@ -9,8 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from ...generator.generator import AgentGenerator
-from ...generator.part_generators import AgentMapPartGenerator
 from ...generator.part_generators.part_generator_base import PartGeneratorBase
+from . import group_setup
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +114,13 @@ def run(args: Namespace) -> None:
         format="%(levelname)s: %(message)s",
     )
 
+    # Two modes writing disjoint sets of files, because they describe different things: an
+    # agent is a directory of code, settings and prompts; an image is a container for some
+    # number of agents plus the map naming them.
+    if getattr(args, "group", False):
+        group_setup.run(args)
+        return
+
     print("=== Blueprint Agents Project Setup ===")
     print("This will create a complete project structure with handlers, services, APIs, and agents.")
 
@@ -128,6 +135,10 @@ def run(args: Namespace) -> None:
     # This used to compute a `project_path = output_dir / project_name`, guard `--overwrite`
     # with it and print it as the location -- while handing the generator `output_dir`. So the
     # directory it protected was never created, and the location it printed was never written to.
+    if not args.project_name:
+        print("Error: asbs setup needs the agent's name, or --group to create the image's files", file=sys.stderr)
+        sys.exit(1)
+
     project_name = PartGeneratorBase.to_class_name(args.project_name)
     output_dir = Path(args.output_dir).absolute()
 
@@ -135,7 +146,7 @@ def run(args: Namespace) -> None:
         print(f"Error: Output directory does not exist: {output_dir}", file=sys.stderr)
         sys.exit(1)
 
-    existing = [path.name for path in (output_dir / "src", output_dir / "agents.toml", output_dir / "settings.toml") if path.exists()]
+    existing = [path.name for path in (output_dir / "src", output_dir / "settings.toml") if path.exists()]
     if existing and not args.overwrite:
         print(f"Error: {output_dir} already contains a scaffolded project ({', '.join(existing)})", file=sys.stderr)
         print("Use --overwrite to write over it", file=sys.stderr)
@@ -170,13 +181,12 @@ def run(args: Namespace) -> None:
             print("  │   ├── models/")
             print("  │   └── prompts/")
             print("  ├── tests/")
-            print("  ├── agents.toml")
             print("  ├── settings.toml")
             print("  ├── .secrets.toml")
             print("  ├── Dockerfile")
             print("  └── .gitignore")
 
-            namespace = AgentMapPartGenerator.agent_namespace(config)
+            namespace = PartGeneratorBase.agent_namespace(config)
             print("\nNext steps:")
             print("  1. Review and edit the generated files")
             print("  2. Add your LLM API key to .secrets.toml")
@@ -186,11 +196,19 @@ def run(args: Namespace) -> None:
             print(f"  5. View API docs at: http://localhost:8000/docs (this agent's routes are under /api/{namespace})")
 
             print("\nsrc/main.py declares this agent; it does not build an application.")
-            print(f"agents.toml names it '{namespace}', and that name is its identity on the broker,")
-            print("in telemetry and in its routes -- change it now if you are going to, because")
-            print("changing it after the first deploy is a consumer migration.")
-            print("The deployment decides which agents a process hosts:")
-            print(f"  docker run -e BLUEPRINT_AGENTS={namespace} <image>")
+            print("\nThis directory carries no agents.toml, and that is deliberate: the agent map says")
+            print("which agents an *image* contains, so an agent holding one would be an agent that")
+            print("knows whether it is running alone. Whoever hosts it supplies the name:")
+            print(f"  - its own Dockerfile writes a one-agent map naming it '{namespace}'")
+            print("  - a group image maps it in the repository's agents.toml, with root and module")
+            print("  - asbs dev uses this directory's name unless --name says otherwise")
+            print("\nThat name is the agent's identity on the broker, in telemetry and in its routes")
+            print("(/api/<name>) -- change it now if you are going to, because changing it after the")
+            print("first deploy is a consumer migration.")
+            print("\nTo host it in a group, add to the repository's agents.toml:")
+            print(f"  [agents.{namespace}]")
+            print('  root   = "<path from that file to this directory>"')
+            print('  module = "<that path as a dotted package>.src.main:agent"')
 
         finally:
             # Clean up temporary config file

@@ -7414,4 +7414,17 @@ keep the readable names -- nothing reads those.
   *and* name it with `BLUEPRINT_GROUP`, or to set `BLUEPRINT_AGENTS` -- but `_read_group_file`
   takes the sole group when a mounted file declares exactly one and `BLUEPRINT_GROUP` is unset, so
   the message asks for a variable the reader may not need. A `src/` change, found while correcting
-  the migration guide's implication that the group has a default; the guide is fixed, this is not.
+  the migration guide's implication that the group has a default. The guide fix did not survive the
+  merge of origin (ddaf37c): that guide was split into `multi-agent-migration.md` and rewritten for
+  standalone serving, so its step 2 again changes the `Dockerfile` command without saying how the
+  group reaches the container. Both the message and the migration step are still open.
+- ~~**Breaking change #12 was missing from the list: `Component.shared_config` →
+  `Component._shared_config`.**~~ **Closed.** Found during a real compatibility pass against
+  `bechtleav360/avs.ai.project.pida`'s `graph-api` test suite (issue #97): its `conftest.py` reset
+  shared state between test cases via `Component.shared_config = None`, which is a silent no-op
+  under the rename described above -- the real state lives on `_shared_config` now -- so
+  `Component.configure()`'s "already set" guard tripped starting from the second test in the run,
+  16 of 27 tests failing, with nothing in the error naming this rename. The rename itself was
+  correct and already reasoned through above; only its absence from the numbered breaking-changes
+  list was the gap. Added as breaking change 12 in `CHANGELOG.md`'s `[0.9.0]` entry, with the
+  one-line fix (`Component.reset_shared_state()` in place of the old assignment).

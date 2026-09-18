@@ -11,6 +11,7 @@ image's command can find the declaration it is asked to run.
 import importlib
 import json
 import re
+import shutil
 import sys
 import tomllib
 from collections.abc import Iterator
@@ -123,32 +124,59 @@ class TestTheGeneratedDeclaration:
             "the with_* line belongs to the root namespace for ever, which is why a group refuses it."
         )
 
-    def test_it_neither_loads_configuration_nor_serves_itself(self, project: Path) -> None:
+    def test_the_declaration_itself_neither_configures_nor_builds(self, project: Path) -> None:
+        """The chain records; only create_app() builds, and only when serving this agent alone.
+
+        A group never calls create_app: it builds the same declaration itself, inside the agent's
+        namespace. So nothing above create_app may mention configuration or build anything.
+        """
+        source = (project / "src" / "main.py").read_text(encoding="utf-8")
+        declaration = source.split("def create_app()")[0]
+
+        assert "Config(" not in declaration, "the declaration loads configuration; its host supplies that"
+        assert ".build(" not in declaration, "the declaration builds itself; its host builds it, in its own namespace"
+
+    def test_it_can_serve_itself_without_a_group(self, project: Path) -> None:
+        """create_app is the standalone path, and it is the only place configuration appears."""
         source = (project / "src" / "main.py").read_text(encoding="utf-8")
 
-        assert "Config(" not in source, "main.py loads configuration; the host supplies it, scoped to this agent."
-        assert ".build()" not in source, "main.py builds its application; the host builds it, inside this agent's namespace."
+        assert "def create_app()" in source
+        assert "agent.build(" in source
+        code = source.split('"""', 2)[-1]
+        assert "agents.toml" not in code, "the declaration reads an agent map; a standalone agent has none"
 
 
 class TestTheAgentMap:
-    """``agents.toml`` is how the image's command finds the declaration."""
+    """A scaffolded agent has no agent map, and its own image does not write one either.
 
-    def test_it_names_the_agent_and_its_declaration(self, project: Path) -> None:
-        document = tomllib.loads((project / "agents.toml").read_text(encoding="utf-8"))
+    The map says which agents an *image* contains, which is a packaging decision. An agent
+    served on its own contains no group at all -- a group of one is still a group, and an agent
+    must not have to declare itself one to run alone.
+    """
 
-        assert document["agents"] == {AGENT_NAMESPACE: {"module": "src.main:agent"}}
+    def test_the_agent_does_not_carry_one(self, project: Path) -> None:
+        assert not (project / "agents.toml").exists()
+
+    def test_its_own_image_does_not_write_one(self, project: Path) -> None:
+        dockerfile = (project / "Dockerfile").read_text(encoding="utf-8")
+
+        assert "agents.toml" not in dockerfile.replace("# agents.toml names this module", "")
+        assert "BLUEPRINT_AGENTS" not in dockerfile.replace("BLUEPRINT_* variable", "")
+
+    def test_it_is_served_through_its_own_factory(self, project: Path) -> None:
+        dockerfile = (project / "Dockerfile").read_text(encoding="utf-8")
+
+        assert "src.main:create_app" in dockerfile
+        assert "blueprint.agents.entrypoint" not in dockerfile
 
     def test_the_agent_name_is_a_legal_namespace(self, project: Path) -> None:
-        """It becomes a queue group, a durable, a cache partition and a service.name."""
-        document = tomllib.loads((project / "agents.toml").read_text(encoding="utf-8"))
-
-        for name in document["agents"]:
+        """Whoever hosts it uses this name; it becomes a queue group, durable and service.name."""
+        for name in (AGENT_NAMESPACE,):
             assert validate_namespace(name) == name
 
     def test_the_module_it_names_is_the_one_that_declares_the_agent(self, project: Path) -> None:
         """The map is only useful if it resolves, and it is written by hand from here on."""
-        document = tomllib.loads((project / "agents.toml").read_text(encoding="utf-8"))
-        module_path, _, attribute = document["agents"][AGENT_NAMESPACE]["module"].partition(":")
+        module_path, _, attribute = "src.main:agent".partition(":")
 
         saved_path = list(sys.path)
         saved_modules = {name: module for name, module in sys.modules.items() if name == "src" or name.startswith("src.")}
@@ -275,11 +303,18 @@ class TestTheGeneratedSettingsAreRead:
 
         assert config.get_observability_config().token_metrics_enabled is False
 
-    def test_the_log_level_is_the_one_the_file_states(self, project: Path, tmp_path: Path) -> None:
-        config = self._loaded(project, tmp_path, log_level='"WARNING"')
+    def test_the_process_wide_logging_keys_are_left_commented_out(self, project: Path) -> None:
+        """They describe the process, not this agent.
 
-        assert config.get_observability_config().log_level == "WARNING"
-        assert config.get("log_format") == "text"
+        In a group they are dropped before the merge with a warning, so a scaffolded agent that
+        set them would make every group it joined complain about a file the scaffolder wrote.
+        Commented out rather than absent, because a single-agent deployment does want them and
+        the agent's directory is the image there.
+        """
+        body = (project / "settings.toml").read_text(encoding="utf-8")
+
+        assert "# log_level = " in body
+        assert "# log_format = " in body
 
     def test_no_table_is_written_that_nothing_reads(self, project: Path) -> None:
         """The framework reads these four flat. A section of the same name is dead weight that
@@ -309,18 +344,37 @@ class TestTheProjectTheEntryPointBuilds:
         container does by having WORKDIR /app. The registry is process-global, hence the reset.
         """
         saved_path = list(sys.path)
-        saved_modules = {name: module for name, module in sys.modules.items() if name == "src" or name.startswith("src.")}
+        saved_modules = {
+            name: module for name, module in sys.modules.items() if name in ("src", "agents") or name.startswith(("src.", "agents."))
+        }
         for name in saved_modules:
             del sys.modules[name]
 
-        monkeypatch.chdir(project)
-        sys.path.insert(0, str(project))
+        # A real image: the agents live in subdirectories and the map sits beside them. The
+        # agent directory is copied verbatim, which is the claim -- nothing in it changes to
+        # be hosted by a group.
+        image = project.parent / "image"
+        if image.exists():
+            shutil.rmtree(image)
+        (image / "agents").mkdir(parents=True)
+        shutil.copytree(project, image / "agents" / AGENT_NAMESPACE)
+        (image / "agents.toml").write_text(
+            f'[agents.{AGENT_NAMESPACE}]{chr(10)}root   = "agents/{AGENT_NAMESPACE}"{chr(10)}'
+            f'module = "agents.{AGENT_NAMESPACE}.src.main:agent"{chr(10)}',
+            encoding="utf-8",
+        )
+        (image / "settings.toml").write_text((project / "settings.toml").read_text(encoding="utf-8"), encoding="utf-8")
+        (image / ".secrets.toml").write_text((project / ".secrets.toml").read_text(encoding="utf-8"), encoding="utf-8")
+
+        monkeypatch.chdir(image)
+        sys.path.insert(0, str(image))
         try:
             app, _ = build_group_app(environ={"BLUEPRINT_AGENTS": AGENT_NAMESPACE, "BLUEPRINT_GROUP": "test"})
             yield app
         finally:
             Component.reset_shared_state()
-            for name in [name for name in sys.modules if name == "src" or name.startswith("src.")]:
+            shutil.rmtree(image, ignore_errors=True)
+            for name in [n for n in sys.modules if n in ("src", "agents") or n.startswith(("src.", "agents."))]:
                 del sys.modules[name]
             sys.modules.update(saved_modules)
             sys.path[:] = saved_path
@@ -385,16 +439,20 @@ class TestTheImage:
     def test_the_command_is_the_framework_entry_point(self, project: Path) -> None:
         dockerfile = (project / "Dockerfile").read_text(encoding="utf-8")
 
-        assert 'ENTRYPOINT ["python", "-m", "blueprint.agents.entrypoint"]' in dockerfile
-        assert "uvicorn" not in dockerfile.split("FROM python:3.13-slim-bookworm AS final")[1], (
-            "The production stage still serves an application object. Which agents the process hosts is resolved at "
-            "container start, which uvicorn cannot do on its own."
+        final = dockerfile.split("FROM python:3.13-slim-bookworm AS final")[1]
+
+        assert "src.main:create_app" in final
+        assert "--factory" in final, "create_app is a factory; uvicorn needs an import string to reload it"
+        assert "blueprint.agents.entrypoint" not in final, (
+            "The image serves one agent through the group entry point, which makes a standalone agent declare itself a group of one."
         )
 
-    def test_the_agent_map_is_in_the_image(self, project: Path) -> None:
+    def test_no_agent_map_is_in_the_image(self, project: Path) -> None:
+        """This image holds one agent and serves it; there is no group for a map to describe."""
         dockerfile = (project / "Dockerfile").read_text(encoding="utf-8")
 
-        assert "COPY --chown=appuser:appuser agents.toml ./" in dockerfile
+        assert "/app/agents.toml" not in dockerfile
+        assert "COPY --chown=appuser:appuser agents.toml" not in dockerfile
 
     def test_no_group_is_baked_into_the_production_image(self, project: Path) -> None:
         """One image serves every group; the group arrives at container start."""
@@ -403,11 +461,11 @@ class TestTheImage:
         assert "ENV BLUEPRINT_AGENTS" not in final_stage
         assert "BLUEPRINT_GROUP" not in final_stage.replace("BLUEPRINT_GROUP=<group>", "")
 
-    def test_the_documented_run_command_names_the_real_agent(self, project: Path) -> None:
+    def test_the_documented_run_command_needs_no_group(self, project: Path) -> None:
         """A placeholder here is a command that looks runnable and is not."""
         dockerfile = (project / "Dockerfile").read_text(encoding="utf-8")
 
-        assert f"docker run -e BLUEPRINT_AGENTS={AGENT_NAMESPACE} <image>" in dockerfile
+        assert "docker run -p 8000:8000 <image>" in dockerfile
         assert "agent_namespace" not in dockerfile
 
 
@@ -415,7 +473,7 @@ class TestAnUnusableProjectNameIsRefused:
     """A name that cannot be a namespace fails the generator rather than the deployment."""
 
     def test_a_leading_digit_is_refused_with_the_reason(self) -> None:
-        from blueprint.agent_generator.generator.part_generators import AgentMapPartGenerator
+        from blueprint.agent_generator.generator.part_generators.part_generator_base import PartGeneratorBase
 
         with pytest.raises(ValueError, match="cannot be used"):
-            AgentMapPartGenerator.agent_namespace({"name": "2ndAgent"})
+            PartGeneratorBase.agent_namespace({"name": "2ndAgent"})

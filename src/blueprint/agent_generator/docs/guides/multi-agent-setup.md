@@ -15,6 +15,8 @@ a runtime setting rather than an architectural commitment.
 
 ---
 
+---
+
 ## Read this first: which of the two are you doing?
 
 Everything below splits along one question, and the answers differ in ways that matter:
@@ -22,7 +24,7 @@ Everything below splits along one question, and the answers differ in ways that 
 | | You are here if | What changes |
 |---|---|---|
 | **A. A new project** | You are running `asbs setup` today | Nothing to migrate. Your agent has a real namespace from the first run |
-| **B. An existing single-agent project** | You have a `main.py` that builds and serves an application | Three files change, and your **broker-side identity changes once** -- see [What changes](#what-changes-and-what-does-not) |
+| **B. An existing single-agent project** | You have a `main.py` that builds and serves an application | Three files change, and your **broker-side identity changes once** -- see [Migrating an Existing Agent into a Group](multi-agent-migration.md) |
 
 A third answer is legitimate and costs nothing: **do nothing.** An existing project that is
 deployed on its own keeps working, unchanged, indefinitely. There is no deprecation here.
@@ -62,24 +64,24 @@ file be served alone and be hosted beside other agents. Note that components are
 **classes**, not instances: a component constructed on the `with_*` line is constructed before any
 namespace exists and belongs to the root for ever, which is why a group refuses one.
 
-**`agents.toml` maps the agent's name to that declaration.**
+**The agent carries no `agents.toml`, and that is the point.**
 
-```toml
-[agents.order_processor]
-module = "src.main:agent"
-```
+The agent map says which agents an *image* contains, which is a packaging decision. An agent that
+carried one would be an agent that knows whether it is running alone -- and in a group only the
+image's own map is read, so the copy would be dead weight that reads as authoritative. `asbs
+validate --group` refuses one found inside an agent.
 
-This file is **baked into the image**: it says what the image contains. It does not say which of
-those agents any particular process runs -- that is the deployment's decision, and it arrives
-separately.
+Whoever hosts the agent supplies its name:
 
-The `Dockerfile` runs `python -m blueprint.agents.entrypoint`, which resolves which agents this
-process runs, looks each one up in `agents.toml` to find its declaration, and serves them.
+| Host | Where the name comes from |
+|---|---|
+| Its own `Dockerfile` | a one-agent map written into the image, with `root = "."` |
+| A group image | an entry in the repository's `agents.toml` |
+| `asbs dev` | `--name`, defaulting to the directory's name |
 
-**The group is never read from `agents.toml`.** The map says what the image *contains*; which of
-those agents a process runs arrives separately, as `BLUEPRINT_AGENTS` or a mounted group file.
-There is no default and no "every agent in the map": a container given neither prints one line and
-exits before binding its port. See [Environment](#environment).
+The generated `Dockerfile` runs `uvicorn src.main:create_app --factory`: one agent, served directly,
+with no map and no group involved. A group image runs `python -m blueprint.agents.entrypoint`
+instead, which reads that image's map, works out this process's group, and serves it.
 
 ### Running it
 
@@ -101,147 +103,85 @@ docker run -e BLUEPRINT_AGENTS=order_processor -p 8000:8000 order-processor
 
 ### Adding a second agent to the same image
 
-Put the second agent's code in its own package, give it its own declaration module and its own
-`settings.toml` **beside that module**, and add it to the map:
+An agent is the same directory whether it runs alone or beside twenty others, so there is no
+second way to create one: you create the *image*, then create each agent inside it exactly as
+you would on its own.
+
+At the top of the repository:
+
+```bash
+asbs setup --group
+```
+
+That writes the image's files and nothing else: an empty `agents.toml`, a `settings.toml` for
+the process-wide keys, and a group `Dockerfile`. No agent is created and none is named.
+
+Then each agent, in its own directory, at whatever depth suits the repository:
+
+```bash
+mkdir -p agents/some_topic/order_processor
+cd agents/some_topic/order_processor
+asbs setup order-processor
+```
+
+and one entry per agent in the image's `agents.toml`:
 
 ```toml
 [agents.order_processor]
-module = "src.order_processor.main:agent"
+root   = "agents/some_topic/order_processor"
+module = "agents.some_topic.order_processor.src.main:agent"
 
 [agents.billing]
-module = "src.billing.main:agent"
+root   = "agents/billing"
+module = "agents.billing.src.main:agent"
 ```
 
-Each agent's `settings.toml` is read from the directory its declaration lives in and merged under
-that agent's own scope, so both may write plain top-level keys and neither sees the other's. Keys
-that describe the *process* -- `app_port`, `app_host`, `app_workers`, `app_environment`,
-`envvar_prefix`, `event_bus`, `log_level`, `log_format`, `readiness_policy`, `nats_stream_name` and
-the rest -- belong in the group's own settings file: one process binds one port, speaks one bus and
-answers one readiness probe, so a copy under one agent's scope is read by nothing. `asbs validate`
-names them if you leave them there.
+**Both keys are required, and `root` is not derived from `module`.** `root` says where the
+agent's files are -- its `settings.toml` and its `src/prompts` -- relative to the directory
+`agents.toml` is in. `module` says how its code imports. They answer different questions and can
+legitimately differ, and a root guessed from where a declaration happens to sit is right for one
+layout and silently wrong for every other. An agent whose settings file was looked for in the
+wrong place does not fail: it runs on the group's defaults and says nothing.
 
----
+Nesting is free. `root` is stated, so no rule has to guess how deep an agent sits.
 
-## B. Migrating an existing single-agent project
-
-Three files change, and nothing else. Read
-[the one decision to get right first](#the-one-decision-to-get-right-first) before you start: one
-of the three is a name you cannot cheaply change afterwards.
-
-### 1. `src/main.py` -- remove two things, add nothing
-
-Before:
-
-```python
-config = Config(settings_files=["settings.toml", ".secrets.toml"])
-
-app = (
-    AppBuilder(config)
-    .with_service(OrderService)
-    .with_handler(OrderValidationHandler)
-    .with_rest_api(OrderApi)
-    .with_cache()
-    .build()
-)
-```
-
-After -- **the same builder**, minus its `config` argument and minus the `.build()`:
-
-```python
-agent = (
-    AppBuilder()
-    .with_service(OrderService)
-    .with_handler(OrderValidationHandler)
-    .with_rest_api(OrderApi)
-    .with_cache()
-)
-```
-
-Every `with_*` call stays exactly where it was. `with_cache()` included. That is the point of there
-being one builder class: migration removes two things and adds none, because the declaration and
-the application builder are the same object.
-
-If the agent is **also** still to be served on its own, add a factory -- optional, and it repeats no
-component:
-
-```python
-def create_app():
-    return agent.build(Config(settings_files=["settings.toml", ".secrets.toml"]))
-```
-
-Two things the module must not do, because it is imported into a shared runtime: construct clients
-or other components at import time, and call `logging.basicConfig()`. Configuration and logging
-belong to the process that hosts the declaration.
-
-If you are passing **instances** anywhere -- `with_rest_api(OrderApi())` -- change them to classes.
-An instance is constructed at that line, before any namespace exists, so it belongs to the root for
-ever; a group refuses one at assembly and names the agent and the fix.
-
-### 2. `Dockerfile` -- one command, and the group it runs
-
-```diff
--CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
-+CMD ["python", "-m", "blueprint.agents.entrypoint"]
-```
-
-and copy the map into the image beside your settings:
-
-```dockerfile
-COPY --chown=appuser:appuser agents.toml ./
-```
-
-**That command is not sufficient on its own.** Unlike `uvicorn src.main:app`, which named the
-application it served, the entry point has to be *told* which agents to run, and copying
-`agents.toml` does not tell it. Either bake a development default the deployment overrides --
-
-```dockerfile
-ENV BLUEPRINT_AGENTS="order"
-```
-
--- or supply it per run: `-e BLUEPRINT_AGENTS=order`, or a mounted group file. A project scaffolded
-by `asbs setup` gets the `ENV` line written for it; a Dockerfile migrated by hand has to add it.
-Without either, the container exits at start with
+The resulting repository:
 
 ```
-Cannot start: No agents were resolved for this process. ...
+agents.toml             # which agents this image contains
+settings.toml           # the process: app_port, event_bus, log_level
+Dockerfile              # the group image
+agents/
+  billing/
+    settings.toml       # this agent, and only this agent
+    .secrets.toml
+    Dockerfile          # optional: builds this agent alone
+    src/
+      main.py
+      prompts/
+  some_topic/
+    order_processor/
+      ...
 ```
 
-### 3. `agents.toml` -- a new file
+Each agent directory is exactly what `asbs setup` writes on its own, so moving one into its own
+repository means deleting its line from this map -- nothing inside the directory changes. An
+agent may keep its own `Dockerfile` to be built as a single-agent image at the same time.
 
-```toml
-[agents.order]
-module = "src.main:agent"
-```
+**Process-wide keys belong in the image's `settings.toml`:** `app_port`, `app_host`,
+`app_workers`, `app_environment`, `envvar_prefix`, `event_bus`, `log_level`, `log_format`,
+`readiness_policy`, `nats_stream_name` and the rest. One process binds one port, speaks one bus
+and configures logging once, so a copy under an agent is dropped before the merge with a warning
+naming the value actually used. `asbs validate --group` reports them.
 
-Required even for a group of one: it is the only thing that turns an agent's name into code. It is
-not what supplies the name -- that is step 2's job, and the two files are separate because they have
-different lifetimes. There is discovery by convention nowhere in this, deliberately -- a set of
-agents that depends on what happens to be importable makes a renamed directory a silently removed
-agent, and a default of "run everything in the map" would make adding an agent silently change what
-every existing deployment runs.
-
-### 4. Check it
+Check the whole image against what is on disk:
 
 ```bash
-asbs validate
+asbs validate --group
 ```
 
-It reads the map, holds the name to the namespace alphabet, confirms the module exists and assigns
-the attribute you named, and reports anything about schedulers or settings that would not survive
-the move. It never imports your project.
-
-### One declaration, three ways to run it
-
-| Shape | Command |
-|---|---|
-| Standalone, unmigrated | `uvicorn src.main:app` |
-| Standalone, migrated (with `create_app`) | `uvicorn src.main:create_app --factory` |
-| Grouped, including a group of one | `BLUEPRINT_AGENTS=order python -m blueprint.agents.entrypoint` |
-
-Only the third takes what it serves from outside the image, and that part is **required**: there is
-no default to fall back to and the process refuses to start without it. `BLUEPRINT_AGENTS` is the
-short form; a mounted `deployment-groups.yaml` does the same job and is what a Kubernetes
-Deployment usually uses -- a file declaring exactly one group needs no `BLUEPRINT_GROUP` beside it.
+It resolves every `root`, reports which `settings.toml` each agent reads, and refuses a file
+that sits where the framework will not look for it.
 
 ---
 
@@ -451,6 +391,7 @@ wants `idempotency_enabled`. NATS has no such coupling -- each agent has its own
 
 ## See also
 
+- [Migrating an Existing Agent into a Group](multi-agent-migration.md) -- moving a project you already have
 - [CLI Reference](cli-reference.md) -- `asbs setup`, `asbs dev`, `asbs validate` in full
 - [Deployment](deployment.md) -- images, Helm, probes, scaling
 - [Caching](../concepts/caching.md) -- named caches, per-agent stores, the management endpoints

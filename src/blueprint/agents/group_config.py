@@ -45,7 +45,7 @@ question asked of a group that misbehaves.
 import logging
 import os
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -77,6 +77,24 @@ class GroupConfigError(Exception):
 
 
 @dataclass(frozen=True)
+class AgentMapEntry:
+    """One agent as the image's agent map describes it: where its code imports from, and where
+    its files live.
+
+    Two fields because they answer two different questions and can legitimately disagree:
+    ``module`` is an import path, ``root`` a directory. An agent installed as a distribution
+    imports from site-packages while its settings and prompts sit in the image.
+
+    Attributes:
+        module: ``"package.module:attribute"``, naming the ``AppBuilder`` that module assigns.
+        root: The agent's own directory, absolute, resolved against the image root.
+    """
+
+    module: str
+    root: Path
+
+
+@dataclass(frozen=True)
 class AgentSpec:
     """One agent this process is asked to host.
 
@@ -88,6 +106,13 @@ class AgentSpec:
         module: Where the agent's ``AppBuilder`` declaration lives, as ``"module.path:attribute"``.
             Comes from the agent map, never from the group file: what an agent *is* belongs to
             the image, and only which agents run belongs to the deployment.
+        root: The agent's own directory, absolute. Comes from the agent map's ``root`` key and
+            is where the agent's ``settings.toml`` and its ``src/prompts`` are read from. Stated
+            rather than derived: deriving it from the declaration module's file assumed the
+            declaration sits one fixed level below the agent, which silently resolved to the
+            wrong directory for every layout that nests differently -- and a settings file that
+            is looked for in the wrong place is not an error, it is an agent running on the
+            group's defaults without saying so.
         critical: Whether this agent failing to load must stop the process. Defaults to
             ``True``, because a partially loaded group whose missing agent's queue has no
             consumer is a worse failure than no pod at all (spec sec. 9.1) -- the pod would pass
@@ -97,6 +122,7 @@ class AgentSpec:
 
     name: str
     module: str
+    root: Path
     critical: bool = True
 
 
@@ -114,6 +140,9 @@ class GroupConfig:
             broker-side identifier may derive from it, or moving an agent between groups would
             be visible to the broker (C1).
         agents: The agents to host, in the order the group declared them.
+        image_root: The directory the agent map was read from, which every agent's ``root`` is
+            relative to. Carried because a standalone agent's root *is* this directory, and the
+            rules about where the image's own files may sit differ in that case.
 
     Note:
         A group declares **no caches**. A cache belongs to the agent that declared it with
@@ -125,6 +154,7 @@ class GroupConfig:
 
     name: str
     agents: tuple[AgentSpec, ...]
+    image_root: Path = field(default_factory=Path.cwd)
 
     @property
     def agent_names(self) -> tuple[str, ...]:
@@ -173,7 +203,7 @@ class GroupConfig:
         agent_map = cls._read_agent_map(env, root)
         agents = cls._resolve_agents(agent_names, critical_names, agent_map, name)
 
-        group = cls(name=name, agents=tuple(agents))
+        group = cls(name=name, agents=tuple(agents), image_root=root.resolve())
         logger.info(
             "Resolved group '%s' with %d agent(s): %s",
             group.name,
@@ -266,8 +296,8 @@ class GroupConfig:
         return document
 
     @classmethod
-    def _read_agent_map(cls, env: dict[str, str] | Any, root: Path) -> dict[str, str]:
-        """Return ``{agent name: "module:attribute"}`` from the in-image agent map.
+    def _read_agent_map(cls, env: dict[str, str] | Any, root: Path) -> dict[str, AgentMapEntry]:
+        """Return ``{agent name: AgentMapEntry}`` from the in-image agent map.
 
         An explicit map rather than scanning for modules by convention. Discovery by convention
         makes the set of agents in an image depend on what happens to be importable, so a
@@ -298,7 +328,8 @@ class GroupConfig:
         if not isinstance(agents, dict) or not agents:
             raise GroupConfigError(f"Agent map {path} declares no [agents.<name>] entries, so this image contains no agents.")
 
-        resolved: dict[str, str] = {}
+        resolved: dict[str, AgentMapEntry] = {}
+        claimed: dict[Path, str] = {}
         for agent_name, entry in agents.items():
             module = entry.get("module") if isinstance(entry, dict) else None
             if not module or not isinstance(module, str):
@@ -306,7 +337,33 @@ class GroupConfig:
                     f"Agent '{agent_name}' in {path} has no 'module', so its declaration cannot be found. Write it as "
                     'module = "pkg.mod:registration".'
                 )
-            resolved[str(agent_name)] = module
+            declared_root = entry.get("root") if isinstance(entry, dict) else None
+            if not declared_root or not isinstance(declared_root, str):
+                raise GroupConfigError(
+                    f"Agent '{agent_name}' in {path} has no 'root', so there is nowhere to read its settings and "
+                    'prompts from. Write it as root = "relative/path/to/the/agent", relative to the directory this '
+                    "file is in. It is required rather than derived: a root guessed from the declaration module is "
+                    "right for one layout and silently wrong for every other, and an agent reading the group's "
+                    "defaults instead of its own settings does not announce itself."
+                )
+            agent_root = (root / declared_root).resolve()
+            if not agent_root.is_relative_to(root.resolve()):
+                raise GroupConfigError(
+                    f"Agent '{agent_name}' in {path} has root '{declared_root}', which resolves to {agent_root} -- "
+                    f"outside the image root {root}. An agent's files are part of the image."
+                )
+            if not agent_root.is_dir():
+                raise GroupConfigError(
+                    f"Agent '{agent_name}' in {path} has root '{declared_root}', and {agent_root} is not a directory. "
+                    "Either the agent was moved and the map was not updated, or the path is a typo."
+                )
+            if agent_root in claimed:
+                raise GroupConfigError(
+                    f"Agents '{claimed[agent_root]}' and '{agent_name}' in {path} share the root {agent_root}. Two "
+                    "agents cannot be the same directory: they would read one another's settings and prompts."
+                )
+            claimed[agent_root] = str(agent_name)
+            resolved[str(agent_name)] = AgentMapEntry(module=module, root=agent_root)
         logger.debug("Agent map %s contains %d agent(s): %s", path, len(resolved), ", ".join(sorted(resolved)))
         return resolved
 
@@ -351,7 +408,9 @@ class GroupConfig:
         return name, agents, critical
 
     @staticmethod
-    def _resolve_agents(agent_names: list[str], critical_names: set[str], agent_map: dict[str, str], group_name: str) -> list[AgentSpec]:
+    def _resolve_agents(
+        agent_names: list[str], critical_names: set[str], agent_map: dict[str, AgentMapEntry], group_name: str
+    ) -> list[AgentSpec]:
         """Turn names into specs, refusing a name the image does not contain.
 
         A name absent from the map is refused **here**, before anything is built, which is the
@@ -386,8 +445,8 @@ class GroupConfig:
                 raise GroupConfigError(f"Group '{group_name}' names an agent that cannot be a namespace: {exc}") from exc
 
             critical = name in critical_names if critical_names else True
-            module = agent_map.get(name)
-            if module is None:
+            entry = agent_map.get(name)
+            if entry is None:
                 if critical:
                     raise GroupConfigError(
                         f"Group '{group_name}' names agent '{name}', which this image does not contain (it has: "
@@ -400,5 +459,5 @@ class GroupConfig:
                     group_name,
                 )
                 continue
-            specs.append(AgentSpec(name=name, module=module, critical=critical))
+            specs.append(AgentSpec(name=name, module=entry.module, root=entry.root, critical=critical))
         return specs

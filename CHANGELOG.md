@@ -1,6 +1,131 @@
 # Changelog
 ## [Unreleased]
 
+### Fixed
+
+- **An agent settings file that scoped keys under the agent's own name merged into nothing.**
+  `[default.<agent>]` in that agent's own `settings.toml` nested to `<agent>.<agent>.*` once the
+  file was merged under the agent's namespace, so every key in it was unreachable -- and the
+  failure surfaced far from the cause, as `No model name for runtime agent '<agent>_agent'
+  configured`, naming the agent rather than the file. Found migrating a real project. It is now
+  refused at merge, naming the section and the fix, and `asbs validate --group` reports it without
+  starting anything. Plain `[default]` serves both shapes: standalone resolves it because a scoped
+  lookup falls back to the root key.
+- **A grouped agent's own `settings.toml` was never read.** The group looked for it beside the
+  *declaration module* -- inside `src/` -- while every scaffolded project writes it beside `src/`,
+  so the file existed, looked right, and was never opened. Nothing failed: the agent ran on the
+  group's defaults and said so nowhere. It is now read from the directory the agent map states.
+- **Prompts resolved against the process working directory.** One directory for a whole group, so
+  it was right for at most one agent; the others found nothing, or found a neighbour's prompt of
+  the same name. Each agent's configuration view now reports its own directory as the package
+  root, so `<agent>/src/prompts` resolves exactly as it does standalone.
+- **A scaffolded agent no longer ships process-wide keys.** `log_level` and `log_format` were
+  written into every agent's `settings.toml`, so every group one joined dropped them with a
+  warning about a file the scaffolder itself wrote. They are now commented out, with the reason.
+
+### Added
+
+- **A standalone agent declares nothing group-related.** `asbs setup` writes a `create_app()`
+  factory beside the declaration, and the generated Dockerfile serves it with
+  `uvicorn src.main:create_app --factory` -- no agent map, no group, no namespace. A group of one
+  is still a group, and requiring an agent to declare itself one in order to run alone is what put
+  the group's own file inside the agent. The same directory is still hosted by a group image
+  without changing a line; its components simply gain that agent's namespace, and with it the
+  `/api/<agent>` route prefix.
+- **`.dockerignore`**, written by both `asbs setup` and `asbs setup --group`. Not tidy-up: the
+  group image copies the whole `agents/` tree, because which agents a process runs is decided at
+  startup rather than at build time -- and Docker's build context is the filesystem, not the
+  repository, so `**/.secrets.toml` being in `.gitignore` did nothing to keep real keys out of a
+  layer.
+- **`asbs setup --group` writes a `pyproject.toml`** as well. The group Dockerfile's builder stage
+  installs from one, so without it the image could not be built.
+- **The declaration rules apply to `create_app` too.** A component registered as an already-built
+  instance is refused when a *host* builds a declaration -- `create_app()` or a group -- because an
+  agent that works standalone only because nobody checked is an agent that fails the day it joins a
+  group. The older shape, `AppBuilder(config)` built in place, stays permissive and keeps working.
+- **`root` in the agent map**, required per agent, relative to the directory `agents.toml` is in.
+  Stated rather than derived: a root guessed from where a declaration happens to sit is right for
+  one layout and silently wrong for every other, and nesting an agent at any depth now costs
+  nothing. A missing `root`, one that escapes the image, one that is not a directory, and two
+  agents sharing one are each refused at startup, naming the agent.
+- **Misplaced files are refused, not ignored** (`blueprint.agents.layout`). One table of artefacts
+  with a single legal location, enforced at group assembly and reported by `asbs validate
+  --group`: `settings.toml` and `.secrets.toml` beside `src/`, `agents.toml` at the image root.
+  `Dockerfile` is deliberately absent from it -- an agent may own one while living in a group
+  repository. Adding an artefact is one tuple.
+- **`asbs setup --group`** writes the image's files -- an empty agent map, the process settings
+  and a group Dockerfile -- and creates no agent.
+- **`asbs validate --group`** validates an image: every `root`, each agent's layout, misplaced
+  files, process-wide keys left in an agent, and which `settings.toml` each agent actually reads.
+- **`asbs dev --name`**, and `asbs dev` no longer needs an `agents.toml` in an agent's directory.
+  It writes the one-agent map outside the project for that run.
+
+### Breaking
+
+- **`root` is required in `agents.toml`.** Every existing entry needs one line added; a map
+  without it refuses to start rather than guessing. For an image that copied one agent to `/app`,
+  that is `root = "."`.
+- **The standalone image no longer runs the group entry point.** It serves
+  `src.main:create_app` directly. An existing project keeps working: `uvicorn src.main:app` is
+  still served for a pre-split `main.py`, and a project that wants the old command can keep it.
+- **`agents.toml` inside an agent is refused unconditionally**, with no exception for an agent
+  mapped at the image root. That shape only existed to let a standalone agent be a group of one,
+  which it no longer has to be.
+- **`asbs setup` no longer writes `agents.toml` into an agent.** The map says which agents an
+  *image* contains, which is a packaging decision -- an agent carrying one is an agent that knows
+  whether it is running alone. The single-agent `Dockerfile` writes a one-agent map into its own
+  image instead. Existing projects keep working; delete the file when the agent joins a group,
+  where it is refused.
+- **The `src/<agent>/main.py` group layout is retired.** An agent is now the same directory alone
+  or in a group -- `<agent>/settings.toml` beside `<agent>/src/` -- which is what lets it move
+  between repositories untouched. Multi-agent grouping has only ever shipped in 0.9.0 alphas, so
+  nothing stable depended on the old shape.
+- **`AgentMapPartGenerator` is gone.** It generated a file that is no longer written; its
+  `agent_namespace` helper moved to `PartGeneratorBase`.
+
+### Added
+
+- **The documentation ships inside the package.** The user-facing guides moved from the repository
+  root to `src/blueprint/agent_generator/docs/` and are now installed with the wheel, so a
+  developer or an AI assistant working in a consuming project can read them with no network access.
+  Previously `README.md` became the wheel's `METADATA` while the 21 documentation pages it links to
+  stayed behind in the repository, and every one of those links resolved to nothing once installed.
+- **`asbs docs`** locates the packaged documentation: `asbs docs` lists every page, `asbs docs
+  <topic>` prints the path to one, `asbs docs <topic> --cat` prints its contents, and `--root`
+  prints the directory. A bare page name is accepted when it is unambiguous.
+- **Seven Claude Code skills**, installed by `asbs claude` alongside the two that already existed:
+  `blueprint-cli`, `blueprint-config`, `blueprint-events`, `blueprint-multi-agent`,
+  `blueprint-testing`, `blueprint-deployment` and `blueprint-troubleshooting`. Each carries the
+  rules that are expensive to get wrong and points at the packaged page for the rest, rather than
+  restating it -- the docs stay the single source of truth.
+- **`LICENSE`** (MIT). The repository claimed MIT in its classifiers and linked a `LICENSE` file
+  that did not exist; the license is now declared as an SPDX expression and ships in the wheel.
+
+### Changed
+
+- **`docs/guides/cli-reference.md` is an index**, with one page per command under `guides/cli/`
+  (`setup`, `create`, `validate`, `dev`, `claude`, plus `naming` and `auto-registration`). It was a
+  single 1,023-line page, which meant reading about one flag cost the whole file.
+- **Migrating an existing agent into a group is its own page**,
+  `guides/multi-agent-migration.md`, split out of `guides/multi-agent-setup.md`.
+- **`README.md` links are absolute.** Relative links do not resolve on the PyPI project page or in
+  the installed `METADATA`. The CI badge pointed at an unrelated repository.
+
+### Fixed
+
+- **`pytest` and `pytest-asyncio` are no longer runtime dependencies.** They were listed in
+  `[project.dependencies]`, so every consumer installed the test suite's tooling in production.
+  They remain in the `ci` extra.
+- **`SessionKeyProvider`'s `"job"` source now sends `agent_id` as the `X-Agent-Id` header, not a query parameter** (#94). Since #76/#78 (0.7.0), `_get_from_job` sent `agent_id` via `params={"agent_id": ...}` on `GET /internal/jobs/{job_id}/session-key`, but the server (service-sessions#194/#203) reads it from `X-Agent-Id` specifically — deliberately, to keep it out of access logs (service-sessions#198). Every call to this endpoint therefore got `422 Unprocessable Content` ("X-Agent-Id header required"), and every job dispatched to a `session_key_source="job"` consumer silently never progressed past `pending` — root-caused investigating bechtleav360/avs.ai.project.vera#177. No behavior change for `env`/`config`/`vault`/`remote` sources.
+- **`SessionsBus._process_job_notification` no longer silently drops a non-403 `HTTPStatusError` (or a failed 403-retry) as an unretrieved asyncio task exception** (#94 follow-up). Both paths used a bare `raise`/re-raise inside a sibling `except` clause, which propagates straight out of the try/except instead of reaching the catch-all `except Exception` below it — invisible because job processing only ever runs as a fire-and-forget task. This was the actual mechanism behind #94's "job silently never progresses past `pending`" symptom, and it applied to any wire-contract drift, not only the one #94 diagnosed. Classification is now a single shared helper (`_is_retryable_http_status`), applied identically on the main dispatch path **and** the 403-retry path:
+  - **Non-retryable terminal 4xx** (e.g. 404 unknown/expired job, 409, 422 contract drift) is now logged and, **when a session key was already obtained earlier in the same pass**, cancels the job via `_cancel_invalid_job`; a failed 403-retry cancels the same way.
+  - **Retryable** upstream fault (5xx, 408, 429 — a service-sessions deploy/restart, LB blip, or rate limit — or 401, a missing/invalid `X-Api-Key` that's systemic across every job this agent handles rather than specific to this one, and that a cancel attempt would itself hit again) is instead logged and left `pending` for redelivery to retry, exactly like `RetryableHandlerError` — canceling on a transient blip would turn every upstream deploy into permanent job loss, strictly worse than #94's original symptom.
+  - **No session key available at all for a terminal error** — #94's own originating case, a failure inside the key fetch itself — the job cannot be cancelled either (service-sessions' `cancel_job` route requires a real `X-Session-Key` unconditionally); that case is now escalated at `critical` instead of disappearing at the same log level as a routine cancel failure, but it does still remain `pending` — a redundant re-fetch was removed, not the underlying inability to authenticate a cancel without a key.
+
+  A review round found the retry path had its own `except Exception` that unconditionally cancelled, including on a retryable failure hit during the retry itself, reintroducing the exact permanent-job-loss risk the classification exists to prevent, just one path over.
+- **`_cancel_invalid_job`'s log line no longer reads as "already cancelled" before the cancellation has even been attempted** (#94 follow-up, review nit). It logged `"Invalid job %s: %s. Cancelling."` unconditionally, before checking whether a session key could even be obtained; when that check failed, a `critical` line immediately followed explaining the job could *not* be cancelled — a skimmed incident read of just the first line could wrongly conclude the job was already handled. Reworded to `"...Attempting cancellation."`, accurate regardless of whether the attempt that follows succeeds.
+- **`SessionKeyClaimConflictError` (a `"job"` source 409 — another agent instance already claimed this job) is now classified explicitly instead of falling into `_process_job_notification`'s generic catch-all** (#94 follow-up, review finding). The exception's own docstring already documented the intended handling ("a caller catching this specifically can log 'another agent instance already claimed this job' instead of treating it identically to 'the key is simply gone'"), but no `except` clause implemented it — an expected multi-consumer race was logged at `logger.exception` with a full traceback, indistinguishable from a real bug. Now logged at `warning`, with no cancel attempt (there's nothing to cancel; the job belongs to the other instance now).
+
 ### Added
 - **`AppBuilder.build()` now sources `docs_url`/`redoc_url`/`openapi_url` from config** (#191, defaults unchanged: `/docs`, `/redoc`, `/openapi.json`). Previously these were hardcoded at `FastAPI()` construction, so a consumer could not disable the built-in `/docs` route without mutating `app.router.routes` after the fact — fragile because it depends on FastAPI's internal route-registration shape (bechtleav360/avs.ai.idac.service-sessions#191). Set `docs_url = "@none"` (Dynaconf's `None` cast) in `settings.toml` to opt out before the route is ever registered. Set at the root of `settings.toml`, not under an `agent_scope` block (`Config._scoped_get()` falls back to the root value when a scoped lookup is `None`). Note FastAPI only registers `docs_url`/`redoc_url` when `openapi_url` is also set, so disabling `openapi_url` disables all three.
 
@@ -13,7 +138,7 @@ all of this — see **Breaking** for the exceptions, which are listed in the ord
 hit them.
 
 Full migration path, including the one decision to get right before the first deploy:
-[`docs/guides/multi-agent-setup.md`](docs/guides/multi-agent-setup.md). The normative spec is
+[`guides/multi-agent-setup.md`](src/blueprint/agent_generator/docs/guides/multi-agent-setup.md). The normative spec is
 `docs/specs/2026-08-28-multi-agent-grouping.md`.
 
 ### Added
@@ -109,6 +234,17 @@ Full migration path, including the one decision to get right before the first de
     the framework's file list is untouched, so no existing deployment changes. `asbs validate`
     reports an undotted file as the rename it needs. An already-scaffolded project should rename its
     file.
+12. **`Component.shared_config` is now private (`Component._shared_config`)**, with
+    `Component.reset_shared_state()` as the one supported way to clear it. The old attribute was
+    public and writable but read by nothing outside `_ComponentMeta`, so hiding it looked like
+    code-only cleanup. It is not: a test suite that rebuilds its `AppBuilder` app once per test case
+    and resets state between cases with the old `Component.shared_config = None` now silently
+    no-ops, since the real state lives on `_shared_config` — `Component.configure()`'s "already set"
+    guard then trips starting from the second test in the run, with an error that does not name this
+    rename. **Any project resetting shared state between test cases must switch to
+    `Component.reset_shared_state()`** in its fixtures; this also clears `shared_registry`, which
+    stays public and is otherwise unaffected. A project that never resets shared state between
+    builds is unaffected.
 
 ### Fixed
 

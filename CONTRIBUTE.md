@@ -288,7 +288,7 @@ Publishing is handled by the CI/CD pipeline. See `.github/workflows/publish.yml`
 
 If you encounter issues, please:
 
-1. Check the [Troubleshooting Guide](docs/guides/troubleshooting.md) for known issues
+1. Check the [Troubleshooting Guide](src/blueprint/agent_generator/docs/guides/troubleshooting.md) for known issues
 2. Review the test output carefully for error messages
 3. Open an issue on GitHub with details about your environment and the error
 
