@@ -468,6 +468,19 @@ class TestTheImage:
         assert "docker run -p 8000:8000 <image>" in dockerfile
         assert "agent_namespace" not in dockerfile
 
+    def test_the_healthcheck_names_a_route_the_application_serves(self, project: Path) -> None:
+        """A HEALTHCHECK on a 404 does not report "unknown", it reports unhealthy, for ever.
+
+        `ActuatorApi` serves `/health/live` and `/health/ready` and nothing at `/health`, so the
+        bare path fails `curl -f` on every probe: the container never becomes healthy, compose's
+        `depends_on: service_healthy` never releases, and an orchestrator reading Docker's own
+        health state sees a permanently failing container that is in fact serving traffic.
+        """
+        dockerfile = (project / "Dockerfile").read_text(encoding="utf-8")
+
+        assert "/health/live" in dockerfile
+        assert "8000/health || exit 1" not in dockerfile, "the bare /health is not a route this application serves"
+
 
 class TestAnUnusableProjectNameIsRefused:
     """A name that cannot be a namespace fails the generator rather than the deployment."""

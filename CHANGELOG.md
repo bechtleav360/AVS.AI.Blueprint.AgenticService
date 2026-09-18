@@ -3,6 +3,14 @@
 
 ### Fixed
 
+- **Both scaffolded `Dockerfile`s declared a `HEALTHCHECK` against a route that does not exist.**
+  `curl -f http://localhost:8000/health` -- but `ActuatorApi` serves `/health/live` and
+  `/health/ready`, and nothing at `/health`. `curl -f` fails on the 404, so every container built
+  from a scaffold reported `unhealthy` for its whole life: compose's `depends_on:
+  service_healthy` never released, and anything reading Docker's health state saw a permanently
+  failing container that was in fact serving traffic. Both now probe `/health/live`, which is what
+  the deployment guide has always shown. A generated-project test holds the path.
+
 - **`asbs validate --group` contradicted the runtime about where an agent's `root` points.** The
   runtime resolves every `root` against the **image root** -- the directory the process runs in --
   and `BLUEPRINT_AGENT_MAP` may put the map anywhere, so a repository keeping `deploy/agents.toml`
