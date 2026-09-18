@@ -33,6 +33,32 @@ map at all.
 **Both need a `.dockerignore`.** `.gitignore` does not apply to a build context, so a wholesale
 `COPY agents ./agents` bakes every agent's `.secrets.toml` into a layer. `asbs setup` writes one.
 
+The same applies to the **group file**, for a different reason: baked in, it makes the image serve
+one group, and the whole point is that one image serves every group. The scaffolded
+`.dockerignore` excludes `deployment-groups.yaml` by name; a repository keeping one file per group
+under a path of its own has to add that path itself.
+
+## How the group reaches the container
+
+`BLUEPRINT_GROUP_CONFIG` takes a path, so the file can live anywhere and be mounted anywhere:
+
+```bash
+# No file at all: the environment supplies the whole group
+docker run -e BLUEPRINT_AGENTS=order,billing -e BLUEPRINT_CRITICAL_AGENTS=order my-image
+
+# A mounted group file, with the group named explicitly
+docker run -v ./deployment/groups/checkout.yaml:/app/group.yaml:ro \
+           -e BLUEPRINT_GROUP_CONFIG=/app/group.yaml \
+           -e BLUEPRINT_GROUP=checkout \
+           my-image
+```
+
+`blueprint-multi-agent` has the full variable table and the one-file-per-group layout. Two things
+matter here: the environment overrides the file key by key, so a deployment changes the agent list
+without editing what is mounted; and an unresolvable group **exits before the port is bound**,
+which is what turns a typo into a restart loop with a readable line instead of a running process
+that is short a consumer.
+
 ## The two that break under replicas
 
 - **Schedulers.** `scheduler_mode = "in_process"` runs a timer in *every* replica and relies on the

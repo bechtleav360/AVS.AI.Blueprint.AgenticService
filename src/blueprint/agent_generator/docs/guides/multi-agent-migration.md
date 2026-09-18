@@ -76,6 +76,29 @@ and copy the map into the image beside your settings:
 COPY --chown=appuser:appuser agents.toml ./
 ```
 
+**That command is not sufficient on its own, and copying the map does not complete it.** Where
+`uvicorn src.main:app` named the application it served, the entry point has to be *told* which
+agents to run, and the map says only which ones the image contains. A container given neither
+`BLUEPRINT_AGENTS` nor a group file prints one line and exits before binding its port:
+
+```
+Cannot start: No agents were resolved for this process. ...
+```
+
+Supply it per run -- `-e BLUEPRINT_AGENTS=order`, or a mounted group file with
+`-e BLUEPRINT_GROUP=<name>` -- or bake a development default the deployment overrides:
+
+```dockerfile
+ENV BLUEPRINT_AGENTS="order"
+```
+
+There is no default and no "every agent in the map". That refusal is deliberate: a fallback of
+"run everything in the image" would make adding an agent to the map silently change what every
+existing deployment runs -- new consumers, new durables, new routes -- with no deployment edit at
+all. See [Environment](multi-agent-setup.md#environment) for the variables, and
+[One file, or one file per group](multi-agent-setup.md#one-file-or-one-file-per-group) for where
+the file itself lives.
+
 ## 3. The image's `agents.toml` -- one entry, not a new file here
 
 The entry goes in the **image's** map, at the top of the repository that builds the image --

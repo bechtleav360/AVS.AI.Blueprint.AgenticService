@@ -284,10 +284,12 @@ removed, which is a rebuild anyway.
 
 ```toml
 [agents.order]
-module = "src.order.main:agent"
+root   = "agents/order"
+module = "agents.order.src.main:agent"
 
 [agents.billing]
-module = "src.billing.main:agent"
+root   = "agents/billing"
+module = "agents.billing.src.main:agent"
 ```
 
 **`deployment-groups.yaml` -- what this process runs.** Never baked in: one image serves every
@@ -329,6 +331,38 @@ docker run -e BLUEPRINT_AGENTS=order,billing -e BLUEPRINT_CRITICAL_AGENTS=order 
 
 Every resolved value is logged with the source it came from, because "which agents did this pod
 actually start" is the first question asked of a group that misbehaves.
+
+### One file, or one file per group
+
+`BLUEPRINT_GROUP_CONFIG` is a **path**, so the default name is a default and not a rule. One file
+holding every group is what the name `deployment-groups.yaml` suggests, and the composition then
+reviews as a single diff. The alternative is one file per group, each declaring exactly one:
+
+```
+deployment/groups/          # an example: nothing in the framework knows this path
+  checkout.yaml
+  reporting.yaml
+```
+
+```bash
+docker run -v ./deployment/groups/checkout.yaml:/app/group.yaml:ro \
+           -e BLUEPRINT_GROUP_CONFIG=/app/group.yaml \
+           -e BLUEPRINT_GROUP=checkout \
+           my-image
+```
+
+What that buys is blast radius: a typo in `reporting` never reaches `checkout`'s container,
+because that container never mounts it. What it costs is the single diff. Each file still carries
+the `groups:` list around its one entry -- there is no single-group form, so a file split out of a
+shared one, or merged back into it, is the same text either way.
+
+Name the group anyway. A file declaring exactly one group is taken without `BLUEPRINT_GROUP`, but
+setting it is what makes the wrong file loud: a name absent from the file is refused by name,
+where a sole unnamed group is accepted whatever it happens to contain.
+
+Whichever shape, the file must stay out of the build context -- see the scaffolded
+`.dockerignore`, which excludes the default name and says why a different path needs a line of
+its own.
 
 If the group cannot be resolved -- no agents named, a group that is not in the file, an agent the
 image does not contain -- the process **stops before binding its port** and prints one line saying

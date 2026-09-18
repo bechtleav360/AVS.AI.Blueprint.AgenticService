@@ -99,6 +99,75 @@ group of one is still a group, and an agent must not have to declare itself one 
 Its components are built at the root namespace, so the routes are the ones the API declares;
 hosted in a group, the same directory gains an `/api/<agent>` prefix.
 
+## Supplying the group
+
+The map is baked in; the group is not. One image serves every group, so which agents *this*
+process runs arrives at container start, by one of two routes.
+
+**Environment only**, which is the `docker run` and CI shape. No file is read at all:
+
+```bash
+docker run -e BLUEPRINT_AGENTS=order,billing -e BLUEPRINT_CRITICAL_AGENTS=order my-image
+```
+
+**A mounted group file**, which is what a real deployment usually does, because the composition
+is then something reviewable as a diff:
+
+```yaml
+groups:
+  - name: checkout
+    agents: [order, billing]
+    critical_agents: [order]
+```
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `BLUEPRINT_GROUP_CONFIG` | `./deployment-groups.yaml` | Path to the group file |
+| `BLUEPRINT_GROUP` | -- | Which group in it. Optional when the file declares exactly one |
+| `BLUEPRINT_AGENTS` | -- | Comma-separated names, supplying the group with no file at all |
+| `BLUEPRINT_CRITICAL_AGENTS` | -- | Comma-separated subset to mark critical |
+| `BLUEPRINT_AGENT_MAP` | `./agents.toml` | Path to the map |
+
+The environment overrides the file key by key, so one deployment changes the agent list without
+editing or duplicating a mounted file. Setting `BLUEPRINT_AGENTS` while `BLUEPRINT_GROUP` is
+unset skips the file entirely rather than merging with it.
+
+### Several groups: one file, or one file each
+
+`BLUEPRINT_GROUP_CONFIG` takes a **path**, so both shapes work and the framework has no opinion
+about which. One file holding every group is the default name and reviews as a single diff. One
+file per group keeps a typo in one group out of every other group's container:
+
+```
+deployment/groups/          # an example. Any layout works -- only the path has to be right
+  checkout.yaml
+  reporting.yaml
+```
+
+```bash
+docker run -v ./deployment/groups/checkout.yaml:/app/group.yaml:ro \
+           -e BLUEPRINT_GROUP_CONFIG=/app/group.yaml \
+           -e BLUEPRINT_GROUP=checkout \
+           my-image
+```
+
+Each such file still carries the `groups:` list with its one entry -- there is no single-group
+form, and the same file works unchanged if it is later merged back into a shared one.
+
+**Set `BLUEPRINT_GROUP` even though a sole group makes it optional.** It is what catches the
+wrong file being mounted: a name that is not in the file is refused by name, where an unnamed
+sole group is taken silently whatever it turns out to contain.
+
+**Whatever the layout, add it to `.dockerignore`.** The scaffolded one excludes
+`deployment-groups.yaml` by name and nothing else, and `.gitignore` does not apply to a build
+context. A group file baked into a layer makes the image serve the group that happened to be on
+disk when it was built, which is the opposite of the point.
+
+If the group cannot be resolved -- nothing naming agents, a group absent from the file, an agent
+the image does not contain -- the process prints one line and **exits before binding its port**,
+so an orchestrator restarts it with something actionable rather than reporting a healthy replica
+that is quietly short a consumer.
+
 ## Before promising the move is free
 
 An agent **left standalone** is unaffected by any of this. An agent **moved into a group** changes
