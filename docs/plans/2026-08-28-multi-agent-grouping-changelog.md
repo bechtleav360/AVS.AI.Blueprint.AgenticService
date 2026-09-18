@@ -7061,6 +7061,44 @@ bus. All five renamed to hyphenated forms, and `tests/unit/examples` now holds e
 `app_name` to `validate_subject_segment`, so the next one cannot ship. The prose and docstrings
 keep the readable names -- nothing reads those.
 
+### Where the group file lives, and what stops it reaching the image
+
+Three documents said a container needs a group and none said how one gets there. The skills
+stopped at "yes: an agent map and a group"; the migration guide changed the `Dockerfile` command
+and copied the map in, which is the half that does not start a container; and every example used
+the default filename, so `BLUEPRINT_GROUP_CONFIG` read as a name rather than the path it is.
+
+No `src/` change -- the variable already takes a path, and one file per group works today. What
+was missing was saying so, and saying what it costs.
+
+- **`template_for_docker_ignore.txt`** excluded `deployment-groups.yaml` and `.yml` by exact
+  name. That is the whole guard, and a repository keeping `deployment/groups/*.yaml` matches
+  neither, so a wildcard copy bakes the group files into the layer -- an image that serves
+  whichever group was on disk when it was built, failing silently because it does start. The
+  template now states the rule and carries a commented example rather than an active line: an
+  uncommented path would be a convention the framework does not have, and would quietly do
+  nothing for anyone whose layout differs. Written by both scaffolds (`generator.py:363`,
+  `group_setup.py:79`).
+- **`blueprint-multi-agent/SKILL.md`** gains *Supplying the group*: the two routes, the five
+  variables, the one-file-per-group layout, and why `BLUEPRINT_GROUP` is worth setting even
+  where a sole group makes it optional -- a name absent from the file is refused by name, where
+  an unnamed sole group is accepted whatever it contains, which is the difference between a
+  mounted wrong file failing and running.
+- **`blueprint-deployment/SKILL.md`** gains *How the group reaches the container*: both
+  `docker run` shapes, and the group file's own reason for staying out of the build context,
+  which is not the `.secrets.toml` reason already there.
+- **`multi-agent-setup.md`** gains *One file, or one file per group* -- blast radius against a
+  single reviewable diff -- and its `agents.toml` example is corrected: it still showed `module`
+  alone, having been written before `root` became required, so following it produced a startup
+  failure naming a key the example never mentions.
+- **`multi-agent-migration.md`** step 2 regains the half lost when the guide was split and
+  rewritten: the entry point has to be told which agents to run, the map does not tell it, and a
+  container given neither exits before binding its port.
+
+No Kubernetes material was added. The framework ships no chart or manifest files and should not;
+what it ships is the capabilities a cluster uses -- probes, `POD_NAME`, `scheduler_mode` -- which
+`guides/deployment.md` already documents.
+
 ---
 
 ## Open points
@@ -7413,11 +7451,15 @@ keep the readable names -- nothing reads those.
 - **The "no agents resolved" message omits a route that works.** It says to mount a group file
   *and* name it with `BLUEPRINT_GROUP`, or to set `BLUEPRINT_AGENTS` -- but `_read_group_file`
   takes the sole group when a mounted file declares exactly one and `BLUEPRINT_GROUP` is unset, so
-  the message asks for a variable the reader may not need. A `src/` change, found while correcting
-  the migration guide's implication that the group has a default. The guide fix did not survive the
-  merge of origin (ddaf37c): that guide was split into `multi-agent-migration.md` and rewritten for
-  standalone serving, so its step 2 again changes the `Dockerfile` command without saying how the
-  group reaches the container. Both the message and the migration step are still open.
+  the message asks for a variable the reader may not need. A `src/` change, and the only part of
+  this still open: the migration step it was found alongside is fixed above, and the docs now say
+  to set `BLUEPRINT_GROUP` regardless, which makes the message's advice sound rather than
+  complete.
+- **A `BLUEPRINT_GROUP_CONFIG` pointing at a directory fails as if nothing were mounted.**
+  `_group_file_path` returns it, `path.is_file()` is false (`group_config.py:250`), and the reader
+  gets "no agents were resolved" -- naming neither the directory nor the fact that a directory is
+  not a file it can read. Cheap to fix and a plausible mistake now that one file per group is
+  documented; deliberately not folded into a documentation change.
 - ~~**Breaking change #12 was missing from the list: `Component.shared_config` →
   `Component._shared_config`.**~~ **Closed.** Found during a real compatibility pass against
   `bechtleav360/avs.ai.project.pida`'s `graph-api` test suite (issue #97): its `conftest.py` reset

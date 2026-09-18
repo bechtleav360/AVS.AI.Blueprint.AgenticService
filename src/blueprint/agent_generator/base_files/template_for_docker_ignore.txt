@@ -27,6 +27,15 @@ agents/**/.dockerignore
 deployment-groups.yaml
 deployment-groups.yml
 
+# These two lines cover the default name only. A repository that keeps several groups usually
+# keeps one file per group somewhere of its own choosing -- BLUEPRINT_GROUP_CONFIG takes a
+# path, so any layout works and the framework has no opinion about it. Whatever that layout
+# is, add it here: a folder of group files is not covered by the names above, and one that
+# reaches the build context is baked in, which makes the image serve the group that happened
+# to be on disk. Uncomment and adjust:
+#
+# deployment/groups/
+
 # Local environments and caches, which are large, machine-specific and often not even the right
 # platform.
 .venv/
