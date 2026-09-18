@@ -1,18 +1,18 @@
 # Migrating an Existing Agent into a Group
 
 You have a single-agent project with a `main.py` that builds and serves an application, and you
-want it to run beside other agents in one process. Three files change, and nothing else.
+want it to run beside other agents in one process.
+
+**Three files carry the migration:** `src/main.py`, the `Dockerfile`, and the image's
+`agents.toml`. Two more may need an edit, depending on what the project already sets -- the
+agent's own `settings.toml` if it scopes keys under its own name, and the image's `settings.toml`
+if the agent sets process-wide keys. Both are covered in step 3, and both are edits to files that
+already exist rather than new ones.
 
 Migrating is optional. A project deployed on its own keeps working, unchanged, indefinitely --
 there is no deprecation here. See [Multi-Agent Setup](multi-agent-setup.md) for the model this fits into, and
 read [the one decision to get right first](multi-agent-setup.md#the-one-decision-to-get-right-first) before you
 start: one of the three files carries a name you cannot cheaply change afterwards.
-
----
-
-Three files change, and nothing else. Read
-[the one decision to get right first](multi-agent-setup.md#the-one-decision-to-get-right-first) before you start: one
-of the three is a name you cannot cheaply change afterwards.
 
 ## 1. `src/main.py` -- remove two things, add nothing
 
@@ -101,10 +101,12 @@ the file itself lives.
 
 ## 3. The image's `agents.toml` -- one entry, not a new file here
 
-The entry goes in the **image's** map, at the top of the repository that builds the image --
-not in the agent's directory. The map says which agents an image contains, which is a packaging
-decision; an agent that carried one would be an agent that knows whether it is running alone.
-`asbs validate --group` refuses one found inside an agent.
+The entry goes in the **image's** map, not in the agent's directory. The map says which agents an
+image contains, which is a packaging decision; an agent that carried one would be an agent that
+knows whether it is running alone. `asbs validate --group` refuses one found inside an agent.
+That is the rule. Where the file sits above an agent is the repository's business -- the top of
+the repository that builds the image is the default and what `asbs setup --group` writes, and
+[Keeping the map somewhere else](#keeping-the-map-somewhere-else) covers the alternative.
 
 If the repository has no image files yet, create them once:
 
@@ -122,14 +124,51 @@ module = "agents.order.src.main:agent"
 
 **Both keys are required.** `root` is the agent's own directory -- the one holding its
 `settings.toml` and its `src/` -- relative to the image root, which is the directory the process
-runs in and normally the one holding `agents.toml`. `module` is how its
-code imports. Neither is derived from the other: a root guessed from where the declaration sits
-is right for one layout and silently wrong for the rest, and an agent whose settings were looked
-for in the wrong place does not fail, it runs on the group's defaults without saying so.
+runs in and normally the one holding `agents.toml`. `module` is how its code imports. Neither is
+derived from the other: a root guessed from where the declaration sits is right for one layout and
+silently wrong for the rest, and an agent whose settings were looked for in the wrong place does
+not fail, it runs on the group's defaults without saying so.
 
 Nothing inside the agent's directory moves. Its `settings.toml` stays beside `src/`, exactly
 where it was when the project ran on its own -- that sameness is what lets the directory move
 back out again untouched.
+
+### Keeping the map somewhere else
+
+The map does not have to sit at the top. A repository that keeps its deployment files together
+can keep the map with them, and **no `root` changes when it moves** -- roots resolve against the
+image root, not against the map, which is the whole reason they are two different things.
+
+Two relocations get confused with each other, so take them one at a time.
+
+**The map moves in the repository, not in the image.** The common case: the file lives in
+`deploy/`, and the `Dockerfile` copies it to the image root as before.
+
+```dockerfile
+COPY --chown=appuser:appuser deploy/agents.toml ./
+```
+
+Inside the container nothing has moved, so the runtime needs no configuration at all. Only the
+tooling, which runs against the repository, has to be told:
+
+```bash
+asbs validate --group . --agent-map deploy/agents.toml
+```
+
+**The map moves inside the image too.** Rarer, and the only case that needs an environment
+variable. Copy it into a subdirectory, then name it:
+
+```dockerfile
+COPY --chown=appuser:appuser deploy/agents.toml ./deploy/
+ENV BLUEPRINT_AGENT_MAP="deploy/agents.toml"
+```
+
+`BLUEPRINT_AGENT_MAP` is read relative to the image root, and it changes only where the *map* is
+looked for. Every agent `root` in it still resolves against the image root, so a map in `deploy/`
+naming `root = "agents/order"` means `/app/agents/order`, not `/app/deploy/agents/order`.
+
+Whichever shape, the agents themselves must stay under the image root -- an agent's files are
+part of the image, and a `root` that escapes it is refused at startup and by `asbs validate`.
 
 ### One thing inside the file may have to change
 
@@ -174,7 +213,14 @@ dropped before the merge with a warning naming the value actually used.
 
 ```bash
 asbs validate              # inside the agent's directory: the agent itself
-asbs validate --group      # at the top: the map, and every agent it points at
+asbs validate --group      # where the map is: the map, and every agent it points at
+```
+
+If the map is not beside the directory you are checking, pass both -- the directory is the image
+root, `--agent-map` is the file:
+
+```bash
+asbs validate --group . --agent-map deploy/agents.toml
 ```
 
 `--group` resolves every `root`, reports which `settings.toml` each agent actually reads, refuses a

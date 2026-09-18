@@ -7147,6 +7147,35 @@ the scaffolded one, the flag's resolution rules and the still-refused root outsi
 `test_group_config.py` gains the runtime half: a relocated map resolves roots against the image
 root and leaves `image_root` at the process root.
 
+### The migration guide said three files and meant five, twice
+
+Five findings against `multi-agent-migration.md`, all traceable to `a9a8f3b` splitting it out of
+`multi-agent-setup.md`: the new opening was written and the lifted one was kept.
+
+- **The intro appeared twice.** "Three files change, and nothing else", the link to *the one
+  decision to get right first*, and "a name you cannot cheaply change" were in the opening
+  paragraph and again, near-verbatim, after the `---`. The second copy is gone.
+- **"Three files change, and nothing else" was not true of the guide's own steps.** Step 3 moves
+  process-wide keys into the image's `settings.toml` and may require unprefixing the agent's own.
+  It now says three files carry the migration and names the two that may need an edit, with the
+  distinction that matters to somebody estimating the work: those two already exist, and whether
+  they are touched depends on what the project already sets.
+- **Map relocation was undocumented**, which is the gap the consumer report started from. New
+  *Keeping the map somewhere else*, and it separates two relocations that the report itself ran
+  together, because only one of them needs configuration: a map kept in `deploy/` **in the
+  repository** and copied to the image root (`COPY deploy/agents.toml ./`) needs nothing at
+  runtime and only `--agent-map` for the tooling, while a map that stays in a subdirectory
+  **inside the image** needs `BLUEPRINT_AGENT_MAP`. Both state the consequence that makes the
+  design legible: no `root` changes when the map moves, because roots resolve against the image
+  root -- a map in `deploy/` naming `root = "agents/order"` still means `/app/agents/order`.
+- **Section 3 opened by contradicting itself.** It placed the map "at the top of the repository
+  that builds the image" flatly, three paragraphs above wording that hedged "normally the one
+  holding `agents.toml`". The rule -- not inside an agent, which `asbs validate --group` enforces
+  -- is now stated as the rule, and the top of the repository as the default that `asbs setup
+  --group` writes.
+- **Step 4's `# at the top` comment** assumed the same thing, and now says "where the map is",
+  with the two-argument invocation below it.
+
 ---
 
 ## Open points
