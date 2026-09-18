@@ -73,8 +73,13 @@ This file is **baked into the image**: it says what the image contains. It does 
 those agents any particular process runs -- that is the deployment's decision, and it arrives
 separately.
 
-The `Dockerfile` runs `python -m blueprint.agents.entrypoint`, which reads `agents.toml`, works out
-this process's group, and serves it.
+The `Dockerfile` runs `python -m blueprint.agents.entrypoint`, which resolves which agents this
+process runs, looks each one up in `agents.toml` to find its declaration, and serves them.
+
+**The group is never read from `agents.toml`.** The map says what the image *contains*; which of
+those agents a process runs arrives separately, as `BLUEPRINT_AGENTS` or a mounted group file.
+There is no default and no "every agent in the map": a container given neither prints one line and
+exits before binding its port. See [Environment](#environment).
 
 ### Running it
 
@@ -172,7 +177,7 @@ If you are passing **instances** anywhere -- `with_rest_api(OrderApi())` -- chan
 An instance is constructed at that line, before any namespace exists, so it belongs to the root for
 ever; a group refuses one at assembly and names the agent and the fix.
 
-### 2. `Dockerfile` -- one command
+### 2. `Dockerfile` -- one command, and the group it runs
 
 ```diff
 -CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
@@ -185,6 +190,22 @@ and copy the map into the image beside your settings:
 COPY --chown=appuser:appuser agents.toml ./
 ```
 
+**That command is not sufficient on its own.** Unlike `uvicorn src.main:app`, which named the
+application it served, the entry point has to be *told* which agents to run, and copying
+`agents.toml` does not tell it. Either bake a development default the deployment overrides --
+
+```dockerfile
+ENV BLUEPRINT_AGENTS="order"
+```
+
+-- or supply it per run: `-e BLUEPRINT_AGENTS=order`, or a mounted group file. A project scaffolded
+by `asbs setup` gets the `ENV` line written for it; a Dockerfile migrated by hand has to add it.
+Without either, the container exits at start with
+
+```
+Cannot start: No agents were resolved for this process. ...
+```
+
 ### 3. `agents.toml` -- a new file
 
 ```toml
@@ -192,9 +213,12 @@ COPY --chown=appuser:appuser agents.toml ./
 module = "src.main:agent"
 ```
 
-Required even for a group of one: it is the only thing that turns an agent's name into code. There
-is discovery by convention nowhere in this, deliberately -- a set of agents that depends on what
-happens to be importable makes a renamed directory a silently removed agent.
+Required even for a group of one: it is the only thing that turns an agent's name into code. It is
+not what supplies the name -- that is step 2's job, and the two files are separate because they have
+different lifetimes. There is discovery by convention nowhere in this, deliberately -- a set of
+agents that depends on what happens to be importable makes a renamed directory a silently removed
+agent, and a default of "run everything in the map" would make adding an agent silently change what
+every existing deployment runs.
 
 ### 4. Check it
 
@@ -212,7 +236,12 @@ the move. It never imports your project.
 |---|---|
 | Standalone, unmigrated | `uvicorn src.main:app` |
 | Standalone, migrated (with `create_app`) | `uvicorn src.main:create_app --factory` |
-| Grouped, including a group of one | `python -m blueprint.agents.entrypoint` |
+| Grouped, including a group of one | `BLUEPRINT_AGENTS=order python -m blueprint.agents.entrypoint` |
+
+Only the third takes what it serves from outside the image, and that part is **required**: there is
+no default to fall back to and the process refuses to start without it. `BLUEPRINT_AGENTS` is the
+short form; a mounted `deployment-groups.yaml` does the same job and is what a Kubernetes
+Deployment usually uses -- a file declaring exactly one group needs no `BLUEPRINT_GROUP` beside it.
 
 ---
 
