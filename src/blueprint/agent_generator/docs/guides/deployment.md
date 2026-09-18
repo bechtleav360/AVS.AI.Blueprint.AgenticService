@@ -24,7 +24,13 @@ Two things shape everything below, and both are recent:
 
 ## The image
 
-A scaffolded project ships a multi-stage Dockerfile whose production stage is:
+**There are two, and which one you have depends on what you scaffolded.** `asbs setup <name>`
+writes a single-agent image that serves one declaration directly -- `uvicorn src.main:create_app
+--factory`, no map, no group, no namespace. `asbs setup --group` writes a group image, which is
+the one below. The same agent directory is built by either without editing a line; what differs
+is what gets copied and what serves it.
+
+The group image's production stage:
 
 ```dockerfile
 FROM python:3.13-slim-bookworm AS final
@@ -61,10 +67,11 @@ Three things about it are load-bearing:
   changes only when an agent is added or removed -- which is a rebuild anyway. Which agents a
   *process* runs is a deployment decision and arrives separately, so baking it would defeat the one
   property the whole model exists for.
-- **The command is `python -m blueprint.agents.entrypoint`**, not `uvicorn src.main:app`. A
-  scaffolded `src/main.py` declares an agent and builds nothing; the entry point resolves this
-  process's group, builds it and serves it. A project that has not migrated keeps `uvicorn
-  src.main:app` and keeps working.
+- **The command is `python -m blueprint.agents.entrypoint`**, which is what makes this a *group*
+  image. A scaffolded `src/main.py` declares an agent and also offers `create_app()`, so the same
+  file is served directly by a single-agent image and hosted by this one; the entry point resolves
+  this process's group, builds it and serves it. A project from before the split, whose `main.py`
+  builds its own application, keeps `uvicorn src.main:app` and keeps working.
 - **`.secrets.toml` is never copied in.** Mount it, or supply the values as environment variables.
 
 ### Building and running

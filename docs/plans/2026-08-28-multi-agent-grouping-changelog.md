@@ -7176,6 +7176,39 @@ Five findings against `multi-agent-migration.md`, all traceable to `a9a8f3b` spl
 - **Step 4's `# at the top` comment** assumed the same thing, and now says "where the map is",
   with the two-argument invocation below it.
 
+### A coherence sweep of the packaged docs against the code
+
+Mechanically clean: all 40 pages' links and anchors resolve, all 29 `asbs docs <topic>` targets
+referenced by the skills exist, the docs index matches what is on disk, and every `agents.toml`
+example carries `root` bar the one below. Six substantive findings, four of them one cause --
+`676731d` changed what a standalone project *is*, and the pages written before it were not swept.
+
+- **Both scaffolded `Dockerfile`s probed `/health`, which is not a route.** Fixed separately as a
+  `fix(docker)`; see `CHANGELOG.md`. It is the only one of the six that was shipped behaviour
+  rather than prose, and the only one older than the standalone change.
+- **`guides/cli/setup.md` documented an `agents.toml` that `asbs setup` does not write** -- with
+  an example missing the required `root`, for a file `asbs validate` now refuses outright. The
+  CLI prints the opposite in the same breath (`setup.py:199`). The page now states that no map is
+  written and why, and shows the entry to add to the *image's* map instead.
+- **`guides/deployment.md`'s "The image" described the group image and called it the scaffolded
+  one.** There are two images now, and `blueprint-deployment/SKILL.md` already said so, so the
+  skill and the guide it points at disagreed. The section opens by naming both and says which one
+  it is about; the bullet about the entry point no longer claims a scaffolded `main.py` builds
+  nothing, which stopped being true when `create_app()` was added to it.
+- **`setup.py`'s own output claimed the single-agent Dockerfile "writes a one-agent map".** It
+  serves `create_app` with uvicorn and writes no map -- the Dockerfile says so in a comment three
+  lines above the `ENTRYPOINT`.
+- **`guides/troubleshooting.md`'s `dapr run` named `src.main:app`**, which a scaffolded project
+  has not defined since the split.
+- **`asbs docs` was registered and undocumented.** `main.py:149` registers it, every skill tells
+  the reader to run it, and `cli-reference.md` listed neither it nor `setup --group`,
+  `validate --group` or `--agent-map`. All added.
+
+Noted, not fixed: `tests/unit/agent_generator/generator/test_generated_project.py` joins the list
+of files `black --check` wants to reformat and `ruff format --check` considers clean. It is the
+disagreement `CLAUDE.local.md` records, it predates this work (reproduced with the change
+stashed), and it is not one formatter's to settle mid-change.
+
 ---
 
 ## Open points

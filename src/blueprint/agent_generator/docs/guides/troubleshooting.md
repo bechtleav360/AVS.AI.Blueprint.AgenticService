@@ -145,7 +145,7 @@ ConnectionRefusedError: Cannot connect to Dapr sidecar at localhost:3500
 For local development, start the application via the Dapr CLI:
 
 ```bash
-dapr run --app-id my-ai-service --app-port 8000 -- python -m uvicorn src.main:app
+dapr run --app-id my-ai-service --app-port 8000 -- python -m uvicorn src.main:create_app --factory
 ```
 
 In Kubernetes, verify the Dapr annotations are present on the pod:
