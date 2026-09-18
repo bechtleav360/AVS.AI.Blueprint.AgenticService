@@ -10,6 +10,8 @@ from typing import Any
 
 from blueprint.agents.component.namespace import validate_namespace
 from blueprint.agents.config import PROCESS_SCOPE_KEYS
+
+from . import validate_group
 from blueprint.agents.io.api.scheduling.scheduler import SCHEDULER_MODE_EVENT, SCHEDULER_MODE_IN_PROCESS, SCHEDULER_MODES
 
 logger = logging.getLogger(__name__)
@@ -37,6 +39,12 @@ def run(args: Namespace) -> None:
     Args:
         args: Parsed command-line arguments
     """
+    # An image and an agent are different things to check, so this is a mode rather than a
+    # guess about what the directory looks like.
+    if getattr(args, "group", False):
+        validate_group.run(args)
+        return
+
     project_dir = Path(args.project_dir).resolve()
 
     if not project_dir.is_dir():

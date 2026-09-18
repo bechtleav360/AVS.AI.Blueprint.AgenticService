@@ -149,7 +149,6 @@ class TestNATSClientClose:
         assert connected_nats_client._js is None
 
     async def test_close_cancels_retry_task(self, nats_client: NATSClient) -> None:
-
         async def _never() -> None:
             await asyncio.sleep(9999)
 

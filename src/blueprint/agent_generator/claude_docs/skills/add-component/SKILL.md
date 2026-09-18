@@ -38,6 +38,12 @@ asbs create agent <Name>
 asbs create scheduler <Name> --cron "<cron-expression>"
 ```
 
+The full option list for each component type, with examples, is in the packaged docs:
+
+```bash
+asbs docs guides/cli/create --cat
+```
+
 ## Step 3: Implement
 
 After scaffolding, implement the component logic:
@@ -90,3 +96,19 @@ If the component needs configuration:
 - **Register in correct order** in `main.py`: services → agents → handlers/APIs/schedulers
 - **Type hints on every method signature**
 - **Pydantic models for all API request/response types**
+
+## Reference
+
+Per-component guides ship with the package:
+
+```bash
+asbs docs components/event-handlers --cat
+asbs docs components/services --cat
+asbs docs components/rest-apis --cat
+asbs docs components/agents --cat
+asbs docs components/schedulers --cat
+```
+
+If `asbs create` could not register the component in `src/main.py`, read
+`asbs docs guides/cli/auto-registration --cat` -- registration order matters, and services must come
+before the handlers, agents and APIs that resolve them.

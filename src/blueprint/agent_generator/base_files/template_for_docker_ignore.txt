@@ -1,0 +1,53 @@
+# What must never reach the build context.
+#
+# The group image copies the whole `agents/` tree, because which agents a *process* runs is
+# decided at startup rather than at build time -- so the image has to contain all of them. That
+# makes this file load-bearing rather than tidy-up: a wholesale copy takes whatever is on disk.
+#
+# .gitignore does not help here. Docker's build context is the filesystem, not the repository,
+# so a file git has never seen is copied in anyway.
+
+# Secrets. The single most important line in this file: real API keys live in .secrets.toml
+# during development, git ignores them, and a COPY would bake them into a layer that anyone
+# who can pull the image can read. Secrets reach a container as environment variables or a
+# mounted file, never as a layer.
+**/.secrets.toml
+**/*.secrets.toml
+.env
+**/.env
+
+# Per-agent Dockerfiles. An agent may own one so it can be built as a single-agent image; it is
+# not part of the group image and only invalidates layers.
+agents/**/Dockerfile
+agents/**/.dockerignore
+
+# The deployment's group file. Which agents this process runs is a deployment decision, so it
+# arrives as a mount or as BLUEPRINT_AGENTS -- baking one in would make the image serve one
+# group only, which is the opposite of the point.
+deployment-groups.yaml
+deployment-groups.yml
+
+# Local environments and caches, which are large, machine-specific and often not even the right
+# platform.
+.venv/
+venv/
+**/__pycache__/
+**/*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+**/.cache/
+
+# Version control and CI
+.git/
+.gitignore
+.github/
+
+# Tests and docs do not run in the image
+**/tests/
+docs/
+
+# Editor and OS noise
+.idea/
+.vscode/
+.DS_Store
