@@ -69,11 +69,19 @@ Notices (1):
 ## asbs validate --group
 
 Validates an *image* rather than a single agent: the agent map, and every agent directory it
-points at. Run it where `agents.toml` is.
+points at.
 
 ```bash
-asbs validate --group
+asbs validate --group                                   # map at the image root
+asbs validate --group --agent-map deploy/agents.toml    # map kept elsewhere
 ```
+
+The directory argument is the **image root** -- what agent `root` values resolve against, and what
+the process would run in. `--agent-map` says where the map itself is, which is a separate question:
+the map is a packaging manifest, and `BLUEPRINT_AGENT_MAP` lets a repository keep it in `deploy/`
+while its agents stay at the top. A relative `--agent-map` resolves against the image root, and the
+environment variable is read when the flag is absent, so the command sees the layout the container
+will.
 
 It checks, per agent:
 

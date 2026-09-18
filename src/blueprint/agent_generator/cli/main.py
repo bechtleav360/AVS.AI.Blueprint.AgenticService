@@ -184,6 +184,13 @@ def main() -> None:
         action="store_true",
         help="Validate an image rather than a single agent: the agent map, and every agent it points at.",
     )
+    validate_parser.add_argument(
+        "--agent-map",
+        metavar="PATH",
+        help="Where the agent map is, if not agents.toml in the directory being validated. Relative paths resolve "
+        "against that directory, as BLUEPRINT_AGENT_MAP does at runtime. Agent roots are unaffected: they resolve "
+        "against the image root either way.",
+    )
 
     # Dev command
     dev_parser = subparsers.add_parser(

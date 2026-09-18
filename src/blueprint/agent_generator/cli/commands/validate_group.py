@@ -11,6 +11,7 @@ keys set under an agent where nothing consults them. None of those stop a pod fr
 passing its probes, which is exactly what makes them expensive to find later.
 """
 
+import os
 import sys
 import tomllib
 from argparse import Namespace
@@ -22,6 +23,7 @@ from blueprint.agents.config import PROCESS_SCOPE_KEYS
 from blueprint.agents.layout import check_agent_layout
 
 AGENT_MAP_FILE = "agents.toml"
+AGENT_MAP_ENV = "BLUEPRINT_AGENT_MAP"
 
 
 def run(args: Namespace) -> None:
@@ -35,25 +37,59 @@ def run(args: Namespace) -> None:
         print(f"Error: Directory does not exist: {image_root}", file=sys.stderr)
         sys.exit(1)
 
+    agent_map = _agent_map_path(image_root, getattr(args, "agent_map", None))
+
     print(f"Validating Blueprint Agents image: {image_root}")
+    if agent_map.parent != image_root:
+        print(f"Agent map: {agent_map}")
     print()
 
-    issues, warnings, notices = _findings(image_root)
+    issues, warnings, notices = _findings(image_root, agent_map)
     _report(issues, warnings, notices)
     sys.exit(1 if issues else 0)
 
 
-def _findings(image_root: Path) -> tuple[list[str], list[str], list[str]]:
-    """Return issues, warnings and notices for the image at ``image_root``."""
+def _agent_map_path(image_root: Path, configured: str | None) -> Path:
+    """Return where the agent map is, which is not necessarily inside the directory being checked.
+
+    The map and the image root answer different questions, and conflating them is what made this
+    command disagree with the runtime. The runtime resolves every agent ``root`` against the image
+    root -- the directory the process runs in -- while the map itself may sit anywhere, because
+    ``BLUEPRINT_AGENT_MAP`` relocates it. A repository keeping its map in ``deploy/`` and its
+    agents at the top therefore runs, and used to be reported here as an image that would not
+    start.
+
+    Args:
+        image_root: The directory being validated, which agent roots resolve against.
+        configured: ``--agent-map``, if it was given.
+
+    Returns:
+        The map's path, absolute. Relative values resolve against the image root, the same way
+        ``BLUEPRINT_AGENT_MAP`` does at runtime.
+    """
+    declared = (configured or os.environ.get(AGENT_MAP_ENV, "") or "").strip()
+    if not declared:
+        return image_root / AGENT_MAP_FILE
+    path = Path(declared)
+    return path if path.is_absolute() else image_root / path
+
+
+def _findings(image_root: Path, agent_map: Path) -> tuple[list[str], list[str], list[str]]:
+    """Return issues, warnings and notices for the image at ``image_root``.
+
+    Args:
+        image_root: The directory agent roots resolve against, as at runtime.
+        agent_map: The map to read, which may be outside ``image_root``.
+    """
     issues: list[str] = []
     warnings: list[str] = []
     notices: list[str] = []
 
-    agent_map = image_root / AGENT_MAP_FILE
     if not agent_map.is_file():
         issues.append(
-            f"No {AGENT_MAP_FILE} here, so this directory is not an image. Run 'asbs setup --group' to create one, "
-            "or drop --group to validate a single agent."
+            f"No agent map at {agent_map}, so this directory is not an image. Run 'asbs setup --group' to create "
+            f"one, point at an existing one with --agent-map (or {AGENT_MAP_ENV}), or drop --group to validate a "
+            "single agent."
         )
         return issues, warnings, notices
 
@@ -107,7 +143,7 @@ def _agent_findings(image_root: Path, name: str, entry: Any, claimed: dict[Path,
     if not declared_root or not isinstance(declared_root, str):
         issues.append(
             f"Agent '{name}' in {AGENT_MAP_FILE} has no 'root', so there is nowhere to read its settings and prompts "
-            'from. Write it as root = "relative/path/to/the/agent".'
+            'from. Write it as root = "relative/path/to/the/agent", relative to the image root.'
         )
         return issues, warnings, notices
 

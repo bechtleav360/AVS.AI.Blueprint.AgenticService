@@ -3,6 +3,17 @@
 
 ### Fixed
 
+- **`asbs validate --group` contradicted the runtime about where an agent's `root` points.** The
+  runtime resolves every `root` against the **image root** -- the directory the process runs in --
+  and `BLUEPRINT_AGENT_MAP` may put the map anywhere, so a repository keeping `deploy/agents.toml`
+  with its agents at the top runs correctly. The validator resolved each `root` against whichever
+  directory the map sat in, so it reported that layout as `... is not a directory` under the
+  verdict "would stop this image starting" -- a false statement about a working image, whose
+  correct reading is to break a layout that worked. The two coincide only where the map is at the
+  image root, which is what `asbs setup --group` writes, so no test caught it. The command now
+  takes the directory argument as the image root and `--agent-map PATH` (or `BLUEPRINT_AGENT_MAP`)
+  as where the map is; a relative path resolves against the image root, as at runtime. The error
+  for an absent map names the flag. Present since `root` became required in 0.9.0a4.
 - **An agent settings file that scoped keys under the agent's own name merged into nothing.**
   `[default.<agent>]` in that agent's own `settings.toml` nested to `<agent>.<agent>.*` once the
   file was merged under the agent's namespace, so every key in it was unreachable -- and the

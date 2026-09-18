@@ -7099,6 +7099,54 @@ No Kubernetes material was added. The framework ships no chart or manifest files
 what it ships is the capabilities a cluster uses -- probes, `POD_NAME`, `scheduler_mode` -- which
 `guides/deployment.md` already documents.
 
+### `asbs validate --group` disagreed with the runtime about where `root` points
+
+Reported from a consumer repository on 0.9.0a6, and reproduced both ways: `asbs validate --group`
+at the top said "No agents.toml here" (the map was in `deploy/`), and `asbs validate --group
+deploy` resolved `root = "agents/riskmanagement/risk_identifier"` to `deploy/agents/...` and called
+it "not a directory".
+
+The part the report did not reach is the one that decided the fix: **the runtime accepts that
+layout.** `_read_agent_map` resolves `agent_root = (root / declared_root)` where `root` is
+`config.get_package_root()` -- the image root -- while `path`, the map itself, is separately
+relocatable with `BLUEPRINT_AGENT_MAP`. `validate_group._agent_findings` resolved against the
+directory holding the map. The two coincide exactly where `asbs setup --group` puts the map, which
+is why 3147 tests passed over it.
+
+So the command was not missing a check. It was making a false statement -- "1 issue(s) would stop
+this image starting" -- about an image that starts, and the reader's correct response to it is to
+break a layout that worked.
+
+Four documents, the template and two docstrings all said `root` was relative to the map's own
+directory, including `group_config.py`'s own error message for a missing `root` and
+`GroupConfig.image_root`'s docstring, which describes the map's directory while the field is
+assigned the package root. The code was consistent with none of them and correct anyway: the map
+is a packaging manifest, and letting its location define the image root means moving one file
+moves every agent.
+
+- **`validate_group.py`** now separates the two questions. `_agent_map_path(image_root, configured)`
+  returns where the map is -- `--agent-map`, else `BLUEPRINT_AGENT_MAP`, else `image_root/agents.toml`,
+  with relative values resolved against the image root exactly as the runtime resolves them --
+  and `_findings(image_root, agent_map)` takes both. Agent roots keep resolving against
+  `image_root`, which is now the runtime's meaning rather than a coincidence. The absent-map issue
+  names the flag and the variable instead of asserting "this directory is not an image"; the header
+  prints the map's path when it is not beside the image root, so the reader can see which file was
+  read.
+- **`main.py`** gains `--agent-map PATH` on the validate parser.
+- **`group_config.py`** carries no behaviour change and three corrected descriptions: the missing-
+  `root` message now names the image root, gives its resolved value and says the map can be moved
+  without moving the agents; `AgentSpec.root` says what it resolves against; `GroupConfig.image_root`
+  says what it is and, explicitly, what it is not.
+- **The template and four documents** say image root instead of "relative to this file".
+  `guides/cli/validate.md` documents `--agent-map` and why the directory argument and the map are
+  two arguments rather than one.
+
+`tests/unit/agent_generator/cli/commands/test_validate_group.py` is new -- `validate_group._findings`
+had no test file at all, which is the second reason this shipped -- and holds the reported layout,
+the scaffolded one, the flag's resolution rules and the still-refused root outside the image.
+`test_group_config.py` gains the runtime half: a relocated map resolves roots against the image
+root and leaves `image_root` at the process root.
+
 ---
 
 ## Open points

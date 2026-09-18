@@ -120,8 +120,9 @@ root   = "agents/order"
 module = "agents.order.src.main:agent"
 ```
 
-**Both keys are required.** `root` is the agent's own directory, relative to the directory
-`agents.toml` is in -- the one holding its `settings.toml` and its `src/`. `module` is how its
+**Both keys are required.** `root` is the agent's own directory -- the one holding its
+`settings.toml` and its `src/` -- relative to the image root, which is the directory the process
+runs in and normally the one holding `agents.toml`. `module` is how its
 code imports. Neither is derived from the other: a root guessed from where the declaration sits
 is right for one layout and silently wrong for the rest, and an agent whose settings were looked
 for in the wrong place does not fail, it runs on the group's defaults without saying so.

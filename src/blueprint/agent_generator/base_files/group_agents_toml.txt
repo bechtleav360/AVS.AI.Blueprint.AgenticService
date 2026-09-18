@@ -13,8 +13,11 @@
 #
 # Each agent needs two keys, and both are required:
 #
-#   root    Where the agent's own directory is, relative to this file. Its settings.toml and
-#           its src/prompts are read from there. Stated rather than guessed from the module:
+#   root    Where the agent's own directory is, relative to the image root -- the directory the
+#           process runs in, which is normally the one this file sits in too. It is the image
+#           root and not this file: BLUEPRINT_AGENT_MAP may put this file elsewhere, and moving
+#           it must not move every agent. Its settings.toml and its src/prompts are read from
+#           there. Stated rather than guessed from the module:
 #           a root derived from where a declaration happens to sit is right for one layout and
 #           silently wrong for every other, and an agent reading the group's defaults instead
 #           of its own settings does not announce itself.

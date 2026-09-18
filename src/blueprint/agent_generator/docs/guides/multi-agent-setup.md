@@ -137,8 +137,11 @@ module = "agents.billing.src.main:agent"
 ```
 
 **Both keys are required, and `root` is not derived from `module`.** `root` says where the
-agent's files are -- its `settings.toml` and its `src/prompts` -- relative to the directory
-`agents.toml` is in. `module` says how its code imports. They answer different questions and can
+agent's files are -- its `settings.toml` and its `src/prompts` -- relative to the **image root**:
+the directory the process runs in, which is where its own `settings.toml` is resolved from too.
+That is normally the directory holding `agents.toml`, but it is the image root that counts --
+`BLUEPRINT_AGENT_MAP` can put the map in `deploy/` while the agents stay at the top, and moving
+the map must not move every agent with it. `module` says how its code imports. They answer different questions and can
 legitimately differ, and a root guessed from where a declaration happens to sit is right for one
 layout and silently wrong for every other. An agent whose settings file was looked for in the
 wrong place does not fail: it runs on the group's defaults and says nothing.
