@@ -263,6 +263,23 @@ class TestAgainstTheAgentMap:
         with pytest.raises(GroupConfigError, match="declares no \\[agents"):
             GroupConfig.resolve(project, environ={"BLUEPRINT_AGENTS": "invoice", "BLUEPRINT_AGENT_MAP": str(path)})
 
+    def test_a_relocated_map_resolves_roots_against_the_image_root_not_against_itself(self, project: Config, tmp_path: Path) -> None:
+        """Where the map sits is a packaging decision; it does not move the agents.
+
+        `BLUEPRINT_AGENT_MAP` exists so the manifest can live somewhere of the repository's
+        choosing -- `deploy/agents.toml` beside the deployment files is the case that found this.
+        Resolving each `root` against the map's own directory instead would make moving the file
+        move every agent with it, and the agents here are not under `deploy/`.
+        """
+        relocated = tmp_path / "deploy"
+        relocated.mkdir()
+        (relocated / "agents.toml").write_text(AGENT_MAP)
+
+        group = GroupConfig.resolve(project, environ={"BLUEPRINT_AGENTS": "invoice", "BLUEPRINT_AGENT_MAP": "deploy/agents.toml"})
+
+        assert group.agents[0].root == (tmp_path / "agents/invoice").resolve()
+        assert group.image_root == tmp_path.resolve(), "The image root is the process's root, not the map's directory."
+
 
 class TestAgentNamesAreAgentNames:
     def test_a_name_that_cannot_be_a_namespace_is_refused(self, project: Config) -> None:

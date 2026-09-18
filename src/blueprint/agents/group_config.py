@@ -106,7 +106,8 @@ class AgentSpec:
         module: Where the agent's ``AppBuilder`` declaration lives, as ``"module.path:attribute"``.
             Comes from the agent map, never from the group file: what an agent *is* belongs to
             the image, and only which agents run belongs to the deployment.
-        root: The agent's own directory, absolute. Comes from the agent map's ``root`` key and
+        root: The agent's own directory, absolute. Comes from the agent map's ``root`` key,
+            resolved against the **image root** rather than against the map's own directory, and
             is where the agent's ``settings.toml`` and its ``src/prompts`` are read from. Stated
             rather than derived: deriving it from the declaration module's file assumed the
             declaration sits one fixed level below the agent, which silently resolved to the
@@ -140,9 +141,12 @@ class GroupConfig:
             broker-side identifier may derive from it, or moving an agent between groups would
             be visible to the broker (C1).
         agents: The agents to host, in the order the group declared them.
-        image_root: The directory the agent map was read from, which every agent's ``root`` is
-            relative to. Carried because a standalone agent's root *is* this directory, and the
-            rules about where the image's own files may sit differ in that case.
+        image_root: The image root -- the directory the process resolves its files against, which
+            every agent's ``root`` is relative to. Deliberately **not** the directory the agent
+            map was read from: the map is a packaging manifest and ``BLUEPRINT_AGENT_MAP`` may
+            put it anywhere, so letting its location define the image root would make moving the
+            file move every agent. Carried because a standalone agent's root *is* this directory,
+            and the rules about where the image's own files may sit differ in that case.
 
     Note:
         A group declares **no caches**. A cache belongs to the agent that declared it with
@@ -341,8 +345,10 @@ class GroupConfig:
             if not declared_root or not isinstance(declared_root, str):
                 raise GroupConfigError(
                     f"Agent '{agent_name}' in {path} has no 'root', so there is nowhere to read its settings and "
-                    'prompts from. Write it as root = "relative/path/to/the/agent", relative to the directory this '
-                    "file is in. It is required rather than derived: a root guessed from the declaration module is "
+                    f'prompts from. Write it as root = "relative/path/to/the/agent", relative to the image root '
+                    f"({root}) rather than to this file -- the map can be moved with '{AGENT_MAP_ENV}' without "
+                    "moving the agents. It is required rather than derived: a root guessed from the declaration "
+                    "module is "
                     "right for one layout and silently wrong for every other, and an agent reading the group's "
                     "defaults instead of its own settings does not announce itself."
                 )

@@ -58,8 +58,10 @@ module = "agents.some_topic.my_agent.src.main:agent"
 ```
 
 **Both are required and neither is derived from the other.** `root` is where the agent's files are
-(its `settings.toml`, its `src/prompts`), relative to the directory `agents.toml` is in; `module`
-is how its code imports. A root guessed from where the declaration sits is right for one layout and
+(its `settings.toml`, its `src/prompts`), relative to the **image root** -- the directory the
+process runs in, which is usually the one holding `agents.toml` but does not have to be:
+`BLUEPRINT_AGENT_MAP` moves the map without moving the agents, and `asbs validate --group
+--agent-map <path>` checks that layout. `module` is how its code imports. A root guessed from where the declaration sits is right for one layout and
 silently wrong for the rest -- and an agent whose settings were looked for in the wrong place does
 not fail, it runs on the group's defaults and says nothing.
 
