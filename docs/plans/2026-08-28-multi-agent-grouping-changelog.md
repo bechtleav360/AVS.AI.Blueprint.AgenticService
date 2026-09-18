@@ -4420,6 +4420,74 @@ went with them.
 
 ---
 
+### The migration guide implied a default group, and there is none
+
+**Documentation only. No code changed, and none should.**
+
+`docs/guides/multi-agent-setup.md` could be followed to the end and produce an image that will not
+start. Its section B -- migrating an existing single-agent project -- changes the `Dockerfile` to
+`CMD ["python", "-m", "blueprint.agents.entrypoint"]`, copies `agents.toml` in beside the settings,
+and stops. Nothing on that path says the container also needs `BLUEPRINT_AGENTS` or a mounted group
+file, and three separate passages actively suggest it does not:
+
+- "*The `Dockerfile` runs `python -m blueprint.agents.entrypoint`, which reads `agents.toml`, works
+  out this process's group, and serves it*" -- which states the causal order backwards. The entry
+  point resolves the group *first* and reads the map afterwards, to turn the names it already has
+  into modules.
+- "*Required even for a group of one: it is the only thing that turns an agent's name into code*",
+  said of `agents.toml`, which reads as though the map is what makes the group-of-one case work.
+- The three-ways table, whose grouped row was a bare `python -m blueprint.agents.entrypoint` beside
+  two other rows that genuinely are complete commands.
+
+The behaviour those passages describe does not exist. `GroupConfig.resolve` takes the agent list
+from the group file slice or from `BLUEPRINT_AGENTS`, and raises `GroupConfigError` when it has
+neither -- *before* `_read_agent_map` is called at all (`group_config.py:166-173`), so "every agent
+in the map" is not a fallback that was considered and rejected at runtime, it is not reachable. The
+refusal is pinned by `test_no_agents_anywhere_is_an_error`, which deliberately writes a populated
+`agents.toml` into the fixture and asserts the resolve still fails: the test's subject is precisely
+that a full map does not supply a group.
+
+**The refusal is right, and the fix is in the prose.** A default of "run everything in the image"
+would mean that adding a second agent to `agents.toml` silently changes what every already-deployed
+process runs -- new queue-group consumers, new durables, new routes -- with no Deployment edit
+anywhere. That is the failure the two-file split exists to prevent: the map has image lifetime, the
+group has deployment lifetime, and a default would collapse the two. `asbs dev` *can* default to
+every agent in the map (`cli-reference.md`) because a developer's laptop is the whole deployment;
+that asymmetry is where the expectation comes from, and it is not one a container can copy.
+
+Four edits, all in `docs/guides/multi-agent-setup.md`:
+
+- The introduction to the entry point now states the order the code actually runs in, and follows
+  it with the rule in its own paragraph: the group is never read from `agents.toml`, there is no
+  default and no "every agent in the map", and a container given neither exits before binding its
+  port.
+- Section B step 2 is retitled "one command, and the group it runs" and gains the missing half:
+  that unlike `uvicorn src.main:app`, which named what it served, the entry point has to be told,
+  and that copying the map does not tell it. It shows both routes -- an `ENV BLUEPRINT_AGENTS` line
+  as a development default, or `-e` per run -- notes that `asbs setup` writes that `ENV` line while
+  a hand-migrated `Dockerfile` has to add it, and quotes the `Cannot start:` line a container
+  produces without it.
+- Step 3 keeps its claim about the map and adds what the claim is not: it turns a name into code,
+  it does not supply the name. The existing argument against discovery by convention is extended
+  by one clause, since "run everything in the map" is the same mistake in a different costume.
+- The three-ways table's grouped row becomes `BLUEPRINT_AGENTS=order python -m
+  blueprint.agents.entrypoint`, with a paragraph under it saying the group is required, that
+  `BLUEPRINT_AGENTS` is the short form, and that a mounted `deployment-groups.yaml` declaring
+  exactly one group needs no `BLUEPRINT_GROUP` beside it.
+
+`docs/guides/deployment.md` needed nothing: it already says "*With neither, the process stops
+before binding its port and prints which of the two is missing*", and gives both `docker run`
+shapes. `README.md` already shows `-e BLUEPRINT_AGENTS=...` on every grouped example. The defect
+was specific to the migration path, which is also the one path where the scaffolding does not
+supply the answer for you -- a project from `asbs setup` gets `ENV BLUEPRINT_AGENTS` written into
+its `Dockerfile` and never meets this.
+
+**Left alone, deliberately:** the error message names only the two environment-variable routes
+("*Either mount a group file and name the group with `BLUEPRINT_GROUP`, or set `BLUEPRINT_AGENTS`*")
+and omits the mounted-file-with-exactly-one-group case that `_read_group_file` supports, so it tells
+you to set `BLUEPRINT_GROUP` when you may not need to. That is a `src/` change and is not part of a
+documentation fix; it is listed under Open points.
+
 ---
 
 ## Compatibility
@@ -7342,3 +7410,8 @@ keep the readable names -- nothing reads those.
   licence is a legal artefact and somebody's decision rather than a documentation fix. Whoever
   settles it removes that entry, which a guard case then requires.
 - **#80** -- the failing example tests and the unenforced test split.
+- **The "no agents resolved" message omits a route that works.** It says to mount a group file
+  *and* name it with `BLUEPRINT_GROUP`, or to set `BLUEPRINT_AGENTS` -- but `_read_group_file`
+  takes the sole group when a mounted file declares exactly one and `BLUEPRINT_GROUP` is unset, so
+  the message asks for a variable the reader may not need. A `src/` change, found while correcting
+  the migration guide's implication that the group has a default; the guide is fixed, this is not.
