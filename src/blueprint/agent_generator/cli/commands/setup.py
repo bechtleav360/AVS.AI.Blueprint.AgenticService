@@ -199,7 +199,7 @@ def run(args: Namespace) -> None:
             print("\nThis directory carries no agents.toml, and that is deliberate: the agent map says")
             print("which agents an *image* contains, so an agent holding one would be an agent that")
             print("knows whether it is running alone. Whoever hosts it supplies the name:")
-            print(f"  - its own Dockerfile writes a one-agent map naming it '{namespace}'")
+            print("  - its own Dockerfile serves it directly with uvicorn src.main:create_app --factory")
             print("  - a group image maps it in the repository's agents.toml, with root and module")
             print("  - asbs dev uses this directory's name unless --name says otherwise")
             print("\nThat name is the agent's identity on the broker, in telemetry and in its routes")

@@ -83,18 +83,26 @@ Components are registered as **classes**, not instances: a component constructed
 line is constructed before any namespace exists and belongs to the root for ever, which is why a
 group refuses one.
 
-`asbs setup` also writes `agents.toml`, which maps the agent's name to that declaration:
+**`asbs setup` writes no `agents.toml`, and that is deliberate.** The map says which agents an
+*image* contains, so an agent carrying one would be an agent that knows whether it is running
+alone -- and `asbs validate` refuses one found inside an agent. The project is run with `uvicorn
+src.main:create_app --factory`, which needs no map, no group and no namespace.
+
+Whoever hosts it supplies the name. To host this directory in a group, add it to the **image's**
+map, which lives in the repository that builds the image:
 
 ```toml
 [agents.my_ai_service]
-module = "src.main:agent"
+root   = "<path from that file to this directory>"
+module = "<that path as a dotted package>.src.main:agent"
 ```
+
+Both keys are required, and `root` resolves against the image root rather than against the map.
+See [Multi-Agent Migration](../multi-agent-migration.md) for the three files that change.
 
 That name is the agent's identity everywhere outside the file -- the NATS queue group, part of the
 JetStream durable name, the cache partition, the OpenTelemetry `service.name` and the `/api/<name>`
-route prefix -- so changing it after the first deploy is a consumer migration. The project is run
-with `uvicorn src.main:create_app --factory`, which needs no map and no group. A group image runs
-`python -m blueprint.agents.entrypoint` instead, and maps this directory from its own `agents.toml`.
+route prefix -- so changing it after the first deploy is a consumer migration.
 
 ---
 
