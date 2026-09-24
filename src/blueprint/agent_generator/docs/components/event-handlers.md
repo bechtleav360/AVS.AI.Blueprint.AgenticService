@@ -130,6 +130,33 @@ class EnricherHandler(EventHandlerBase):
         return HandlerResult(event_type="webhook.processed", data=enriched)
 ```
 
+### What the transport puts in `context`
+
+Before the first handler runs, the transport that delivered the event writes what it knows about the
+delivery:
+
+| Key | Transport | Value |
+|---|---|---|
+| `nats_topic` | NATS | The subscription that matched, possibly a wildcard: `t.*.risk.>` |
+| `nats_subject` | NATS | The subject the message was delivered on: `t.T1.risk.created` |
+| `dapr_topic` | Dapr | The topic the sidecar delivered to |
+
+**Derive anything security-relevant from `nats_subject`, not from the event.** Every field of the
+event -- `tenantid` and any other extension included -- is whatever the publisher wrote. The subject
+is what the broker routed, and under subject-scoped publish permissions it is what the broker checked
+the publisher was allowed to use. Nothing in the payload can overwrite a context key.
+
+```python
+from blueprint.agents.io.api.eventing.nats import NATS_SUBJECT_CONTEXT_KEY
+
+async def handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> None:
+    tenant = context[NATS_SUBJECT_CONTEXT_KEY].split(".")[1]   # t.<tenant>.risk.<event>
+```
+
+The key is present only for events NATS delivered: a test, a direct `process_event` call or another
+transport has no subject, so read it with `.get()` where that can happen. Handlers share `context`,
+so a handler earlier in the chain could overwrite it -- do not write to transport keys.
+
 ## Published Event Types
 
 Optionally declare the event types this handler can produce. Used for documentation and subscription introspection.

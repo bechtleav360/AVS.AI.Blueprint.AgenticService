@@ -12,6 +12,18 @@ if TYPE_CHECKING:
     from ..io.api.actuators.health.health_base import ComponentHealth
 
 
+DeliveryCallback = Callable[[CloudEvent[Any], str], Awaitable[None]]
+"""What a transport's ``subscribe()`` calls for each message: the decoded event, and the subject it arrived on.
+
+The subject is passed beside the event rather than inside it because it is the one fact about a
+delivery the publisher does not control. ``msg.subject`` is what the broker routed -- and, under
+subject-scoped permissions, what it checked the publisher was allowed to publish to -- while every
+field of the event, a tenant id included, is whatever the publisher wrote. A handler that must know
+*which* subject a wildcard subscription matched (``t.*.risk.>`` delivering ``t.T1.risk.created``)
+needs the former, so it travels outside the payload, where nothing in the payload can overwrite it.
+"""
+
+
 class ClientBase(Component, ABC):
     """Abstract base class for all clients (IO transports, AI providers).
 
@@ -76,7 +88,7 @@ class ClientBase(Component, ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def subscribe(self, topic_callbacks: dict[str, Callable[[CloudEvent[Any]], Awaitable[None]]]) -> None:
+    async def subscribe(self, topic_callbacks: dict[str, DeliveryCallback]) -> None:
         """Register all topic→callback mappings and begin the managed connection + subscription cycle.
 
         Implementations must be non-blocking: store the mapping and start a

@@ -1,7 +1,6 @@
 """OpenAI client implementation."""
 
 import logging
-from collections.abc import Awaitable, Callable
 from typing import Any
 
 from openai import AsyncOpenAI
@@ -9,6 +8,7 @@ from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIResponsesModel, OpenAIResponsesModelSettings
 from pydantic_ai.providers.openai import OpenAIProvider
 
+from ..client_base import DeliveryCallback
 from .ai_client_base import AIClientBase
 from ...models.api import ComponentHealth
 from ...models.events import CloudEvent
@@ -30,7 +30,7 @@ class OpenAIClient(AIClientBase):
             await self._client.close()
             self._client = None
 
-    async def subscribe(self, topic_callbacks: dict[str, Callable[[CloudEvent[Any]], Awaitable[None]]]) -> None:
+    async def subscribe(self, topic_callbacks: dict[str, DeliveryCallback]) -> None:
         logger.warning("OpenAI client does not support subscriptions")
 
     async def publish(self, topic: str, event: CloudEvent[Any], routing_key: str | None = None) -> None:

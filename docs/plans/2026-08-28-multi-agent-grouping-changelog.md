@@ -7340,6 +7340,50 @@ interpreter's pip and installing that file with uv. `.venv` does not have it yet
 Docs: five rows in `reference/configuration-keys.md` and a paragraph on choosing one method.
 Guarded by `TestNATSClientAuthentication` and `TestRedactUrl` in `test_nats_client.py`.
 
+### Handlers see the subject a message was delivered on
+
+From the same review (their cross-repo change 1, the real fix for their W17 interim). The
+tenant-auth plan wants the tenant taken from the subject the broker checked, not from the
+publisher-controlled `event.tenantid`. `_subscribe_one()` passed its callback only the decoded
+event, and the context `NatsEventing` built held `nats_topic` -- the *subscription*, e.g.
+`t.*.risk.>`, which says nothing about which tenant matched.
+
+The reviewer offered two routes: the handler context, or a framework-set CloudEvent extension.
+**The context was chosen** because a publisher cannot reach it by construction: the context is
+built by the transport edge from transport facts, and nothing in the event is copied into it. An
+extension would live in the payload the publisher writes, and the framework would have to
+overwrite or strip it on every delivery -- a guarantee that holds only as long as no path forgets.
+
+**What changed.**
+
+- **`DeliveryCallback`**, new in `clients/client_base.py`:
+  `Callable[[CloudEvent[Any], str], Awaitable[None]]`. `ClientBase.subscribe()`'s abstract
+  signature fixed callbacks to one argument, so passing the subject from NATS alone would have
+  violated the contract (mypy caught it as an incompatible override). The contract itself is
+  widened instead, and `NATSClient`, `DaprClient`, `OpenAIClient` and `VLLMClient` use it.
+- **`NATSClient._subscribe_one()`**: `await callback(cloud_event, msg.subject)`.
+- **`NatsEventing._make_event_callback()`**: the callback takes the subject and builds
+  `{"nats_topic": topic, NATS_SUBJECT_CONTEXT_KEY: subject}`. The constant is public in
+  `io/api/eventing/nats.py`.
+- **`DaprEventing._make_event_callback()`** accepts and ignores it: `DaprClient` stores its
+  callbacks and never calls them, because Dapr delivers over HTTP (verified: nothing indexes
+  `_topic_callbacks`).
+
+**Breaking**, and recorded as such: a one-argument callback handed to `NATSClient.subscribe()`
+now fails on its first message. Handlers are unaffected. Eighteen test callbacks in
+`test_nats_client.py` and two call sites in `test_nats.py` were written against the old shape and
+were updated.
+
+**Not covered, and stated:** Dapr has no equivalent. The sidecar delivers to a fixed topic path,
+and whether its envelope's `topic` is broker-checked depends on the pubsub component, not on this
+framework. A handler under Dapr gets no `nats_subject` and must not assume one.
+
+Docs: *What the transport puts in `context`* in `components/event-handlers.md`, with the three
+transport keys and the rule to derive tenants from the subject. Guarded by
+`test_the_delivery_subject_reaches_the_callback` in `test_nats_client.py` and
+`TestNatsEventingDeliverySubject` in `test_nats.py`, including an event that carries a spoofed
+`nats_subject` extension and a different `tenantid`.
+
 ---
 
 ## Open points
