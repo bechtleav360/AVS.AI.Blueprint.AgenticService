@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import copy
 import logging
 import signal
 from collections.abc import AsyncIterator, Callable, Mapping
@@ -641,6 +642,14 @@ class AppBuilder:
         read from its own section rather than from the root or from a neighbour's. That is the
         whole of D6, and it is why this method takes ``config`` at all.
 
+        **Each agent builds from its own copy of the builder.** A group replays one declaration
+        once per agent -- the same ``AppBuilder`` named twice in the map -- and
+        ``AgentBuilder.build`` is single-use, because it stores what it resolved (the AI config,
+        the client, the prompt) on the builder. Building the recorded builder itself therefore
+        raised "already been called" for the second agent. The builder is the recipe, not the
+        agent, so a shallow copy per build is exactly "one declaration, several agents"; the
+        recorded builder stays unbuilt, and so does the single-use guard for direct use.
+
         Args:
             declaration: The recorded call to replay.
             config: The application's configuration, scoped per declaration as needed.
@@ -652,7 +661,8 @@ class AppBuilder:
             instance = declaration.target
         elif isinstance(declaration.target, AgentBuilder):
             with construction_scope(declaration.namespace):
-                instance = declaration.target.build(config.for_namespace(declaration.namespace), **declaration.kwargs)
+                recipe = copy.copy(declaration.target)
+                instance = recipe.build(config.for_namespace(declaration.namespace), **declaration.kwargs)
         else:
             with construction_scope(declaration.namespace):
                 instance = declaration.target(**declaration.kwargs)

@@ -24,6 +24,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from blueprint.agents.agent.agent_builder import AgentBuilder
 from blueprint.agents.agent_group import AgentGroup
 from blueprint.agents.app_builder import AppBuilder
 from blueprint.agents.component.component import Component
@@ -559,3 +560,42 @@ class TestEachAgentsOwnSettings:
         group.assemble(config)
 
         assert group.settings == {}
+
+
+class TestOneAgentBuilderServesSeveralAgents:
+    """#10 -- AgentBuilder.build() is single-use, and a group replays one declaration per agent."""
+
+    @staticmethod
+    def _assemble(config: Config, declaration: AppBuilder, names: tuple[str, ...]) -> list[dict[str, Any]]:
+        built: list[dict[str, Any]] = []
+
+        def _runtime(**kwargs: Any) -> MagicMock:
+            built.append(kwargs)
+            return MagicMock(name=kwargs["name"])
+
+        ai = MagicMock(model_name="m", provider="openai", max_tokens=None, temperature=None)
+        with (
+            patch.object(type(config), "get_ai_config", return_value=ai),
+            patch.dict("blueprint.agents.agent.agent_builder._CLIENT_MAP", {"openai": MagicMock(return_value=MagicMock())}),
+            patch("blueprint.agents.agent.agent_builder.PromptLoader.load_prompt", return_value="prompt"),
+            patch("blueprint.agents.agent.agent_builder.AgentRuntime", side_effect=_runtime),
+        ):
+            AgentGroup("pair", dict.fromkeys(names, declaration)).assemble(config)
+        return built
+
+    def test_each_agent_gets_its_own_build(self, config: Config) -> None:
+        agent = AgentBuilder(runtime_name="assistant").with_model_from_config().with_system_prompt("system")
+        built = self._assemble(config, AppBuilder().with_agent(agent), ("order", "billing"))
+        assert len(built) == 2
+
+    def test_the_recorded_builder_stays_unbuilt(self, config: Config) -> None:
+        agent = AgentBuilder(runtime_name="assistant").with_model_from_config().with_system_prompt("system")
+        self._assemble(config, AppBuilder().with_agent(agent), ("order", "billing"))
+        assert agent._built is False
+
+    def test_the_agents_do_not_share_a_tool_list(self, config: Config) -> None:
+        agent = AgentBuilder(runtime_name="assistant").with_model_from_config().with_system_prompt("system")
+        agent.with_tool("lookup", lambda: "x")
+        built = self._assemble(config, AppBuilder().with_agent(agent), ("order", "billing"))
+        assert built[0]["tools"] is not built[1]["tools"]
+        assert built[0]["tools"] == built[1]["tools"]

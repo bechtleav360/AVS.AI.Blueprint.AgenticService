@@ -402,7 +402,8 @@ class AgentBuilder:
         kwargs.setdefault("name", self._runtime_name)
         runtime = AgentRuntime(
             system_prompt=self._system_prompt,
-            tools=self._tools if self._tools else [],
+            # A new list per agent: copies of one builder share it, and each agent owns its tools.
+            tools=list(self._tools),
             **kwargs,
         )
         runtime._ai_client = self._ai_client
