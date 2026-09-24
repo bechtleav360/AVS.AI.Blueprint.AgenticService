@@ -3,6 +3,11 @@
 
 ### Fixed
 
+- **An environment override of a key an agent's own `settings.toml` also sets now wins in a group.**
+  `DYNACONF_<AGENT>__KEY` was compared against the agent file's keys case-sensitively -- Dynaconf
+  upper-cases what it loads, the file keeps lower case -- so the override was never seen: a list
+  was concatenated with the file's, a scalar was replaced by the file's value, and the key was
+  reported as merged. Keys are now matched case-insensitively, at every nesting level.
 - **Both scaffolded `Dockerfile`s declared a `HEALTHCHECK` against a route that does not exist.**
   `curl -f http://localhost:8000/health` -- but `ActuatorApi` serves `/health/live` and
   `/health/ready`, and nothing at `/health`. `curl -f` fails on the 404, so every container built

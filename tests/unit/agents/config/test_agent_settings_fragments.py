@@ -175,6 +175,50 @@ class TestPrecedence:
         assert (view.get("cache.size_limit"), view.get("cache.cache_dir")) == (500, ".cache/orders")
 
 
+class TestEnvironmentOverrides:
+    """``DYNACONF_<AGENT>__KEY`` beats the agent's own file, for a key the file also sets.
+
+    Dynaconf stores what it loads upper-cased and the fragment keeps its lower case, so a verbatim
+    comparison never saw the override: the fragment was written beside it, the list was then
+    concatenated and the scalar replaced -- and the key was reported as merged.
+    """
+
+    @pytest.fixture
+    def overridden(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Config:
+        monkeypatch.setenv("DYNACONF_RISK__NATS_SUBSCRIPTIONS", '["t.T1.risk.>"]')
+        monkeypatch.setenv("DYNACONF_RISK__APP_NAME", "FromEnv")
+        monkeypatch.setenv("DYNACONF_RISK__CACHE__SIZE_LIMIT", "500")
+        (tmp_path / "settings.toml").write_text('[default]\napp_environment = "development"\n')
+        return Config(settings_files=["settings.toml"], root_path=str(tmp_path))
+
+    @pytest.fixture
+    def merged(self, overridden: Config, tmp_path: Path) -> tuple[str, ...]:
+        body = """
+        [default]
+        app_name = "RiskIdentifier"
+        nats_subscriptions = ["risk.>", "t.*.risk.>"]
+        model_name = "risk-model"
+
+        [default.cache]
+        size_limit = 100
+        cache_dir = ".cache/risk"
+        """
+        return overridden.merge_agent_settings("risk", fragment(tmp_path, "risk", body))
+
+    def test_a_list_is_replaced_not_concatenated(self, overridden: Config, merged: tuple[str, ...]) -> None:
+        assert overridden.for_namespace("risk").get("nats_subscriptions") == ["t.T1.risk.>"]
+
+    def test_a_scalar_keeps_the_environments_value(self, overridden: Config, merged: tuple[str, ...]) -> None:
+        assert overridden.for_namespace("risk").get("app_name") == "FromEnv"
+
+    def test_a_nested_key_keeps_the_environments_value(self, overridden: Config, merged: tuple[str, ...]) -> None:
+        view = overridden.for_namespace("risk")
+        assert (view.get("cache.size_limit"), view.get("cache.cache_dir")) == (500, ".cache/risk")
+
+    def test_only_what_the_environment_left_out_is_reported(self, merged: tuple[str, ...]) -> None:
+        assert merged == ("cache.cache_dir", "model_name")
+
+
 class TestProcessScopeKeys:
     def test_a_port_is_ignored(self, config: Config, tmp_path: Path) -> None:
         """One process, one HTTP server: a per-agent port is unbindable."""
