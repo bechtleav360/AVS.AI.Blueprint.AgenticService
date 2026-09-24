@@ -7515,6 +7515,47 @@ Docs: *When publishing a result fails* in `concepts/event-processing.md`. Guarde
 `TestAFailedResultPublish` (`test_event_processing_service.py`) and two `release` cases in
 `test_handler_chain.py`; all nine behaviour cases fail against the previous code.
 
+### The declared transport mode is enforced (#4, decision D)
+
+**Verified.** `NATSClient.connect()` called `connection.jetstream()` inside a `try` and, if it
+raised, logged a WARNING and set `_use_jetstream = False` -- falling back to Core NATS: no durable
+consumers, and `_settle` returns early on Core NATS, so every handler failure was dropped. Worse, the
+fallback almost never fired: `jetstream()` only builds a local context and asks the server nothing,
+so an agent on a server without JetStream connected "successfully" and failed later, confusingly,
+at stream provisioning.
+
+Decided with the user: `nats_use_jetstream` is the declaration, and a server that does not match it
+fails the agent. Core declared on a JetStream-enabled server is fine -- Core NATS works everywhere.
+
+**What changed, in `nats_client.py`.**
+
+- **`JetStreamUnavailableError`**, new: the declared-JetStream-but-not-offered error.
+- **`_require_jetstream()`**, new, called by `connect()` right after `jetstream()`: sends
+  `account_info()`. `NoRespondersError` and `APIError` (which covers `ServiceUnavailableError`)
+  are answers: the connection is closed, the error recorded in `_jetstream_mismatch`, reported
+  (below), and raised. A `nats.errors.TimeoutError` is not an answer and propagates as an ordinary,
+  retried connection failure. The fallback block is gone.
+- **`_start_with_retry()`** re-raises `JetStreamUnavailableError` without retrying.
+- **`health_check()`** reports the recorded mismatch as the unhealthy message.
+- **`on_startup()`**: if a mismatch was recorded -- normally by the actuator's first health poll,
+  which connects every client before any component starts -- it probes again (`connect()`), so the
+  startup failure policy (sec. 9.1) applies and a retried startup sees a fixed server. It then marks
+  the client started.
+- **`set_fatal_handler()`**, **`_report_fatal()`**: after startup, a mismatch is handed once to the
+  installed handler, as a watched task.
+
+**In `app_builder.py`:** every `NATSClient` gets `set_fatal_handler(self._on_transport_fatal)`.
+**`_on_transport_fatal()`**, new: the root or a critical agent logs CRITICAL and sends SIGTERM to the
+process (`signal.raise_signal`), so uvicorn runs the graceful shutdown and the other agents drain; a
+non-critical agent is marked down and stays down, because this is a deployment error no retry fixes
+(it is deliberately not added to the startup-recovery list).
+
+Docs: `nats_use_jetstream` in `reference/configuration-keys.md`, *JetStream delivery* in
+`concepts/event-processing.md`, a new symptom in `guides/troubleshooting.md`. Guarded by
+`TestTheDeclaredModeIsEnforced` (`test_nats_client.py`, 12 cases) and
+`TestAFatalTransportErrorAfterStartup` (`test_startup_failure_policy.py`, 3 cases). One existing
+test (`test_connect_enables_jetstream_when_configured`) needed `account_info` mocked as awaitable.
+
 ---
 
 ## Open points

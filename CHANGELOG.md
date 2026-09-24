@@ -126,6 +126,12 @@
 
 ### Breaking
 
+- **`nats_use_jetstream = true` is enforced against the server; there is no fallback to Core
+  NATS.** The server is asked for the account's JetStream information on connecting. If it does not
+  offer JetStream, the agent fails: at startup through the startup failure policy, later (broker
+  unreachable at startup) by shutting the process down for the root or a critical agent and marking
+  a non-critical one down. The previous fallback rarely triggered, and when it did it dropped
+  durable consumers and acknowledgements without anyone deciding it.
 - **`ClientBase.subscribe()` callbacks take the delivery subject.** The contract is now
   `DeliveryCallback = Callable[[CloudEvent, str], Awaitable[None]]` (in `clients/client_base.py`):
   the event, then the subject it arrived on. Only code that calls `NATSClient.subscribe()` directly,

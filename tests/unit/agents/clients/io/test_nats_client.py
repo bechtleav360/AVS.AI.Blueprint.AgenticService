@@ -7,10 +7,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import urlparse
 
 import pytest
+from nats.errors import NoRespondersError
+from nats.errors import TimeoutError as NatsTimeoutError
 from nats.js import api as js_api
+from nats.js.errors import APIError, ServiceUnavailableError
 
 from blueprint.agents.clients.io.io_client_base import subject_is_covered_by
-from blueprint.agents.clients.io.nats_client import DEVELOPMENT_NATS_URL, ConsumerTuning, NATSClient, redact_url
+from blueprint.agents.clients.io.nats_client import (
+    DEVELOPMENT_NATS_URL,
+    ConsumerTuning,
+    JetStreamUnavailableError,
+    NATSClient,
+    redact_url,
+)
 from blueprint.agents.models.errors import CriticalHandlerError, InvalidEventError, RetryableHandlerError
 from blueprint.agents.models.events import CloudEvent
 
@@ -106,6 +115,7 @@ class TestNATSClientConnect:
             True if key == "nats_use_jetstream" else {"nats_url": "nats://localhost:4222"}.get(key, default)
         )
         mock_js = MagicMock()
+        mock_js.account_info = AsyncMock()
         mock_nc = MagicMock(is_closed=False, is_connected=True)
         mock_nc.jetstream = MagicMock(return_value=mock_js)
         with patch("blueprint.agents.clients.io.nats_client.nats.connect", new_callable=AsyncMock) as mock_connect:
@@ -2038,3 +2048,125 @@ class TestStreamSubjectCoverage:
 
         assert wanted, "the client wanted no subjects at all, so this asserts nothing"
         assert all(subject_is_covered_by(subject, "orders.>") for subject in wanted)
+
+
+class TestTheDeclaredModeIsEnforced:
+    """D -- nats_use_jetstream is a declaration: a server without JetStream fails the agent.
+
+    It used to be a wish. connection.jetstream() asks the server nothing, and the rare failure it
+    did catch fell back to Core NATS -- no durable consumers, no settlement -- without anyone
+    deciding it.
+    """
+
+    @staticmethod
+    def _configure(mock_config: MagicMock, *, jetstream: bool) -> None:
+        values = {"app_name": "orders", "nats_url": "nats://broker:4222", "app_environment": "production", "nats_use_jetstream": jetstream}
+        mock_config.get.side_effect = lambda key, default=None: values.get(key, default)
+        mock_config.envvar_prefix = "DYNACONF"
+
+    @staticmethod
+    def _server(account_info: AsyncMock) -> MagicMock:
+        js = MagicMock()
+        js.account_info = account_info
+        nc = MagicMock(is_closed=False, is_connected=True)
+        nc.jetstream = MagicMock(return_value=js)
+        nc.close = AsyncMock()
+        return nc
+
+    async def _connect(self, client: NATSClient, nc: MagicMock) -> None:
+        with patch("blueprint.agents.clients.io.nats_client.nats.connect", new_callable=AsyncMock, return_value=nc):
+            await client.connect()
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            ServiceUnavailableError(),
+            NoRespondersError(),
+            APIError(code=503, err_code=10039, description="jetstream not enabled for account"),
+        ],
+        ids=["no-jetstream-on-server", "no-responders", "not-enabled-for-account"],
+    )
+    async def test_a_server_without_jetstream_fails_the_connection(
+        self, nats_client: NATSClient, mock_config: MagicMock, answer: Exception
+    ) -> None:
+        self._configure(mock_config, jetstream=True)
+        nc = self._server(AsyncMock(side_effect=answer))
+        with pytest.raises(JetStreamUnavailableError, match="nats_use_jetstream = true"):
+            await self._connect(nats_client, nc)
+        nc.close.assert_awaited_once()
+        assert nats_client._nats_client is None
+        assert nats_client._use_jetstream is True
+
+    async def test_it_is_reported_by_the_health_check(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        self._configure(mock_config, jetstream=True)
+        with pytest.raises(JetStreamUnavailableError):
+            await self._connect(nats_client, self._server(AsyncMock(side_effect=ServiceUnavailableError())))
+        health = await nats_client.health_check()
+        assert health.status == "unhealthy"
+        assert "does not offer JetStream" in (health.message or "")
+
+    async def test_a_timeout_is_not_an_answer(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        """No reply proves nothing; it stays an ordinary, retried connection failure."""
+        self._configure(mock_config, jetstream=True)
+        with pytest.raises(NatsTimeoutError):
+            await self._connect(nats_client, self._server(AsyncMock(side_effect=NatsTimeoutError())))
+        assert nats_client._jetstream_mismatch is None
+
+    async def test_a_server_with_jetstream_connects(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        self._configure(mock_config, jetstream=True)
+        await self._connect(nats_client, self._server(AsyncMock()))
+        assert nats_client._js is not None
+
+    async def test_core_asks_the_server_nothing(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        """Core NATS works on every server; JetStream being enabled there does not matter."""
+        self._configure(mock_config, jetstream=False)
+        info = AsyncMock()
+        await self._connect(nats_client, self._server(info))
+        info.assert_not_awaited()
+
+    async def test_the_retry_loop_does_not_retry_it(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        self._configure(mock_config, jetstream=True)
+        connect = AsyncMock(return_value=self._server(AsyncMock(side_effect=ServiceUnavailableError())))
+        with patch("blueprint.agents.clients.io.nats_client.nats.connect", connect):
+            with pytest.raises(JetStreamUnavailableError):
+                await nats_client._start_with_retry()
+        connect.assert_awaited_once()
+
+    async def test_startup_fails_when_a_poll_found_it_first(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        """The actuator's first health poll connects every client before any component starts."""
+        self._configure(mock_config, jetstream=True)
+        nc = self._server(AsyncMock(side_effect=ServiceUnavailableError()))
+        with patch("blueprint.agents.clients.io.nats_client.nats.connect", new_callable=AsyncMock, return_value=nc):
+            with pytest.raises(JetStreamUnavailableError):
+                await nats_client.connect()
+            with pytest.raises(JetStreamUnavailableError):
+                await nats_client.on_startup()
+
+    async def test_a_retried_startup_sees_a_fixed_server(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        self._configure(mock_config, jetstream=True)
+        with pytest.raises(JetStreamUnavailableError):
+            await self._connect(nats_client, self._server(AsyncMock(side_effect=ServiceUnavailableError())))
+        with patch("blueprint.agents.clients.io.nats_client.nats.connect", new_callable=AsyncMock, return_value=self._server(AsyncMock())):
+            await nats_client.on_startup()
+        assert nats_client._jetstream_mismatch is None
+
+    async def test_after_startup_it_goes_to_the_fatal_handler_once(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        self._configure(mock_config, jetstream=True)
+        handler = AsyncMock()
+        nats_client.set_fatal_handler(handler)
+        await nats_client.on_startup()
+        for _ in range(3):
+            with pytest.raises(JetStreamUnavailableError):
+                await self._connect(nats_client, self._server(AsyncMock(side_effect=ServiceUnavailableError())))
+        await asyncio.sleep(0)
+        handler.assert_awaited_once()
+        assert handler.await_args.args[0] == nats_client.namespace
+
+    async def test_before_startup_it_is_left_to_on_startup(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        self._configure(mock_config, jetstream=True)
+        handler = AsyncMock()
+        nats_client.set_fatal_handler(handler)
+        with pytest.raises(JetStreamUnavailableError):
+            await self._connect(nats_client, self._server(AsyncMock(side_effect=ServiceUnavailableError())))
+        await asyncio.sleep(0)
+        handler.assert_not_awaited()

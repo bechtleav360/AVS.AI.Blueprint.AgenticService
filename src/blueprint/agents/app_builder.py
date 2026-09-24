@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import logging
+import signal
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -1083,7 +1084,7 @@ class AppBuilder:
             # The client is per agent; the endpoint is not. See _wire_dapr_endpoint.
             DaprClient(namespace=namespace)  # auto-registers
         elif event_bus_type == "nats":
-            NATSClient(namespace=namespace)  # auto-registers
+            NATSClient(namespace=namespace).set_fatal_handler(self._on_transport_fatal)  # auto-registers
             if consumes:
                 self._eventing_components.append(NatsEventing(namespace=namespace))
         elif event_bus_type == "sessions":
@@ -1298,6 +1299,30 @@ class AppBuilder:
             await self._mark_agent_down(namespace, f"its {kind.lower()} '{label}' failed to start: {exc}")
             return
         logger.info("%s %s startup completed", kind, label)
+
+    async def _on_transport_fatal(self, namespace: str, error: BaseException) -> None:
+        """Act on a transport that found, after startup, that its agent cannot run at all.
+
+        The startup failure policy (sec. 9.1) decides at startup; this is the same decision for the
+        case where the broker was not reachable then, so the failure surfaced later, in the
+        connection loop or a health poll. The root and a critical agent end the process -- a pod
+        that stays up without them is a replica silently short a consumer, the very case sec. 9.1
+        exits for. A non-critical agent is marked down, and stays down: unlike a startup failure,
+        this is a deployment error that no retry fixes.
+
+        The process is ended with SIGTERM to itself, so uvicorn runs the normal graceful shutdown
+        -- the other agents drain -- instead of the interpreter stopping mid-flight.
+        """
+        if not namespace or namespace in self._critical_namespaces:
+            logger.critical(
+                "Agent '%s' cannot run, and it is %s, so the process is shut down: %s",
+                namespace or ROOT_LABEL,
+                "the root" if not namespace else "critical",
+                error,
+            )
+            signal.raise_signal(signal.SIGTERM)
+            return
+        await self._mark_agent_down(namespace, str(error))
 
     @staticmethod
     def _startup_retry_interval(config: Config) -> float:

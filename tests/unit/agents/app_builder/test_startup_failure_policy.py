@@ -10,9 +10,11 @@ of the eight startup loops the failure came out of and what the actuator knew by
 """
 
 import asyncio
+import signal
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -297,3 +299,31 @@ class TestRecovery:
         with pytest.raises(ValueError, match="startup_retry_interval_seconds"):
             async with app.router.lifespan_context(app):
                 pass
+
+
+class TestAFatalTransportErrorAfterStartup:
+    """D -- the startup failure policy, for a failure that surfaced after startup."""
+
+    @staticmethod
+    def _builder(config: Config) -> AppBuilder:
+        builder = AppBuilder(config)
+        builder.host_agent("orders", critical=True)
+        builder.host_agent("billing", critical=False)
+        builder._critical_namespaces = ["orders"]
+        return builder
+
+    @pytest.mark.parametrize("namespace", ["", "orders"], ids=["root", "critical"])
+    async def test_the_root_or_a_critical_agent_ends_the_process(self, config: Config, namespace: str, caplog) -> None:
+        builder = self._builder(config)
+        with patch("blueprint.agents.app_builder.signal.raise_signal") as raise_signal, caplog.at_level("CRITICAL"):
+            await builder._on_transport_fatal(namespace, RuntimeError("no JetStream"))
+        raise_signal.assert_called_once_with(signal.SIGTERM)
+        assert "the process is shut down" in caplog.text
+
+    async def test_a_non_critical_agent_is_marked_down(self, config: Config) -> None:
+        builder = self._builder(config)
+        builder._mark_agent_down = AsyncMock()  # type: ignore[method-assign]
+        with patch("blueprint.agents.app_builder.signal.raise_signal") as raise_signal:
+            await builder._on_transport_fatal("billing", RuntimeError("no JetStream"))
+        raise_signal.assert_not_called()
+        builder._mark_agent_down.assert_awaited_once_with("billing", "no JetStream")
