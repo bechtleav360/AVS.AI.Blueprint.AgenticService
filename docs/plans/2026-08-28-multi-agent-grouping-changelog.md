@@ -7591,6 +7591,28 @@ Guarded by `TestStructuredOutputReachesTheAgent` in `test_agent_builder.py`: thr
 cases fail against the previous code (the other two check that unset changes nothing and that the
 kwargs route still works).
 
+### One `AgentBuilder` declaration serves several agents (#10)
+
+**Verified by reproduction** (the list marked it unverified): `AgentGroup("pair", {"order": decl,
+"billing": decl})` with `decl = AppBuilder().with_agent(AgentBuilder(...))` raised
+`RuntimeError: AgentBuilder.build() has already been called` for the second agent, through the real
+`build()`. `AgentGroup`'s own docstring calls one declaration serving several agents the group's
+central property; no test covered it with an agent.
+
+**Change.** `AppBuilder._construct` builds from `copy.copy(declaration.target)` instead of the
+recorded builder. The builder is a recipe; `build()` stores what it resolved on the builder, which
+is why it is single-use, and a copy per agent keeps that guard for direct use while letting a group
+build the recipe once per agent. The recorded builder stays unbuilt. `AgentBuilder.build()` now
+hands `list(self._tools)` to the runtime, so copies of one builder do not give two agents one tool
+list.
+
+Not a conflict with `_refuse_state_shared_between_agents`, which refuses *user* objects passed as
+arguments rather than copying them: the builder is the framework's own declaration type, and copying
+it is the framework's decision.
+
+Guarded by `TestOneAgentBuilderServesSeveralAgents` in `test_agent_group.py` (3 cases, all failing
+against the previous code).
+
 ---
 
 ## Open points

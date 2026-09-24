@@ -3,6 +3,10 @@
 
 ### Fixed
 
+- **One declaration with an `AgentBuilder` can serve several agents of a group.** A group replays
+  a declaration once per agent, and `AgentBuilder.build()` is single-use, so the second agent failed
+  with "AgentBuilder.build() has already been called". Each agent now builds from its own copy of
+  the builder, with its own tool list.
 - **`AgentBuilder.with_result_type()` and `with_deps_type()` take effect.** Both were stored and
   never passed to the agent, so a structured-output agent returned plain `str` and the documented
   `result.output.<field>` failed. They are now passed as `output_type` and `deps_type`. Giving the
