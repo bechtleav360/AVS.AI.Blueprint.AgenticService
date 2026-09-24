@@ -56,6 +56,7 @@ import asyncio
 import logging
 import time
 from abc import ABC, abstractmethod
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from typing import Any, ClassVar
 from uuid import UUID
@@ -71,6 +72,46 @@ from ..models.sessions import JobError
 from .event_handler_base import EventHandlerBase
 
 logger = logging.getLogger(__name__)
+
+
+class RecentJobIds:
+    """The ids of recently finished jobs, forgotten after a while and capped in number.
+
+    The replay guard needs to recognise a *redelivery* of a finished job, and a redelivery arrives
+    within minutes. A plain set kept every id for the life of the process -- one UUID per finished
+    job, never pruned -- so memory grew without bound. This keeps an id for ``ttl`` seconds and at
+    most ``max_entries`` ids, evicting the oldest first; a redelivery after that is processed again,
+    which the terminal call's retry already has to tolerate.
+    """
+
+    def __init__(self, ttl: float, max_entries: int) -> None:
+        self._ttl = ttl
+        self._max_entries = max_entries
+        self._added: OrderedDict[UUID, float] = OrderedDict()
+
+    def add(self, job_id: UUID) -> None:
+        """Remember ``job_id`` as finished now."""
+        self._evict_expired()
+        self._added.pop(job_id, None)
+        self._added[job_id] = time.monotonic()
+        while len(self._added) > self._max_entries:
+            self._added.popitem(last=False)
+
+    def __contains__(self, job_id: object) -> bool:
+        self._evict_expired()
+        return job_id in self._added
+
+    def __len__(self) -> int:
+        self._evict_expired()
+        return len(self._added)
+
+    def _evict_expired(self) -> None:
+        cutoff = time.monotonic() - self._ttl
+        while self._added:
+            oldest = next(iter(self._added.values()))
+            if oldest > cutoff:
+                return
+            self._added.popitem(last=False)
 
 
 class SessionsJobHandler(EventHandlerBase, ABC):
@@ -123,13 +164,20 @@ class SessionsJobHandler(EventHandlerBase, ABC):
                     f"alias property and is silently ignored by the retry logic. Set {new_name!r} instead."
                 )
 
+    SEEN_TTL_SECONDS: ClassVar[float] = 3600.0
+    """How long a finished job's id is remembered for recognising a redelivery."""
+
+    SEEN_MAX_ENTRIES: ClassVar[int] = 10_000
+    """How many finished job ids are remembered at most; the oldest is forgotten first."""
+
     def __init__(self, priority: int = 100) -> None:
         super().__init__(priority=priority)
         self._agent_id: str | None = None
         # Concurrent duplicate guard; populated at entry, cleared in `finally`.
         self._in_flight: set[UUID] = set()
-        # Replay guard; populated only on a terminal outcome (complete/cancel).
-        self._seen: set[UUID] = set()
+        # Replay guard; populated only on a terminal outcome (complete/cancel). Bounded in time
+        # and size -- see RecentJobIds.
+        self._seen = RecentJobIds(ttl=self.SEEN_TTL_SECONDS, max_entries=self.SEEN_MAX_ENTRIES)
 
     async def on_startup(self) -> None:
         """Resolve the agent id from ``sessions_service`` config (required)."""
