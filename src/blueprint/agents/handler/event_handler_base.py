@@ -46,10 +46,9 @@ class EventHandlerBase(Component, ABC):
     Usage in custom code:
 
     ```python
-    class MyHandler(EventHandler):
+    class MyHandler(EventHandlerBase):
         def __init__(self):
             super().__init__(priority=20)
-            self.name = "MyHandler"
 
         async def can_handle_event(self, event, context):
             return True

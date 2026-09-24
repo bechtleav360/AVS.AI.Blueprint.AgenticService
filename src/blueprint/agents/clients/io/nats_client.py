@@ -789,7 +789,9 @@ class NATSClient(IOClientBase):
         except JetStreamUnavailableError:
             raise
         except Exception as e:
-            logger.error("Failed to connect to NATS: %s", str(e))
+            # Raised, not logged: the retry loop logs each failed attempt, and a caller outside it
+            # decides for itself. Logging here as well doubled every connection failure.
+            e.add_note(f"while connecting to NATS at {nats_url}")
             raise
 
     async def _require_jetstream(self, nats_url: str) -> None:

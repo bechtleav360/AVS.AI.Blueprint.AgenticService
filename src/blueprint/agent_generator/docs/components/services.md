@@ -32,7 +32,7 @@ class MyService(ServiceBase):
         super().__init__()
 ```
 
-ServiceBase provides access to `self.registry` and `self.config` inherited from Component. There are no abstract methods to implement -- add whatever public methods your domain requires.
+ServiceBase provides access to `self.registry` and `self.config` inherited from Component. It has two abstract methods, `on_startup()` and `on_shutdown()` (see *Lifecycle Hooks* below) -- implement both, even if one does nothing -- and otherwise add whatever public methods your domain requires.
 
 ## Lifecycle Hooks
 

@@ -18,7 +18,7 @@ class HealthCheckerBase(ABC):
         class CustomHealthChecker(HealthCheckerBase):
             async def health_check(self) -> ComponentHealth:
                 # Perform health check logic
-                return ComponentHealth(status="UP", message="Service OK")
+                return ComponentHealth(status="healthy", message="Service OK")
         ```
     """
 
@@ -27,7 +27,9 @@ class HealthCheckerBase(ABC):
         """Perform health check and return component status.
 
         Returns:
-            ComponentHealth: Status object with status ("UP" or "DOWN") and message.
+            ComponentHealth: Status object with status ``"healthy"`` or ``"unhealthy"`` and a
+                message. Anything other than ``"healthy"`` counts as failing -- ``"UP"`` included,
+                which the readiness payload uses for agents and the pod, not for components.
 
         Raises:
             Exception: Any exceptions are caught by the caller and logged.

@@ -272,8 +272,8 @@ def qualified_entry_name(namespace: str, name: str) -> str:
 def namespace_of(component: Any) -> str:
     """Return the namespace a component belongs to, or the root for one that has none.
 
-    Read with ``getattr`` because the namespace currently lives on the bases that own
-    one (transport clients, publishing service) rather than on ``Component`` itself.
+    Every ``Component`` carries its namespace. Read with ``getattr`` so that an object which is
+    not a component -- a health checker, a plain value -- answers the root instead of raising.
     """
     return str(getattr(component, "namespace", ROOT_NAMESPACE) or ROOT_NAMESPACE)
 

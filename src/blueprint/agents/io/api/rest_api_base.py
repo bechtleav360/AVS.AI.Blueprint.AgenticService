@@ -1,21 +1,23 @@
 """Generic RESTful API base class for the agent service (framework-level).
 
-Subclasses register routes by decorating methods the class-level HTTP verb helpers.
+Subclasses register routes by decorating methods with the class-level HTTP verb helpers.
 
 Example::
 
-    class MyApi(RestApiBase):
-        def __init__(self) -> None:
-            super().__init__()
+    class ItemApi(RestApiBase):
+        async def on_startup(self) -> None:
+            self._items = self.registry.get_service(ItemService)
 
-            tags=["Status"],
-        @RestApiBase.get("/items", response_model=list[Item], tags=["Items"], summary="Get for Items")
+        async def on_shutdown(self) -> None:
+            pass
+
+        @RestApiBase.get("/items", response_model=list[Item], tags=["Items"], summary="List items")
         async def list_items(self) -> list[Item]:
-            return await self.get_registry().get_service("item_service").all()
+            return await self._items.all()
 
-        @RestApiBase.post("/items", response_model=Item, tags=["Items"], summary="Create for Items")
+        @RestApiBase.post("/items", response_model=Item, tags=["Items"], summary="Create an item")
         async def create_item(self, payload: ItemRequest) -> Item:
-            return await self.get_registry().get_service("item_service").create(payload)
+            return await self._items.create(payload)
 """
 
 from __future__ import annotations

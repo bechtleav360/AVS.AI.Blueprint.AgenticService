@@ -46,7 +46,7 @@ def mock_http(checker: SessionsServiceHealthChecker):
 class TestRestApiCheck:
     async def test_healthy_when_api_returns_200(self, checker: SessionsServiceHealthChecker, mock_http: AsyncMock) -> None:
         result = await checker.health_check()
-        assert result.status == "UP"
+        assert result.status == "healthy"
 
     async def test_rest_url_includes_health_endpoint(self, checker: SessionsServiceHealthChecker, mock_http: AsyncMock) -> None:
         await checker.health_check()
@@ -61,7 +61,7 @@ class TestRestApiCheck:
     async def test_down_when_request_error(self, checker: SessionsServiceHealthChecker, mock_http: AsyncMock) -> None:
         mock_http.get.side_effect = httpx.RequestError("connection refused")
         result = await checker.health_check()
-        assert result.status == "DOWN"
+        assert result.status == "unhealthy"
 
     async def test_down_message_contains_error(self, checker: SessionsServiceHealthChecker, mock_http: AsyncMock) -> None:
         mock_http.get.side_effect = httpx.RequestError("connection refused")
@@ -83,13 +83,13 @@ class TestHeartbeatTracking:
     async def test_up_when_heartbeat_is_fresh(self, checker: SessionsServiceHealthChecker, mock_http: AsyncMock) -> None:
         checker._last_heartbeat = datetime.now(UTC) - timedelta(seconds=10)
         result = await checker.health_check()
-        assert result.status == "UP"
+        assert result.status == "healthy"
         assert result.details["sse_connection"] == "active"
 
     async def test_down_when_heartbeat_is_stale(self, checker: SessionsServiceHealthChecker, mock_http: AsyncMock) -> None:
         checker._last_heartbeat = datetime.now(UTC) - timedelta(seconds=90)
         result = await checker.health_check()
-        assert result.status == "DOWN"
+        assert result.status == "unhealthy"
         assert result.details["sse_connection"] == "stale"
 
     async def test_stale_message_contains_seconds_ago(self, checker: SessionsServiceHealthChecker, mock_http: AsyncMock) -> None:
@@ -101,7 +101,7 @@ class TestHeartbeatTracking:
 class TestNoHeartbeat:
     async def test_up_when_no_heartbeat_yet(self, checker: SessionsServiceHealthChecker, mock_http: AsyncMock) -> None:
         result = await checker.health_check()
-        assert result.status == "UP"
+        assert result.status == "healthy"
         assert result.details["sse_connection"] == "unknown"
 
 
