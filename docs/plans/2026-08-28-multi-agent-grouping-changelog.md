@@ -7298,6 +7298,48 @@ Docs: `reference/configuration-keys.md` (`nats_url`, `app_environment`) and a ne
 localhost note in `guides/troubleshooting.md`. Guarded by `TestNATSClientUrl` in
 `test_nats_client.py` and `test_development_warning.py`.
 
+### NATS connections can carry credentials, and a URL's credentials stop leaking
+
+From the same review (their M2). Under tenant-scoped auth the broker enforces per-account
+permissions, and the only way to authenticate was credentials inside `nats_url` -- which makes the
+URL a secret. Two places were not treating it as one:
+
+- **`connect()` logged it** at INFO in both "Connected to NATS server ..." lines.
+- **`health_check()` put `connected_url` in its message**, and that is a `ParseResult` carrying
+  `user:password@`, so it reached `/health`. The existing tests mocked `connected_url` as a string,
+  which is why this was never seen; the mocks in `conftest.py` now use a `ParseResult`.
+
+`/status/env` was already safe: it masks keys by marker and strips userinfo from every URL.
+
+**What was built.**
+
+- **`redact_url()`**, module level in `nats_client.py`: returns the URL with its userinfo replaced
+  by `***`. Used by both call sites above.
+- **`NATSClient._resolve_connect_options(nats_url)`**, called from `on_startup()` beside
+  `_resolve_nats_url()` (and from `connect()` if startup never ran), returns the keyword arguments
+  that `connect()` now splats into `nats.connect()`: `user`/`password`, `token`,
+  `user_credentials` (from `nats_creds_file`), `nkeys_seed_str` (from `nats_nkey_seed`) and
+  `inbox_prefix`. It refuses, at startup: one of `nats_user`/`nats_password` without the other; a
+  creds file that is not a file; more than one method, counting credentials in the URL as one; a
+  creds file or seed when the `nkeys` package is not installed; an inbox prefix with whitespace, a
+  wildcard or a trailing dot. It logs the method's *name* at DEBUG, never a value.
+- Every key is read through the agent's view, so per-agent accounts work with
+  `[default.<agent>]` or `DYNACONF_<AGENT>__NATS_CREDS_FILE` -- which, since the fix above, the
+  environment can now override.
+
+**`nkeys` is now a dependency**, declared as `nats-py[nkeys]` so nats-py chooses the compatible
+version (0.2.1, which pulls in PyNaCl 1.6.2; both Apache-2.0). nats-py needs it for creds files and
+nkey seeds; decided with the user over an optional extra, because creds files are the normal route
+under decentralised auth, which is where tenant-scoped auth is heading. The startup check stays for
+an environment installed without it.
+
+Installing it locally hit the known fatal uv `os error 5` (nkeys ships only as an sdist, and uv
+cannot reopen the wheel it builds). Worked around by building the wheel with the system
+interpreter's pip and installing that file with uv. `.venv` does not have it yet.
+
+Docs: five rows in `reference/configuration-keys.md` and a paragraph on choosing one method.
+Guarded by `TestNATSClientAuthentication` and `TestRedactUrl` in `test_nats_client.py`.
+
 ---
 
 ## Open points

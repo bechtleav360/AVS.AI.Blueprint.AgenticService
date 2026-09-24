@@ -3,6 +3,9 @@
 
 ### Fixed
 
+- **Credentials inside `nats_url` no longer reach the log or `/health`.** The connect log line
+  printed the URL verbatim, and the NATS health message printed the parsed URL including
+  `user:password@`. Both now show `***@host:port`.
 - **An environment override of a key an agent's own `settings.toml` also sets now wins in a group.**
   `DYNACONF_<AGENT>__KEY` was compared against the agent file's keys case-sensitively -- Dynaconf
   upper-cases what it loads, the file keeps lower case -- so the override was never seen: a list
@@ -49,6 +52,13 @@
 
 ### Added
 
+- **NATS credentials from their own keys.** `nats_user`/`nats_password`, `nats_token`,
+  `nats_creds_file` and `nats_nkey_seed` are passed to the connection, so an account under
+  tenant-scoped auth no longer has to put its credentials inside `nats_url`. At most one method may
+  be configured; a half-set login, a creds file that is not there, or two methods at once fail
+  startup. `nats_inbox_prefix` replaces `_INBOX` for accounts not permitted `_INBOX.>`. All are read
+  per agent, so each agent of a group can have its own account. The dependency on `nats-py` is now
+  `nats-py[nkeys]`, which creds files and nkey seeds need.
 - **A `blueprint-migration` Claude Code skill**, installed by `asbs claude`: moving an existing
   single-agent project into a group -- the files it touches, the mistakes that break it, and how
   `asbs validate --group` checks it. The migration guide was previously reachable only from inside

@@ -1,6 +1,7 @@
 """Shared fixtures for IO client unit tests."""
 
 from unittest.mock import AsyncMock, MagicMock
+from urllib.parse import urlparse
 
 import pytest
 from nats.js.errors import NotFoundError
@@ -80,7 +81,7 @@ def mock_nats_core() -> MagicMock:
     mock = MagicMock()
     mock.is_closed = False
     mock.is_connected = True
-    mock.connected_url = "nats://localhost:4222"
+    mock.connected_url = urlparse("nats://localhost:4222")  # nats-py returns a ParseResult, not a str
     mock.publish = AsyncMock()
     mock.subscribe = AsyncMock(return_value=MagicMock(unsubscribe=AsyncMock()))
     mock.close = AsyncMock()
@@ -109,7 +110,7 @@ def mock_nats_jetstream() -> tuple[MagicMock, MagicMock]:
     mock_nc = MagicMock()
     mock_nc.is_closed = False
     mock_nc.is_connected = True
-    mock_nc.connected_url = "nats://localhost:4222"
+    mock_nc.connected_url = urlparse("nats://localhost:4222")  # nats-py returns a ParseResult, not a str
     mock_nc.publish = AsyncMock()
     mock_nc.close = AsyncMock()
     mock_nc.jetstream = MagicMock(return_value=mock_js)

@@ -4,12 +4,13 @@ import asyncio
 import json
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import urlparse
 
 import pytest
 from nats.js import api as js_api
 
 from blueprint.agents.clients.io.io_client_base import subject_is_covered_by
-from blueprint.agents.clients.io.nats_client import DEVELOPMENT_NATS_URL, ConsumerTuning, NATSClient
+from blueprint.agents.clients.io.nats_client import DEVELOPMENT_NATS_URL, ConsumerTuning, NATSClient, redact_url
 from blueprint.agents.models.errors import CriticalHandlerError, InvalidEventError, RetryableHandlerError
 from blueprint.agents.models.events import CloudEvent
 
@@ -178,6 +179,125 @@ class TestNATSClientUrl:
             with pytest.raises(ValueError, match="'nats_url' is not set"):
                 await nats_client.connect()
         connect.assert_not_awaited()
+
+
+class TestNATSClientAuthentication:
+    """M2 -- credentials and the inbox prefix reach ``nats.connect()`` from their own keys."""
+
+    URL = "nats://broker:4222"
+
+    @staticmethod
+    def _configure(mock_config: MagicMock, **values: object) -> None:
+        values.setdefault("nats_url", TestNATSClientAuthentication.URL)
+        mock_config.get.side_effect = lambda key, default=None: values.get(key, default)
+        mock_config.envvar_prefix = "DYNACONF"
+
+    @staticmethod
+    async def _connect_kwargs(client: NATSClient) -> dict:
+        await client.on_startup()
+        mock_nc = MagicMock(is_closed=False, is_connected=True)
+        with patch("blueprint.agents.clients.io.nats_client.nats.connect", new_callable=AsyncMock, return_value=mock_nc) as connect:
+            await client.connect()
+        return connect.call_args.kwargs
+
+    async def test_no_credentials_passes_none(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        self._configure(mock_config)
+        kwargs = await self._connect_kwargs(nats_client)
+        assert not {"user", "password", "token", "user_credentials", "nkeys_seed_str", "inbox_prefix"} & kwargs.keys()
+
+    async def test_user_and_password(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        self._configure(mock_config, nats_user="agent", nats_password="YOUR_PASSWORD_HERE")
+        kwargs = await self._connect_kwargs(nats_client)
+        assert (kwargs["user"], kwargs["password"]) == ("agent", "YOUR_PASSWORD_HERE")
+
+    @pytest.mark.parametrize(("given", "missing"), [({"nats_user": "agent"}, "nats_password"), ({"nats_password": "x"}, "nats_user")])
+    async def test_half_a_login_fails_startup(self, nats_client: NATSClient, mock_config: MagicMock, given: dict, missing: str) -> None:
+        self._configure(mock_config, **given)
+        with pytest.raises(ValueError, match=f"'{missing}' is not set"):
+            await nats_client.on_startup()
+
+    async def test_token(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        self._configure(mock_config, nats_token="YOUR_TOKEN_HERE")
+        assert (await self._connect_kwargs(nats_client))["token"] == "YOUR_TOKEN_HERE"
+
+    async def test_creds_file(self, nats_client: NATSClient, mock_config: MagicMock, tmp_path) -> None:
+        creds = tmp_path / "agent.creds"
+        creds.write_text("placeholder")
+        self._configure(mock_config, nats_creds_file=str(creds))
+        with patch("blueprint.agents.clients.io.nats_client.importlib.util.find_spec", return_value=object()):
+            kwargs = await self._connect_kwargs(nats_client)
+        assert kwargs["user_credentials"] == str(creds)
+
+    async def test_a_creds_file_that_is_not_there_fails_startup(self, nats_client: NATSClient, mock_config: MagicMock, tmp_path) -> None:
+        self._configure(mock_config, nats_creds_file=str(tmp_path / "missing.creds"))
+        with pytest.raises(ValueError, match="not a file"):
+            await nats_client.on_startup()
+
+    async def test_nkey_seed(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        self._configure(mock_config, nats_nkey_seed="YOUR_SEED_HERE")
+        with patch("blueprint.agents.clients.io.nats_client.importlib.util.find_spec", return_value=object()):
+            kwargs = await self._connect_kwargs(nats_client)
+        assert kwargs["nkeys_seed_str"] == "YOUR_SEED_HERE"
+
+    async def test_a_seed_without_nkeys_installed_fails_startup(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        self._configure(mock_config, nats_nkey_seed="YOUR_SEED_HERE")
+        with patch("blueprint.agents.clients.io.nats_client.importlib.util.find_spec", return_value=None):
+            with pytest.raises(ValueError, match="needs the 'nkeys' package"):
+                await nats_client.on_startup()
+
+    @pytest.mark.parametrize(
+        "values",
+        [
+            {"nats_user": "a", "nats_password": "b", "nats_token": "c"},
+            {"nats_token": "c", "nats_nkey_seed": "d"},
+            {"nats_url": "nats://a:b@broker:4222", "nats_token": "c"},
+        ],
+    )
+    async def test_two_methods_fail_startup(self, nats_client: NATSClient, mock_config: MagicMock, values: dict) -> None:
+        self._configure(mock_config, **values)
+        with pytest.raises(ValueError, match="configured more than once"):
+            await nats_client.on_startup()
+
+    async def test_credentials_in_the_url_alone_still_work(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        self._configure(mock_config, nats_url="nats://a:b@broker:4222")
+        await nats_client.on_startup()
+        assert nats_client._connect_options == {}
+
+    async def test_inbox_prefix(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        self._configure(mock_config, nats_inbox_prefix="_INBOX_risk")
+        assert (await self._connect_kwargs(nats_client))["inbox_prefix"] == "_INBOX_risk"
+
+    @pytest.mark.parametrize("prefix", ["_INBOX.*", "_INBOX.risk.", "has space"])
+    async def test_an_unusable_inbox_prefix_fails_startup(self, nats_client: NATSClient, mock_config: MagicMock, prefix: str) -> None:
+        self._configure(mock_config, nats_inbox_prefix=prefix)
+        with pytest.raises(ValueError, match="nats_inbox_prefix"):
+            await nats_client.on_startup()
+
+    async def test_nothing_secret_is_logged(self, nats_client: NATSClient, mock_config: MagicMock, caplog) -> None:
+        self._configure(mock_config, nats_url="nats://a:YOUR_PASSWORD_HERE@broker:4222")
+        with caplog.at_level(logging.DEBUG, logger="blueprint.agents.clients.io.nats_client"):
+            await self._connect_kwargs(nats_client)
+        assert "YOUR_PASSWORD_HERE" not in caplog.text
+        assert "***@broker:4222" in caplog.text
+
+
+class TestRedactUrl:
+    @pytest.mark.parametrize(
+        ("url", "expected"),
+        [
+            ("nats://broker:4222", "nats://broker:4222"),
+            ("nats://user:secret@broker:4222", "nats://***@broker:4222"),
+            ("nats://tokenonly@broker", "nats://***@broker"),
+        ],
+    )
+    def test_userinfo_is_removed(self, url: str, expected: str) -> None:
+        assert redact_url(url) == expected
+
+    async def test_the_health_message_does_not_carry_it(self, connected_nats_client: NATSClient) -> None:
+        connected_nats_client._nats_client.connected_url = urlparse("nats://user:secret@broker:4222")
+        result = await connected_nats_client.health_check()
+        assert "secret" not in result.message
+        assert "***@broker:4222" in result.message
 
 
 class TestNATSClientClose:
