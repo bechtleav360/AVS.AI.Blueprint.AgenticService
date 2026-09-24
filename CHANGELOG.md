@@ -3,6 +3,11 @@
 
 ### Fixed
 
+- **The vLLM request timeout has its own key.** It was taken from `model_max_tokens`, so 4096
+  tokens meant a 68-minute HTTP timeout and 5 tokens a 5-second one. `model_timeout` (seconds,
+  default 60 for vLLM) sets it now, and applies to the OpenAI client too when set.
+- **The Dapr routing key reaches the sidecar.** It was sent as an HTTP header, which Dapr's publish
+  API does not read; it is now the `metadata.routingKey` query parameter.
 - **One declaration with an `AgentBuilder` can serve several agents of a group.** A group replays
   a declaration once per agent, and `AgentBuilder.build()` is single-use, so the second agent failed
   with "AgentBuilder.build() has already been called". Each agent now builds from its own copy of

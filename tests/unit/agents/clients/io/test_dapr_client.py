@@ -103,25 +103,26 @@ class TestDaprClientPublish:
         assert parsed["id"] == "test-event-id"
         assert parsed["type"] == "test.event"
 
-    async def test_publish_adds_routing_key_header_when_provided(
+    async def test_publish_sends_the_routing_key_as_a_query_parameter(
         self,
         connected_dapr_client: DaprClient,
         mock_httpx_client: MagicMock,
         cloud_event: CloudEvent,
     ) -> None:
+        """#8 -- Dapr reads publish metadata from the query string; as a header it was dropped."""
         await connected_dapr_client.publish("topic", cloud_event, routing_key="rk-123")
-        headers = mock_httpx_client.post.call_args[1]["headers"]
-        assert headers["metadata.routingKey"] == "rk-123"
+        kwargs = mock_httpx_client.post.call_args[1]
+        assert kwargs["params"] == {"metadata.routingKey": "rk-123"}
+        assert "metadata.routingKey" not in kwargs["headers"]
 
-    async def test_publish_omits_routing_key_header_when_not_provided(
+    async def test_publish_omits_the_routing_key_when_not_provided(
         self,
         connected_dapr_client: DaprClient,
         mock_httpx_client: MagicMock,
         cloud_event: CloudEvent,
     ) -> None:
         await connected_dapr_client.publish("topic", cloud_event)
-        headers = mock_httpx_client.post.call_args[1]["headers"]
-        assert "metadata.routingKey" not in headers
+        assert mock_httpx_client.post.call_args[1]["params"] == {}
 
     async def test_publish_uses_custom_pubsub_name(
         self,

@@ -3,6 +3,7 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from openai import NOT_GIVEN
 
 from blueprint.agents.clients.ai.openai_client import OpenAIClient
 
@@ -49,7 +50,13 @@ class TestOpenAIClientCreateModel:
 
     def test_create_model_builds_async_openai_with_api_key(self, openai_client: OpenAIClient, patch_openai_deps: dict) -> None:
         openai_client.create_model()
-        patch_openai_deps["async_openai"].assert_called_once_with(max_retries=3, api_key="test-api-key")
+        patch_openai_deps["async_openai"].assert_called_once_with(max_retries=3, api_key="test-api-key", timeout=NOT_GIVEN)
+
+    def test_model_timeout_is_passed_when_set(self, openai_client: OpenAIClient, patch_openai_deps: dict, mock_ai_config) -> None:
+        """#7 -- model_timeout applies to the OpenAI client too; unset leaves the SDK default."""
+        mock_ai_config.timeout = 30.0
+        openai_client.create_model()
+        assert patch_openai_deps["async_openai"].call_args.kwargs["timeout"] == 30.0
 
     def test_create_model_sets_client(self, openai_client: OpenAIClient, patch_openai_deps: dict) -> None:  # noqa: ARG002
         openai_client.create_model()

@@ -1125,6 +1125,7 @@ class Config:
             base_url=base_url,
             model_settings=model_settings,
             max_tokens=get_with_fallback("model_max_tokens"),
+            timeout=get_with_fallback("model_timeout"),
             temperature=get_with_fallback("model_temperature"),
             concurrency_limit=get_with_fallback("concurrent_requests"),
             usage_limits=UsageLimits(

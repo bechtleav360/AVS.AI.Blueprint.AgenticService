@@ -7613,6 +7613,22 @@ it is the framework's decision.
 Guarded by `TestOneAgentBuilderServesSeveralAgents` in `test_agent_group.py` (3 cases, all failing
 against the previous code).
 
+### vLLM timeout and Dapr routing key (#7, #8)
+
+- **#7, verified.** `VLLMClient.create_model` passed `timeout=ai_config.max_tokens or 60` to
+  `AsyncOpenAI`. New key `model_timeout` (resolved per runtime like the other `model_*` keys) ->
+  `AIConfig.timeout` (`gt=0`, so a non-positive value is a validation error), and the vLLM client
+  uses it with a 60 s default (`DEFAULT_VLLM_TIMEOUT`). The OpenAI client passes it only when set,
+  so its SDK default is otherwise unchanged.
+- **#8, checked against Dapr's publish API**, which reads metadata from query parameters prefixed
+  `metadata.`: `DaprClient.publish` put `metadata.routingKey` in the headers, where the sidecar
+  ignores it. It is now sent as `params`. Not exercised against a running sidecar here; Dapr is not
+  used by the project this round serves.
+
+Guarded by `TestTheRequestTimeout` (`test_vllm_client.py`) and the two routing-key cases in
+`test_dapr_client.py`, which replace the two that asserted the header; four cases fail against the
+previous code.
+
 ---
 
 ## Open points
