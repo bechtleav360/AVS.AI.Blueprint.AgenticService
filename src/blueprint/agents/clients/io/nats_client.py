@@ -2,13 +2,16 @@
 
 import asyncio
 import contextlib
+import importlib.util
 import json
 import logging
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from functools import cached_property
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import nats
 from nats.aio.client import Client as NatsClient
@@ -31,9 +34,27 @@ DEVELOPMENT_NATS_URL = "nats://localhost:4222"
 """The broker a development process connects to when ``nats_url`` is unset -- and only then.
 
 In a container ``localhost`` is almost always wrong -- a broker in the same pod is the exception, and
-it can say so -- and a client pointed at it retries forever while the pod looks healthy. So outside ``app_environment = "development"`` an unset ``nats_url`` fails
-startup instead of reaching for this.
+it can say so -- and a client pointed at it retries forever while the pod looks healthy. So outside
+``app_environment = "development"`` an unset ``nats_url`` fails startup instead of reaching for this.
 """
+
+
+def redact_url(url: str) -> str:
+    """Return ``url`` without its ``user:password@`` part, for logs and health messages.
+
+    Credentials in ``nats_url`` are still accepted, so every place that shows the URL has to strip
+    them: the connect log line and the ``/health`` message both used to print it verbatim.
+    """
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return "<unparseable url>"
+    if not parts.username and not parts.password:
+        return url
+    host = parts.hostname or ""
+    netloc = f"{host}:{parts.port}" if parts.port else host
+    return urlunsplit(parts._replace(netloc=f"***@{netloc}"))
+
 
 DEAD_LETTERED_COUNTER = "blueprint.events.dead_lettered"
 """Events the framework gave up on, whether or not their payload was kept.
@@ -145,6 +166,7 @@ class NATSClient(IOClientBase):
         super().__init__(namespace=namespace)
         self._connection_name: str = ""
         self._nats_url: str = ""
+        self._connect_options: dict[str, Any] = {}
         self._nats_client: NatsClient | None = None
         self._js: JetStreamContext | None = None
         self._use_jetstream: bool = False
@@ -551,14 +573,16 @@ class NATSClient(IOClientBase):
     # ------------------------------------------------------------------
 
     async def on_startup(self) -> None:
-        """Resolve the broker URL, so a missing one fails this agent's startup (M1).
+        """Resolve the broker URL and credentials, so a bad one fails this agent's startup (M1, M2).
 
         Runs in the lifespan's client phase, before any connection is attempted. The connection
         itself is made in a background retry loop that retries every error forever -- a missing
-        URL included, which is a configuration error no retry can fix. Resolved here, it is
-        reported once, against this agent, as ``_resolve_queue_group`` reports its own.
+        URL or a half-configured credential included, which are configuration errors no retry can
+        fix. Resolved here, they are reported once, against this agent, as
+        ``_resolve_queue_group`` reports its own.
         """
         self._nats_url = self._resolve_nats_url()
+        self._connect_options = self._resolve_connect_options(self._nats_url)
 
     def _resolve_nats_url(self) -> str:
         """Return the configured ``nats_url``; outside development, refuse to run without one.
@@ -591,6 +615,88 @@ class NATSClient(IOClientBase):
             f"forever while the pod looks healthy. Set 'nats_url' in the group's settings.toml or as {variable}."
         )
 
+    def _resolve_connect_options(self, nats_url: str) -> dict[str, Any]:
+        """Return the credential and inbox arguments for ``nats.connect()`` (M2).
+
+        One authentication method at most, each from its own keys:
+
+        - ``nats_user`` and ``nats_password`` -- username and password (``user``, ``password``)
+        - ``nats_token`` -- a token (``token``)
+        - ``nats_creds_file`` -- a JWT + nkey credentials file, by path (``user_credentials``)
+        - ``nats_nkey_seed`` -- an nkey seed, by value (``nkeys_seed_str``)
+
+        Keeping them out of ``nats_url`` is the point: a URL carrying ``user:pass@`` makes the
+        URL a secret, and every place that shows the URL has to know to strip it. The secret
+        values belong in ``.secrets.toml`` or the environment; ``/status/env`` masks all four
+        keys by name. The keys are read through this agent's view, so a group can give each
+        agent its own account.
+
+        ``nats_inbox_prefix`` replaces ``_INBOX`` for request/reply inboxes and JetStream API
+        replies. An account restricted by subject permissions is usually not allowed
+        ``_INBOX.>``, and without this every JetStream call it makes times out.
+
+        Raises:
+            ValueError: if more than one method is configured (``user:pass@`` in ``nats_url``
+                counts as one), if only one of ``nats_user``/``nats_password`` is set, if
+                ``nats_creds_file`` names no file, if the ``nkeys`` package that creds files
+                and seeds need is not installed, or if ``nats_inbox_prefix`` is not a subject.
+        """
+        options: dict[str, Any] = {}
+        methods: list[str] = []
+
+        user = self._read_str("nats_user")
+        password = self._read_str("nats_password")
+        if bool(user) != bool(password):
+            missing = "nats_password" if user else "nats_user"
+            raise ValueError(f"'nats_user' and 'nats_password' go together, and '{missing}' is not set.")
+        if user:
+            options.update(user=user, password=password)
+            methods.append("nats_user/nats_password")
+
+        token = self._read_str("nats_token")
+        if token:
+            options["token"] = token
+            methods.append("nats_token")
+
+        creds_file = self._read_str("nats_creds_file")
+        if creds_file:
+            if not Path(creds_file).is_file():
+                raise ValueError(f"'nats_creds_file' is '{creds_file}', which is not a file. Is the secret mounted there?")
+            options["user_credentials"] = creds_file
+            methods.append("nats_creds_file")
+
+        seed = self._read_str("nats_nkey_seed")
+        if seed:
+            options["nkeys_seed_str"] = seed
+            methods.append("nats_nkey_seed")
+
+        if urlsplit(nats_url).username:
+            methods.append("credentials in 'nats_url'")
+        if len(methods) > 1:
+            raise ValueError(
+                f"NATS authentication is configured more than once: {', '.join(methods)}. The broker accepts one "
+                "method per connection, and which one nats-py would send is not something to leave to chance. "
+                "Keep exactly one."
+            )
+        if ("user_credentials" in options or "nkeys_seed_str" in options) and importlib.util.find_spec("nkeys") is None:
+            raise ValueError(
+                f"'{methods[0]}' needs the 'nkeys' package to sign the server's challenge, and it is not installed. "
+                "Install it with: pip install nkeys"
+            )
+
+        inbox_prefix = self._read_str("nats_inbox_prefix")
+        if inbox_prefix:
+            validate_publish_subject(inbox_prefix, source="'nats_inbox_prefix'")
+            if inbox_prefix.endswith("."):
+                raise ValueError(f"'nats_inbox_prefix' is '{inbox_prefix}'. Leave out the trailing dot; nats-py adds it.")
+            options["inbox_prefix"] = inbox_prefix
+
+        logger.debug("Agent '%s' authenticates to NATS with %s", self.namespace or ROOT_LABEL, methods[0] if methods else "no credentials")
+        return options
+
+    def _read_str(self, key: str) -> str:
+        return str(self.config.get(key, "") or "").strip()
+
     def _is_connected(self) -> bool:
         return self._nats_client is not None and not self._nats_client.is_closed and self._nats_client.is_connected
 
@@ -601,17 +707,19 @@ class NATSClient(IOClientBase):
 
         if not self._nats_url:
             self._nats_url = self._resolve_nats_url()
-        nats_url = self._nats_url
+            self._connect_options = self._resolve_connect_options(self._nats_url)
+        nats_url = redact_url(self._nats_url)
         self._connection_name = self._resolve_connection_name()
         try:
             self._nats_client = await nats.connect(
-                nats_url,
+                self._nats_url,
                 name=self._connection_name,
                 max_reconnect_attempts=self.config.get("nats_max_reconnect_attempts", 5),
                 reconnect_time_wait=self.config.get("nats_reconnect_time_wait", 2),
                 connect_timeout=10,
                 disconnected_cb=self._on_disconnected,
                 reconnected_cb=self._on_reconnected,
+                **self._connect_options,
             )
             self._client = self._nats_client
             self._use_jetstream = self.config.get("nats_use_jetstream", False)
@@ -821,7 +929,8 @@ class NATSClient(IOClientBase):
             return ComponentHealth(status="healthy", message="connected; consumption paused while this agent is degraded")
         if self._subscriptions_managed and not self._subscriptions_ready:
             return ComponentHealth(status="unhealthy", message="connected but subscriptions not yet established")
-        server_info = self._nats_client.connected_url  # type: ignore[union-attr]
+        connected = self._nats_client.connected_url  # type: ignore[union-attr]
+        server_info = redact_url(connected.geturl()) if connected is not None else "an unknown server"
         sub_info = f" ({len(self._subscriptions)} subscriptions active)" if self._subscriptions else ""
         return ComponentHealth(status="healthy", message=f"Connected to NATS server at {server_info}{sub_info}")
 

@@ -40,7 +40,7 @@ dependencies = [
     "python-multipart>=0.0.20",
     "apscheduler>=3.11.2",
     "diskcache-rs>=0.4.4",
-    "nats-py>=2.13.1",
+    "nats-py[nkeys]>=2.13.1",
     "croniter>=6.0.0",
     "pyyaml>=6.0"
 ]
