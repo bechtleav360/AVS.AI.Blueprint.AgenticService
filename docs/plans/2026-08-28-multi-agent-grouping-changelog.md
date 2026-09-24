@@ -7384,9 +7384,47 @@ transport keys and the rule to derive tenants from the subject. Guarded by
 `TestNatsEventingDeliverySubject` in `test_nats.py`, including an event that carries a spoofed
 `nats_subject` extension and a different `tenantid`.
 
+### A latched-down agent consumed events anyway (C4)
+
+Found while verifying a report from the dynamic-subscriptions work: "a non-critical agent whose
+`on_startup` raised is marked down, and nothing ever calls `clear_forced_down`". That report is
+accurate, and is recorded under *Open points* below -- but checking it turned up a defect that
+breaks the **committed** spec, not only the draft's D9.
+
+**Cause.** Sec. 9.1 marks a non-critical agent down when a component's `on_startup` raises, and
+`NamespaceSupervisor._set` pauses its clients (C4). The lifespan starts clients before services,
+so an agent whose *client* failed is paused before its `NatsEventing` has subscribed -- there is
+nothing to drain, and `pause_consumption()` only sets the flag. `subscribe()` then started the
+retry loop regardless, and neither `_start_with_retry()` nor `_connect_and_subscribe()` read the
+flag. Reproduced: a client paused before `subscribe()` ended with one live subscription. The same
+held for a pause arriving while the loop was still connecting (a later component of the same agent
+failing). The pause was only enforced on reconnect and in `health_check()`.
+
+**Fix, in `NATSClient`.**
+
+- `subscribe()`: a paused client registers its topics, resolves its queue group and durables (so
+  configuration errors still surface at startup), and returns without starting the loop.
+- `_start_retry_task()`, new: starts the loop unless one is running; used by `subscribe()` and by
+  `resume_consumption()`.
+- `_connect_and_subscribe()`: paused after connecting -> subscribe nothing; `_start_with_retry()`
+  then leaves `subscriptions_ready` false.
+- `resume_consumption()`: a client that never connected starts the loop instead of returning.
+
+Guarded by `TestAPauseBeforeSubscribing` in `test_nats_client.py`; two of its three cases fail
+against the previous code.
+
 ---
 
 ## Open points
+
+- **A startup-failure latch is never released.** A non-critical agent whose `on_startup` raised
+  is latched by `AppBuilder._mark_agent_down` -> `NamespaceSupervisor.mark_down`, and nothing in
+  `src/` calls `clear_forced_down`, so it stays degraded until the pod restarts. That is what sec.
+  9.1 specifies -- it names no recovery -- so it is not a defect against the committed spec; it
+  violates D9 of the untracked dynamic-subscriptions draft, which proposes retrying `on_startup`
+  with a budget and then terminating. Terminating is not obviously right for a *deterministic*
+  failure (a bad key): the restart fails the same way, and crash-looping the pod takes every
+  healthy agent down with it, which is the blast radius sec. 9.1 exists to remove. Undecided.
 
 - ~~**The generated `settings.toml` writes two sections nothing reads.**~~ **Done.** `[default.logging]`
   (`level`, `format`) and `[default.observability]` (`otel_enabled`, `token_metrics_enabled`) are

@@ -236,6 +236,13 @@ class NATSClient(IOClientBase):
         """Register all topic→callback mappings and start the background retry task.
 
         Returns immediately; connection and subscription happen in the background.
+
+        **A client that is already paused registers and waits.** An agent marked down in the
+        lifespan's client phase (spec sec. 9.1) is paused before its eventing endpoint reaches
+        this call, when there is nothing yet to drain. Starting the retry loop anyway subscribed
+        it, so a latched-down agent consumed events -- C4 held only for failures that happened
+        after subscribing. The loop is started by :meth:`resume_consumption` instead, if the
+        agent is ever released.
         """
         self._topic_callbacks = topic_callbacks
         self._queue_group = self._resolve_queue_group()
@@ -244,6 +251,19 @@ class NATSClient(IOClientBase):
             self._tuning = self._resolve_consumer_tuning(list(topic_callbacks))
         self._subscriptions_managed = True
         self._subscriptions_ready = False
+        if self._consumption_paused:
+            logger.info(
+                "Agent '%s' is degraded, so its %d subscription(s) are registered but not started",
+                self.namespace or ROOT_LABEL,
+                len(topic_callbacks),
+            )
+            return
+        self._start_retry_task()
+
+    def _start_retry_task(self) -> None:
+        """Start the background connect-and-subscribe loop, unless one is already running."""
+        if self._retry_task is not None and not self._retry_task.done():
+            return
         self._retry_task = asyncio.ensure_future(self._start_with_retry())
         self._retry_task.add_done_callback(self._on_retry_done)
 
@@ -776,7 +796,13 @@ class NATSClient(IOClientBase):
         if not self._consumption_paused:
             return
         self._consumption_paused = False
-        if not self._subscriptions_managed or self._nats_client is None:
+        if not self._subscriptions_managed:
+            return
+        if self._nats_client is None:
+            # Paused before it ever connected -- subscribe() registered the topics and waited.
+            # The retry loop is what connects and subscribes; a loop still running picks up the
+            # cleared flag by itself.
+            self._start_retry_task()
             return
         try:
             await self._subscribe_all()
@@ -945,6 +971,8 @@ class NATSClient(IOClientBase):
         while True:
             try:
                 await self._connect_and_subscribe()
+                if self._consumption_paused:
+                    return
                 self._subscriptions_ready = True
                 logger.info("NATSClient connected and subscribed successfully")
                 return
@@ -981,6 +1009,11 @@ class NATSClient(IOClientBase):
             with contextlib.suppress(Exception):
                 await sub.unsubscribe()
         self._subscriptions.clear()
+        if self._consumption_paused:
+            # Paused while this loop was still connecting: stay connected, subscribe nothing.
+            # resume_consumption() subscribes over this connection if the agent is released.
+            logger.info("Agent '%s' connected while degraded; not subscribing", self.namespace or ROOT_LABEL)
+            return
         await self._subscribe_all()
 
     async def _subscribe_all(self) -> None:
