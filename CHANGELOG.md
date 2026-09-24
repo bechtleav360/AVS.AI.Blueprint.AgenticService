@@ -3,6 +3,12 @@
 
 ### Fixed
 
+- **REST request bodies are no longer logged.** `RestApiBase._process_resource` put the whole
+  payload into the `extra` of an INFO line, so personal data and secrets in a request body reached
+  the logs. Only the payload's type is logged now.
+- **A REST request keeps one request id.** `process_event` replaced the id the REST layer had
+  created, logged and returned as the RFC 7807 `traceId`, so processing ran under a second id that
+  matched nothing the caller saw. A caller's id is now kept.
 - **The vLLM request timeout has its own key.** It was taken from `model_max_tokens`, so 4096
   tokens meant a 68-minute HTTP timeout and 5 tokens a 5-second one. `model_timeout` (seconds,
   default 60 for vLLM) sets it now, and applies to the OpenAI client too when set.

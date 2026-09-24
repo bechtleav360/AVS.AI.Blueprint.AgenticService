@@ -240,3 +240,28 @@ class TestAFailedResultPublish:
         _, publisher = self._wire(event_processing_service, mock_registry, results)
         await event_processing_service.process_event(GenericCloudEvent(id="e1", type="t", source="s"))
         assert [call.kwargs["index"] for call in publisher.publish_handler_event.await_args_list] == [0, 1]
+
+
+class TestTheRequestIdIsKept:
+    """#13 -- process_event replaced the caller's request_id with a new uuid4."""
+
+    async def test_a_callers_id_survives_processing(self, event_processing_service: EventProcessingService) -> None:
+        chain = MagicMock()
+        chain.process = AsyncMock(return_value=None)
+        event_processing_service._handler_chains[ROOT_NAMESPACE] = chain
+        context = {"request_id": "rest-123"}
+
+        result = await event_processing_service.process_event(GenericCloudEvent(id="e1", type="t", source="s"), context)
+
+        assert context["request_id"] == "rest-123"
+        assert result.request_id == "rest-123"
+
+    async def test_without_one_an_id_is_made(self, event_processing_service: EventProcessingService) -> None:
+        chain = MagicMock()
+        chain.process = AsyncMock(return_value=None)
+        event_processing_service._handler_chains[ROOT_NAMESPACE] = chain
+        context: dict = {}
+
+        await event_processing_service.process_event(GenericCloudEvent(id="e1", type="t", source="s"), context)
+
+        assert context["request_id"]
