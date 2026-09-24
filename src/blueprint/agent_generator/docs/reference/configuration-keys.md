@@ -163,6 +163,7 @@ Each named runtime defines model provider settings. The `default` runtime is use
 | `model_api_key` | `str` | -- | API key for the model provider. Can also be set via environment variable. |
 | `model_base_url` | `str` | -- | Base URL for the model API. Required for `"vllm"` and custom OpenAI-compatible endpoints. |
 | `model_max_tokens` | `int` | -- | Maximum number of tokens in the model response. |
+| `model_timeout` | `float` | `60` for `"vllm"`, the SDK's default for `"openai"` | HTTP timeout per model request, in seconds. Must be positive. Settable per runtime like the other `model_*` keys. |
 | `model_temperature` | `float` | -- | Sampling temperature. Lower values produce more deterministic output. |
 | `concurrent_requests` | `int` | -- | Maximum number of concurrent requests to the model provider. |
 

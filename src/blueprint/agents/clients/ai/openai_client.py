@@ -3,7 +3,7 @@
 import logging
 from typing import Any
 
-from openai import AsyncOpenAI
+from openai import NOT_GIVEN, AsyncOpenAI
 from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIResponsesModel, OpenAIResponsesModelSettings
 from pydantic_ai.providers.openai import OpenAIProvider
@@ -42,7 +42,12 @@ class OpenAIClient(AIClientBase):
             raise RuntimeError("Model already created")
 
         ai_config = self.config.get_ai_config(self._runtime_name)
-        self._client = AsyncOpenAI(max_retries=3, api_key=ai_config.api_key)
+        # model_timeout applies here too when set; otherwise the SDK's own default stands.
+        self._client = AsyncOpenAI(
+            max_retries=3,
+            api_key=ai_config.api_key,
+            timeout=ai_config.timeout if ai_config.timeout is not None else NOT_GIVEN,
+        )
         settings = OpenAIResponsesModelSettings(**ai_config.model_settings)  # type: ignore[typeddict-item]
         provider = OpenAIProvider(openai_client=self._client)
         self._model = OpenAIResponsesModel(

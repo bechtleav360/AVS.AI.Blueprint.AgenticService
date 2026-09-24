@@ -24,6 +24,10 @@ _VLLM_PROFILE = ModelProfile(
 )
 
 
+DEFAULT_VLLM_TIMEOUT = 60.0
+"""Seconds per model request when ``model_timeout`` is not set."""
+
+
 class VLLMClient(AIClientBase):
     """VLLM client for AI model interactions (OpenAI-compatible API)."""
 
@@ -54,7 +58,9 @@ class VLLMClient(AIClientBase):
             max_retries=3,
             base_url=ai_config.base_url,
             api_key=ai_config.api_key,
-            timeout=ai_config.max_tokens if ai_config.max_tokens else 60,
+            # Its own key. It used to be max_tokens -- a token count read as seconds, so
+            # 4096 tokens meant a 68-minute timeout and 5 tokens a 5-second one.
+            timeout=ai_config.timeout or DEFAULT_VLLM_TIMEOUT,
         )
         provider = OpenAIProvider(openai_client=self._client)
         self._model = OpenAIChatModel(

@@ -126,12 +126,14 @@ class DaprClient(IOClientBase):
         effective_pubsub = pubsub_name or self.config.get("dapr_pubsub_name", "pubsub")
         url = f"{dapr_url}/v1.0/publish/{effective_pubsub}/{topic}"
         headers = {"Content-Type": "application/cloudevents+json"}
-        if routing_key:
-            headers["metadata.routingKey"] = routing_key
+        # Dapr's publish API takes metadata as query parameters prefixed with "metadata." -- it
+        # was sent as an HTTP header, which the sidecar does not read, so the routing key was
+        # silently dropped.
+        params = {"metadata.routingKey": routing_key} if routing_key else {}
         data = json.dumps(dict(event))
 
         try:
-            response = await client.post(url, content=data, headers=headers)
+            response = await client.post(url, content=data, headers=headers, params=params)
             response.raise_for_status()
             logger.debug("Published event to Dapr topic '%s': %s", topic, event.id)
         except Exception as e:
