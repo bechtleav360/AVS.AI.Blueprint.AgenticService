@@ -980,7 +980,7 @@ unticked box is not done, and says why.
       carried as dead code, so the second half has nothing to check yet.
 - [ ] Unhandled events per (namespace, topic) and namespaces-per-subject fan-out are both exposed,
       neither reported as a fault and neither keeping per-topic state (sec. 7.2, sec. 7.7).
-      `blueprint.events.unhandled` carries (namespace, topic); the namespaces-per-subject fan-out
+      `blueprint.events.unhandled` carries (agent, topic), on the agent's own meter; the namespaces-per-subject fan-out
       gauge is not implemented.
 - [ ] Marginal RSS per additional idle namespace measured and published, reusing #36's
       benchmark harness. #32 measures ~6 MB per forked child with shared libraries; a

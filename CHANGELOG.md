@@ -3,6 +3,8 @@
 
 ### Fixed
 
+- **`opentelemetry-instrumentation-httpx` is a declared dependency.** `telemetry.py` imports it,
+  and it was installed only because something else happened to pull it in.
 - **Scaffolding fixes.** The generated `Dockerfile` copied a `README.md` that nothing generates, so
   `docker build` on a fresh project failed; the generated `settings.toml` chose `scheduler_mode =
   "in_process"`, defeating its deliberate lack of a default, and carried an internal model host;
@@ -160,6 +162,11 @@
 
 ### Breaking
 
+- **`blueprint.events.unhandled` and `blueprint.events.duplicate` carry `agent`, not
+  `namespace`,** and are recorded on the agent's own meter. They were created at import on the
+  global meter, so they reported under the root's resource for every agent, with a label no other
+  metric uses. The root is labelled `<root>`, as everywhere else. Dashboards on the old label need
+  the new one.
 - **`nats_use_jetstream = true` is enforced against the server; there is no fallback to Core
   NATS.** The server is asked for the account's JetStream information on connecting. If it does not
   offer JetStream, the agent fails: at startup through the startup failure policy, later (broker
