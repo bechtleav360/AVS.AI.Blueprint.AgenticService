@@ -3,6 +3,18 @@
 
 ### Fixed
 
+- **A handler failure is logged once.** The handler chain and `EventProcessingService` each logged
+  it at ERROR before re-raising, and the transport edge logged it again with its disposition --
+  up to three copies per failure. Only the edge logs it now. `DaprClient.publish`, `NATSClient.connect`
+  and `Config.validate` stop logging before raising, too.
+- **The documented health-check example reported a failing check.** `HealthCheckerBase`'s example
+  returned `status="UP"`, but readiness counts anything other than `"healthy"` as failing;
+  `SessionsServiceHealthChecker` returned `UP`/`DOWN` and so always counted as down. Both now use
+  `"healthy"`/`"unhealthy"`.
+- **Stale documentation:** the health package README described three classes that do not exist
+  (rewritten); `components/services.md` said `ServiceBase` has no abstract methods (it has two);
+  the `RestApiBase` and `EventHandlerBase` docstring examples did not run; `namespace_of` and the
+  registry's log line described code that has moved on.
 - **`opentelemetry-instrumentation-httpx` is a declared dependency.** `telemetry.py` imports it,
   and it was installed only because something else happened to pull it in.
 - **Scaffolding fixes.** The generated `Dockerfile` copied a `README.md` that nothing generates, so

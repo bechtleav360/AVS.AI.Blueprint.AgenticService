@@ -88,7 +88,7 @@ class Registry:
         self._default_namespace: str | None = None
         self._views: dict[str, Registry] = {}
 
-        logger.info("ComponentRegistry initialized")
+        logger.info("Registry initialized")
 
     def _resolve_single(self, name_or_class: str | type[T], base_type: type[T], namespace: str | None = None) -> T:
         """Resolve a single component by name string or concrete class.

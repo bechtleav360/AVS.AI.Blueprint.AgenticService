@@ -130,6 +130,20 @@ class TestProcess:
         with pytest.raises(RuntimeError, match="handler exploded"):
             await chain.process(cloud_event, {})
 
+    async def test_a_handler_failure_is_raised_not_logged(
+        self, chain: HandlerChain, mock_registry: MagicMock, cloud_event: GenericCloudEvent, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The transport edge logs it with its disposition; logging here too doubled every failure."""
+
+        class BrokenHandler(StubHandler):
+            async def handle_event(self, event, context):
+                raise RuntimeError("handler exploded")
+
+        _wire_handlers(mock_registry, [BrokenHandler()])
+        with caplog.at_level("ERROR", logger="blueprint.agents.handler.handler_chain"), pytest.raises(RuntimeError):
+            await chain.process(cloud_event, {})
+        assert caplog.records == []
+
 
 # ---------------------------------------------------------------------------
 # Idempotency (P4, spec sec. 7.4)

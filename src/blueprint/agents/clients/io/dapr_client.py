@@ -132,13 +132,9 @@ class DaprClient(IOClientBase):
         params = {"metadata.routingKey": routing_key} if routing_key else {}
         data = json.dumps(dict(event))
 
-        try:
-            response = await client.post(url, content=data, headers=headers, params=params)
-            response.raise_for_status()
-            logger.debug("Published event to Dapr topic '%s': %s", topic, event.id)
-        except Exception as e:
-            logger.error("Failed to publish event to Dapr topic '%s': %s", topic, str(e))
-            raise
+        response = await client.post(url, content=data, headers=headers, params=params)
+        response.raise_for_status()
+        logger.debug("Published event to Dapr topic '%s': %s", topic, event.id)
 
     # ------------------------------------------------------------------
     # Health

@@ -192,15 +192,8 @@ class EventProcessingService(ServiceBase):
             status = ProcessingStatus.NO_HANDLER_FOUND if handler_result is None else ProcessingStatus.PROCESSED
             return self._build_result(request_id, handler_results, status)
 
-        except Exception as e:
-            logger.error(
-                "Event processing failed for request %s: %s",
-                request_id,
-                str(e),
-                extra={"request_id": request_id, "error": str(e)},
-                exc_info=True,
-            )
-            raise
+        # A failure propagates unlogged: every caller is a transport edge (NATS, Dapr, REST) that
+        # logs it with what it decided to do about it. Logging here too duplicated each failure.
         finally:
             self._correlation_context.reset(correlation_token)
 

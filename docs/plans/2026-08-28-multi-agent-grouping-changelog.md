@@ -7713,9 +7713,49 @@ Spec: the acceptance-criteria line for `blueprint.events.unhandled` says (agent,
 `concepts/observability.md` lists the two labels. Guarded by the converted accounting tests and the
 new `test_it_is_counted_on_the_agents_own_meter` in `test_event_handling_base.py`.
 
+### Log once, and documentation that matches the code (low-priority findings)
+
+**Log or raise, not both** (the repo's logging rule), all verified:
+
+- `HandlerChain._dispatch` logged a failing handler at ERROR and re-raised; so did
+  `EventProcessingService.process_event`; and the transport edge -- NATS `message_handler`, Dapr
+  `_process_event` / fan-out, REST `_process_resource` (`logger.exception`) -- logged it again with
+  its disposition. Verified each edge logs before removing the two inner ones; one failure is now
+  one ERROR line. The chain still records the exception on the span.
+- `DaprClient.publish` logged and re-raised a publish failure; now it only raises.
+- `NATSClient.connect` logged "Failed to connect" and re-raised; the retry loop already logs each
+  attempt. Now it adds a note with the (redacted) URL and raises.
+- `Config.validate` logged each of its three failure kinds before raising `ConfigError`.
+
+**Found while rewriting the health README:** `HealthCheckerBase`'s docstring example returned
+`status="UP"` and documented `"UP"`/`"DOWN"`, while `HealthCheckCache` counts anything other than
+`"healthy"` as failing -- so a check written from the example was permanently failing. This is
+the "status vocabulary is split" finding, and `SessionsServiceHealthChecker` had the same bug. Both
+now use `"healthy"`/`"unhealthy"`; the docstring says why `"UP"` is wrong for a component.
+
+**Docs and docstrings:** `io/api/actuators/health/README.md` (383 lines describing
+`DaprPubSubHealthChecker`, `VLLMProviderHealthChecker` and `HealthCheckerRegistry`, none of which
+exist) rewritten to the actual modules; `components/services.md` (the two abstract lifecycle
+methods); `RestApiBase` module docstring (syntactically broken, called a non-existent
+`get_registry()`); `EventHandlerBase` example (subclassed `EventHandler`, assigned `self.name`);
+`namespace_of` (the namespace lives on `Component` now); "ComponentRegistry" in the registry's log
+line and `component/__init__.py`.
+
+**Observed, not changed:** `TestClaimedTick::test_three_replicas_run_one_tick` failed once in a full
+run (two replicas claimed one tick) and passed five times in a row alone. Nothing in this change
+touches the scheduler or `DiskCacheService`; `DiskCacheService.claim` documents one non-atomic path
+(taking over an expired claim), which is the likely cause. Recorded under *Open points*.
+
+Guarded by `test_a_handler_failure_is_raised_not_logged` (`test_handler_chain.py`) and the
+vocabulary cases in `test_sessions_health.py`.
+
 ---
 
 ## Open points
+
+- **`test_three_replicas_run_one_tick` is flaky in a full run.** Seen once on 2026-09-24 (two of three
+  replicas ran one tick), passing alone. Likely `DiskCacheService.claim`'s documented non-atomic
+  takeover of an expired claim, or a run straddling a minute boundary; not investigated.
 
 - ~~**A startup-failure latch is never released.**~~ **Closed** -- see *A latched agent recovers, and
   readiness shows it* above. A non-critical agent whose `on_startup` raised

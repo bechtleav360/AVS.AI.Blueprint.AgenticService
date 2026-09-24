@@ -1299,17 +1299,14 @@ class Config:
         except ValidationError as exc:
             # Handle Dynaconf validation errors without stack trace
             error_msg = str(exc)
-            logger.error("Configuration validation failed: %s", error_msg)
             self._validation_errors.append(error_msg)
             raise ConfigError(error_msg) from None
         except ConfigError as exc:
-            # Re-raise ConfigError without stack trace
-            logger.error("Configuration validation failed: %s", exc)
+            # Re-raised, not logged: the caller decides (log or raise, not both).
             self._validation_errors.append(str(exc))
             raise
         except Exception as exc:
             # Catch any other unexpected errors with stack trace for debugging
-            logger.error("Unexpected configuration error: %s", exc, exc_info=True)
             self._validation_errors.append(str(exc))
             raise ConfigError(str(exc)) from exc
 

@@ -361,7 +361,9 @@ class HandlerChain(Component):
                     logger.info("Handler '%s' passed event '%s' to next handler", handler.name, event.type)
 
             except Exception as e:
-                logger.error("Handler '%s' failed: %s", handler.name, str(e), exc_info=True)
+                # Not logged here: the transport edge logs it with the topic and the disposition it
+                # chose (spec sec. 7.2), which this layer does not know. Logging here as well put
+                # every handler failure in the log two or three times.
                 span.record_exception(e)
                 raise
 
