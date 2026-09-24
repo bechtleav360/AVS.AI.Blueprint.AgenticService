@@ -174,6 +174,9 @@
 
 ### Breaking
 
+- **Removed unused internals:** the empty module `blueprint.agents.models.event_routing`, and the
+  example-domain models `AnalysisRequest` and `AnalysisResponse` in `blueprint.agents.models.result`,
+  which nothing in the framework used and the package did not export.
 - **`blueprint.events.unhandled` and `blueprint.events.duplicate` carry `agent`, not
   `namespace`,** and are recorded on the agent's own meter. They were created at import on the
   global meter, so they reported under the root's resource for every agent, with a label no other

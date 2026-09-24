@@ -7749,6 +7749,27 @@ touches the scheduler or `DiskCacheService`; `DiskCacheService.claim` documents 
 Guarded by `test_a_handler_failure_is_raised_not_logged` (`test_handler_chain.py`) and the
 vocabulary cases in `test_sessions_health.py`.
 
+### Dead code: only what is internal (decision E)
+
+Decided with the user: remove what is clearly internal, keep public API for now.
+
+**Removed:** `models/event_routing.py` (0 bytes, imported by nothing); `AnalysisRequest` and
+`AnalysisResponse` in `models/result.py` -- an old example domain, not exported by
+`blueprint.agents.models`, used by nothing but `AnalysisRequest`'s own validator tests, which went
+with it (and the now unused `model_validator` import). `tests/unit/agents/models/TESTS.md` updated.
+
+**Kept, deliberately:**
+
+- Public API, per decision E: the unused registry getters, `EventPublishingService.publish_status_event`,
+  `get_topic_for_event_type`, `get_available_event_types`, `AgentRuntime.run_with_prompt(_sync)`,
+  `EventHandlerBase.get_published_event_types`, `Config.get_sessions_config`, and `RuntimeConfig`
+  (exported in `models.__all__`).
+- `IOBase` -- empty, but the base of `RestApiBase` and `TelemetryManager`, so not dead.
+- `DaprEventing._make_event_callback` -- proposed for removal, kept on inspection: `ClientBase.subscribe()`
+  requires the callbacks by contract, so removing them means changing that contract again. Its
+  docstring (since `75bc08e`) says they are never invoked.
+- `NamespaceSupervisor.clear_forced_down` has a caller since the startup-recovery change.
+
 ---
 
 ## Open points
