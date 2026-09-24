@@ -314,3 +314,64 @@ class TestNamespaceOwnership:
         svc = EventPublishingService()
         with pytest.raises(ValueError, match="No components of type"):
             await svc.on_startup()
+
+
+# ---------------------------------------------------------------------------
+# #1 -- a failed publish of a handler result is not swallowed, and its id is stable
+# ---------------------------------------------------------------------------
+
+
+class TestAFailedHandlerPublish:
+    async def test_the_failure_reaches_the_caller(
+        self, event_publishing_service: EventPublishingService, mock_io_client: MagicMock, cloud_event: GenericCloudEvent
+    ) -> None:
+        """Swallowed, the delivery was acked and the handler's output was lost."""
+        mock_io_client.publish.side_effect = ConnectionError("broker gone")
+        with pytest.raises(ConnectionError, match="broker gone") as caught:
+            await event_publishing_service.publish_handler_event(
+                event_type="test.event", data={}, metadata={}, source_event=cloud_event, index=1
+            )
+        assert any("handler result 1 ('test.event'" in note for note in caught.value.__notes__)
+
+    async def test_a_deliberate_skip_is_still_not_an_error(
+        self, event_publishing_service: EventPublishingService, cloud_event: GenericCloudEvent
+    ) -> None:
+        await event_publishing_service.publish_handler_event(event_type="unmapped.event", data={}, metadata={}, source_event=cloud_event)
+
+
+class TestTheResultIdIsDerived:
+    """A redelivery republishes under the same id, so a consumer can deduplicate it."""
+
+    @staticmethod
+    async def _published_id(service: EventPublishingService, client: MagicMock, source: GenericCloudEvent, index: int = 0) -> str:
+        client.publish.reset_mock()
+        await service.publish_handler_event(event_type="test.event", data={}, metadata={}, source_event=source, index=index)
+        return client.publish.await_args.args[1].id
+
+    async def test_the_same_delivery_gets_the_same_id(
+        self, event_publishing_service: EventPublishingService, mock_io_client: MagicMock, cloud_event: GenericCloudEvent
+    ) -> None:
+        first = await self._published_id(event_publishing_service, mock_io_client, cloud_event)
+        again = await self._published_id(event_publishing_service, mock_io_client, cloud_event)
+        assert first == again
+
+    async def test_two_results_of_one_dispatch_differ(
+        self, event_publishing_service: EventPublishingService, mock_io_client: MagicMock, cloud_event: GenericCloudEvent
+    ) -> None:
+        first = await self._published_id(event_publishing_service, mock_io_client, cloud_event, index=0)
+        second = await self._published_id(event_publishing_service, mock_io_client, cloud_event, index=1)
+        assert first != second
+
+    async def test_another_source_event_differs(
+        self, event_publishing_service: EventPublishingService, mock_io_client: MagicMock, cloud_event: GenericCloudEvent
+    ) -> None:
+        other = GenericCloudEvent(id="evt-002", type="test.event", source="test-source")
+        assert await self._published_id(event_publishing_service, mock_io_client, cloud_event) != await self._published_id(
+            event_publishing_service, mock_io_client, other
+        )
+
+    def test_two_agents_answering_one_event_do_not_collide(self, cloud_event: GenericCloudEvent) -> None:
+        """Their results can share a source (a root-level app_name), so the agent is in the id."""
+        orders, billing = MagicMock(namespace="orders"), MagicMock(namespace="billing")
+        derive = EventPublishingService._result_event_id
+        assert derive(orders, cloud_event, "test.event", 0) != derive(billing, cloud_event, "test.event", 0)

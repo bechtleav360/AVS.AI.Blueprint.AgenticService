@@ -3,6 +3,12 @@
 
 ### Fixed
 
+- **A handler result that fails to publish fails the delivery.** `publish_handler_event` caught
+  every exception and logged a WARNING, so the inbound event was acknowledged and the handler's
+  output was lost. The failure now naks the event -- the handler runs again on redelivery -- and the
+  dedup marker is released so the redelivery is not skipped. Result events get a deterministic id
+  (UUIDv5 over agent, source event, type and position) instead of a random one, so a republished
+  result keeps its id and consumers can deduplicate it.
 - **An agent latched down at startup is shown as down in `/health/ready`.** The latch paused the
   agent and set its gauge to 0, but readiness was computed from health checks alone, so the probe
   and the payload reported it `UP` with nothing failing. The payload now shows it `DOWN` with a

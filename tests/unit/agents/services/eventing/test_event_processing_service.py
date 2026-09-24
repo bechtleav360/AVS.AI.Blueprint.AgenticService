@@ -199,3 +199,44 @@ class TestProcessRestRequest:
         event_processing_service.process_event = _capture
         await event_processing_service.process_rest_request({})
         assert captured["event"].type == "rest.request"
+
+
+class TestAFailedResultPublish:
+    """#1 -- the delivery fails, and the dedup marker is released so the redelivery runs."""
+
+    @staticmethod
+    def _wire(service: EventProcessingService, mock_registry: MagicMock, results: list[HandlerResult]) -> tuple[MagicMock, MagicMock]:
+        chain = MagicMock()
+        chain.process = AsyncMock(return_value=results)
+        service._handler_chains[ROOT_NAMESPACE] = chain
+        publisher = MagicMock()
+        publisher.publish_handler_event = AsyncMock()
+        mock_registry.get_component.return_value = publisher
+        return chain, publisher
+
+    async def test_it_fails_the_delivery_and_releases_the_marker(
+        self, event_processing_service: EventProcessingService, mock_registry: MagicMock
+    ) -> None:
+        chain, publisher = self._wire(event_processing_service, mock_registry, [HandlerResult(event_type="done", data={})])
+        publisher.publish_handler_event.side_effect = ConnectionError("broker gone")
+        event = GenericCloudEvent(id="e1", type="t", source="s")
+
+        with pytest.raises(ConnectionError):
+            await event_processing_service.process_event(event)
+        chain.release.assert_called_once()
+        assert chain.release.call_args.args[0].id == "e1"
+
+    async def test_a_successful_publish_keeps_the_marker(
+        self, event_processing_service: EventProcessingService, mock_registry: MagicMock
+    ) -> None:
+        chain, _ = self._wire(event_processing_service, mock_registry, [HandlerResult(event_type="done", data={})])
+        await event_processing_service.process_event(GenericCloudEvent(id="e1", type="t", source="s"))
+        chain.release.assert_not_called()
+
+    async def test_each_result_is_published_with_its_position(
+        self, event_processing_service: EventProcessingService, mock_registry: MagicMock
+    ) -> None:
+        results = [HandlerResult(event_type="a", data={}), HandlerResult(event_type="b", data={})]
+        _, publisher = self._wire(event_processing_service, mock_registry, results)
+        await event_processing_service.process_event(GenericCloudEvent(id="e1", type="t", source="s"))
+        assert [call.kwargs["index"] for call in publisher.publish_handler_event.await_args_list] == [0, 1]

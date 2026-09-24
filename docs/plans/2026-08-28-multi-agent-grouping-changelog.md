@@ -7477,6 +7477,44 @@ real lifespan: both readiness cases fail without the aggregation change, and fou
 recovery cases fail with the recovery disabled (the other two assert that it never terminates and
 that a bad interval is refused).
 
+### A handler result that fails to publish fails the delivery (#1)
+
+**Verified.** `EventPublishingService.publish_handler_event` wrapped everything in
+`except Exception` and logged a WARNING; `EventProcessingService.process_event` then returned
+normally, the NATS edge acked, and the handler's output was gone -- not redelivered, not
+dead-lettered. The result event also got a fresh `uuid4()` per attempt, so even a redelivery
+would have reached consumers under a new id.
+
+**A second defect behind the first, found while fixing it.** With `idempotency_enabled`, the
+chain claims the event's marker before dispatch and releases it only when *dispatch* raises.
+Publishing happens after `process()` returned, so a publish failure left the marker in place:
+fixing only the swallow would have nak'd the event, and the redelivery would have been skipped as
+a duplicate -- the output lost one step later.
+
+**What changed.**
+
+- **`publish_handler_event()`** no longer catches. A publish failure gets a note
+  (`exc.add_note`) naming the result's position, type, id and the source event, and propagates.
+  The two deliberate skips -- no topic mapping, a loop to the source topic -- still only warn.
+- **`_result_event_id()`**, new: `uuid5(HANDLER_RESULT_ID_NAMESPACE, agent | source | id |
+  event_type | index)`, random only for a source event without an id. The agent is in the name
+  because two agents answering one event can share a `source` (a root-level `app_name`).
+- **`publish_handler_event(..., index=)`**, new keyword, passed by `process_event` from
+  `enumerate(handler_results)`.
+- **`process_event()`**: on a publish failure, `self._chain_for(namespace).release(event)`, then
+  re-raise.
+- **`HandlerChain.release(event)`**, new public method over the existing `_release`, resolving
+  the policy itself; a no-op with dedup off.
+
+Decided with the user: the redelivery re-runs the handler, including an LLM call. That is the
+at-least-once contract every other failure already has, and the deterministic id is what makes the
+repeated publish safe downstream.
+
+Docs: *When publishing a result fails* in `concepts/event-processing.md`. Guarded by
+`TestAFailedHandlerPublish` and `TestTheResultIdIsDerived` (`test_event_publishing_service.py`),
+`TestAFailedResultPublish` (`test_event_processing_service.py`) and two `release` cases in
+`test_handler_chain.py`; all nine behaviour cases fail against the previous code.
+
 ---
 
 ## Open points

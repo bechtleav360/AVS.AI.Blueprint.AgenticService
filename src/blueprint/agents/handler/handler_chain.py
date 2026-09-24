@@ -488,6 +488,18 @@ class HandlerChain(Component):
         )
         return True
 
+    def release(self, event: CloudEvent[Any]) -> None:
+        """Drop this event's dedup marker after a failure that happened after a successful dispatch.
+
+        For the caller that finishes the delivery: a handler result that could not be published
+        fails the delivery after the chain has already kept its claim, and the redelivery must be
+        allowed to run the chain again. A no-op when dedup is off.
+        """
+        policy = self._policy
+        if policy is None:
+            policy = self._policy = self._resolve_idempotency_policy()
+        self._release(event, policy)
+
     def _release(self, event: CloudEvent[Any], policy: IdempotencyPolicy) -> None:
         """Drop the marker after a failed dispatch so the redelivery is allowed to run.
 
