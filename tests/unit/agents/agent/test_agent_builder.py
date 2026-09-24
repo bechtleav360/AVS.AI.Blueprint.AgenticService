@@ -307,3 +307,40 @@ class TestBuild:
         ):
             with pytest.raises(ValueError, match="Unexpected keyword argument"):
                 builder_with_model.build(completely_unknown_kwarg="foo")
+
+
+class TestStructuredOutputReachesTheAgent:
+    """#2 -- with_result_type / with_deps_type were stored and never passed to AgentRuntime."""
+
+    class Summary(BaseModel):
+        text: str
+
+    @staticmethod
+    def _build(builder: AgentBuilder, **kwargs: object) -> MagicMock:
+        builder.with_model_from_config().with_system_prompt("system")
+        with patch.dict("blueprint.agents.agent.agent_builder._CLIENT_MAP", {"openai": MagicMock(return_value=MagicMock())}):
+            with patch("blueprint.agents.agent.agent_builder.PromptLoader.load_prompt", return_value="prompt"):
+                with patch("blueprint.agents.agent.agent_builder.AgentRuntime") as runtime:
+                    builder.build(**kwargs)
+        return runtime
+
+    def test_the_result_type_is_the_output_type(self, builder: AgentBuilder, mock_registry: MagicMock) -> None:
+        runtime = self._build(builder.with_result_type(self.Summary))
+        assert runtime.call_args.kwargs["output_type"] is self.Summary
+
+    def test_the_deps_type_is_passed(self, builder: AgentBuilder, mock_registry: MagicMock) -> None:
+        runtime = self._build(builder.with_deps_type(dict))
+        assert runtime.call_args.kwargs["deps_type"] is dict
+
+    def test_unset_leaves_pydantic_ai_defaults(self, builder: AgentBuilder, mock_registry: MagicMock) -> None:
+        runtime = self._build(builder)
+        assert "output_type" not in runtime.call_args.kwargs
+        assert "deps_type" not in runtime.call_args.kwargs
+
+    def test_set_both_ways_is_refused(self, builder: AgentBuilder, mock_registry: MagicMock) -> None:
+        with pytest.raises(ValueError, match="set it one way only"):
+            self._build(builder.with_result_type(self.Summary), output_type=str)
+
+    def test_the_old_kwarg_route_still_works(self, builder: AgentBuilder, mock_registry: MagicMock) -> None:
+        runtime = self._build(builder, output_type=self.Summary)
+        assert runtime.call_args.kwargs["output_type"] is self.Summary
