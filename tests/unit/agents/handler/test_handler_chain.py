@@ -159,6 +159,12 @@ class _StubCache:
     def delete(self, key: Any, namespace: str = "default") -> bool:
         return self.store.pop(self._key(key), None) is not None
 
+    def claim(self, key: Any, value: Any, namespace: str = "default", ttl: int | None = None) -> bool:
+        if self.exists(key, namespace):
+            return False
+        self.set(key, value, namespace=namespace, ttl=ttl)
+        return True
+
 
 def _enable_dedup(mock_config: MagicMock, mock_registry: MagicMock, ttl: int = 60) -> _StubCache:
     """Turn dedup on with a working cache, and return that cache."""
@@ -197,6 +203,29 @@ class TestIdempotencyDisabled:
 
 
 class TestIdempotencyEnabled:
+    async def test_the_claim_is_one_atomic_call(
+        self, chain: HandlerChain, mock_registry: MagicMock, mock_config: MagicMock, cloud_event: GenericCloudEvent
+    ) -> None:
+        """#6 -- exists() then set() let two replicas both pass; the atomic claim decides alone.
+
+        Simulates the race window: exists() still says "absent", but another replica's claim won.
+        """
+        cache = _enable_dedup(mock_config, mock_registry)
+        cache.exists = lambda key, namespace="default": False  # type: ignore[method-assign]
+        cache.claim = lambda key, value, namespace="default", ttl=None: False  # type: ignore[method-assign]
+        seen: list[str] = []
+
+        class Counting(StubHandler):
+            async def can_handle_event(self, event, context):
+                seen.append(event.id)
+                return False
+
+        _wire_handlers(mock_registry, [Counting()])
+
+        await chain.process(cloud_event, {})
+
+        assert seen == []
+
     async def test_release_after_a_successful_dispatch_lets_the_redelivery_run(
         self, chain: HandlerChain, mock_registry: MagicMock, mock_config: MagicMock, cloud_event: GenericCloudEvent
     ) -> None:
