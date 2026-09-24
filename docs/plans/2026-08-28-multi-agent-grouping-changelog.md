@@ -7413,11 +7413,76 @@ failing). The pause was only enforced on reconnect and in `health_check()`.
 Guarded by `TestAPauseBeforeSubscribing` in `test_nats_client.py`; two of its three cases fail
 against the previous code.
 
+### A latched agent recovers, and readiness shows it
+
+Two findings, one subject: the open point recorded just above ("a startup-failure latch is never
+released"), and #3 of an external defect list ("`mark_down` does not affect readiness"). Decided
+with the user: retry, never terminate, and show the latch in `/health/ready`. Sec. 9.1 of the spec
+is amended to say so.
+
+**#3, verified.** `HealthCheckCache._aggregate_by_agent` built each namespace's verdict from its
+check results and never read the supervisor's latch. A latched agent -- paused, gauge at 0 --
+was therefore `UP` in `/health/ready` with `failing: []`, and `ReadinessPolicy` counted it as
+serving. Separately, `_run_health_checks` returned before doing anything when no check was
+registered, so neither the verdict nor `supervisor.observe()` ran -- and `observe()` is what
+resumes an agent.
+
+- **`NamespaceReadiness.reason`**, new: why an agent is out of service when no check says so.
+- **`NamespaceSupervisor.forced_down`**, new property: every latched namespace and its reason.
+- **`_aggregate_by_agent`** reads it: a latched namespace is `False` in `namespace_status` (so
+  the policy counts it) and `DOWN` with its `reason` in the payload, whatever its checks say.
+- **`_run_health_checks`** no longer returns early without checks.
+- **`HealthCheckCache.refresh()`** and **`ActuatorApi.refresh_health()`**, new: recompute now.
+  Called when a latch is set or released, so the probe does not lag one interval behind.
+
+**Recovery.**
+
+- **`AppBuilder._start_component`**, non-critical branch: records `(kind, component, label)` in
+  `_failed_startups[namespace]`, in start order, before latching.
+- **`_startup_retry_interval()`**: reads `startup_retry_interval_seconds` at the start of the
+  lifespan, refusing a non-positive or non-numeric value -- so a bad value fails startup rather
+  than surfacing on the day an agent first fails.
+- **`_start_startup_recovery()`**, after every component has started: one task per latched agent.
+- **`_recover_agent()`**: sleeps, then calls `on_startup` on the pending components in order,
+  stopping at the first that raises (a later one may depend on it). A failure logs a WARNING and
+  refreshes the latch's reason, so the payload shows the current error. When none are pending:
+  `clear_forced_down`, INFO, `refresh_health()` -- the refresh runs `observe()`, which resumes
+  consumption if the checks pass. Never terminates.
+- **`_stop_startup_recovery()`**, first thing in shutdown: cancels and awaits the tasks.
+- **`_on_recovery_done()`**: the done-callback the design rules require on every spawned task; it
+  logs a recovery that ended by raising, naming the task's agent.
+- **`_mark_agent_down()`** now refreshes readiness after latching.
+- `startup_retry_interval_seconds` joins `PROCESS_SCOPE_KEYS`.
+
+**Why never terminate**, pushing back on D9 of the dynamic-subscriptions draft: a deterministic
+failure (a bad key) fails identically after a restart, and the restart crash-loops the pod and
+every healthy agent in it -- the blast radius sec. 9.1 exists to remove. The ERROR on the
+transition, the gauge, the payload's reason and a WARNING per attempt keep it visible.
+
+**Re-running `on_startup` was audited** for every framework component that implements it: each
+raises before acquiring anything (configuration checks, then the client object) or guards a
+repeated start (`SchedulerBase`, `SessionsBus`). User components are now required to be safe too;
+`concepts/observability.md` and the spec say so.
+
+**Checked, not a defect:** the previous commit stops a paused client starting its retry loop, and a
+health poll pauses an agent whose NATS check fails -- which looked like it could deadlock an agent
+whose broker was down at startup. It cannot: `ClientHealthChecker` calls `client.connect()` before
+every check, so polls connect the client independently of the loop, and the poll that finds it
+connected resumes and subscribes it.
+
+Docs: `concepts/observability.md` (retry, the `reason`, the `on_startup` requirement),
+`concepts/configuration.md` and `reference/configuration-keys.md` (the key). Guarded by
+`TestReadinessShowsTheLatch` and `TestRecovery` in `test_startup_failure_policy.py`, through the
+real lifespan: both readiness cases fail without the aggregation change, and four of the six
+recovery cases fail with the recovery disabled (the other two assert that it never terminates and
+that a bad interval is refused).
+
 ---
 
 ## Open points
 
-- **A startup-failure latch is never released.** A non-critical agent whose `on_startup` raised
+- ~~**A startup-failure latch is never released.**~~ **Closed** -- see *A latched agent recovers, and
+  readiness shows it* above. A non-critical agent whose `on_startup` raised
   is latched by `AppBuilder._mark_agent_down` -> `NamespaceSupervisor.mark_down`, and nothing in
   `src/` calls `clear_forced_down`, so it stays degraded until the pod restarts. That is what sec.
   9.1 specifies -- it names no recovery -- so it is not a defect against the committed spec; it

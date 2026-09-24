@@ -253,9 +253,24 @@ consuming and the gauge returns to `1`.
 The one exception is a startup failure. If a non-critical agent's `on_startup` raises, the process
 starts without it and that agent is **latched** down -- its components can often still answer a
 health check while the agent is unusable, so an observed-health signal would put it straight back
-into service on the next poll. A critical agent's `on_startup` failure ends the startup instead,
-before the port is bound, so Kubernetes crash-loops the pod with the traceback rather than
-reporting a replica that is silently short a consumer.
+into service on the next poll. The readiness payload shows it as `DOWN` with a `reason` naming
+the component and its error, even though no check is failing.
+
+A latched agent is **retried**: every `startup_retry_interval_seconds` (default 30) the framework
+calls `on_startup` again on the components that failed, in their original order, stopping at the
+first that fails again. When all of them start, the latch is released and the agent's health
+checks decide from there -- a transient cause, such as a database that was not reachable yet,
+recovers without a restart. While it keeps failing, each attempt logs a WARNING and the payload
+carries the latest error. It is retried indefinitely and never ends the process: a deterministic
+failure, such as a missing key, would fail the same way after a restart, and crash-looping the pod
+would take every healthy agent in it down too.
+
+**So `on_startup` must be safe to call again after it raised.** Raise before acquiring anything, or
+release what you acquired before raising; the framework's own components all do.
+
+A critical agent's `on_startup` failure ends the startup instead, before the port is bound, so
+Kubernetes crash-loops the pod with the traceback rather than reporting a replica that is silently
+short a consumer.
 
 ---
 

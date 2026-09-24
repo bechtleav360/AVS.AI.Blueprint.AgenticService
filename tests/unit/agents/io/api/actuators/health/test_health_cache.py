@@ -204,11 +204,12 @@ class TestTheVerdictIsPerAgent:
     """C3: the overall status is no longer a fold over every check, but a policy over agents."""
 
     @staticmethod
-    def _supervisor(namespaces: list[str], critical: set[str]) -> MagicMock:
-        """A stand-in supervisor: the cache reads its namespaces and its critical set."""
+    def _supervisor(namespaces: list[str], critical: set[str], forced: dict[str, str] | None = None) -> MagicMock:
+        """A stand-in supervisor: the cache reads its namespaces, its critical set and its latches."""
         supervisor = MagicMock()
         supervisor.status = dict.fromkeys(namespaces, True)
         supervisor.critical_namespaces = frozenset(critical)
+        supervisor.forced_down = dict(forced or {})
         supervisor.observe = AsyncMock()
         return supervisor
 
@@ -278,3 +279,38 @@ class TestTheVerdictIsPerAgent:
         cache.set_health_entries(self._entries())
         await cache._run_health_checks()
         assert (await cache.get_health_status()).status == "DOWN"
+
+
+class TestALatchedAgent:
+    """#3 -- a latched agent is down in the verdict and the payload, whatever its checks say."""
+
+    REASON = "its service 'db' failed to start: refused"
+
+    async def _run(
+        self, policy: ReadinessPolicy, critical: set[str], entries: list[HealthCheckEntry]
+    ) -> tuple[HealthCheckCache, MagicMock]:
+        supervisor = TestTheVerdictIsPerAgent._supervisor(["", "orders", "billing"], critical, {"billing": self.REASON})
+        cache = HealthCheckCache(policy=policy, supervisor=supervisor)
+        cache.set_health_entries(entries)
+        await cache._run_health_checks()
+        return cache, supervisor
+
+    async def test_passing_checks_do_not_make_it_up(self) -> None:
+        cache, supervisor = await self._run(ReadinessPolicy.ALL, set(), [_entry("db", "healthy", namespace="billing")])
+        response = await cache.get_health_status()
+        assert response.status == "DOWN"
+        assert (response.namespaces["billing"].status, response.namespaces["billing"].reason) == ("DOWN", self.REASON)
+        assert response.namespaces["billing"].failing == []
+        supervisor.observe.assert_awaited_once_with({"": True, "orders": True, "billing": False})
+
+    async def test_critical_policy_keeps_the_pod_in_but_says_why(self) -> None:
+        cache, _ = await self._run(ReadinessPolicy.CRITICAL, {"orders"}, [_entry("db", "healthy", namespace="billing")])
+        response = await cache.get_health_status()
+        assert response.status == "UP"
+        assert response.namespaces["billing"].reason == self.REASON
+
+    async def test_it_is_reported_with_no_checks_registered_at_all(self) -> None:
+        """The poll used to return before aggregating, so the verdict and observe() never ran."""
+        cache, supervisor = await self._run(ReadinessPolicy.ALL, set(), [])
+        assert (await cache.get_health_status()).namespaces["billing"].status == "DOWN"
+        supervisor.observe.assert_awaited_once()

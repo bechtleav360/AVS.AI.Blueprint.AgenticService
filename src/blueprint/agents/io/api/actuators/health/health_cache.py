@@ -129,11 +129,24 @@ class HealthCheckCache:
         async with self._lock:
             return self._cached_response
 
+    async def refresh(self) -> None:
+        """Re-run the checks now instead of at the next interval.
+
+        For a change the checks cannot see -- an agent latched down or released -- so that the
+        readiness probe and the payload reflect it immediately rather than up to one interval later.
+        """
+        await self._run_health_checks()
+
     async def _run_health_checks(self) -> None:
-        """Run all health checks and update cache."""
+        """Run all health checks and update cache.
+
+        **Runs with no checks registered too.** It used to return early, and that skipped more than
+        the checks: the verdict was never recomputed and the supervisor never observed, so an agent
+        latched down at startup stayed ``UP`` in the payload, and a released latch never resumed
+        consumption, because resumption is driven from here.
+        """
         if not self._entries:
-            logger.debug("No health check providers configured")
-            return
+            logger.debug("No health check providers configured; aggregating supervisor state only")
 
         try:
             async with self._lock:
@@ -213,7 +226,8 @@ class HealthCheckCache:
             Whether each namespace passed, and the per-agent section of the readiness payload.
         """
         supervised = set(self._supervisor.status) if self._supervisor is not None else set()
-        failing: dict[str, list[str]] = {namespace: [] for namespace in supervised}
+        forced = self._supervisor.forced_down if self._supervisor is not None else {}
+        failing: dict[str, list[str]] = {namespace: [] for namespace in supervised | set(forced)}
 
         for entry in self._entries:
             result = components.get(entry.key)
@@ -221,16 +235,20 @@ class HealthCheckCache:
             if result is not None and result.status != "healthy":
                 failing[entry.namespace].append(entry.key)
 
+        # A latched agent is down whatever its checks say. That is the point of the latch: a
+        # component that failed to start may answer its health check perfectly while the agent is
+        # unusable, so the checks alone would report it UP -- to the policy and in the payload.
         critical = self._critical_namespaces()
-        namespace_status = {namespace: not keys for namespace, keys in failing.items()}
+        namespace_status = {namespace: not keys and namespace not in forced for namespace, keys in failing.items()}
         namespaces = {
             (namespace or ROOT_LABEL): NamespaceReadiness(
-                status="UP" if not keys else "DOWN",
+                status="UP" if namespace_status[namespace] else "DOWN",
                 # The root is shared infrastructure, so it gates readiness under every policy
                 # -- see ReadinessPolicy. Reporting it as critical is what makes the payload
                 # explain the verdict rather than contradict it.
                 critical=not namespace or namespace in critical,
                 failing=keys,
+                reason=forced.get(namespace),
             )
             for namespace, keys in failing.items()
         }
