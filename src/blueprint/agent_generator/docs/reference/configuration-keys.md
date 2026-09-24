@@ -14,7 +14,7 @@ Top-level application settings.
 |-----|------|---------|-------------|
 | `app_name` | `str` | `"agent_blueprint"` | Application name. Used in logging, health checks, and OpenTelemetry service identification. |
 | `app_port` | `int` | `8000` | HTTP port the application listens on. |
-| `app_environment` | `str` | `"development"` | Deployment environment identifier (e.g., `"development"`, `"staging"`, `"production"`). |
+| `app_environment` | `str` | `"development"` | Deployment environment identifier (e.g., `"development"`, `"staging"`, `"production"`). `"development"` enables development fallbacks such as the localhost default for `nats_url`, and the process logs a WARNING at startup that it is not suitable for production. Being the default, a deployment that sets nothing runs in development mode: set it to anything else to deploy. |
 | `log_level` | `str` | `"INFO"` | Root log level. One of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. |
 | `log_format` | `str` | `"text"` | Log output format. `"text"` for human-readable, `"json"` for structured JSON logging. |
 
@@ -27,7 +27,7 @@ Settings for the event bus transport layer.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `event_bus` | `str` | `""` | Event bus implementation. Set to `"dapr"` for Dapr pub/sub or `"nats"` for NATS. Empty string disables the event bus. |
-| `nats_url` | `str` | `"nats://localhost:4222"` | NATS server URL. Only used when `event_bus = "nats"`. |
+| `nats_url` | `str` | none -- `"nats://localhost:4222"` in development only | NATS server URL. Only used when `event_bus = "nats"`. Unset, a process with `app_environment = "development"` connects to localhost and logs a WARNING saying so; in any other environment startup fails naming this key, because `localhost` is almost always wrong in a container and a client pointed at it retries forever while the pod looks healthy. A broker in the same pod is the exception: set `nats_url` to it explicitly. |
 | `dapr_pubsub_name` | `str` | `"pubsub"` | Dapr pub/sub component name, used when publishing and in the subscription document served at `GET /dapr/subscribe`. Only used when `event_bus = "dapr"`. |
 | `dapr_declarative_subscriptions` | `bool` | `false` | Set `true` when Dapr subscriptions are declared outside the application (Kubernetes `Subscription` resources or YAML). The discovery endpoint then serves an empty document, so the sidecar cannot subscribe twice. |
 | `nats_queue_group` | `str` | value of `app_name` | Queue group joined by every NATS subscription, so exactly one replica processes any given message. Identifies the agent, not the process: it must not contain a pod, container or replica name, or moving the agent between deployments would change which consumer it is. Startup fails if neither this key nor `app_name` yields a name. Applies to the root namespace only -- a client that belongs to a namespace uses the namespace name, so two agents sharing a process never share a group. Only used when `event_bus = "nats"`. |

@@ -1282,6 +1282,26 @@ class AppBuilder:
             return
         logger.info("%s %s startup completed", kind, label)
 
+    @staticmethod
+    def _warn_if_development(config: Config) -> None:
+        """Say, once per process, that this process runs with development defaults.
+
+        ``app_environment`` defaults to ``"development"``, so a deployment that sets nothing runs in
+        development mode -- with the fallbacks that mode allows, such as ``nats_url`` defaulting
+        to ``localhost``. Those fallbacks are what make a developer's machine work without
+        configuration; in a pod they are almost always wrong. This line is what makes a deployment
+        that forgot to leave development mode visible in its own log.
+        """
+        environment = str(config.get("app_environment", "development"))
+        if environment.lower() != "development":
+            return
+        logger.warning(
+            "This service is running in development mode (app_environment = %r), which is not suitable for "
+            "production: development falls back to defaults such as a localhost broker. Set app_environment to "
+            "deploy it.",
+            environment,
+        )
+
     async def _start_loop_diagnostics(self, config: Config) -> None:
         """Turn on asyncio debug mode, or start the watchdog, whichever this environment wants.
 
@@ -1328,6 +1348,7 @@ class AppBuilder:
             registry: Registry = Component.shared_registry  # type: ignore[assignment]
             resolved_config = self._require_config()
             logger.info("Starting up application components")
+            self._warn_if_development(resolved_config)
 
             # Configure OpenTelemetry tracing, one identity per agent (C2). First in startup,
             # because Component.tracer caches the provider it resolves on first use and every
