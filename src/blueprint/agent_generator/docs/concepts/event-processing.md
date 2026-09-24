@@ -258,6 +258,15 @@ With `nats_use_jetstream = true` the framework creates one **durable consumer pe
 configured stream and binds every replica to it through the agent's queue group, so exactly one
 replica handles each message. What happens to a delivery is decided at the transport edge:
 
+**`nats_use_jetstream` is checked against the server.** On connecting, the framework asks the
+server for the account's JetStream information. If JetStream is not there -- not enabled on the
+server, or not for this account -- the agent fails, and there is no fallback to Core NATS: that
+would silently drop durable consumers and acknowledgements. At startup the startup failure policy
+applies. If the broker was unreachable at startup and the mismatch shows up later, the root or a
+critical agent shuts the process down (SIGTERM to itself, so the other agents still drain), and a
+non-critical agent is marked down until the pod restarts. A timeout on that request is not treated
+as an answer; it is retried like any other connection failure.
+
 | Outcome | Disposition |
 |---------|-------------|
 | The handler chain returned, including "no handler matched" | `ack` |

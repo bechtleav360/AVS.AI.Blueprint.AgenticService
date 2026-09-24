@@ -6,6 +6,7 @@ import importlib.util
 import json
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
@@ -16,7 +17,8 @@ import nats
 from nats.aio.client import Client as NatsClient
 from nats.js import api as js_api
 from nats.js.client import JetStreamContext
-from nats.js.errors import NotFoundError
+from nats.errors import NoRespondersError
+from nats.js.errors import APIError, NotFoundError
 from opentelemetry.metrics import Counter
 
 from ...component.namespace import ROOT_LABEL, ROOT_NAMESPACE
@@ -37,6 +39,19 @@ In a container ``localhost`` is almost always wrong -- a broker in the same pod 
 it can say so -- and a client pointed at it retries forever while the pod looks healthy. So outside
 ``app_environment = "development"`` an unset ``nats_url`` fails startup instead of reaching for this.
 """
+
+
+class JetStreamUnavailableError(RuntimeError):
+    """The agent declared ``nats_use_jetstream = true`` and the server does not offer JetStream to it.
+
+    A deployment error, not a transient one: no retry makes a server grow JetStream. It is therefore
+    never retried by the connection loop, and it fails the agent -- at startup through the startup
+    failure policy (spec sec. 9.1), later through the fatal handler :class:`AppBuilder` installs.
+    """
+
+
+FatalHandler = Callable[[str, BaseException], Awaitable[None]]
+"""Called once when a client finds, after startup, that its agent cannot run at all: namespace, error."""
 
 
 def redact_url(url: str) -> str:
@@ -167,6 +182,10 @@ class NATSClient(IOClientBase):
         self._connection_name: str = ""
         self._nats_url: str = ""
         self._connect_options: dict[str, Any] = {}
+        self._jetstream_mismatch: JetStreamUnavailableError | None = None
+        self._started = False
+        self._fatal_handler: FatalHandler | None = None
+        self._fatal_reported = False
         self._nats_client: NatsClient | None = None
         self._js: JetStreamContext | None = None
         self._use_jetstream: bool = False
@@ -603,6 +622,22 @@ class NATSClient(IOClientBase):
         """
         self._nats_url = self._resolve_nats_url()
         self._connect_options = self._resolve_connect_options(self._nats_url)
+        if self._jetstream_mismatch is not None:
+            # Found by a connect that ran before this -- normally the actuator's first health poll,
+            # which connects every client before any component starts. Probed again rather than
+            # re-raised, so a retried startup (sec. 9.1) sees a server that has since been fixed.
+            self._jetstream_mismatch = None
+            await self.connect()
+        self._started = True
+
+    def set_fatal_handler(self, handler: FatalHandler) -> None:
+        """Install what is called when this agent turns out, after startup, to be unable to run.
+
+        Before startup has finished, such a failure is raised from :meth:`on_startup` instead, where
+        the startup failure policy handles it. After it, nothing awaits the connection -- it happens
+        in the retry loop or a health poll -- so it is handed to this handler, once.
+        """
+        self._fatal_handler = handler
 
     def _resolve_nats_url(self) -> str:
         """Return the configured ``nats_url``; outside development, refuse to run without one.
@@ -746,19 +781,69 @@ class NATSClient(IOClientBase):
             self._publish_via_jetstream = self._resolve_publish_mode()
             self._publish_subjects = self._resolve_publish_subjects()
             if self._use_jetstream:
-                try:
-                    self._js = self._nats_client.jetstream()
-                    logger.info("Connected to NATS server with JetStream at %s as '%s'", nats_url, self._connection_name)
-                except Exception as e:
-                    logger.warning("JetStream initialization failed, falling back to Core NATS: %s", str(e))
-                    self._use_jetstream = False
-                    self._publish_via_jetstream = False
-
-            if not self._use_jetstream:
+                self._js = self._nats_client.jetstream()
+                await self._require_jetstream(nats_url)
+                logger.info("Connected to NATS server with JetStream at %s as '%s'", nats_url, self._connection_name)
+            else:
                 logger.info("Connected to NATS server (Core NATS) at %s as '%s'", nats_url, self._connection_name)
+        except JetStreamUnavailableError:
+            raise
         except Exception as e:
             logger.error("Failed to connect to NATS: %s", str(e))
             raise
+
+    async def _require_jetstream(self, nats_url: str) -> None:
+        """Fail the connection if the server does not offer JetStream to this account.
+
+        ``connection.jetstream()`` only builds a local context and asks the server nothing, so the
+        fallback this replaces -- "JetStream initialization failed, falling back to Core NATS" --
+        almost never fired, and when it did it silently dropped durability: no durable consumer,
+        and no settlement, so every handler failure was lost. Nobody had decided that. The account
+        info request is the cheapest call that the server answers only when JetStream is there.
+
+        A timeout proves nothing either way and stays an ordinary connection failure, retried like
+        any other. No responders (no JetStream on the server) and an API error (not enabled for the
+        account) are answers, and they are final.
+
+        Raises:
+            JetStreamUnavailableError: the server answered, and JetStream is not available.
+        """
+        try:
+            await self._js.account_info()  # type: ignore[union-attr]
+        except (NoRespondersError, APIError) as exc:
+            error = JetStreamUnavailableError(
+                f"Agent '{self.namespace or ROOT_LABEL}' declares 'nats_use_jetstream = true', but the NATS server at "
+                f"{nats_url} does not offer JetStream to this account ({type(exc).__name__}: {exc}). It is not retried "
+                "and there is no fallback to Core NATS, which would drop durable consumers and acknowledgements "
+                "without anyone deciding it. Enable JetStream on the server or account, or set "
+                "'nats_use_jetstream = false' if Core NATS is intended."
+            )
+            await self._nats_client.close()  # type: ignore[union-attr]
+            self._nats_client = None
+            self._js = None
+            self._client = None
+            self._jetstream_mismatch = error
+            self._report_fatal(error)
+            raise error from exc
+
+    def _report_fatal(self, error: BaseException) -> None:
+        """Hand a fatal error found after startup to the installed handler, once."""
+        if not self._started or self._fatal_handler is None or self._fatal_reported:
+            return
+        self._fatal_reported = True
+        task = asyncio.ensure_future(self._fatal_handler(self.namespace, error))
+        task.add_done_callback(self._on_fatal_handler_done)
+
+    def _on_fatal_handler_done(self, task: asyncio.Task[None]) -> None:
+        """Report a fatal handler that itself raised, naming the agent (C7)."""
+        if task.cancelled() or task.exception() is None:
+            return
+        logger.error(
+            "Agent '%s': handling a fatal transport error failed: %s",
+            self.namespace or ROOT_LABEL,
+            task.exception(),
+            exc_info=task.exception(),
+        )
 
     async def pause_consumption(self) -> None:
         """Drain this agent's subscriptions so its events redeliver elsewhere (C4).
@@ -949,6 +1034,8 @@ class NATSClient(IOClientBase):
         self-sustaining: the agent could never be seen to recover, so consumption would never
         resume, and a transient Redis outage would take the agent off its topics permanently.
         """
+        if self._jetstream_mismatch is not None:
+            return ComponentHealth(status="unhealthy", message=str(self._jetstream_mismatch))
         if not self._is_connected():
             return ComponentHealth(status="unhealthy", message="NATS client not connected")
         if self._consumption_paused:
@@ -976,6 +1063,10 @@ class NATSClient(IOClientBase):
                 self._subscriptions_ready = True
                 logger.info("NATSClient connected and subscribed successfully")
                 return
+            except JetStreamUnavailableError:
+                # Final, not transient: retrying would log the same answer forever.
+                self._subscriptions_ready = False
+                raise
             except Exception as e:
                 attempt += 1
                 self._subscriptions_ready = False

@@ -197,6 +197,21 @@ ValueError: 'event_bus' is 'nats' but 'nats_url' is not set (app_environment is 
 **Solution:** Set `nats_url` in the group's `settings.toml`, or in the environment as the variable the message
 names (`DYNACONF_NATS_URL` with the default prefix).
 
+### `does not offer JetStream to this account`
+
+**Symptom:** Startup fails, an agent is marked down, or the process shuts itself down, with:
+
+```
+JetStreamUnavailableError: Agent 'orders' declares 'nats_use_jetstream = true', but the NATS server at ... does not offer JetStream to this account
+```
+
+**Cause:** The agent is configured for JetStream and the server answered that JetStream is not
+available -- not enabled on the server (`jetstream {}` missing from its configuration), or not
+enabled for the account the connection authenticates as.
+
+**Solution:** Enable JetStream for that server and account, or set `nats_use_jetstream = false`
+if the agent is meant to run on Core NATS. The framework does not fall back on its own.
+
 ### Topic Mapping Mismatches
 
 **Symptom:** Events are published but handlers never receive them.
