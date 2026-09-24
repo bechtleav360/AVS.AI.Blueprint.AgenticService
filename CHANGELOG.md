@@ -3,6 +3,10 @@
 
 ### Fixed
 
+- **`AgentBuilder.with_result_type()` and `with_deps_type()` take effect.** Both were stored and
+  never passed to the agent, so a structured-output agent returned plain `str` and the documented
+  `result.output.<field>` failed. They are now passed as `output_type` and `deps_type`. Giving the
+  same value to `build()` as a keyword as well is refused.
 - **Event deduplication claims atomically.** The handler chain checked for the marker with
   `exists()` and then wrote it with `set()`, so two replicas handed the same event at the same moment
   both passed the check and both dispatched. It now uses the cache's atomic `claim()`, which already

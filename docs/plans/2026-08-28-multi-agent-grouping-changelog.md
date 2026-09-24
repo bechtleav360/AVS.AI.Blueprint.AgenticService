@@ -7574,6 +7574,23 @@ Guarded by `test_the_claim_is_one_atomic_call` in `test_handler_chain.py`, which
 window (`exists()` says absent, `claim()` says taken) and fails against the previous code. The stub
 cache in that file gained `claim()`.
 
+### Structured output and deps types reach the agent (#2)
+
+**Verified.** `AgentBuilder.with_result_type()` and `with_deps_type()` set `_result_type` and
+`_deps_type`; `build()` constructed `AgentRuntime(system_prompt=..., tools=..., **kwargs)` with
+neither, and `_result_type` appeared only in a log line. `components/agents.md` documents
+`result.output.<field>`, which failed on the `str` the agent actually returned. The only working
+route was `build(output_type=X)` through the kwargs check.
+
+**Change, in `build()`:** each configured type is put into the agent kwargs (`output_type`,
+`deps_type`); a type given both ways raises `ValueError`. Unset now means `None` rather than the
+`BaseModel` / `type(None)` placeholders, so pydantic-ai's defaults apply untouched. The build log
+says `str (default)` when no result type was set.
+
+Guarded by `TestStructuredOutputReachesTheAgent` in `test_agent_builder.py`: three of its five
+cases fail against the previous code (the other two check that unset changes nothing and that the
+kwargs route still works).
+
 ---
 
 ## Open points

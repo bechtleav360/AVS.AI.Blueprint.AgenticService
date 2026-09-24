@@ -87,8 +87,9 @@ class AgentBuilder:
         self._model_name_override: str = ""
         self._system_prompt: str | None = None
         self._tools: list[Tool] = []
-        self._result_type: type[BaseModel] = BaseModel
-        self._deps_type: type[Any] = type(None)
+        # None means "not configured": pydantic-ai's own defaults apply (str output, no deps).
+        self._result_type: type[Any] | None = None
+        self._deps_type: type[Any] | None = None
         self._meter = meter
         self._package_root = Path(package_root) if package_root else ""
         self._metrics_enabled: bool = True
@@ -375,6 +376,20 @@ class AgentBuilder:
                 if kwarg not in allowed:
                     raise ValueError(f"Unexpected keyword argument for Agent: {kwarg}")
 
+        # The structured output and deps types reach the agent. with_result_type() and
+        # with_deps_type() used to store them and nothing else -- AgentRuntime never received
+        # either, so a documented `result.output.<field>` was a str and failed at the attribute.
+        # Given both ways, the builder refuses rather than silently picking one.
+        for builder_value, agent_kwarg, method in (
+            (self._result_type, "output_type", "with_result_type"),
+            (self._deps_type, "deps_type", "with_deps_type"),
+        ):
+            if builder_value is None:
+                continue
+            if agent_kwarg in kwargs:
+                raise ValueError(f"'{agent_kwarg}' is given to build() and set by {method}(); set it one way only.")
+            kwargs[agent_kwarg] = builder_value
+
         # AgentRuntime takes its registry name as a required argument and nothing was passing
         # one: AppBuilder.with_agent(agent, name=...) keeps that name on the *declaration* and
         # assigns it after construction, so this call raised TypeError before it could get
@@ -404,7 +419,7 @@ class AgentBuilder:
             self._ai_config.provider,
             self._ai_config.model_name,
             len(self._tools),
-            self._result_type.__name__,
+            self._result_type.__name__ if self._result_type is not None else "str (default)",
         )
 
         return runtime
