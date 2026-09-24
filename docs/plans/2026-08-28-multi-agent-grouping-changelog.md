@@ -7556,6 +7556,24 @@ Docs: `nats_use_jetstream` in `reference/configuration-keys.md`, *JetStream deli
 `TestAFatalTransportErrorAfterStartup` (`test_startup_failure_policy.py`, 3 cases). One existing
 test (`test_connect_enables_jetstream_when_configured`) needed `account_info` mocked as awaitable.
 
+### Event deduplication claims atomically (#6)
+
+**Verified.** `HandlerChain._claim` called `cache.exists()` and then `cache.set()`: two replicas
+handed the same event between those calls both passed and both dispatched. The class docstring
+admitted it. `CacheService.claim()` -- atomic set-if-absent, `add` on the disk cache and `SET NX`
+on Redis, whose own docstring names event deduplication as a purpose -- was used only by the
+scheduler.
+
+**Change:** `_claim` returns `self.registry.cache_service.claim(key, marker, namespace=..., ttl=...)`.
+The release on failure (`_release` / `release`) is unchanged: it deletes the marker. The docstring
+and `idempotency_enabled` in `reference/configuration-keys.md` now describe what the claim
+guarantees: atomic across replicas that share a cache, per pod otherwise, and failing open on a cache
+error.
+
+Guarded by `test_the_claim_is_one_atomic_call` in `test_handler_chain.py`, which simulates the race
+window (`exists()` says absent, `claim()` says taken) and fails against the previous code. The stub
+cache in that file gained `claim()`.
+
 ---
 
 ## Open points

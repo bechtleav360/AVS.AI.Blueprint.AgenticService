@@ -3,6 +3,10 @@
 
 ### Fixed
 
+- **Event deduplication claims atomically.** The handler chain checked for the marker with
+  `exists()` and then wrote it with `set()`, so two replicas handed the same event at the same moment
+  both passed the check and both dispatched. It now uses the cache's atomic `claim()`, which already
+  existed for the scheduler's tick claim.
 - **A handler result that fails to publish fails the delivery.** `publish_handler_event` caught
   every exception and logged a WARNING, so the inbound event was acknowledged and the handler's
   output was lost. The failure now naks the event -- the handler runs again on redelivery -- and the

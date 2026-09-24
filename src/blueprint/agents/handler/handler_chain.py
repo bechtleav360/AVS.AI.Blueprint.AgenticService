@@ -187,10 +187,11 @@ class HandlerChain(Component):
     claim, because the failure naks and the redelivery must be allowed to run: a claim
     kept across a failure would turn every retry into a silent no-op.
 
-    The claim is check-then-set, not a lock. Two replicas handed the same event at the
-    same instant can both pass the check, and a cache that is unreachable fails open --
-    both dispatch. This narrows the duplicate window; it does not close it, and a handler
-    whose side effects must never repeat still needs its own reconciliation.
+    The claim is the cache's atomic set-if-absent (``CacheService.claim``), so two replicas
+    handed the same event at the same instant cannot both win it -- with a cache they share
+    (Redis, or a disk cache on a shared volume). A per-pod cache deduplicates within one pod
+    only, and a cache that is unreachable fails open: both dispatch. A handler whose side
+    effects must never repeat still needs its own reconciliation.
 
     Config keys
     ~~~~~~~~~~~
@@ -476,17 +477,14 @@ class HandlerChain(Component):
         if key is None:
             return True
 
-        cache = self.registry.cache_service
-        if cache.exists(key, namespace=IDEMPOTENCY_CACHE_NAMESPACE):
-            return False
-
-        cache.set(
+        # One atomic set-if-absent, not exists() then set(): between those two calls a second
+        # replica handed the same event passes the check too, and both dispatch.
+        return self.registry.cache_service.claim(
             key,
             {"seen_at": time.time(), "event_type": event.type},
             namespace=IDEMPOTENCY_CACHE_NAMESPACE,
             ttl=policy.ttl,
         )
-        return True
 
     def release(self, event: CloudEvent[Any]) -> None:
         """Drop this event's dedup marker after a failure that happened after a successful dispatch.
