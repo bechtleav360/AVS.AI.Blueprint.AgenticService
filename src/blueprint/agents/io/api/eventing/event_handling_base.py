@@ -6,11 +6,12 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Any
 
-from opentelemetry import metrics
+from opentelemetry.metrics import Counter
 
 from ....component.component import traced
 from ....component.namespace import ROOT_LABEL
 from ....handler.handler_chain import DUPLICATE_CONTEXT_KEY
+from ....io.telemetry.providers import agent_meter
 from ....models import ProcessingResult, ProcessingStatus
 from ....models.errors import DeliveryDisposition
 from ....models.events import CloudEvent
@@ -20,17 +21,13 @@ from .dapr_response import dapr_status
 
 logger = logging.getLogger(__name__)
 
-_UNHANDLED_EVENTS = metrics.get_meter(__name__).create_counter(
-    name="blueprint.events.unhandled",
-    description="Events a namespace received and found nothing to do with",
-    unit="{event}",
-)
+UNHANDLED_EVENTS_COUNTER = "blueprint.events.unhandled"
+DUPLICATE_EVENTS_COUNTER = "blueprint.events.duplicate"
 
-_DUPLICATE_EVENTS = metrics.get_meter(__name__).create_counter(
-    name="blueprint.events.duplicate",
-    description="Events a namespace recognised as already processed and did not dispatch",
-    unit="{event}",
-)
+_COUNTER_DESCRIPTIONS = {
+    UNHANDLED_EVENTS_COUNTER: "Events an agent received and found nothing to do with",
+    DUPLICATE_EVENTS_COUNTER: "Events an agent recognised as already processed and did not dispatch",
+}
 
 
 class EventHandlingBase(RestApiBase, CloudEventProcessorMixin, ABC):
@@ -106,15 +103,28 @@ class EventHandlingBase(RestApiBase, CloudEventProcessorMixin, ABC):
         agent = self.namespace if namespace is None else namespace
         logger.debug("Processing CloudEvent %s for namespace '%s'", cloud_event.id, agent or ROOT_LABEL)
         processing_result = await self._dispatch_cloud_event(cloud_event, context, namespace=agent)
-        # The agent this dispatch was for, not a hardcoded root. Both counters are documented as
-        # per-namespace and were attributing every event in the process to the root, so a group
-        # would have reported one agent's broad subscription as everybody's. The value is the
-        # namespace verbatim, so a single-agent application keeps reporting '' and its existing
-        # dashboards do not see a new label value.
+        # The agent this dispatch was for, not a hardcoded root: a group would otherwise report one
+        # agent's broad subscription as everybody's.
         if context.get(DUPLICATE_CONTEXT_KEY):
-            _DUPLICATE_EVENTS.add(1, {"namespace": agent, "topic": topic})
+            self._count(DUPLICATE_EVENTS_COUNTER, agent, topic)
             logger.debug("Event %s on topic '%s' was already processed by '%s'", cloud_event.id, topic, agent or ROOT_LABEL)
         elif processing_result.status is ProcessingStatus.NO_HANDLER_FOUND:
-            _UNHANDLED_EVENTS.add(1, {"namespace": agent, "topic": topic})
+            self._count(UNHANDLED_EVENTS_COUNTER, agent, topic)
             logger.debug("No handler in '%s' had work for event %s on topic '%s'", agent or ROOT_LABEL, cloud_event.id, topic)
         return processing_result
+
+    def _count(self, name: str, namespace: str, topic: str) -> None:
+        """Add one to ``name`` on ``namespace``'s own meter, labelled like every other agent metric.
+
+        The two counters used to be created once, at import, on the global meter -- so they
+        reported under the root's resource whatever agent they counted (C2), and they were
+        labelled ``namespace`` where every other metric says ``agent``. They are created per agent
+        on first use instead: the per-agent meter providers do not exist until the lifespan has
+        configured telemetry, which is after this component is constructed.
+        """
+        counters: dict[tuple[str, str], Counter] = self.__dict__.setdefault("_event_counters", {})
+        counter = counters.get((name, namespace))
+        if counter is None:
+            counter = agent_meter(namespace, __name__).create_counter(name=name, description=_COUNTER_DESCRIPTIONS[name], unit="{event}")
+            counters[(name, namespace)] = counter
+        counter.add(1, {"agent": namespace or ROOT_LABEL, "topic": topic})

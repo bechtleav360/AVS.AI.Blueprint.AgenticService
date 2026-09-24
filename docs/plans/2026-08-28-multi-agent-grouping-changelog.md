@@ -7691,6 +7691,28 @@ Guarded by `test_every_file_the_dockerfile_copies_is_generated` (checks every bu
 `TestAnInvalidGeneratorConfig` in `test_generated_project.py`, all four failing against the previous
 templates and code; and the rewritten validate case in `test_validate_group_gates.py`.
 
+### Event counters on the agent's meter; the httpx instrumentation declared (metrics findings)
+
+- **Verified.** `event_handling_base.py` created `blueprint.events.unhandled` and
+  `blueprint.events.duplicate` at import on `metrics.get_meter(__name__)` -- the global provider --
+  so every agent's count reported under the root's resource (C2), labelled `namespace` where every
+  other metric uses `agent`. **`EventHandlingBase._count(name, namespace, topic)`**, new: creates
+  the counter on `agent_meter(namespace, ...)` on first use -- the per-agent providers do not exist
+  at construction -- caches it per (counter, agent) on the instance, and labels
+  `{"agent": namespace or ROOT_LABEL, "topic": topic}`. The cache is keyed by agent, not topic, so
+  the no-per-topic-state guarantee holds; `test_many_distinct_topics_leave_no_state_behind` now
+  measures after the first event and asserts the cache stays at one entry.
+- **Breaking for dashboards:** the label is now `agent`, and the root reports `<root>` instead of
+  `""`. Listed in `CHANGELOG.md`'s Breaking section.
+- **Verified.** `telemetry.py` imports `opentelemetry.instrumentation.httpx`, which `pyproject.toml`
+  did not declare; it is now declared (`>=0.59b0`, matching the other instrumentation). The unused
+  `opentelemetry-instrumentation-fastapi` was **not** removed: it belongs to trace propagation (#15),
+  deferred, and removing a dependency is not this change's call.
+
+Spec: the acceptance-criteria line for `blueprint.events.unhandled` says (agent, topic).
+`concepts/observability.md` lists the two labels. Guarded by the converted accounting tests and the
+new `test_it_is_counted_on_the_agents_own_meter` in `test_event_handling_base.py`.
+
 ---
 
 ## Open points

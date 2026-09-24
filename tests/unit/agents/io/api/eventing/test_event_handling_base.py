@@ -1,14 +1,29 @@
 """Unit tests for EventHandlingBase._unwrap_nested_cloud_event and handle_event."""
 
 import json
+from collections import defaultdict
+from collections.abc import Iterator
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from blueprint.agents.handler.handler_chain import DUPLICATE_CONTEXT_KEY
 from blueprint.agents.io.api.eventing.dapr import DaprEventing
+from blueprint.agents.io.api.eventing.event_handling_base import DUPLICATE_EVENTS_COUNTER, UNHANDLED_EVENTS_COUNTER
 from blueprint.agents.models.events import CloudEvent
 from blueprint.agents.models.result import ProcessingResult
+
+
+@contextmanager
+def _counters() -> Iterator[dict[str, MagicMock]]:
+    """Stand-in counters, one per name, created through the agent's meter as the code does."""
+    counters: dict[str, MagicMock] = defaultdict(MagicMock)
+    meter = MagicMock()
+    meter.create_counter.side_effect = lambda name, **_: counters[name]
+    with patch("blueprint.agents.io.api.eventing.event_handling_base.agent_meter", return_value=meter):
+        yield counters
+
 
 # ---------------------------------------------------------------------------
 # _unwrap_nested_cloud_event
@@ -178,20 +193,20 @@ class TestUnhandledEventAccounting:
     ) -> None:
         self._returning(dapr_eventing, unhandled_result)
 
-        with patch("blueprint.agents.io.api.eventing.event_handling_base._UNHANDLED_EVENTS") as counter:
+        with _counters() as counters:
             await dapr_eventing._process_cloud_event(cloud_event, {}, "orders.created")
 
-        counter.add.assert_called_once_with(1, {"namespace": "", "topic": "orders.created"})
+        counters[UNHANDLED_EVENTS_COUNTER].add.assert_called_once_with(1, {"agent": "<root>", "topic": "orders.created"})
 
     async def test_matched_event_is_not_counted(
         self, dapr_eventing: DaprEventing, cloud_event: CloudEvent, processed_result: ProcessingResult
     ) -> None:
         self._returning(dapr_eventing, processed_result)
 
-        with patch("blueprint.agents.io.api.eventing.event_handling_base._UNHANDLED_EVENTS") as counter:
+        with _counters() as counters:
             await dapr_eventing._process_cloud_event(cloud_event, {}, "orders.created")
 
-        counter.add.assert_not_called()
+        counters[UNHANDLED_EVENTS_COUNTER].add.assert_not_called()
 
     async def test_every_unmatched_event_is_counted(
         self, dapr_eventing: DaprEventing, cloud_event: CloudEvent, unhandled_result: ProcessingResult
@@ -199,11 +214,11 @@ class TestUnhandledEventAccounting:
         """The count is read as a ratio against received volume, so it must not be deduplicated."""
         self._returning(dapr_eventing, unhandled_result)
 
-        with patch("blueprint.agents.io.api.eventing.event_handling_base._UNHANDLED_EVENTS") as counter:
+        with _counters() as counters:
             for _ in range(5):
                 await dapr_eventing._process_cloud_event(cloud_event, {}, "orders.created")
 
-        assert counter.add.call_count == 5
+        assert counters[UNHANDLED_EVENTS_COUNTER].add.call_count == 5
 
     async def test_unmatched_event_is_not_reported_as_a_fault(
         self,
@@ -220,17 +235,32 @@ class TestUnhandledEventAccounting:
 
         assert [r for r in caplog.records if r.levelname in {"WARNING", "ERROR", "CRITICAL"}] == []
 
+    async def test_it_is_counted_on_the_agents_own_meter(
+        self, dapr_eventing: DaprEventing, cloud_event: CloudEvent, unhandled_result: ProcessingResult
+    ) -> None:
+        """Created at import on the global meter, it reported under the root's resource (C2)."""
+        self._returning(dapr_eventing, unhandled_result)
+        meter = MagicMock()
+        with patch("blueprint.agents.io.api.eventing.event_handling_base.agent_meter", return_value=meter) as agent_meter:
+            await dapr_eventing._process_cloud_event(cloud_event, {}, "orders.created", namespace="orders")
+
+        assert agent_meter.call_args.args[0] == "orders"
+        meter.create_counter.return_value.add.assert_called_once_with(1, {"agent": "orders", "topic": "orders.created"})
+
     async def test_many_distinct_topics_leave_no_state_behind(
         self, dapr_eventing: DaprEventing, cloud_event: CloudEvent, unhandled_result: ProcessingResult
     ) -> None:
         """Under Dapr the topic comes from a URL path, so remembering each one is caller-controlled growth."""
         self._returning(dapr_eventing, unhandled_result)
+        # The first event creates this agent's counter; that is per (counter, agent), not per topic.
+        await dapr_eventing._process_cloud_event(cloud_event, {}, "topic.first")
         before = len(dapr_eventing.__dict__)
 
         for index in range(100):
             await dapr_eventing._process_cloud_event(cloud_event, {}, f"topic.{index}")
 
         assert len(dapr_eventing.__dict__) == before
+        assert len(dapr_eventing.__dict__["_event_counters"]) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -261,14 +291,11 @@ class TestDuplicateAccounting:
         mock_registry.get_service.return_value.process_event = self._flagging_process_event(unhandled_result)
         mock_registry.correlation_context.set.return_value = MagicMock()
 
-        with (
-            patch("blueprint.agents.io.api.eventing.event_handling_base._DUPLICATE_EVENTS") as duplicates,
-            patch("blueprint.agents.io.api.eventing.event_handling_base._UNHANDLED_EVENTS") as unhandled,
-        ):
+        with _counters() as counters:
             await dapr_eventing.handle_event("orders", cloud_event)
 
-        duplicates.add.assert_called_once_with(1, {"namespace": "", "topic": "orders"})
-        unhandled.add.assert_not_called()
+        counters[DUPLICATE_EVENTS_COUNTER].add.assert_called_once_with(1, {"agent": "<root>", "topic": "orders"})
+        counters[UNHANDLED_EVENTS_COUNTER].add.assert_not_called()
 
     async def test_duplicate_still_acknowledges(
         self,
@@ -295,11 +322,8 @@ class TestDuplicateAccounting:
         mock_registry.get_service.return_value.process_event = AsyncMock(return_value=unhandled_result)
         mock_registry.correlation_context.set.return_value = MagicMock()
 
-        with (
-            patch("blueprint.agents.io.api.eventing.event_handling_base._DUPLICATE_EVENTS") as duplicates,
-            patch("blueprint.agents.io.api.eventing.event_handling_base._UNHANDLED_EVENTS") as unhandled,
-        ):
+        with _counters() as counters:
             await dapr_eventing.handle_event("orders", cloud_event)
 
-        unhandled.add.assert_called_once_with(1, {"namespace": "", "topic": "orders"})
-        duplicates.add.assert_not_called()
+        counters[UNHANDLED_EVENTS_COUNTER].add.assert_called_once_with(1, {"agent": "<root>", "topic": "orders"})
+        counters[DUPLICATE_EVENTS_COUNTER].add.assert_not_called()

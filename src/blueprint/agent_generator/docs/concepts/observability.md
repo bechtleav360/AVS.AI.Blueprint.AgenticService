@@ -103,8 +103,8 @@ An exception propagating out of the method sets the span status to `ERROR` befor
 |---|---|---|
 | `blueprint.namespace.up` | gauge | `1` while an agent is serving, `0` once it is not. Carries `agent`. |
 | `blueprint.namespace.inflight` | gauge | Dispatches that agent has in progress. Carries `agent`. |
-| `blueprint.events.unhandled` | counter | Events an agent received and found nothing to do with. |
-| `blueprint.events.duplicate` | counter | Events an agent recognised as already processed. |
+| `blueprint.events.unhandled` | counter | Events an agent received and found nothing to do with. Carries `agent` and `topic`. |
+| `blueprint.events.duplicate` | counter | Events an agent recognised as already processed. Carries `agent` and `topic`. |
 | `llm.tokens.count` | counter | Tokens consumed, by an agent's model calls. |
 | `llm.response.latency` | histogram | Model call duration. |
 
