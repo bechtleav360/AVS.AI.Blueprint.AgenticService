@@ -74,6 +74,7 @@ PROCESS_SCOPE_KEYS = frozenset(
         "log_format",
         "suppress_noisy_loggers",
         "health_check_interval_seconds",
+        "startup_retry_interval_seconds",
         "readiness_policy",
         "dot_placeholder",
         "nats_stream_name",

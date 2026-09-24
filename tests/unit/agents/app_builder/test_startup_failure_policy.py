@@ -9,6 +9,7 @@ Driven through the real lifespan against real components, because the interestin
 of the eight startup loops the failure came out of and what the actuator knew by then.
 """
 
+import asyncio
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -147,3 +148,152 @@ class TestTheCriticalSet:
         builder.host_agent("orders", critical=False)
         assert builder.namespaces == ("orders",)
         assert builder.critical_namespaces == ()
+
+
+# ---------------------------------------------------------------------------
+# Recovery: a latched agent is retried until it starts, and readiness shows the latch
+# ---------------------------------------------------------------------------
+
+
+class FlakyService(ServiceBase):
+    """Fails ``failures`` times, then starts. Class state, because the registry constructs it."""
+
+    failures = 1
+    calls = 0
+
+    async def on_startup(self) -> None:
+        type(self).calls += 1
+        if type(self).calls <= type(self).failures:
+            raise RuntimeError(f"not reachable yet (call {type(self).calls})")
+
+    async def on_shutdown(self) -> None:
+        pass
+
+
+class CountingService(ServiceBase):
+    """Starts fine, and counts how often it was asked to."""
+
+    calls = 0
+
+    async def on_startup(self) -> None:
+        type(self).calls += 1
+
+    async def on_shutdown(self) -> None:
+        pass
+
+
+@pytest.fixture
+def fast_retry(tmp_path: Path) -> Config:
+    settings = tmp_path / "settings.toml"
+    settings.write_text(
+        '[development]\napp_name = "group"\napp_port = 8000\napp_environment = "development"\nstartup_retry_interval_seconds = 0.01\n'
+    )
+    return Config(settings_files=[str(settings)], root_path=str(tmp_path))
+
+
+@pytest.fixture(autouse=True)
+def _reset_counters() -> Iterator[None]:
+    FlakyService.failures, FlakyService.calls, CountingService.calls = 1, 0, 0
+    yield
+
+
+def build_with(config: Config, *services: type[ServiceBase]) -> tuple[FastAPI, AppBuilder]:
+    builder = AppBuilder(config)
+    builder.host_agent("orders", critical=True)
+    builder.host_agent("billing", critical=False)
+    with namespace_scope("orders"):
+        builder.with_service(QuietService)
+    with namespace_scope("billing"):
+        for service in services:
+            builder.with_service(service)
+    return builder.build(), builder
+
+
+async def readiness(builder: AppBuilder) -> Any:
+    assert builder._actuator_api is not None and builder._actuator_api._health_cache is not None
+    return await builder._actuator_api._health_cache.get_health_status()
+
+
+async def settle(predicate, attempts: int = 200) -> None:
+    for _ in range(attempts):
+        if predicate():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("condition not reached")
+
+
+class TestReadinessShowsTheLatch:
+    """#3 -- a latched agent was paused and reported 0 on the gauge, yet /health/ready said UP."""
+
+    async def test_the_agent_is_down_in_the_payload_with_its_reason(self, config: Config) -> None:
+        app, builder = build(config, critical=False)
+        async with app.router.lifespan_context(app):
+            response = await readiness(builder)
+        assert response.namespaces["billing"].status == "DOWN"
+        assert "database is unreachable" in (response.namespaces["billing"].reason or "")
+        assert response.namespaces["orders"].status == "UP"
+        assert response.namespaces["orders"].reason is None
+
+    async def test_the_default_policy_takes_the_pod_out_of_rotation(self, config: Config) -> None:
+        app, builder = build(config, critical=False)
+        async with app.router.lifespan_context(app):
+            assert (await readiness(builder)).status == "DOWN"
+
+
+class TestRecovery:
+    async def test_a_transient_failure_recovers_without_a_restart(self, fast_retry: Config) -> None:
+        app, builder = build_with(fast_retry, FlakyService)
+        async with app.router.lifespan_context(app):
+            supervisor = supervisor_of(builder)
+            await settle(lambda: supervisor.is_up("billing"))
+            assert supervisor.forced_down_reason("billing") is None
+            response = await readiness(builder)
+        assert response.status == "UP"
+        assert response.namespaces["billing"].reason is None
+        assert FlakyService.calls == 2
+
+    async def test_a_persistent_failure_stays_down_and_keeps_saying_why(self, fast_retry: Config, caplog) -> None:
+        app, builder = build_with(fast_retry, BrokenService)
+        with caplog.at_level("WARNING", logger="blueprint.agents.app_builder"):
+            async with app.router.lifespan_context(app):
+                await settle(lambda: "attempt 2" in caplog.text)
+                supervisor = supervisor_of(builder)
+                assert supervisor.is_up("billing") is False
+                assert "database is unreachable" in (supervisor.forced_down_reason("billing") or "")
+        assert "still out of service" in caplog.text
+
+    async def test_it_never_ends_the_process(self, fast_retry: Config) -> None:
+        """A deterministic failure would crash-loop the pod and every healthy agent in it."""
+        app, builder = build_with(fast_retry, BrokenService)
+        async with app.router.lifespan_context(app):
+            await asyncio.sleep(0.1)
+            assert supervisor_of(builder).is_up("orders") is True
+
+    async def test_a_later_component_waits_for_the_one_before_it(self, fast_retry: Config) -> None:
+        """Retried in start order, stopping at the first that fails again: it may be a dependency."""
+        FlakyService.failures = 3
+        app, builder = build_with(fast_retry, FlakyService, CountingService)
+        async with app.router.lifespan_context(app):
+            await settle(lambda: supervisor_of(builder).is_up("billing"))
+        # CountingService started once at startup (it did not fail) and is never retried.
+        assert (FlakyService.calls, CountingService.calls) == (4, 1)
+
+    async def test_shutdown_stops_the_recovery(self, fast_retry: Config) -> None:
+        app, builder = build_with(fast_retry, BrokenService)
+        async with app.router.lifespan_context(app):
+            assert builder._recovery_tasks
+            tasks = list(builder._recovery_tasks)
+        assert all(task.done() for task in tasks)
+        assert builder._recovery_tasks == []
+
+    @pytest.mark.parametrize("value", ["0", "-5", '"soon"'])
+    async def test_a_bad_interval_fails_startup(self, tmp_path: Path, value: str) -> None:
+        settings = tmp_path / "settings.toml"
+        settings.write_text(
+            f'[development]\napp_name = "group"\napp_port = 8000\napp_environment = "development"\n'
+            f"startup_retry_interval_seconds = {value}\n"
+        )
+        app, _ = build_with(Config(settings_files=[str(settings)], root_path=str(tmp_path)), QuietService)
+        with pytest.raises(ValueError, match="startup_retry_interval_seconds"):
+            async with app.router.lifespan_context(app):
+                pass

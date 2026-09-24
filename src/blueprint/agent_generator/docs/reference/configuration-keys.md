@@ -17,6 +17,7 @@ Top-level application settings.
 | `app_environment` | `str` | `"development"` | Deployment environment identifier (e.g., `"development"`, `"staging"`, `"production"`). `"development"` enables development fallbacks such as the localhost default for `nats_url`, and the process logs a WARNING at startup that it is not suitable for production. Being the default, a deployment that sets nothing runs in development mode: set it to anything else to deploy. |
 | `log_level` | `str` | `"INFO"` | Root log level. One of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. |
 | `log_format` | `str` | `"text"` | Log output format. `"text"` for human-readable, `"json"` for structured JSON logging. |
+| `startup_retry_interval_seconds` | `float` | `30` | Seconds between attempts to start again the components of a non-critical agent whose `on_startup` raised. The agent stays out of service, shown with a `reason` in `/health/ready`, until every failed component starts; it is retried indefinitely and never ends the process. Must be positive; startup fails otherwise. Process scope. |
 
 ---
 

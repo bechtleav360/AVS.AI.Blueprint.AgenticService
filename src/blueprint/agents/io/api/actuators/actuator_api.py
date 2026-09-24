@@ -147,6 +147,11 @@ class ActuatorApi(RestApiBase):
             self._health_cache.set_health_entries(self._health_entries)
         await self._health_cache.start()
 
+    async def refresh_health(self) -> None:
+        """Recompute readiness now, for a change no health check observes (a latch set or released)."""
+        if self._health_cache is not None:
+            await self._health_cache.refresh()
+
     async def on_shutdown(self) -> None:
         """Stop the health check cache."""
         if self._health_cache is not None:

@@ -166,6 +166,11 @@ class NamespaceSupervisor:
         """Why ``namespace`` was latched down, or ``None`` if it was not."""
         return self._forced_down.get(namespace)
 
+    @property
+    def forced_down(self) -> Mapping[str, str]:
+        """Every latched namespace and why, for the readiness verdict and its payload."""
+        return dict(self._forced_down)
+
     def _degraded_reason(self, namespace: str) -> str:
         """The reason to report for a health-driven transition."""
         return self._forced_down.get(namespace) or "one or more of its health checks failed"

@@ -772,10 +772,21 @@ There is no partial build: one process, one `build()`. The `critical` flag is th
 |---|---|---|
 | Agent missing from the agent map | exit non-zero | log ERROR, skip |
 | Module import raises | exit non-zero | log ERROR, skip |
-| `on_startup` raises | exit non-zero | mark namespace down, pause consumers (C4), continue |
+| `on_startup` raises | exit non-zero | mark namespace down, pause consumers (C4), continue; retry (below) |
 
 Exit **MUST** happen before the port is bound, so Kubernetes crash-loops with a readable message
 rather than reporting a healthy pod that is silently short-staffed.
+
+**A namespace marked down by a startup failure MUST be retried, and MUST NOT end the process.**
+Every `startup_retry_interval_seconds` (default 30, process scope) the framework calls `on_startup`
+again on that namespace's failed components, in their original start order, stopping at the first
+that raises again. When all of them have started, the mark is released and the namespace's health
+checks decide from then on. While it is marked, the readiness payload **MUST** report the namespace
+`DOWN` with the failure as its reason, whatever its health checks say -- the mark exists because a
+component that failed to start may still pass its check. Terminating instead is not a recovery: a
+deterministic failure fails the same way after a restart, and the restart takes every healthy
+namespace in the process down with it. `on_startup` **MUST** therefore be safe to call again after
+it raised.
 
 The default for an unflagged agent is `critical: true`: a partially loaded group whose missing
 agent's queue has no consumer is a worse failure than no pod at all.

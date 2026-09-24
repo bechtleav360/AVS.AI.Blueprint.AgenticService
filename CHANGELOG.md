@@ -3,6 +3,15 @@
 
 ### Fixed
 
+- **An agent latched down at startup is shown as down in `/health/ready`.** The latch paused the
+  agent and set its gauge to 0, but readiness was computed from health checks alone, so the probe
+  and the payload reported it `UP` with nothing failing. The payload now shows it `DOWN` with a
+  `reason`, and the readiness policy counts it. The poll also no longer skips everything when no
+  health check is registered, which had left both the verdict and resumption unevaluated.
+- **An agent latched down at startup recovers without a restart.** Its failed components are
+  retried every `startup_retry_interval_seconds` (default 30), in start order; when all have
+  started the latch is released and health checks decide. It never ends the process. `on_startup`
+  must therefore be safe to call again after it raised.
 - **A non-critical agent marked down at startup no longer consumes events anyway.** When its
   client failed `on_startup`, the agent was paused before its eventing endpoint subscribed, and the
   subscribe path ignored the pause -- so the latched-down agent connected and took events it could

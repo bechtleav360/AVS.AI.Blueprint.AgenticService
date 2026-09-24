@@ -1,5 +1,7 @@
 """Generic FastAPI application setup and configuration."""
 
+import asyncio
+import contextlib
 import logging
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
@@ -69,6 +71,15 @@ SchedulerT = TypeVar("SchedulerT", bound=SchedulerBase)
 RestApiT = TypeVar("RestApiT", bound=RestApiBase)
 
 logger = logging.getLogger(__name__)
+
+STARTUP_RETRY_INTERVAL_KEY = "startup_retry_interval_seconds"
+"""Seconds between attempts to start the components of an agent that failed to start (sec. 9.1).
+
+Process-scope: one process runs one recovery policy. The default matches the health check interval,
+so a recovered agent is back in the readiness verdict within about one poll of recovering.
+"""
+
+DEFAULT_STARTUP_RETRY_INTERVAL = 30.0
 
 
 @dataclass(frozen=True)
@@ -257,6 +268,11 @@ class AppBuilder:
         # Of those, the ones the deployment said it cannot run without. Read by the
         # readiness probe under readiness_policy = 'critical' (C3).
         self._critical_namespaces: list[str] = []
+        # Components of non-critical agents whose on_startup raised, per agent and in start order,
+        # retried after startup until they all start (sec. 9.1). The tasks are held so that
+        # shutdown can cancel them rather than leave one retrying against a stopping process.
+        self._failed_startups: dict[str, list[tuple[str, Any, str]]] = {}
+        self._recovery_tasks: list[asyncio.Task[None]] = []
 
     # ------------------------------------------------------------------
     # Configuration
@@ -1278,9 +1294,112 @@ class AppBuilder:
                 exc,
                 exc_info=True,
             )
+            self._failed_startups.setdefault(namespace, []).append((kind, component, label))
             await self._mark_agent_down(namespace, f"its {kind.lower()} '{label}' failed to start: {exc}")
             return
         logger.info("%s %s startup completed", kind, label)
+
+    @staticmethod
+    def _startup_retry_interval(config: Config) -> float:
+        """Read ``startup_retry_interval_seconds``, refusing a value that is not a positive number.
+
+        Read at the start of the lifespan, not when the first failure needs it: a bad value would
+        otherwise surface only on the day an agent fails to start, as a second failure on top.
+        """
+        raw = config.get(STARTUP_RETRY_INTERVAL_KEY, DEFAULT_STARTUP_RETRY_INTERVAL)
+        try:
+            interval = float(raw)
+        except (TypeError, ValueError):
+            interval = 0.0
+        if interval <= 0:
+            raise ValueError(f"'{STARTUP_RETRY_INTERVAL_KEY}' must be a positive number of seconds, got {raw!r}.")
+        return interval
+
+    def _start_startup_recovery(self, interval: float) -> None:
+        """Start one recovery task per agent that is latched down by a startup failure."""
+        for namespace in self._failed_startups:
+            task = asyncio.create_task(self._recover_agent(namespace, interval), name=f"startup-recovery:{namespace}")
+            task.add_done_callback(self._on_recovery_done)
+            self._recovery_tasks.append(task)
+
+    @staticmethod
+    def _on_recovery_done(task: asyncio.Task[None]) -> None:
+        """Report a recovery that ended by raising, naming its agent (C7).
+
+        The loop itself catches every component failure, so this only fires for a defect in the
+        loop -- which would otherwise surface as asyncio's "Task exception was never retrieved",
+        attributed to nobody, while the agent silently stays down for good.
+        """
+        if task.cancelled() or task.exception() is None:
+            return
+        logger.error("Startup recovery task '%s' stopped unexpectedly: %s", task.get_name(), task.exception(), exc_info=task.exception())
+
+    async def _stop_startup_recovery(self) -> None:
+        """Cancel every recovery still running, before any component is shut down."""
+        for task in self._recovery_tasks:
+            task.cancel()
+        for task in self._recovery_tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        self._recovery_tasks.clear()
+
+    async def _recover_agent(self, namespace: str, interval: float) -> None:
+        """Retry an agent's failed components until they all start, then release its latch.
+
+        A non-critical agent whose component raised in ``on_startup`` is latched down (sec. 9.1)
+        and stays down until something releases it -- and before this, nothing did: the agent was
+        out of service until the pod restarted, which for a pod that is otherwise healthy may be
+        never. A transient cause (a database not reachable yet) therefore needed a manual restart.
+
+        **It retries forever and never terminates the process.** A restart fixes nothing a retry
+        does not, and a *deterministic* failure -- a missing key, a wrong URL -- fails the same way
+        after the restart, so terminating would crash-loop the pod and take every healthy agent in
+        the group with it: the blast radius sec. 9.1 exists to remove. While it keeps failing, the
+        agent stays visibly down: ``blueprint.namespace.up`` is 0, the readiness payload carries the
+        latest error, and each attempt logs a WARNING.
+
+        The components are retried in the order they originally started, stopping at the first
+        that fails again: a later one may depend on it, and starting it against a dependency that
+        is still broken would only produce a second, misleading error. Framework components are
+        safe to start again after they raised -- each raises before any side effect, or guards a
+        repeated start -- and user components have to be too; the docs say so.
+
+        Releasing the latch does not by itself put the agent back in service. It hands the decision
+        back to the agent's health checks, and the health refresh that follows resumes consumption
+        if they pass.
+        """
+        pending = self._failed_startups[namespace]
+        attempt = 0
+        while pending:
+            await asyncio.sleep(interval)
+            attempt += 1
+            while pending:
+                kind, component, label = pending[0]
+                try:
+                    await component.on_startup()
+                except Exception as exc:
+                    logger.warning(
+                        "Agent '%s' is still out of service: its %s '%s' failed to start again (attempt %d, next in %.0fs): %s",
+                        namespace,
+                        kind.lower(),
+                        label,
+                        attempt,
+                        interval,
+                        exc,
+                    )
+                    # The latch stays; only its reason is refreshed, so the readiness payload
+                    # shows the error that is current rather than the first one.
+                    await self._mark_agent_down(namespace, f"its {kind.lower()} '{label}' failed to start: {exc}")
+                    break
+                logger.info("Agent '%s': %s '%s' started on attempt %d", namespace, kind.lower(), label, attempt)
+                pending.pop(0)
+
+        supervisor = self._actuator_api.supervisor if self._actuator_api is not None else None
+        if supervisor is not None:
+            await supervisor.clear_forced_down(namespace)
+        logger.info("Agent '%s' started after %d attempt(s); its health checks decide from here", namespace, attempt)
+        if self._actuator_api is not None:
+            await self._actuator_api.refresh_health()
 
     @staticmethod
     def _warn_if_development(config: Config) -> None:
@@ -1340,6 +1459,9 @@ class AppBuilder:
             logger.error("Agent '%s' cannot be marked down: no supervisor is running. Reason was: %s", namespace, reason)
             return
         await supervisor.mark_down(namespace, reason)
+        # The readiness verdict is cached per poll; recompute it now, so the probe and the payload
+        # show the latch at once instead of up to one health interval later.
+        await self._actuator_api.refresh_health()  # type: ignore[union-attr]
 
     def _create_lifespan_manager(self) -> Any:
         @asynccontextmanager
@@ -1349,6 +1471,7 @@ class AppBuilder:
             resolved_config = self._require_config()
             logger.info("Starting up application components")
             self._warn_if_development(resolved_config)
+            startup_retry_interval = self._startup_retry_interval(resolved_config)
 
             # Configure OpenTelemetry tracing, one identity per agent (C2). First in startup,
             # because Component.tracer caches the provider it resolves on first use and every
@@ -1407,6 +1530,7 @@ class AppBuilder:
             for lifecycle_component in self._lifecycle_components:
                 await self._start_component("Lifecycle component", lifecycle_component, type(lifecycle_component).__name__)
 
+            self._start_startup_recovery(startup_retry_interval)
             logger.info("Application startup completed")
             yield
 
@@ -1414,6 +1538,7 @@ class AppBuilder:
             # Shutdown — reverse order
             # ----------------------------------------------------------
             logger.info("Shutting down application components")
+            await self._stop_startup_recovery()
 
             for lifecycle_component in reversed(self._lifecycle_components):
                 try:

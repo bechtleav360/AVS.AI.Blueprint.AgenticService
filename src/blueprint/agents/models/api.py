@@ -203,6 +203,12 @@ class NamespaceReadiness(BaseModel):
         default_factory=list,
         description="The entry keys of this agent's checks that are not healthy.",
     )
+    reason: str | None = Field(
+        default=None,
+        description="Why this agent is out of service when no health check says so -- a component that failed to "
+        "start. Absent while health checks alone decide.",
+        examples=["its service 'db' failed to start: connection refused"],
+    )
 
 
 class ReadinessResponse(BaseModel):

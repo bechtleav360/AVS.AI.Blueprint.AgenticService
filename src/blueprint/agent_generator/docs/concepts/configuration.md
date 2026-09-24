@@ -277,8 +277,8 @@ configuration, not a scope.
 
 Some keys describe the *process*, and one process has one of each: `app_port`, `app_host`,
 `app_workers`, `app_environment`, `envvar_prefix`, `event_bus`, `log_level`, `log_format`,
-`suppress_noisy_loggers`, `health_check_interval_seconds`, `readiness_policy`,
-`nats_stream_name`.
+`suppress_noisy_loggers`, `health_check_interval_seconds`, `startup_retry_interval_seconds`,
+`readiness_policy`, `nats_stream_name`.
 
 They belong in the image's own `settings.toml`, beside `agents.toml`. Set in an agent's file
 they are dropped before the merge, with a warning naming the value the process uses instead --
