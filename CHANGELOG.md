@@ -52,6 +52,10 @@
 
 ### Added
 
+- **Handlers see the subject a NATS message was delivered on**, as `context["nats_subject"]`
+  (`NATS_SUBJECT_CONTEXT_KEY`), beside `nats_topic`, which is the subscription and may be a
+  wildcard. It comes from the broker, not the event, so a tenant can be derived from the subject the
+  broker checked rather than from the publisher-controlled `tenantid`.
 - **NATS credentials from their own keys.** `nats_user`/`nats_password`, `nats_token`,
   `nats_creds_file` and `nats_nkey_seed` are passed to the connection, so an account under
   tenant-scoped auth no longer has to put its credentials inside `nats_url`. At most one method may
@@ -102,6 +106,11 @@
 
 ### Breaking
 
+- **`ClientBase.subscribe()` callbacks take the delivery subject.** The contract is now
+  `DeliveryCallback = Callable[[CloudEvent, str], Awaitable[None]]` (in `clients/client_base.py`):
+  the event, then the subject it arrived on. Only code that calls `NATSClient.subscribe()` directly,
+  or implements `ClientBase`, is affected -- handlers are not. A one-argument callback now fails
+  with a `TypeError` on the first message.
 - **`nats_url` has no default outside development.** With `event_bus = "nats"` and no `nats_url`,
   a process whose `app_environment` is anything but `"development"` now fails startup naming the
   key -- a standalone or critical agent before the port is bound, a non-critical agent of a group

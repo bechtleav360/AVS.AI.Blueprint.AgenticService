@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from blueprint.agents.io.api.eventing.nats import NatsEventing
+from blueprint.agents.io.api.eventing.nats import NATS_SUBJECT_CONTEXT_KEY, NatsEventing
 from blueprint.agents.models.errors import CriticalHandlerError, InvalidEventError, RetryableHandlerError
 from blueprint.agents.models.events import CloudEvent
 
@@ -208,9 +208,30 @@ class TestNatsEventingCallbackPropagatesFailures:
     async def test_handler_errors_reach_the_caller(self, nats_eventing: NatsEventing, cloud_event: CloudEvent, error: Exception) -> None:
         callback = self._callback(nats_eventing, error)
         with pytest.raises(type(error)):
-            await callback(cloud_event)
+            await callback(cloud_event, "orders.created")
 
     async def test_successful_dispatch_returns_none(self, nats_eventing: NatsEventing, cloud_event: CloudEvent, processed_result) -> None:
         callback = self._callback(nats_eventing, None)
         nats_eventing._process_cloud_event = AsyncMock(return_value=processed_result)  # type: ignore[method-assign]
-        assert await callback(cloud_event) is None
+        assert await callback(cloud_event, "orders.created") is None
+
+
+class TestNatsEventingDeliverySubject:
+    """H1 -- the subject the broker delivered on reaches the handler context, beside the subscription."""
+
+    async def test_the_context_carries_the_subject_and_the_subscription(
+        self, nats_eventing: NatsEventing, cloud_event: CloudEvent, processed_result
+    ) -> None:
+        nats_eventing._process_cloud_event = AsyncMock(return_value=processed_result)  # type: ignore[method-assign]
+        await nats_eventing._make_event_callback("t.*.risk.>")(cloud_event, "t.T1.risk.created")
+
+        context = nats_eventing._process_cloud_event.await_args.args[1]
+        assert context == {"nats_topic": "t.*.risk.>", NATS_SUBJECT_CONTEXT_KEY: "t.T1.risk.created"}
+
+    async def test_the_event_cannot_supply_it(self, nats_eventing: NatsEventing, processed_result) -> None:
+        """A publisher writes the event, including any extension it likes; it does not write the context."""
+        spoofed = CloudEvent(id="e1", type="risk.created", source="publisher", tenantid="T2", nats_subject="t.T2.risk.created")
+        nats_eventing._process_cloud_event = AsyncMock(return_value=processed_result)  # type: ignore[method-assign]
+        await nats_eventing._make_event_callback("t.*.risk.>")(spoofed, "t.T1.risk.created")
+
+        assert nats_eventing._process_cloud_event.await_args.args[1][NATS_SUBJECT_CONTEXT_KEY] == "t.T1.risk.created"

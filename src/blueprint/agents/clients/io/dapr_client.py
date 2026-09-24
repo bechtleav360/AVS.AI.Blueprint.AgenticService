@@ -4,7 +4,6 @@ import asyncio
 import contextlib
 import json
 import logging
-from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
@@ -13,6 +12,7 @@ from ...component.namespace import ROOT_LABEL, ROOT_NAMESPACE
 from ...models.api import ComponentHealth
 from ...models.events import CloudEvent
 from .io_client_base import IOClientBase
+from ..client_base import DeliveryCallback
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,7 @@ class DaprClient(IOClientBase):
 
     def __init__(self, namespace: str = ROOT_NAMESPACE) -> None:
         super().__init__(namespace=namespace)
-        self._topic_callbacks: dict[str, Callable[[CloudEvent[Any]], Awaitable[None]]] = {}
+        self._topic_callbacks: dict[str, DeliveryCallback] = {}
         self._subscriptions_ready: bool = False
         self._subscriptions_managed: bool = False
         self._retry_task: asyncio.Task[None] | None = None
@@ -72,7 +72,7 @@ class DaprClient(IOClientBase):
     # Managed subscription API
     # ------------------------------------------------------------------
 
-    async def subscribe(self, topic_callbacks: dict[str, Callable[[CloudEvent[Any]], Awaitable[None]]]) -> None:
+    async def subscribe(self, topic_callbacks: dict[str, DeliveryCallback]) -> None:
         """Store topic→callback mappings and start the background sidecar-ping retry task.
 
         Returns immediately; sidecar reachability check happens in the background.

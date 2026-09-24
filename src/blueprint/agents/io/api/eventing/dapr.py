@@ -1,7 +1,7 @@
 """Generic Dapr pub/sub endpoints for the agent service (framework-level)."""
 
 import logging
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Callable, Coroutine
 from typing import Any
 
 from fastapi import Request, Response
@@ -9,6 +9,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 
+from ....clients.client_base import DeliveryCallback
 from ....clients.io.dapr_client import DaprClient
 from ....component.namespace import ROOT_LABEL, ROOT_NAMESPACE, namespace_of
 from ....models.errors import DeliveryDisposition, HandlerError, combined_disposition, disposition_for
@@ -138,9 +139,7 @@ class DaprEventing(EventHandlingBase):
         for namespace, topics in topics_by_agent.items():
             client = self.registry.get_component(DaprClient, namespace=namespace)
             self._clients[namespace] = client
-            topic_callbacks: dict[str, Callable[[CloudEvent[Any]], Awaitable[None]]] = {
-                topic: self._make_event_callback(topic) for topic in topics
-            }
+            topic_callbacks: dict[str, DeliveryCallback] = {topic: self._make_event_callback(topic) for topic in topics}
             logger.info(
                 "Namespace '%s' declares %d topic(s) to the sidecar: %s",
                 namespace or ROOT_LABEL,
@@ -152,10 +151,15 @@ class DaprEventing(EventHandlingBase):
     async def on_shutdown(self) -> None:
         pass
 
-    def _make_event_callback(self, topic: str) -> Callable[[CloudEvent[Any]], Awaitable[None]]:
-        """Return an async callback that routes an incoming Dapr event through the handler chain."""
+    def _make_event_callback(self, topic: str) -> DeliveryCallback:
+        """Return an async callback that routes an incoming Dapr event through the handler chain.
 
-        async def _process_event(event: CloudEvent[Any]) -> None:
+        The subject argument is part of the transport contract (``DeliveryCallback``) and unused
+        here: ``DaprClient`` stores these callbacks without calling them, because Dapr delivers
+        over HTTP to ``POST /events/{topic}`` rather than through the client.
+        """
+
+        async def _process_event(event: CloudEvent[Any], _subject: str) -> None:
             try:
                 context = {"dapr_topic": topic}
                 await self._process_cloud_event(event, context, topic)

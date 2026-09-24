@@ -1,9 +1,9 @@
 """NATS eventing implementation using NATSClient."""
 
 import logging
-from collections.abc import Awaitable, Callable
 from typing import Any
 
+from ....clients.client_base import DeliveryCallback
 from ....clients.io.nats_client import NATSClient
 from ....component.namespace import ROOT_LABEL, ROOT_NAMESPACE
 from ....models.events import CloudEvent
@@ -11,6 +11,15 @@ from ..rest_api_base import RestApiBase
 from .event_handling_base import EventHandlingBase
 
 logger = logging.getLogger(__name__)
+
+NATS_SUBJECT_CONTEXT_KEY = "nats_subject"
+"""Handler context key holding the subject a NATS message was delivered on.
+
+Beside ``nats_topic``, which is the *subscription* -- possibly a wildcard such as ``t.*.risk.>`` --
+this is the concrete subject that matched it, e.g. ``t.T1.risk.created``. It comes from the broker,
+never from the event, so a handler can derive a tenant from it without trusting the publisher's
+``tenantid``. Present only on events delivered by NATS.
+"""
 
 
 class NatsEventing(EventHandlingBase):
@@ -54,9 +63,7 @@ class NatsEventing(EventHandlingBase):
         """Subscribe this agent's topics through this agent's client."""
         self._client = self.registry.get_component(NATSClient, namespace=self.namespace)
 
-        topic_callbacks: dict[str, Callable[[CloudEvent[Any]], Awaitable[None]]] = {
-            topic: self._make_event_callback(topic) for topic in self._declared_topics()
-        }
+        topic_callbacks: dict[str, DeliveryCallback] = {topic: self._make_event_callback(topic) for topic in self._declared_topics()}
 
         if topic_callbacks:
             logger.info(
@@ -96,11 +103,11 @@ class NatsEventing(EventHandlingBase):
     async def on_shutdown(self) -> None:
         pass
 
-    def _make_event_callback(self, topic: str) -> Callable[[CloudEvent[Any]], Awaitable[None]]:
+    def _make_event_callback(self, topic: str) -> DeliveryCallback:
         """Return an async callback that routes an incoming event through the handler chain."""
 
-        async def _process_event(event: CloudEvent[Any]) -> None:
-            context = {"nats_topic": topic}
+        async def _process_event(event: CloudEvent[Any], subject: str) -> None:
+            context = {"nats_topic": topic, NATS_SUBJECT_CONTEXT_KEY: subject}
             processing_result = await self._process_cloud_event(event, context, topic)
             logger.debug(
                 "Processed CloudEvent %s on topic %s with status %s",

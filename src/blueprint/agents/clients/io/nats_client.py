@@ -6,7 +6,6 @@ import importlib.util
 import json
 import logging
 import re
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
@@ -26,6 +25,7 @@ from ...io.telemetry.providers import agent_meter
 from ...models.api import ComponentHealth
 from ...models.errors import DeliveryDisposition, disposition_for
 from ...models.events import CloudEvent
+from ..client_base import DeliveryCallback
 from .io_client_base import IOClientBase, subject_is_covered_by, validate_publish_subject, validate_subject_segment
 
 logger = logging.getLogger(__name__)
@@ -173,7 +173,7 @@ class NATSClient(IOClientBase):
         self._publish_via_jetstream: bool = False
         self._publish_subjects: set[str] = set()
         self._subscriptions: list[Any] = []
-        self._topic_callbacks: dict[str, Callable[[CloudEvent[Any]], Awaitable[None]]] = {}
+        self._topic_callbacks: dict[str, DeliveryCallback] = {}
         self._queue_group: str = ""
         self._tuning: ConsumerTuning | None = None
         self._durables: dict[str, str] = {}
@@ -232,7 +232,7 @@ class NATSClient(IOClientBase):
     # Managed subscription API
     # ------------------------------------------------------------------
 
-    async def subscribe(self, topic_callbacks: dict[str, Callable[[CloudEvent[Any]], Awaitable[None]]]) -> None:
+    async def subscribe(self, topic_callbacks: dict[str, DeliveryCallback]) -> None:
         """Register all topic→callback mappings and start the background retry task.
 
         Returns immediately; connection and subscription happen in the background.
@@ -1147,7 +1147,7 @@ class NATSClient(IOClientBase):
     # Internal — per-topic subscription
     # ------------------------------------------------------------------
 
-    async def _subscribe_one(self, topic: str, callback: Callable[[CloudEvent[Any]], Awaitable[None]]) -> None:
+    async def _subscribe_one(self, topic: str, callback: DeliveryCallback) -> None:
         client = await self.client
 
         async def message_handler(msg: Any) -> None:
@@ -1160,7 +1160,7 @@ class NATSClient(IOClientBase):
                     return
 
                 try:
-                    await callback(cloud_event)
+                    await callback(cloud_event, msg.subject)
                 except Exception as ex:
                     disposition = disposition_for(ex)
                     logger.error(
