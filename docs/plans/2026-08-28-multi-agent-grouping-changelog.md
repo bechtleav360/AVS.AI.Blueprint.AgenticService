@@ -7237,6 +7237,33 @@ match.
 Checked and found complete: every guide under `docs/guides/` now has a skill; `concepts/`,
 `components/` and `reference/` are reached through the existing skills rather than one each.
 
+### An environment override of a key the agent's file also sets was silently defeated
+
+Reported by a DevOps review of a first group deployment (their H3). `merge_agent_settings`
+promises that an environment override (`DYNACONF_<AGENT>__KEY`) is left alone and the agent's file
+fills only the gaps. It did not keep that promise for any key the file also set:
+
+- `DYNACONF_RISK_IDENTIFIER__NATS_SUBSCRIPTIONS='["t.T1.risk.>"]'` against a file setting
+  `["risk.>", "t.*.risk.>"]` resolved to all three -- the lists were concatenated.
+- `DYNACONF_RISK_IDENTIFIER__APP_NAME=FromEnv` resolved to the file's `RiskIdentifier`.
+- The merge reported both keys as added.
+
+**Cause.** Dynaconf stores what it loads upper-cased (`NATS_SUBSCRIPTIONS`); the agent's file is
+parsed with `tomllib` and keeps its lower case (`nats_subscriptions`). `Config._fill_missing`
+compared keys verbatim, never saw the override, and wrote the fragment's key beside it. Dynaconf
+then folded the two spellings into one key -- merging the lists, letting the later scalar win. The
+existing precedence tests passed because they set the override through the group's
+`settings.toml`, which does not take the upper-case path.
+
+**Fix.** `_fill_missing` matches keys case-insensitively, at every level, and keeps the spelling of
+the key already present. Consequence for deployments: any key an agent's file sets can now be
+overridden per agent from the environment, which the reviewer's interim of one process per tenant
+depends on.
+
+Guarded by `TestEnvironmentOverrides` in `test_agent_settings_fragments.py`: a list, a scalar and
+a nested key each keep the environment's value, and only the keys the environment left out are
+reported. All four fail against the previous `_fill_missing`.
+
 ---
 
 ## Open points

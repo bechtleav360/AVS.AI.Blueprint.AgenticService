@@ -731,19 +731,30 @@ class Config:
         ``[default.<agent>.cache] size_limit`` instead of replacing the table or being dropped
         by it. A leaf already present is never overwritten -- see the precedence rule on
         :meth:`merge_agent_settings`.
+
+        **Keys are matched case-insensitively.** Dynaconf stores what it loaded upper-cased --
+        ``DYNACONF_RISK__NATS_SUBSCRIPTIONS`` arrives as ``NATS_SUBSCRIPTIONS`` -- while an agent's
+        file is parsed with ``tomllib`` and keeps its lower case. Compared verbatim, the two never
+        match: the fragment's key is written beside the override instead of yielding to it, and
+        Dynaconf then folds the two spellings into one, concatenating a list and letting the file
+        replace a scalar. That silently defeats every environment override of a key the agent's
+        file also sets. The present key keeps its spelling; only the comparison ignores case.
         """
+        spelled = {str(key).lower(): key for key in target}
         added: list[str] = []
         for key, value in incoming.items():
             path = f"{prefix}{key}"
-            if key not in target:
+            existing = spelled.get(str(key).lower())
+            if existing is None:
                 target[key] = value
+                spelled[str(key).lower()] = key
                 added.append(path)
                 continue
-            present = target[key]
+            present = target[existing]
             if hasattr(present, "items") and hasattr(value, "items"):
                 nested = dict(present.items())
                 added.extend(Config._fill_missing(nested, dict(value.items()), prefix=f"{path}."))
-                target[key] = nested
+                target[existing] = nested
         return tuple(sorted(added))
 
     def resolved_settings(self, namespace: str = "") -> dict[str, Any]:
