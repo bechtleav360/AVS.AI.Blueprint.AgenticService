@@ -7209,6 +7209,34 @@ of files `black --check` wants to reformat and `ruff format --check` considers c
 disagreement `CLAUDE.local.md` records, it predates this work (reproduced with the change
 stashed), and it is not one formatter's to settle mid-change.
 
+### `asbs claude` had no migration skill, and announced its skills from a hand-kept list
+
+Reported by a colleague during PR review: the skills `asbs claude` installs did not include one
+for migration. The command itself dropped nothing -- `ClaudeGenerator.generate()` copies
+`claude_docs/skills/` wholesale and `pyproject.toml` packages `claude_docs/**/*` -- but no
+migration skill had ever been written. `guides/multi-agent-migration.md` was reachable only as one
+row of a table inside `blueprint-multi-agent`, so nothing surfaced as `/blueprint-migration`, and a
+user asking Claude to migrate an agent depended on the multi-agent skill's description happening to
+match.
+
+- **New skill `blueprint-migration`.** The five files the migration touches, the rules that break
+  it (instances instead of classes, the entry point without `BLUEPRINT_AGENTS`, a map inside the
+  agent, `[default.<agent>]` nesting twice), `asbs validate --group`, and the broker-identity change
+  that makes the move visible. It points at the guide for the diffs rather than repeating them.
+  `blueprint-multi-agent`'s description now routes migration to it, and the shipped `CLAUDE.md`'s
+  skill list names it.
+- **The "Next steps" slash-command list was a hand-kept block** in `generate()`, so the next skill
+  added would have been copied and never announced. `skill_names()` and `agent_names()` now read
+  `claude_docs/` and the output is built from them.
+- **Guarded** by `tests/unit/agent_generator/generator/test_claude_generator.py`: every skill's
+  frontmatter `name` matches its directory (a mismatch installs a skill under a slash command
+  nobody is told about), every skill is copied and announced, and the shipped `CLAUDE.md` names
+  every `blueprint-*` reference skill. The existing `test_docs.py` already checks that the new
+  skill's `asbs docs` targets exist.
+
+Checked and found complete: every guide under `docs/guides/` now has a skill; `concepts/`,
+`components/` and `reference/` are reached through the existing skills rather than one each.
+
 ---
 
 ## Open points

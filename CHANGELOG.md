@@ -44,6 +44,12 @@
 
 ### Added
 
+- **A `blueprint-migration` Claude Code skill**, installed by `asbs claude`: moving an existing
+  single-agent project into a group -- the files it touches, the mistakes that break it, and how
+  `asbs validate --group` checks it. The migration guide was previously reachable only from inside
+  `blueprint-multi-agent`. `asbs claude` now lists the skills and agents it installed by reading
+  them from the package, rather than from a hand-kept list that would have left any new skill
+  unannounced.
 - **A standalone agent declares nothing group-related.** `asbs setup` writes a `create_app()`
   factory beside the declaration, and the generated Dockerfile serves it with
   `uvicorn src.main:create_app --factory` -- no agent map, no group, no namespace. A group of one
