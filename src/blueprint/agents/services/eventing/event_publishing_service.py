@@ -2,7 +2,7 @@
 
 import logging
 from typing import Any
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from opentelemetry import trace
 
@@ -15,6 +15,10 @@ from ...models.config import EventPublishingConfig
 from ...models.events import CloudEvent
 
 logger = logging.getLogger(__name__)
+
+
+HANDLER_RESULT_ID_NAMESPACE = uuid5(NAMESPACE_URL, "urn:blueprint:handler-result")
+"""The UUID namespace a handler result's event id is derived in. Fixed: changing it changes every id."""
 
 
 class EventPublishingService(ServiceBase):
@@ -130,8 +134,23 @@ class EventPublishingService(ServiceBase):
         metadata: dict[str, Any],
         source_event: CloudEvent[Any],
         new_subject: str | None = None,
+        *,
+        index: int = 0,
     ) -> None:
         """Construct and publish a CloudEvent from a handler result.
+
+        **A failed publish raises.** It used to be caught and logged as a WARNING, after which the
+        delivery that produced the result was acknowledged -- so the handler's output was lost, and
+        nothing redelivered or dead-lettered it. Raising lets the transport edge nak the inbound
+        event, which runs the handler again on redelivery: at-least-once, like every other failure.
+
+        **The result's id is derived, not random** -- see :meth:`_result_event_id`. A redelivery
+        republishes the same result under the same id, so a consumer that deduplicates on
+        ``(source, id)`` sees one event, including when an earlier attempt published part of a
+        handler's results before failing.
+
+        Two deliberate skips are not failures and still only warn: an event type with no topic
+        mapping, and a result that would be published to the topic it came from.
 
         Args:
             event_type: The event type to publish
@@ -139,49 +158,70 @@ class EventPublishingService(ServiceBase):
             metadata: Additional metadata (used for logging)
             source_event: The original event that triggered this processing
             new_subject: Optional subject override
+            index: This result's position among the results of the same dispatch. Part of the
+                derived id, so two results of one dispatch never share one.
+
+        Raises:
+            Exception: whatever publishing raised, with a note naming the result.
         """
-        try:
-            pub_config = self._get_pub_config()
-            topic_config = pub_config.topic_mapping.get(event_type)
+        pub_config = self._get_pub_config()
+        topic_config = pub_config.topic_mapping.get(event_type)
 
-            if not topic_config:
-                logger.warning(
-                    "No topic mapping found for handler event type '%s', skipping publication",
-                    event_type,
-                )
-                return
-
-            if topic_config.topic == getattr(source_event, "topic", None):
-                logger.warning(
-                    "Handler event topic '%s' matches source event topic, skipping publication to prevent loop",
-                    topic_config.topic,
-                )
-                return
-
-            handler_event = GenericCloudEvent(
-                specversion="1.0",
-                id=str(uuid4()),
-                source=self.config.get("app_name", "agent-service"),
-                type=event_type,
-                data=data,
-                subject=new_subject or getattr(source_event, "subject", None),
-            )
-
-            logger.info(
-                "Publishing handler event type '%s' to topic '%s'",
-                event_type,
-                topic_config.topic,
-                extra={"event_type": event_type, "event_id": handler_event.id, "metadata": metadata},
-            )
-
-            await self.publish_event(handler_event)
-
-        except Exception as e:
+        if not topic_config:
             logger.warning(
-                "Failed to publish handler event: %s",
-                str(e),
-                extra={"event_type": event_type, "error": str(e), "metadata": metadata},
+                "No topic mapping found for handler event type '%s', skipping publication",
+                event_type,
             )
+            return
+
+        if topic_config.topic == getattr(source_event, "topic", None):
+            logger.warning(
+                "Handler event topic '%s' matches source event topic, skipping publication to prevent loop",
+                topic_config.topic,
+            )
+            return
+
+        handler_event = GenericCloudEvent(
+            specversion="1.0",
+            id=self._result_event_id(source_event, event_type, index),
+            source=self.config.get("app_name", "agent-service"),
+            type=event_type,
+            data=data,
+            subject=new_subject or getattr(source_event, "subject", None),
+        )
+
+        logger.info(
+            "Publishing handler event type '%s' to topic '%s'",
+            event_type,
+            topic_config.topic,
+            extra={"event_type": event_type, "event_id": handler_event.id, "metadata": metadata},
+        )
+
+        try:
+            await self.publish_event(handler_event)
+        except Exception as exc:
+            exc.add_note(
+                f"while publishing handler result {index} ('{event_type}', id {handler_event.id}) of event "
+                f"'{getattr(source_event, 'id', None)}'"
+            )
+            raise
+
+    def _result_event_id(self, source_event: CloudEvent[Any], event_type: str, index: int) -> str:
+        """Derive a handler result's event id from what produced it.
+
+        A UUIDv5 over this agent, the source event's ``source`` and ``id``, the result's type and
+        its position. The same delivery redelivered yields the same ids; two agents answering the
+        same event do not collide, because the agent is part of the name -- their results can
+        share a ``source``, which is a root-level ``app_name``.
+
+        Falls back to a random id for a source event without one, which has nothing stable to
+        derive from.
+        """
+        source_id = str(getattr(source_event, "id", "") or "").strip()
+        if not source_id:
+            return str(uuid4())
+        name = "\x1f".join((self.namespace, str(getattr(source_event, "source", "") or ""), source_id, event_type, str(index)))
+        return str(uuid5(HANDLER_RESULT_ID_NAMESPACE, name))
 
     async def publish_status_event(self, status_data: dict[str, Any], status: str, event_id: str | None = "") -> dict[str, Any]:
         """Convenience method to publish status events.

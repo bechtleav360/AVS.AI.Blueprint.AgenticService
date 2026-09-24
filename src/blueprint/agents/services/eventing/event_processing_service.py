@@ -162,20 +162,29 @@ class EventProcessingService(ServiceBase):
 
             handler_results: list[HandlerResult] = self._extract_handler_results(handler_result)
 
-            for result in handler_results:
+            for index, result in enumerate(handler_results):
                 if result.event_type:
                     # This agent's publishing service, falling back to a root one. Not the
                     # unscoped lookup this used to be: with one publishing service per
                     # namespace (P6) that finds several and refuses to choose, so a grouped
                     # process would fail on the first handler that returns an event_type.
                     publisher = self.registry.get_component(EventPublishingService, namespace=namespace)
-                    await publisher.publish_handler_event(
-                        event_type=result.event_type,
-                        data=result.data,
-                        metadata=result.metadata or {},
-                        source_event=event,
-                        new_subject=result.subject or new_subject,
-                    )
+                    try:
+                        await publisher.publish_handler_event(
+                            event_type=result.event_type,
+                            data=result.data,
+                            metadata=result.metadata or {},
+                            source_event=event,
+                            new_subject=result.subject or new_subject,
+                            index=index,
+                        )
+                    except Exception:
+                        # The chain claimed this event's dedup marker and kept it, because the
+                        # dispatch succeeded. The failure below naks the event; left in place, the
+                        # marker would make the redelivery a skipped duplicate, and the result this
+                        # publish failed to send would be lost after all.
+                        self._chain_for(namespace).release(event)
+                        raise
 
             status = ProcessingStatus.NO_HANDLER_FOUND if handler_result is None else ProcessingStatus.PROCESSED
             return self._build_result(request_id, handler_results, status)

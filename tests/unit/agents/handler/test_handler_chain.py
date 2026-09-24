@@ -197,6 +197,30 @@ class TestIdempotencyDisabled:
 
 
 class TestIdempotencyEnabled:
+    async def test_release_after_a_successful_dispatch_lets_the_redelivery_run(
+        self, chain: HandlerChain, mock_registry: MagicMock, mock_config: MagicMock, cloud_event: GenericCloudEvent
+    ) -> None:
+        """#1 -- a result that failed to publish fails the delivery after the chain kept its claim."""
+        _enable_dedup(mock_config, mock_registry)
+        seen: list[str] = []
+
+        class Counting(StubHandler):
+            async def can_handle_event(self, event, context):
+                seen.append(event.id)
+                return False
+
+        _wire_handlers(mock_registry, [Counting()])
+
+        await chain.process(cloud_event, {})
+        chain.release(cloud_event)
+        await chain.process(cloud_event, {})
+
+        assert seen == ["evt-001", "evt-001"]
+
+    def test_release_with_dedup_off_is_a_no_op(self, chain: HandlerChain, mock_registry: MagicMock, cloud_event: GenericCloudEvent) -> None:
+        chain.release(cloud_event)
+        mock_registry.cache_service.delete.assert_not_called()
+
     async def test_same_event_delivered_twice_dispatches_once(
         self, chain: HandlerChain, mock_registry: MagicMock, mock_config: MagicMock, cloud_event: GenericCloudEvent
     ) -> None:

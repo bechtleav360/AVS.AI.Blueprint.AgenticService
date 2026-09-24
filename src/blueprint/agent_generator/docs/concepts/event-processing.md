@@ -148,6 +148,24 @@ async def handle_event(self, event: CloudEvent) -> list[HandlerResult]:
     ]
 ```
 
+### When publishing a result fails
+
+**A result that cannot be published fails the delivery.** The inbound event is not acknowledged: it
+is redelivered, and the handler runs again -- including any LLM call it makes. This is the same
+at-least-once contract as a handler that raises; the alternative is an event marked processed
+whose output was never sent. If deduplication is enabled, the marker for the inbound event is
+released, so the redelivery is not skipped as a duplicate.
+
+**A result's event id is derived, not random:** a UUIDv5 over the agent, the inbound event's
+`source` and `id`, the result's `event_type` and its position in the list. A redelivery therefore
+republishes each result under the same id -- including results an earlier attempt had already sent
+before a later one failed -- and a consumer that deduplicates on `source` + `id` sees each result
+once. Keep the order of a returned list stable for the same input.
+
+Two cases are skipped with a WARNING rather than failed, because they are configuration rather than
+a failure: an `event_type` with no entry in `topic_mapping`, and a result that would be published
+to the topic its inbound event came from.
+
 ### Return Any Other Value -- Internal Chaining
 
 Returning any other value passes it along internally within the handler chain without publishing to the event bus. This is useful for in-process data transformation between handlers.
