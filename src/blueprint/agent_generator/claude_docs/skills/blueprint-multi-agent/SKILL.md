@@ -1,6 +1,6 @@
 ---
 name: blueprint-multi-agent
-description: Running several Blueprint agents in one process, and migrating an existing single-agent project into a group. Use for agents.toml, agent namespaces, group deployment, the entrypoint module, or when an existing agent must join a group.
+description: Running several Blueprint agents in one process - agents.toml, agent namespaces, supplying the group at container start, and the entrypoint module. Use when designing or deploying a group; for moving an existing single-agent project into one, use blueprint-migration.
 user-invocable: true
 ---
 
@@ -15,7 +15,7 @@ two is an edit to a Deployment, not a rebuild.
 | Case | Read |
 |---|---|
 | New project, built as a group from the start | `asbs docs guides/multi-agent-setup --cat` |
-| Existing single-agent project joining a group | `asbs docs guides/multi-agent-migration --cat` |
+| Existing single-agent project joining a group | The `blueprint-migration` skill, then `asbs docs guides/multi-agent-migration --cat` |
 | Leave it standalone | Nothing changes. There is no deprecation - this is a legitimate answer |
 
 ## The layout, which is not negotiable

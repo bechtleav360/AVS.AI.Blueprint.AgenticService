@@ -255,7 +255,7 @@ asbs docs reference/configuration-keys --cat   # print its contents
 ```
 
 Prefer the matching skill (`blueprint-cli`, `blueprint-config`, `blueprint-events`,
-`blueprint-multi-agent`, `blueprint-testing`, `blueprint-deployment`,
+`blueprint-multi-agent`, `blueprint-migration`, `blueprint-testing`, `blueprint-deployment`,
 `blueprint-troubleshooting`); each one carries the rules that matter and points at the page for the
 detail. **Never guess a configuration key or a CLI flag** -- the reference is on disk.
 
