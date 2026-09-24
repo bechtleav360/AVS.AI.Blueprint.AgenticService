@@ -7644,6 +7644,24 @@ Guarded by `TestProcessResourceLogging` (`test_rest_api_base.py`) and `TestTheRe
 (`test_event_processing_service.py`); one case of each fails against the previous code, the other
 pins the part that was already right.
 
+### The sessions replay guard is bounded (#14)
+
+**Verified.** `SessionsJobHandler._seen` was a `set[UUID]` added to on every terminal outcome
+(complete, fail, cancel) and never pruned: one UUID per finished job, for the life of the process.
+
+**Change.** New `RecentJobIds` in `sessions_job_handler.py`: an `OrderedDict` of id -> monotonic
+time with `add()`, `__contains__` and `__len__`, evicting ids older than `ttl` and the oldest beyond
+`max_entries`. `_seen` is one, sized by the class attributes `SEEN_TTL_SECONDS = 3600` and
+`SEEN_MAX_ENTRIES = 10_000`. Its purpose is recognising a *redelivery*, which arrives in minutes; a
+redelivery after the window is processed again, which the terminal call's retry already tolerates.
+The handler's own tests use `in` and `.add()`, and pass unchanged.
+
+The finding also noted that this guard is per process and inconsistent with the chain's cache-based
+dedup. That is true and deliberate here: the guard protects one handler instance against the
+sessions bus redelivering to it; unifying it with the cache is a design change, not a fix.
+
+Guarded by `TestTheReplayGuardIsBounded` in `test_sessions_job_handler.py` (3 cases).
+
 ---
 
 ## Open points

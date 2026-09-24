@@ -3,6 +3,9 @@
 
 ### Fixed
 
+- **`SessionsJobHandler` no longer grows without bound.** Its replay guard kept every finished
+  job's id for the life of the process. It now remembers an id for an hour and at most 10,000 ids
+  (`SEEN_TTL_SECONDS`, `SEEN_MAX_ENTRIES`, overridable per subclass).
 - **REST request bodies are no longer logged.** `RestApiBase._process_resource` put the whole
   payload into the `extra` of an INFO line, so personal data and secrets in a request body reached
   the logs. Only the payload's type is logged now.
