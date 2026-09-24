@@ -118,7 +118,10 @@ class EventProcessingService(ServiceBase):
         if context is None:
             context = {}
 
-        request_id = str(uuid4())
+        # The caller's id if it has one. The REST path creates one, logs it and returns it as the
+        # RFC 7807 traceId; overwriting it here gave processing a second id that matched nothing
+        # the caller could see.
+        request_id = str(context.get("request_id") or uuid4())
         context["request_id"] = request_id
         span = trace.get_current_span()
         span.set_attribute("request_id", request_id)

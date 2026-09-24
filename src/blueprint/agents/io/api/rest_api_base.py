@@ -182,7 +182,9 @@ class RestApiBase(IOBase, ABC):
                 "path": request.url.path,
                 "method": request.method,
                 "client_ip": request.client.host if request.client else None,
-                "payload": payload,
+                # The type, never the body: a request body is where personal data and secrets
+                # arrive, and it used to be logged here in full, at INFO.
+                "payload_type": type(payload).__name__,
             },
         )
 

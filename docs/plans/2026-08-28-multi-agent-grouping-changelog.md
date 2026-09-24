@@ -7629,6 +7629,21 @@ Guarded by `TestTheRequestTimeout` (`test_vllm_client.py`) and the two routing-k
 `test_dapr_client.py`, which replace the two that asserted the header; four cases fail against the
 previous code.
 
+### REST payload logging and request id (#12, #13)
+
+- **#12, verified.** `RestApiBase._process_resource` logged `extra={"payload": payload, ...}` at
+  INFO -- the full request body, against the org's PII rule and the repo's rule that sensitive data
+  is not logged at any level. Replaced by `payload_type`.
+- **#13, verified end to end.** `_process_resource` creates a `request_id`, sets it as
+  `request.state.trace_id` (the problem-details `traceId`) and passes it in `context` through
+  `process_rest_request` to `process_event` -- which assigned `context["request_id"] = str(uuid4())`
+  unconditionally. It now keeps `context.get("request_id")` and only makes one when absent, so the
+  NATS and Dapr paths, which pass none, are unchanged.
+
+Guarded by `TestProcessResourceLogging` (`test_rest_api_base.py`) and `TestTheRequestIdIsKept`
+(`test_event_processing_service.py`); one case of each fails against the previous code, the other
+pins the part that was already right.
+
 ---
 
 ## Open points
