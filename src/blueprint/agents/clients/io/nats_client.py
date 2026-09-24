@@ -27,6 +27,14 @@ from .io_client_base import IOClientBase, subject_is_covered_by, validate_publis
 
 logger = logging.getLogger(__name__)
 
+DEVELOPMENT_NATS_URL = "nats://localhost:4222"
+"""The broker a development process connects to when ``nats_url`` is unset -- and only then.
+
+In a container ``localhost`` is almost always wrong -- a broker in the same pod is the exception, and
+it can say so -- and a client pointed at it retries forever while the pod looks healthy. So outside ``app_environment = "development"`` an unset ``nats_url`` fails
+startup instead of reaching for this.
+"""
+
 DEAD_LETTERED_COUNTER = "blueprint.events.dead_lettered"
 """Events the framework gave up on, whether or not their payload was kept.
 
@@ -136,6 +144,7 @@ class NATSClient(IOClientBase):
     def __init__(self, namespace: str = ROOT_NAMESPACE) -> None:
         super().__init__(namespace=namespace)
         self._connection_name: str = ""
+        self._nats_url: str = ""
         self._nats_client: NatsClient | None = None
         self._js: JetStreamContext | None = None
         self._use_jetstream: bool = False
@@ -541,6 +550,47 @@ class NATSClient(IOClientBase):
     # Connection
     # ------------------------------------------------------------------
 
+    async def on_startup(self) -> None:
+        """Resolve the broker URL, so a missing one fails this agent's startup (M1).
+
+        Runs in the lifespan's client phase, before any connection is attempted. The connection
+        itself is made in a background retry loop that retries every error forever -- a missing
+        URL included, which is a configuration error no retry can fix. Resolved here, it is
+        reported once, against this agent, as ``_resolve_queue_group`` reports its own.
+        """
+        self._nats_url = self._resolve_nats_url()
+
+    def _resolve_nats_url(self) -> str:
+        """Return the configured ``nats_url``; outside development, refuse to run without one.
+
+        Development falls back to :data:`DEVELOPMENT_NATS_URL` with a WARNING, so a broker on the
+        developer's machine needs no configuration. Anywhere else there is no fallback: a pod
+        pointed at ``localhost`` connects to nothing and never says so.
+
+        Raises:
+            ValueError: if ``nats_url`` is unset or empty and ``app_environment`` is not
+                ``"development"``. Names the key, the environment, and how to set it.
+        """
+        url = str(self.config.get("nats_url", "") or "").strip()
+        if url:
+            return url
+        environment = str(self.config.get("app_environment", "development"))
+        if environment.lower() == "development":
+            logger.warning(
+                "Agent '%s': 'nats_url' is not set, connecting to %s because app_environment is 'development'. "
+                "Set 'nats_url' for any other environment -- there, an unset one fails startup.",
+                self.namespace or ROOT_LABEL,
+                DEVELOPMENT_NATS_URL,
+            )
+            return DEVELOPMENT_NATS_URL
+        prefix = self.config.envvar_prefix
+        variable = f"{prefix}_NATS_URL" if prefix else "NATS_URL"
+        raise ValueError(
+            f"'event_bus' is 'nats' but 'nats_url' is not set (app_environment is {environment!r}). Outside "
+            "development there is no default: localhost is rarely right in a container, and a client pointed at it retries "
+            f"forever while the pod looks healthy. Set 'nats_url' in the group's settings.toml or as {variable}."
+        )
+
     def _is_connected(self) -> bool:
         return self._nats_client is not None and not self._nats_client.is_closed and self._nats_client.is_connected
 
@@ -549,7 +599,9 @@ class NATSClient(IOClientBase):
         if self._nats_client is not None and not self._nats_client.is_closed:
             return
 
-        nats_url = self.config.get("nats_url", "nats://localhost:4222")
+        if not self._nats_url:
+            self._nats_url = self._resolve_nats_url()
+        nats_url = self._nats_url
         self._connection_name = self._resolve_connection_name()
         try:
             self._nats_client = await nats.connect(

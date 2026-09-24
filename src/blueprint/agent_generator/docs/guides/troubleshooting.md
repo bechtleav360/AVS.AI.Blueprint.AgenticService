@@ -179,6 +179,24 @@ nats sub test.subject
 
 In Kubernetes, verify the NATS service is deployed and the Dapr component configuration points to the correct address.
 
+**Refused against `localhost:4222` inside a pod?** The process is in development mode: `app_environment` is
+unset or `"development"`, and `nats_url` is unset, so it fell back to localhost. The log says so twice -- a
+WARNING that the service is running in development mode, and one naming the fallback. Set `app_environment`
+and `nats_url` for the deployment.
+
+### `'nats_url' is not set` on Startup
+
+**Symptom:** Startup fails, or one agent of a group is marked down, with:
+
+```
+ValueError: 'event_bus' is 'nats' but 'nats_url' is not set (app_environment is 'production'). ...
+```
+
+**Cause:** Outside development there is no default broker address.
+
+**Solution:** Set `nats_url` in the group's `settings.toml`, or in the environment as the variable the message
+names (`DYNACONF_NATS_URL` with the default prefix).
+
 ### Topic Mapping Mismatches
 
 **Symptom:** Events are published but handlers never receive them.

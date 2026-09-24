@@ -9,7 +9,7 @@ import pytest
 from nats.js import api as js_api
 
 from blueprint.agents.clients.io.io_client_base import subject_is_covered_by
-from blueprint.agents.clients.io.nats_client import ConsumerTuning, NATSClient
+from blueprint.agents.clients.io.nats_client import DEVELOPMENT_NATS_URL, ConsumerTuning, NATSClient
 from blueprint.agents.models.errors import CriticalHandlerError, InvalidEventError, RetryableHandlerError
 from blueprint.agents.models.events import CloudEvent
 
@@ -121,6 +121,63 @@ class TestNATSClientConnect:
         ):
             with pytest.raises(Exception, match="refused"):
                 await nats_client.connect()
+
+
+class TestNATSClientUrl:
+    """M1 -- ``nats_url`` falls back to localhost in development only; elsewhere startup fails."""
+
+    @staticmethod
+    def _configure(mock_config: MagicMock, **values: object) -> None:
+        mock_config.get.side_effect = lambda key, default=None: values.get(key, default)
+        mock_config.envvar_prefix = "DYNACONF"
+
+    async def test_a_configured_url_is_used(self, nats_client: NATSClient, mock_config: MagicMock, caplog) -> None:
+        self._configure(mock_config, nats_url="nats://broker:4222", app_environment="production")
+        with caplog.at_level(logging.WARNING, logger="blueprint.agents.clients.io.nats_client"):
+            await nats_client.on_startup()
+        assert nats_client._nats_url == "nats://broker:4222"
+        assert caplog.records == []
+
+    async def test_development_falls_back_to_localhost(self, nats_client: NATSClient, mock_config: MagicMock, caplog) -> None:
+        self._configure(mock_config, app_environment="development")
+        with caplog.at_level(logging.WARNING, logger="blueprint.agents.clients.io.nats_client"):
+            await nats_client.on_startup()
+        assert nats_client._nats_url == DEVELOPMENT_NATS_URL
+        assert "'nats_url' is not set" in caplog.text
+
+    async def test_an_unset_environment_is_development(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        """``app_environment`` defaults to development, and this follows the same default."""
+        self._configure(mock_config)
+        await nats_client.on_startup()
+        assert nats_client._nats_url == DEVELOPMENT_NATS_URL
+
+    @pytest.mark.parametrize("url", [None, "", "   "])
+    async def test_production_without_a_url_fails(self, nats_client: NATSClient, mock_config: MagicMock, url: str | None) -> None:
+        self._configure(mock_config, nats_url=url, app_environment="production")
+        with pytest.raises(ValueError, match=r"'nats_url' is not set \(app_environment is 'production'\).*DYNACONF_NATS_URL"):
+            await nats_client.on_startup()
+
+    async def test_the_message_names_an_unprefixed_variable(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        self._configure(mock_config, app_environment="production")
+        mock_config.envvar_prefix = False
+        with pytest.raises(ValueError, match="or as NATS_URL"):
+            await nats_client.on_startup()
+
+    async def test_connect_uses_the_url_resolved_at_startup(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        self._configure(mock_config, nats_url="nats://broker:4222", app_environment="production")
+        await nats_client.on_startup()
+        mock_nc = MagicMock(is_closed=False, is_connected=True)
+        with patch("blueprint.agents.clients.io.nats_client.nats.connect", new_callable=AsyncMock, return_value=mock_nc) as connect:
+            await nats_client.connect()
+        assert connect.call_args[0][0] == "nats://broker:4222"
+
+    async def test_connect_without_startup_refuses_too(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        """A client connected lazily, before any lifespan, must not reach localhost either."""
+        self._configure(mock_config, app_environment="production")
+        with patch("blueprint.agents.clients.io.nats_client.nats.connect", new_callable=AsyncMock) as connect:
+            with pytest.raises(ValueError, match="'nats_url' is not set"):
+                await nats_client.connect()
+        connect.assert_not_awaited()
 
 
 class TestNATSClientClose:

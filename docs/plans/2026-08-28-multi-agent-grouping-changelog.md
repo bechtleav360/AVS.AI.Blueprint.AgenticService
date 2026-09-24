@@ -7264,6 +7264,40 @@ Guarded by `TestEnvironmentOverrides` in `test_agent_settings_fragments.py`: a l
 a nested key each keep the environment's value, and only the keys the environment left out are
 reported. All four fail against the previous `_fill_missing`.
 
+### `nats_url` no longer defaults to localhost outside development
+
+From the same review (their M1). `NATSClient.connect()` read `nats_url` with a default of
+`nats://localhost:4222`. In a pod that is almost always wrong, and the failure mode is the worst
+available: the connection happens in the background retry loop, which retries every error forever,
+so a pod the operator deployed without computed settings kept retrying against itself while the
+process looked alive.
+
+The reviewer asked for the default to go and for startup to fail naming the key. Removing it
+outright would have broken the case the default exists for -- a broker on a developer's machine
+with nothing configured -- so, agreed with the user, the fallback survives in development only:
+
+- **`NATSClient.on_startup()`** now resolves the URL through `_resolve_nats_url()`. Set: used.
+  Unset and `app_environment` is `"development"`: `DEVELOPMENT_NATS_URL`, with a WARNING naming the
+  agent. Unset anywhere else: `ValueError` naming `nats_url`, the environment, and the variable to
+  set (following the configured `envvar_prefix`, or unprefixed when there is none). The client
+  phase of the lifespan runs before the eventing services, so under sec. 9.1 this aborts a
+  standalone, root or critical agent before the port is bound and marks a non-critical one down --
+  the same path `_resolve_queue_group()` takes.
+- **`connect()`** uses the resolved URL, and resolves it itself if nothing ran `on_startup()`, so a
+  lazily connected client cannot reach localhost by the back door either.
+- **`AppBuilder._warn_if_development()`**, called once at the start of the lifespan, logs that the
+  process runs in development mode and is not suitable for production.
+
+**The residual gap, stated rather than hidden.** `app_environment` itself defaults to
+`"development"`, and no scaffolded file sets anything else. A pod that sets neither key therefore
+still connects to localhost -- but now under two WARNINGs, one saying the process is in
+development mode and one naming the fallback. Closing that fully would mean changing the
+default environment, which is a larger decision than this fix; the user chose the warning.
+
+Docs: `reference/configuration-keys.md` (`nats_url`, `app_environment`) and a new symptom plus a
+localhost note in `guides/troubleshooting.md`. Guarded by `TestNATSClientUrl` in
+`test_nats_client.py` and `test_development_warning.py`.
+
 ---
 
 ## Open points

@@ -92,6 +92,15 @@
 
 ### Breaking
 
+- **`nats_url` has no default outside development.** With `event_bus = "nats"` and no `nats_url`,
+  a process whose `app_environment` is anything but `"development"` now fails startup naming the
+  key -- a standalone or critical agent before the port is bound, a non-critical agent of a group
+  by being marked down. It used to connect to `nats://localhost:4222`, which in a pod reaches
+  nothing and retried forever while the pod reported healthy. Development keeps the localhost
+  fallback, with a WARNING. A broker in the same pod needs `nats_url` set explicitly.
+- **A process in development mode logs a WARNING at startup** that it is not suitable for
+  production. `app_environment` defaults to `"development"`, so a deployment that sets nothing now
+  says so in its own log.
 - **`root` is required in `agents.toml`.** Every existing entry needs one line added; a map
   without it refuses to start rather than guessing. For an image that copied one agent to `/app`,
   that is `root = "."`.
