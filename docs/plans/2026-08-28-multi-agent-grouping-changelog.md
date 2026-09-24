@@ -7662,6 +7662,35 @@ sessions bus redelivering to it; unifying it with the cache is a design change, 
 
 Guarded by `TestTheReplayGuardIsBounded` in `test_sessions_job_handler.py` (3 cases).
 
+### Generator and CLI (#11 and the low-priority generator findings)
+
+All verified before changing:
+
+- **`base_files/Dockerfile`** copied `pyproject.toml README.md`; no `README.md` is generated and the
+  generated `pyproject.toml` declares no readme. Now copies the manifest only.
+- **`asbs validate`** warned an agent directory that it had no `agents.toml` and told it to add
+  one -- the opposite of `layout.py`, `asbs setup` and the migration guide, which all say the map
+  belongs to the image. `NO_AGENT_MAP_WARNING` became `NO_AGENT_MAP_NOTICE`: a notice that the map
+  belongs to the image, pointing at `asbs validate --group` and the migration guide. The test that
+  pinned the old advice (`test_a_project_without_one_is_told_the_three_changes`) now pins the new.
+- **`asbs setup`** printed "this agent's routes are under /api/{namespace}"; a standalone
+  `create_app` builds at the root. It now names both.
+- **`base_files/settings.txt`**: `scheduler_mode = "in_process"` was active, choosing the value the
+  framework deliberately has no default for; both values are now commented out. Its tick-topic
+  comment said `<app_name>.scheduler...`; the code derives `<agent>.scheduler...` and falls back to
+  `app_name` only at the root. `model_base_url` named an internal host; now a placeholder.
+- **`generator.py`** passed an `agent_namespace` template variable the Dockerfile has no token for
+  (removed, with its now unused import), and `load_config` called `sys.exit(1)` on an invalid
+  config; it raises `ValueError` after the `try`, and the CLI entry point still turns it into exit
+  status 1.
+- **`assistant_integrations/CLAUDE.md`** was packaged (`pyproject.toml` package-data) and read by
+  nothing. Removed with its package-data entry.
+
+Guarded by `test_every_file_the_dockerfile_copies_is_generated` (checks every build-context
+`COPY` source exists in a generated project), `TestTheGeneratedSettings` and
+`TestAnInvalidGeneratorConfig` in `test_generated_project.py`, all four failing against the previous
+templates and code; and the rewritten validate case in `test_validate_group_gates.py`.
+
 ---
 
 ## Open points

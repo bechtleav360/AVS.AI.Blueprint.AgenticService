@@ -3,6 +3,14 @@
 
 ### Fixed
 
+- **Scaffolding fixes.** The generated `Dockerfile` copied a `README.md` that nothing generates, so
+  `docker build` on a fresh project failed; the generated `settings.toml` chose `scheduler_mode =
+  "in_process"`, defeating its deliberate lack of a default, and carried an internal model host;
+  `asbs validate` told an agent to add an `agents.toml`, which an agent must not carry, and now
+  points at the image's map instead (as a notice); `asbs setup` said a standalone agent's routes
+  were under `/api/<name>`; the generator called `sys.exit(1)` from library code on an invalid
+  config and now raises `ValueError`. The unreferenced `assistant_integrations/CLAUDE.md` is no
+  longer packaged.
 - **`SessionsJobHandler` no longer grows without bound.** Its replay guard kept every finished
   job's id for the life of the process. It now remembers an id for an hour and at most 10,000 ids
   (`SEEN_TTL_SECONDS`, `SEEN_MAX_ENTRIES`, overridable per subclass).
