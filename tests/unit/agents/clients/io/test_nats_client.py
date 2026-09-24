@@ -1758,6 +1758,71 @@ class TestNATSClientConnectionName:
         assert "pod-99" not in client._durable_for("orders.created")
 
 
+class TestAPauseBeforeSubscribing:
+    """C4 for an agent marked down in the client phase, before its endpoint subscribes (spec sec. 9.1).
+
+    The pause used to be enforced only on a client that already had subscriptions to drain. A
+    non-critical agent whose client failed ``on_startup`` is paused first and subscribed second,
+    and the retry loop ignored the flag -- so the latched-down agent consumed events.
+    """
+
+    TOPICS = {"orders.created": AsyncMock()}
+
+    @staticmethod
+    def _configure(mock_config: MagicMock) -> None:
+        values = {"app_name": "orders", "nats_url": "nats://broker:4222", "app_environment": "production"}
+        mock_config.get.side_effect = lambda key, default=None: values.get(key, default)
+        mock_config.envvar_prefix = "DYNACONF"
+
+    @staticmethod
+    def _broker() -> MagicMock:
+        nc = MagicMock(is_closed=False, is_connected=True)
+        nc.subscribe = AsyncMock(return_value=MagicMock())
+        return nc
+
+    async def test_a_paused_client_does_not_subscribe(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        self._configure(mock_config)
+        await nats_client.pause_consumption()
+        nc = self._broker()
+        with patch("blueprint.agents.clients.io.nats_client.nats.connect", new_callable=AsyncMock, return_value=nc) as connect:
+            await nats_client.subscribe(self.TOPICS)
+            await asyncio.sleep(0)
+        connect.assert_not_awaited()
+        nc.subscribe.assert_not_awaited()
+        assert nats_client._retry_task is None
+        assert nats_client.subscriptions_ready is False
+
+    async def test_releasing_it_connects_and_subscribes(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        self._configure(mock_config)
+        await nats_client.pause_consumption()
+        nc = self._broker()
+        with patch("blueprint.agents.clients.io.nats_client.nats.connect", new_callable=AsyncMock, return_value=nc):
+            await nats_client.subscribe(self.TOPICS)
+            await nats_client.resume_consumption()
+            await nats_client._retry_task
+        nc.subscribe.assert_awaited_once()
+        assert nats_client.subscriptions_ready is True
+
+    async def test_a_pause_while_connecting_subscribes_nothing(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        """Marked down by a later component of the same agent while the loop is still connecting."""
+        self._configure(mock_config)
+        nc = self._broker()
+
+        async def _slow_connect(*_args, **_kwargs):
+            await nats_client.pause_consumption()
+            return nc
+
+        with patch("blueprint.agents.clients.io.nats_client.nats.connect", side_effect=_slow_connect):
+            await nats_client.subscribe(self.TOPICS)
+            await nats_client._retry_task
+        nc.subscribe.assert_not_awaited()
+        assert nats_client.subscriptions_ready is False
+
+        await nats_client.resume_consumption()
+        nc.subscribe.assert_awaited_once()
+        assert nats_client.subscriptions_ready is True
+
+
 class TestPausingADegradedAgent:
     """C4: readiness gates HTTP only, so a degraded agent has to be taken off its topics."""
 

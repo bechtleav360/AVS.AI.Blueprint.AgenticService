@@ -3,6 +3,11 @@
 
 ### Fixed
 
+- **A non-critical agent marked down at startup no longer consumes events anyway.** When its
+  client failed `on_startup`, the agent was paused before its eventing endpoint subscribed, and the
+  subscribe path ignored the pause -- so the latched-down agent connected and took events it could
+  not process. A paused client now registers its topics and waits; it connects and subscribes only
+  if the agent is released.
 - **Credentials inside `nats_url` no longer reach the log or `/health`.** The connect log line
   printed the URL verbatim, and the NATS health message printed the parsed URL including
   `user:password@`. Both now show `***@host:port`.
