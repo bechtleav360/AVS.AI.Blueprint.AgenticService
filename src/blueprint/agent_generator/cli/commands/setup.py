@@ -193,7 +193,10 @@ def run(args: Namespace) -> None:
             print("     (A .secrets.toml with a placeholder has been created for you)")
             print("  3. Run the generated tests: pytest")
             print("  4. Run the service: asbs dev")
-            print(f"  5. View API docs at: http://localhost:8000/docs (this agent's routes are under /api/{namespace})")
+            print(
+                f"  5. View API docs at: http://localhost:8000/docs (served alone, this agent's routes are under /api; "
+                f"hosted in a group, under /api/{namespace})"
+            )
 
             print("\nsrc/main.py declares this agent; it does not build an application.")
             print("\nThis directory carries no agents.toml, and that is deliberate: the agent map says")

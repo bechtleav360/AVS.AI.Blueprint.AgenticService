@@ -11,7 +11,9 @@ WORKDIR /app
 
 # Layer 1: Copy dependency manifests and install dependencies
 # This layer caches if only code changes, not deps
-COPY pyproject.toml README.md ./
+# Only the manifest: the generated pyproject.toml declares no readme, and no README.md is
+# generated, so copying one failed a fresh `docker build` at this line.
+COPY pyproject.toml ./
 
 RUN uv pip install --system --no-cache \
     --upgrade pip setuptools wheel && \

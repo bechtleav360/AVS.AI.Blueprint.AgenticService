@@ -7,7 +7,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .part_generators.part_generator_base import PartGeneratorBase
 from .part_generators import (
     APIPartGenerator,
     CopyPartGenerator,
@@ -78,10 +77,6 @@ class AgentGenerator:
                 self.config = json.load(f)
                 logger.debug(f"Loaded config: {json.dumps(self.config, indent=2, default=str)}")
 
-            if not self._config_is_valid():
-                sys.exit(1)
-            logger.info("Configuration is valid")
-
         except json.JSONDecodeError as e:
             error_msg = f"Invalid JSON in config file {self.config_path}: {e}"
             logger.error(error_msg, exc_info=True)
@@ -90,6 +85,14 @@ class AgentGenerator:
             error_msg = f"Error loading config file {self.config_path}: {e}"
             logger.error(error_msg, exc_info=True)
             raise
+
+        # Raised, not sys.exit(1): this is library code, and exiting the interpreter from it took
+        # the decision away from every caller -- a test, or a tool embedding the generator. The
+        # command-line entry point already turns an exception into a message and exit status 1.
+        # _config_is_valid has logged each problem it found.
+        if not self._config_is_valid():
+            raise ValueError(f"Config file {self.config_path} is not valid; the problems are logged above.")
+        logger.info("Configuration is valid")
 
     def _config_is_valid(self) -> bool:
         """Validate the configuration structure and cross-references.
@@ -351,7 +354,6 @@ class AgentGenerator:
                 "",
                 "Dockerfile",
                 "Dockerfile",
-                template_vars={"agent_namespace": PartGeneratorBase.agent_namespace(self.config)},
             ).create_file(out)
 
             # Create .gitignore

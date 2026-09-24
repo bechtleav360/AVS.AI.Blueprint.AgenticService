@@ -32,14 +32,15 @@ def _agent(name: str = "orders", module: str = "src.main:agent") -> str:
 class TestTheAgentMap:
     """The map is how a name reaches code; the gate is everything that stops it."""
 
-    def test_a_project_without_one_is_told_the_three_changes(self, tmp_path: Path) -> None:
-        issues, warnings, _ = _group_findings(_project(tmp_path))
+    def test_an_agent_without_one_is_not_told_to_add_one(self, tmp_path: Path) -> None:
+        """An agent carries no map by design; it used to be warned and told to add one here."""
+        issues, warnings, notices = _group_findings(_project(tmp_path))
 
         assert not issues, "A project deployed on its own is not broken, so this is never an issue."
-        assert len(warnings) == 1
-        assert "src/main.py" in warnings[0]
-        assert "Dockerfile" in warnings[0]
-        assert "agents.toml" in warnings[0]
+        assert warnings == []
+        assert len(notices) == 1
+        assert "belongs to the image" in notices[0]
+        assert "asbs validate --group" in notices[0]
 
     def test_a_well_formed_map_passes_silently(self, tmp_path: Path) -> None:
         issues, warnings, _ = _group_findings(_project(tmp_path, agent_map=_agent()))

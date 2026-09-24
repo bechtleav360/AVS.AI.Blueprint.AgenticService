@@ -461,6 +461,19 @@ class TestTheImage:
         assert "ENV BLUEPRINT_AGENTS" not in final_stage
         assert "BLUEPRINT_GROUP" not in final_stage.replace("BLUEPRINT_GROUP=<group>", "")
 
+    def test_every_file_the_dockerfile_copies_is_generated(self, project: Path) -> None:
+        """#11 -- it copied a README.md nothing generates, so a fresh `docker build` failed."""
+        dockerfile = (project / "Dockerfile").read_text(encoding="utf-8")
+        sources = []
+        for line in dockerfile.splitlines():
+            words = line.split()
+            if not words or words[0] != "COPY" or any(word.startswith("--from") for word in words):
+                continue
+            sources.extend(word for word in words[1:-1] if not word.startswith("--"))
+        assert sources, "the Dockerfile copies nothing from the build context"
+        missing = [source for source in sources if not (project / source).exists()]
+        assert missing == []
+
     def test_the_documented_run_command_needs_no_group(self, project: Path) -> None:
         """A placeholder here is a command that looks runnable and is not."""
         dockerfile = (project / "Dockerfile").read_text(encoding="utf-8")
@@ -490,3 +503,27 @@ class TestAnUnusableProjectNameIsRefused:
 
         with pytest.raises(ValueError, match="cannot be used"):
             PartGeneratorBase.agent_namespace({"name": "2ndAgent"})
+
+
+class TestTheGeneratedSettings:
+    """What settings.toml must not decide for the author, or bake in."""
+
+    def test_no_scheduler_mode_is_chosen(self, project: Path) -> None:
+        """It has no default by design; an active line in the template chose one anyway."""
+        settings = (project / "settings.toml").read_text(encoding="utf-8")
+        active = [line for line in settings.splitlines() if line.startswith("scheduler_mode")]
+        assert active == []
+
+    def test_no_internal_host_is_baked_in(self, project: Path) -> None:
+        assert "q14.net" not in (project / "settings.toml").read_text(encoding="utf-8")
+
+
+class TestAnInvalidGeneratorConfig:
+    def test_it_raises_instead_of_exiting_the_interpreter(self, tmp_path: Path) -> None:
+        """Library code: sys.exit took the decision away from every caller."""
+        config_file = tmp_path / "generator-config.json"
+        config_file.write_text(json.dumps({"name": "Incomplete"}), encoding="utf-8")
+        generator = AgentGenerator(str(config_file), str(tmp_path / "out"))
+
+        with pytest.raises(ValueError, match="is not valid"):
+            generator.load_config()

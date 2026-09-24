@@ -217,17 +217,15 @@ def _idempotency_notice(project_dir: Path) -> str | None:
 # missing is the honest shape.
 # ----------------------------------------------------------------------------------------------
 
-NO_AGENT_MAP_WARNING = "\n".join(
+NO_AGENT_MAP_NOTICE = "\n".join(
     [
-        "No agents.toml, so this project cannot be hosted by 'python -m blueprint.agents.entrypoint'.",
-        "    That is not a fault in a project deployed on its own, which is served by its own",
-        "    src/main.py as it always was. To make it hostable, three changes and nothing else:",
-        "      - src/main.py: 'agent = AppBuilder()...' -- drop the config argument and the",
-        "        trailing .build(), so the file declares rather than builds;",
-        "      - Dockerfile: the command becomes 'python -m blueprint.agents.entrypoint';",
-        "      - agents.toml: one [agents.<name>] entry pointing at 'src.main:agent'.",
-        "    The name chosen there becomes the queue group, part of the durable name and the",
-        "    /api/<name> prefix, so it is a consumer migration to change after the first deploy.",
+        "No agents.toml here, which is right for an agent: the map says which agents an *image*",
+        "    contains, so it belongs to the image that hosts this agent, never to the agent itself.",
+        "    Served on its own, the agent needs none. To host it in a group, add one entry to the",
+        "    image's agents.toml ([agents.<name>] with root and module) and check the image with",
+        "    'asbs validate --group' -- see 'asbs docs guides/multi-agent-migration'. The name chosen",
+        "    there becomes the queue group, part of the durable name and the /api/<name> prefix, so",
+        "    it is a consumer migration to change after the first deploy.",
     ]
 )
 
@@ -247,7 +245,7 @@ def _group_findings(project_dir: Path) -> tuple[list[str], list[str], list[str]]
 
     agent_map_file = project_dir / AGENT_MAP_FILE
     if not agent_map_file.is_file():
-        warnings.append(NO_AGENT_MAP_WARNING)
+        notices.append(NO_AGENT_MAP_NOTICE)
         agents: dict[str, str] = {}
     else:
         agents, map_issues = _read_agent_map(agent_map_file)
