@@ -22,7 +22,7 @@ from nats.js.errors import APIError, NotFoundError
 from opentelemetry.metrics import Counter
 
 from ...component.namespace import ROOT_LABEL, ROOT_NAMESPACE
-from ...deployment import deployment_group, pod_identity
+from ...deployment import UNGROUPED_LABEL, UNKNOWN_POD_LABEL, deployment_group, pod_identity
 from ...io.telemetry.providers import agent_meter
 from ...models.api import ComponentHealth
 from ...models.errors import DeliveryDisposition, disposition_for
@@ -599,13 +599,22 @@ class NATSClient(IOClientBase):
         absent, so the name cannot degenerate into ``"..pod-7"`` and "no group" stays
         distinguishable from "a group whose name is empty".
 
+        **A standalone agent is named after its pod alone** -- no namespace and no group set.
+        Neither exists for it, and a name reading ``<root>.<ungrouped>.pod`` would imply a
+        grouping that is not there. If the pod cannot be told either, no name is sent at all,
+        as before the namespace feature, rather than a name made only of a placeholder. The
+        root of a *grouped* process keeps the full form: its group exists.
+
         **This value must never reach the queue group or the durable name.** It contains
         the pod, so a consumer identity derived from it would change on every restart and
         on every regrouping, which is precisely what C1 forbids. It is deliberately not
         stored anywhere those two are resolved from.
         """
-        namespace = self.namespace or ROOT_LABEL
-        return f"{namespace}.{deployment_group()}.{pod_identity()}"
+        group = deployment_group()
+        pod = pod_identity()
+        if not self.namespace and group == UNGROUPED_LABEL:
+            return "" if pod == UNKNOWN_POD_LABEL else pod
+        return f"{self.namespace or ROOT_LABEL}.{group}.{pod}"
 
     # ------------------------------------------------------------------
     # Connection
@@ -768,7 +777,7 @@ class NATSClient(IOClientBase):
         try:
             self._nats_client = await nats.connect(
                 self._nats_url,
-                name=self._connection_name,
+                name=self._connection_name or None,
                 max_reconnect_attempts=self.config.get("nats_max_reconnect_attempts", 5),
                 reconnect_time_wait=self.config.get("nats_reconnect_time_wait", 2),
                 connect_timeout=10,

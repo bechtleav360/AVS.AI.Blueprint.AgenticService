@@ -62,13 +62,19 @@ change which broker-side consumer it is.
 
 | Variable | Default | Description |
 |-----|---------|-------------|
-| `BLUEPRINT_GROUP` | `<ungrouped>` in the connection name | Deployment group this process was started as. Appears in the middle position of the NATS connection name. |
+| `BLUEPRINT_GROUP` | `<ungrouped>` in the connection name | Deployment group this process was started as. Appears in the middle position of the NATS connection name, which is `<agent>.<group>.<pod>`. A standalone agent -- no namespace, no group -- is named after its pod alone, and sends no name if the pod cannot be determined. |
 | `POD_NAME` | -- | Replica identity, preferred over `HOSTNAME` because a deployment can set it explicitly through the Kubernetes downward API. Appears in the last position of the connection name. |
 | `HOSTNAME` | the host name, else `<unknown-pod>` | Used when `POD_NAME` is unset; the kubelet sets it to the pod name. |
 
 Every NATS connection is named `<namespace>.<group>.<pod>`, which is what makes a pod's
-contents legible in the broker's `/connz` output. The namespace segment is `<root>` for an
-application that never names one -- that is, for every single-agent application.
+contents legible in the broker's `/connz` output. A single-agent application -- no namespace and no
+group -- is named after its pod alone, and sends no name if the pod cannot be determined; the root
+of a grouped process is `<root>.<group>.<pod>`.
+
+These variables are read by the framework, not through `Config`. An agent in a group cannot read
+`blueprint_group`, `pod_name` or `hostname` through its configuration -- `get()` raises -- so that no
+agent can be written to depend on where it runs. A single-agent application's configuration reads
+them like any other key.
 
 An absent value becomes a bracketed placeholder rather than an empty segment, so a name never
 degenerates into `..pod-7`. The brackets are not decoration: they are excluded from the namespace

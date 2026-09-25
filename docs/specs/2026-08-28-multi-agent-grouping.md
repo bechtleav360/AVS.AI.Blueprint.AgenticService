@@ -432,6 +432,11 @@ deployment may have no access to. The cost argument above justifies a connection
 that uses one*; it does not justify one per namespace that does not.
 
 Connection name **MUST** be `f"{namespace}.{group}.{pod}"`, and **MUST NOT** feed C1 naming.
+**Exception -- a standalone agent** (namespace `""` and no `BLUEPRINT_GROUP`): the name **MUST** be
+the pod alone, and **MUST** be omitted when the pod cannot be determined. Neither a namespace nor a
+group exists for it, and `<root>.<ungrouped>.<pod>` would imply a grouping that is not there; an
+omitted name is what a standalone agent sent before this feature. The root of a *grouped* process
+keeps the full form.
 An absent segment **MUST** be filled with a placeholder rather than left empty -- `<root>` for the
 root namespace, `<ungrouped>` for an unset `BLUEPRINT_GROUP`, `<unknown-pod>` when the replica
 cannot be identified -- so all three positions always carry a value, a name never degenerates into

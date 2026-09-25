@@ -1689,28 +1689,34 @@ class TestNATSClientConnectionName:
         monkeypatch.setenv("POD_NAME", "pod-1")
         assert nats_client._resolve_connection_name() == "<root>.billing.pod-1"
 
-    def test_unset_group_is_named_rather_than_left_blank(self, nats_client: NATSClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_a_standalone_agent_is_named_after_its_pod_alone(self, nats_client: NATSClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        """No namespace and no group exist for it, so the name implies neither."""
         monkeypatch.delenv("BLUEPRINT_GROUP", raising=False)
         monkeypatch.setenv("POD_NAME", "pod-1")
-        assert nats_client._resolve_connection_name() == "<root>.<ungrouped>.pod-1"
+        assert nats_client._resolve_connection_name() == "pod-1"
 
     def test_pod_name_wins_over_hostname(self, nats_client: NATSClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("BLUEPRINT_GROUP", raising=False)
         monkeypatch.setenv("POD_NAME", "from-downward-api")
         monkeypatch.setenv("HOSTNAME", "from-kubelet")
-        assert nats_client._resolve_connection_name().endswith(".from-downward-api")
+        assert nats_client._resolve_connection_name() == "from-downward-api"
 
     def test_hostname_is_used_when_pod_name_is_absent(self, nats_client: NATSClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("BLUEPRINT_GROUP", raising=False)
         monkeypatch.delenv("POD_NAME", raising=False)
         monkeypatch.setenv("HOSTNAME", "from-kubelet")
-        assert nats_client._resolve_connection_name().endswith(".from-kubelet")
+        assert nats_client._resolve_connection_name() == "from-kubelet"
 
     def test_falls_back_to_the_host_name(self, nats_client: NATSClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("BLUEPRINT_GROUP", raising=False)
         monkeypatch.delenv("POD_NAME", raising=False)
         monkeypatch.delenv("HOSTNAME", raising=False)
         monkeypatch.setattr("blueprint.agents.deployment.socket.gethostname", lambda: "laptop")
-        assert nats_client._resolve_connection_name().endswith(".laptop")
+        assert nats_client._resolve_connection_name() == "laptop"
 
-    def test_unresolvable_host_still_yields_a_name(self, nats_client: NATSClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_an_unresolvable_host_sends_no_name_when_standalone(self, nats_client: NATSClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Not a name made only of a placeholder: nothing, as before the namespace feature."""
+        monkeypatch.delenv("BLUEPRINT_GROUP", raising=False)
         monkeypatch.delenv("POD_NAME", raising=False)
         monkeypatch.delenv("HOSTNAME", raising=False)
 
@@ -1718,7 +1724,33 @@ class TestNATSClientConnectionName:
             raise OSError("no host name")
 
         monkeypatch.setattr("blueprint.agents.deployment.socket.gethostname", _raise)
-        assert nats_client._resolve_connection_name().endswith(".<unknown-pod>")
+        assert nats_client._resolve_connection_name() == ""
+
+    async def test_no_name_reaches_nats_then(self, nats_client: NATSClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("BLUEPRINT_GROUP", raising=False)
+        monkeypatch.delenv("POD_NAME", raising=False)
+        monkeypatch.delenv("HOSTNAME", raising=False)
+
+        def _raise() -> str:
+            raise OSError("no host name")
+
+        monkeypatch.setattr("blueprint.agents.deployment.socket.gethostname", _raise)
+        with patch("blueprint.agents.clients.io.nats_client.nats.connect", new_callable=AsyncMock) as mock_connect:
+            mock_connect.return_value = MagicMock(is_closed=False, is_connected=True)
+            await nats_client.connect()
+        assert mock_connect.call_args[1]["name"] is None
+
+    def test_an_agent_with_a_namespace_keeps_every_position(self, mock_config: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The spec's form, placeholders included, wherever a namespace or a group exists."""
+        monkeypatch.delenv("BLUEPRINT_GROUP", raising=False)
+        monkeypatch.delenv("POD_NAME", raising=False)
+        monkeypatch.delenv("HOSTNAME", raising=False)
+
+        def _raise() -> str:
+            raise OSError("no host name")
+
+        monkeypatch.setattr("blueprint.agents.deployment.socket.gethostname", _raise)
+        assert _namespaced_client(mock_config, "orders")._resolve_connection_name() == "orders.<ungrouped>.<unknown-pod>"
 
     def test_a_dotted_group_cannot_add_a_segment(self, nats_client: NATSClient, monkeypatch: pytest.MonkeyPatch) -> None:
         """Four segments would misattribute the connection; the name is three by construction."""
@@ -1734,10 +1766,10 @@ class TestNATSClientConnectionName:
         monkeypatch.setenv("POD_NAME", "pod-1")
         assert nats_client._resolve_connection_name() == "<root>._ungrouped_.pod-1"
 
-    def test_an_fqdn_hostname_stays_one_segment(self, nats_client: NATSClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_an_fqdn_hostname_stays_one_segment(self, mock_config: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("POD_NAME", raising=False)
         monkeypatch.setenv("HOSTNAME", "web-7.eu.internal")
-        name = nats_client._resolve_connection_name()
+        name = _namespaced_client(mock_config, "orders")._resolve_connection_name()
         assert name.endswith(".web-7_eu_internal")
         assert name.count(".") == 2
 

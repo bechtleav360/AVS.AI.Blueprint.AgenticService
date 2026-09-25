@@ -6,6 +6,10 @@
 - **A standalone agent's `Config` reads `hostname`, `pod_name` and `blueprint_group` again.** Since
   the 0.9 alphas, `get()` raised for these keys everywhere. The refusal exists so that an agent in a
   group cannot depend on where it runs; it now applies only to an agent's view in a group.
+- **A standalone agent's NATS connection is named after its pod alone.** It was named
+  `<root>.<ungrouped>.<pod>`, implying a namespace and a group that do not exist for it. Before the
+  namespace feature it sent no name; now it sends the pod (or host) name, and none if that cannot
+  be determined. Agents in a group keep `<agent>.<group>.<pod>`.
 - **A standalone agent logs what it logged before the namespace feature.** Log lines and error
   messages that existed in 0.8.1 had been reworded for groups, with `<root>` standing in for a
   standalone agent's empty namespace -- e.g. `Eventing component <root> startup completed`,
