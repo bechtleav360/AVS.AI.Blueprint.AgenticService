@@ -7807,6 +7807,13 @@ Guarded by `test_standalone_log_lines.py` (6 cases, including "building a standa
 health cache and actuator tests (10 cases); all 16 fail against the previous code. No existing test
 had pinned any of these lines, which is how they changed unnoticed.
 
+**Kept, decided with the user:** the error lines removed by "log each failure once" stay removed
+(each failure is logged once, at the transport edge), and so does the old "Failed to publish handler
+event" WARNING, which belonged to acknowledging an event whose result was lost. The rule behind it
+is now stated in `concepts/event-processing.md`: a delivery is acknowledged only when its work --
+the handler chain and publishing every result -- is complete; otherwise it is a nak or a dead
+letter. `CLAUDE.md` now states that the repository is written entirely in English.
+
 **The NATS connection name, decided with the user.** v0.8.1 sent none; the feature named every
 connection `f"{namespace}.{group}.{pod}"`, so a standalone agent appeared in `/connz` as
 `<root>.<ungrouped>.<pod>`. The user chose to keep a name -- more information is good -- but not to
@@ -7887,6 +7894,13 @@ this environment. `CHANGELOG.md` gains a Deprecated section and "Upgrading a sta
 stream, the Core NATS queue group). Two stale comments fixed on the way: `integration_config`'s
 "the framework default is 300" and `docker-compose.yml`'s "falls back to Core NATS".
 
+**The scheduler's startup line, decided with the user: keep it, and call the behaviour breaking.**
+The line changed with the behaviour (#73: a tick is claimed, one replica runs it), so the v0.8.1
+wording would now be wrong. But a deployment that expected every replica to run each tick in
+parallel sees that change, so `CHANGELOG.md` [0.9.0] Breaking gains item 13 for it -- and item 14
+for the same shift on Core NATS, where the new queue group means one replica per event instead of
+every replica.
+
 **`Config` behaviour, decided with the user.** `get("hostname" / "pod_name" / "blueprint_group")`
 raised `ValueError` on every configuration since the deployment-identity blocklist (C6). The user
 asked what those keys have to do with namespaces: nothing directly -- C6 keeps an agent from
@@ -7916,6 +7930,12 @@ agent alike, which the docs state. Found on the way: OpenTelemetry SDK 1.44 sets
 Tests: `TestTheDeploymentDeclaresTheResource` (4 cases; three fail against the previous code).
 (2) The global `MeterProvider` stays; its side effect -- a project's own `metrics.get_meter()`
 metrics are now exported -- is breaking change 17 in `CHANGELOG.md` [0.9.0].
+
+**A breaking note that did not hold for standalone agents.** `CHANGELOG.md` [0.9.0] breaking change 6
+("Cache keys moved ... sees its old entries as absent") was written as if it applied to every
+application. The audit found a standalone agent's default cache unchanged -- same directory, Redis
+prefix and key hash. The item now says it applies to named caches and to agents in a group, and
+that a standalone agent's default cache keeps its entries.
 
 **Not restored -- listed for the user, not worked around:** the Dapr degraded reason, the
 behaviour changes of the transport fixes, `Config` behaviour changes, the scheduler line, and the

@@ -5,6 +5,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 See `AGENTS.md` for the architecture, the component patterns, the testing conventions and the **design rules** --
 each with the failure it prevents -- shared across all AI assistants and every human working here.
 
+## Language
+
+This repository is written entirely in English: code, identifiers, comments, docstrings, log and error messages,
+documentation, specs, plans, changelogs, commit messages and pull-request descriptions.
+
 ## Dev Commands
 
 ```bash

@@ -405,12 +405,14 @@ Full migration path, including the one decision to get right before the first de
    Service"` and no `foo.otel_service_name` sees `service.name` change from `Foo Service` to `foo`.
    Migration is one line: set `<scope>.otel_service_name` to whatever the dashboards key on. A
    project that passes no `agent_scope` is unaffected.
-6. **Cache keys moved, twice.** A cache is now private to the agent that declared it, keyed on
-   `(namespace, name)` with its own subdirectory and Redis prefix. An application upgrading with a
-   persistent Redis cache or a mounted disk cache sees its old entries as **absent** — a cold cache,
-   not an error. A group still needs exactly one writable mount, since an agent's store is a
-   subdirectory of `cache.cache_dir`. If any cache entry is load-bearing rather than an
-   optimisation, migrate it deliberately.
+6. **Cache keys moved, twice -- for named caches and for agents in a group.** A cache is now
+   private to the agent that declared it, keyed on `(namespace, name)` with its own subdirectory
+   and Redis prefix. Such a cache upgrading with persistent Redis or a mounted disk cache sees its
+   old entries as **absent** — a cold cache, not an error. **A standalone agent's default cache is
+   unaffected:** its directory, Redis prefix and keys are unchanged, so it keeps its entries. A
+   group still needs exactly one writable mount, since an agent's store is a subdirectory of
+   `cache.cache_dir`. If any cache entry is load-bearing rather than an optimisation, migrate it
+   deliberately.
 7. **Four declaration surfaces are deleted**: `AgentRegistration`, `RegisteredComponent`,
    `NamespaceBuilder`, and `AppBuilder.with_namespace` / `with_registration`. `AppBuilder` is the one
    declaration surface; `AgentGroup` collects named declarations into a process. Passing an
@@ -443,6 +445,16 @@ Full migration path, including the one decision to get right before the first de
     `Component.reset_shared_state()`** in its fixtures; this also clears `shared_registry`, which
     stays public and is otherwise unaffected. A project that never resets shared state between
     builds is unaffected.
+13. **A scheduler tick runs in one replica, not in every one.** Before, every replica -- and every
+    worker -- ran its own timer and each ran every tick. Now `scheduler_mode = "event"` delivers the
+    tick through the queue group to one replica, and `"in_process"` claims each tick in the cache so
+    one replica runs it. A deployment that relied on every replica running a tick in parallel -- a
+    per-pod cleanup, say -- now runs it once per tick; register the cache per pod, or do the per-pod
+    work outside the scheduler. Without a registered cache, `"in_process"` still runs every tick in
+    every replica, and says so with a WARNING at startup where it used to log an INFO.
+14. **A Core NATS event reaches one replica, not every one.** Subscriptions now join a queue group
+    (`nats_queue_group`, else `app_name`); before, every replica received and processed every event.
+    A deployment that relied on each replica seeing each event now sees each event once.
 15. **`Config()` no longer configures logging.** Constructing a `Config` used to set up the root
     logger; library code must not, so `AppBuilder` does it now. A script or test that builds only a
     `Config` and relied on its logging setup has to configure logging itself.
