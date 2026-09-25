@@ -714,7 +714,10 @@ class AppBuilder:
             ValueError: if ``name`` cannot serve as a cache name.
         """
         if not enabled:
-            logger.info("Caching disabled; cache '%s' is not registered", name)
+            if name == DEFAULT_CACHE_NAME and not current_namespace():
+                logger.info("Caching disabled")
+            else:
+                logger.info("Caching disabled; cache '%s' is not registered", name)
             return self
 
         # Validated now, not at replay: the name becomes a directory segment and a Redis key
@@ -770,13 +773,21 @@ class AppBuilder:
         )
         registry: Registry = Component.shared_registry  # type: ignore[assignment]
         registry.add_cache(name, cache_service, namespace=namespace)
-        logger.info(
-            "Registered cache '%s' for agent '%s' as %s (locking=%s)",
-            name,
-            namespace or ROOT_LABEL,
-            type(cache_service).__name__,
-            enable_locking,
-        )
+        if name == DEFAULT_CACHE_NAME and not namespace:
+            logger.info(
+                "Registered %s with cache_dir=%s (locking=%s)",
+                type(cache_service).__name__,
+                config.get_cache_config().cache_dir,
+                enable_locking,
+            )
+        else:
+            logger.info(
+                "Registered cache '%s' for agent '%s' as %s (locking=%s)",
+                name,
+                namespace or ROOT_LABEL,
+                type(cache_service).__name__,
+                enable_locking,
+            )
 
     def with_health_checker(self, name: str, checker: "HealthCheckerBase") -> "AppBuilder":
         """Declare a custom health checker for the readiness probe.
@@ -1104,6 +1115,11 @@ class AppBuilder:
             # lifespan hook still drives on_startup / on_shutdown without polluting the
             # router-mount path.
             self._lifecycle_components.append(SessionsBus(namespace=namespace))
+        elif not namespace:
+            logger.warning(
+                "Event handlers are registered but no valid event_bus configured "
+                "('dapr', 'nats', or 'sessions'). Event handling will be disabled."
+            )
         else:
             logger.warning(
                 "Namespace '%s' has event handlers registered but no valid event_bus is configured "
@@ -1295,7 +1311,7 @@ class AppBuilder:
         except Exception as exc:
             namespace = namespace_of(component)
             if not namespace or namespace in self._critical_namespaces:
-                logger.error("%s %s startup failed: %s", kind, label, exc, exc_info=True)
+                logger.error("%s startup failed: %s", f"{kind} {label}" if label else kind, exc, exc_info=True)
                 raise
             logger.error(
                 "%s %s startup failed and agent '%s' is not critical, so the process starts without it: %s",
@@ -1308,7 +1324,7 @@ class AppBuilder:
             self._failed_startups.setdefault(namespace, []).append((kind, component, label))
             await self._mark_agent_down(namespace, f"its {kind.lower()} '{label}' failed to start: {exc}")
             return
-        logger.info("%s %s startup completed", kind, label)
+        logger.info("%s startup completed", f"{kind} {label}" if label else kind)
 
     async def _on_transport_fatal(self, namespace: str, error: BaseException) -> None:
         """Act on a transport that found, after startup, that its agent cannot run at all.
@@ -1559,7 +1575,8 @@ class AppBuilder:
 
             # Eventing components (one Dapr / NATS endpoint per agent that consumes)
             for eventing_component in self._eventing_components:
-                await self._start_component("Eventing component", eventing_component, eventing_component.namespace or ROOT_LABEL)
+                # The root's endpoint is unlabelled, so a standalone agent logs what it always has.
+                await self._start_component("Eventing component", eventing_component, eventing_component.namespace)
 
             # Routerless lifecycle components (e.g. SessionsBus).
             for lifecycle_component in self._lifecycle_components:
@@ -1590,12 +1607,15 @@ class AppBuilder:
                 try:
                     await eventing_component.on_shutdown()
                 except Exception as e:
-                    logger.error(
-                        "Eventing component for namespace '%s' shutdown failed: %s",
-                        eventing_component.namespace or ROOT_LABEL,
-                        e,
-                        exc_info=True,
-                    )
+                    if not eventing_component.namespace:
+                        logger.error("Eventing component shutdown failed: %s", e, exc_info=True)
+                    else:
+                        logger.error(
+                            "Eventing component for namespace '%s' shutdown failed: %s",
+                            eventing_component.namespace,
+                            e,
+                            exc_info=True,
+                        )
 
             for scheduler in registry.get_schedulers():
                 try:

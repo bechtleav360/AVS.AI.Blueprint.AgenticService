@@ -209,13 +209,17 @@ class ActuatorApi(RestApiBase):
                 # The agents, not only the components: in a group the first question asked of a
                 # failing probe is whose failure took the pod out, and the payload's per-agent
                 # section is the only thing that answers it under a policy other than 'all'.
-                degraded = [name for name, agent in response.namespaces.items() if agent.status != "UP"]
-                logger.warning(
-                    "Readiness probe failed under policy '%s'; degraded agent(s): %s; components: %s",
-                    response.policy,
-                    ", ".join(degraded) or "none reported",
-                    response.components,
-                )
+                if not any(self._namespaces):
+                    # A standalone agent: no policy and no agents to name, so the line it always logged.
+                    logger.warning("Readiness probe failed: %s", response.components)
+                else:
+                    degraded = [name for name, agent in (response.namespaces or {}).items() if agent.status != "UP"]
+                    logger.warning(
+                        "Readiness probe failed under policy '%s'; degraded agent(s): %s; components: %s",
+                        response.policy,
+                        ", ".join(degraded) or "none reported",
+                        response.components,
+                    )
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail=response.model_dump(),

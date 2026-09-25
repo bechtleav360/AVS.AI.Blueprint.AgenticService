@@ -314,3 +314,19 @@ class TestALatchedAgent:
         cache, supervisor = await self._run(ReadinessPolicy.ALL, set(), [])
         assert (await cache.get_health_status()).namespaces["billing"].status == "DOWN"
         supervisor.observe.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# A standalone agent logs what v0.8.1 logged
+# ---------------------------------------------------------------------------
+
+
+class TestStandaloneLogLines:
+    async def test_a_failing_check(self, caplog: pytest.LogCaptureFixture) -> None:
+        checker = MagicMock()
+        checker.health_check = AsyncMock(side_effect=RuntimeError("boom"))
+        cache = HealthCheckCache()
+        cache.set_health_entries([HealthCheckEntry(name="db", namespace="", checker=checker)])
+        with caplog.at_level("WARNING", logger="blueprint.agents.io.api.actuators.health.health_cache"):
+            await cache._run_health_checks()
+        assert caplog.messages == ["Health check failed for db: boom"]

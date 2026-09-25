@@ -161,12 +161,10 @@ class HealthCheckCache:
                     if isinstance(result, BaseException):
                         # The agent is named separately from the entry key, because that is the
                         # question asked of a group: whose check is failing, not only which one.
-                        logger.warning(
-                            "Health check '%s' of agent '%s' failed: %s",
-                            entry.name,
-                            entry.agent,
-                            result,
-                        )
+                        if entry.namespace:
+                            logger.warning("Health check '%s' of agent '%s' failed: %s", entry.name, entry.namespace, result)
+                        else:
+                            logger.warning("Health check failed for %s: %s", entry.key, result)
                         components[entry.key] = ComponentHealth(
                             status="unhealthy",
                             message=f"Check failed: {result}",

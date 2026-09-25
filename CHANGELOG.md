@@ -3,6 +3,13 @@
 
 ### Fixed
 
+- **A standalone agent logs what it logged before the namespace feature.** Log lines and error
+  messages that existed in 0.8.1 had been reworded for groups, with `<root>` standing in for a
+  standalone agent's empty namespace -- e.g. `Eventing component <root> startup completed`,
+  `No handler in namespace '<root>' processed event`, the NATS connect and subscribe lines, the
+  cache registration lines, `Health check failed for …`, `Readiness probe failed: …`, the
+  configuration and OpenTelemetry lines, and the registry's "no cache" and "already exists"
+  errors. A standalone agent emits the 0.8.1 wording again; a grouped process keeps the new one.
 - **A handler failure is logged once.** The handler chain and `EventProcessingService` each logged
   it at ERROR before re-raising, and the transport edge logged it again with its disposition --
   up to three copies per failure. Only the edge logs it now. `DaprClient.publish`, `NATSClient.connect`
