@@ -272,8 +272,8 @@ spec:
 ```
 
 `POD_NAME` is worth injecting: the framework reads it for the telemetry `service.instance.id` and
-for the NATS connection name (`<agent>.<group>.<pod>`), which is what makes "which replica did
-that" answerable from the broker's own connection list.
+for the NATS connection name (`<agent>.<group>.<pod>`; a standalone agent's is the pod alone), which
+is what makes "which replica did that" answerable from the broker's own connection list.
 
 ### The group file as a ConfigMap
 

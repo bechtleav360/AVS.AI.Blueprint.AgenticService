@@ -7807,6 +7807,17 @@ Guarded by `test_standalone_log_lines.py` (6 cases, including "building a standa
 health cache and actuator tests (10 cases); all 16 fail against the previous code. No existing test
 had pinned any of these lines, which is how they changed unnoticed.
 
+**The NATS connection name, decided with the user.** v0.8.1 sent none; the feature named every
+connection `f"{namespace}.{group}.{pod}"`, so a standalone agent appeared in `/connz` as
+`<root>.<ungrouped>.<pod>`. The user chose to keep a name -- more information is good -- but not to
+imply a group where none exists. `NATSClient._resolve_connection_name` now returns the pod alone
+when the namespace is `""` and `BLUEPRINT_GROUP` is unset, and `""` when the pod is unknown too;
+`connect()` passes `name=self._connection_name or None`, so the latter sends no name, as v0.8.1 did.
+The root of a grouped process keeps the full form, since its group exists. Spec sec. 6 is amended
+with the exception; `reference/configuration-keys.md` and `guides/deployment.md` say so. The
+connection-name tests were rewritten for the standalone case and one added for the namespaced form
+with placeholders.
+
 **`Config` behaviour, decided with the user.** `get("hostname" / "pod_name" / "blueprint_group")`
 raised `ValueError` on every configuration since the deployment-identity blocklist (C6). The user
 asked what those keys have to do with namespaces: nothing directly -- C6 keeps an agent from
