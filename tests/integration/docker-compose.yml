@@ -19,8 +19,8 @@ services:
     image: nats:2.10-alpine
     container_name: blueprint-test-nats
     # --jetstream is what the framework needs for durables, dead letters and max_deliver;
-    # without it every subscription silently falls back to Core NATS and the acknowledgement
-    # tests assert nothing. --http_port exposes /healthz and /connz, which is also where the
+    # without it an agent with nats_use_jetstream = true fails to start (there is no fallback
+    # to Core NATS). --http_port exposes /healthz and /connz, which is also where the
     # connection names the client sets (namespace.group.pod) can be read back.
     command: ["--jetstream", "--store_dir=/tmp/nats", "--http_port=8222"]
     ports:

@@ -207,6 +207,13 @@
   unreachable at startup) by shutting the process down for the root or a critical agent and marking
   a non-critical one down. The previous fallback rarely triggered, and when it did it dropped
   durable consumers and acknowledgements without anyone deciding it.
+- **JetStream consumer settings are opt-in again.** The framework set `ack_wait` 300 s,
+  `max_ack_pending` 16 and `max_deliver` 5 on every consumer it created, overriding the server's
+  defaults for deployments that had configured nothing. `nats_ack_wait`, `nats_max_ack_pending` and
+  `nats_max_deliver` are now applied only when set; unset, the server's default stands (NATS: 30 s,
+  1000, unlimited). With `nats_max_deliver` unset, a message that keeps failing is retried without
+  limit and never dead-lettered, as before 0.9.0 -- set it to bound retries. Consumers that already
+  exist keep their settings, and an unset key is not reported as a difference.
 - **`ClientBase.subscribe()` callbacks take the delivery subject.** The contract is now
   `DeliveryCallback = Callable[[CloudEvent, str], Awaitable[None]]` (in `clients/client_base.py`):
   the event, then the subject it arrived on. Only code that calls `NATSClient.subscribe()` directly,
@@ -287,6 +294,32 @@
 
 ### Added
 - **`AppBuilder.build()` now sources `docs_url`/`redoc_url`/`openapi_url` from config** (#191, defaults unchanged: `/docs`, `/redoc`, `/openapi.json`). Previously these were hardcoded at `FastAPI()` construction, so a consumer could not disable the built-in `/docs` route without mutating `app.router.routes` after the fact — fragile because it depends on FastAPI's internal route-registration shape (bechtleav360/avs.ai.idac.service-sessions#191). Set `docs_url = "@none"` (Dynaconf's `None` cast) in `settings.toml` to opt out before the route is ever registered. Set at the root of `settings.toml`, not under an `agent_scope` block (`Config._scoped_get()` falls back to the root value when a scoped lookup is `None`). Note FastAPI only registers `docs_url`/`redoc_url` when `openapi_url` is also set, so disabling `openapi_url` disables all three.
+
+### Deprecated
+
+- **JetStream consumers created before 0.9.** 0.8 left each durable delivering to a random inbox
+  with no deliver group, so only one replica can consume from it. Such a consumer is still found
+  under its name and used exactly as it is -- it is never recreated, which would replay or gap --
+  but it is logged at startup as `DEPRECATED` and will not be supported in a future release.
+  Delete it during a maintenance window; the framework then recreates it so that every replica
+  shares it.
+
+### Upgrading a standalone agent from 0.8
+
+What the broker sees change when an agent that ran on 0.8 starts on this version, with
+`nats_use_jetstream = true`:
+
+- **Existing durables are reused**, found under the same name for a topic without `.`, `*`, `>` or
+  whitespace (`orders` -> `orders-durable`), and announced as deprecated (above). For a topic with a
+  dot the name is now `orders_created-durable`; 0.8's `orders.created-durable` is a name the broker
+  refuses, so no such consumer can exist to be orphaned.
+- **`nats_durable_name` with several topics fails startup.** 0.8 gave all of them one consumer, of
+  which only the first topic's subscription worked.
+- **The stream is widened, never narrowed.** 0.8 created it over `<first topic>.>` and never touched
+  it again; this version adds every subscribed topic, the dead-letter subject and, when publishing
+  through JetStream, the publish subjects.
+- **Core NATS subscriptions join a queue group** (`nats_queue_group`, else `app_name`), so each
+  message reaches one replica instead of every one.
 
 ## [0.9.0] - 2026-09-14
 

@@ -267,20 +267,28 @@ critical agent shuts the process down (SIGTERM to itself, so the other agents st
 non-critical agent is marked down until the pod restarts. A timeout on that request is not treated
 as an answer; it is retried like any other connection failure.
 
+**A delivery is acknowledged only when its work is complete.** Complete means the handler chain
+returned *and* every result it returned was published. Anything short of that is never an `ack`:
+it is a `nak`, so the event is delivered again, or a dead letter when retrying cannot help. An
+`ack` for work that did not finish would tell the broker the event is done while its outcome is
+lost -- nothing redelivers it and nothing records it.
+
 | Outcome | Disposition |
 |---------|-------------|
-| The handler chain returned, including "no handler matched" | `ack` |
+| The handler chain returned and every result was published, including "no handler matched" | `ack` |
+| A result could not be published | `nak` -- the handler runs again on redelivery; with deduplication on, its marker is released first |
 | `RetryableHandlerError`, or any unexpected exception | `nak` -- redelivered after `nats_ack_wait` |
 | `InvalidEventError` or `CriticalHandlerError` | dead-lettered, then `term` |
 | The payload is not a parseable CloudEvent | dead-lettered, then `term` |
-| The last delivery `nats_max_deliver` allows failed again | dead-lettered, then `term` |
+| The last delivery `nats_max_deliver` allows failed again (only when `nats_max_deliver` is set) | dead-lettered, then `term` |
 
 Dead-lettering republishes the **original bytes**, unchanged, to `nats_dead_letter_subject`, with
 the reason, the original subject, the delivery count and the event id in headers. The subject is
 added to the stream when the framework provisions it, so dead letters are persisted rather than
 dropped on the floor, and consuming them is an ordinary subscription.
 
-Two settings interact and are worth choosing together:
+Two settings interact and are worth choosing together. The framework sets neither on its own --
+unset, each is the server's default:
 
 - **`nats_ack_wait` must exceed your slowest handler.** It is the broker's patience, not the
   client's: when it expires the message is redelivered to another replica while the first one is

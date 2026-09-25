@@ -94,9 +94,11 @@ class ConsumerTuning:
     happens.
     """
 
-    ack_wait: float
-    max_ack_pending: int
-    max_deliver: int
+    # None means "not configured": the setting is left out of the consumer, so the server's
+    # default applies -- as it did before the framework set any of them.
+    ack_wait: float | None
+    max_ack_pending: int | None
+    max_deliver: int | None
     dead_letter_subject: str
 
 
@@ -167,12 +169,12 @@ class NATSClient(IOClientBase):
     ``event_client_retry_delay`` (float, default 5.0): seconds between retries.
     ``event_client_drain_timeout`` (float, default 30.0): seconds allowed for in-flight
     handlers to finish during shutdown.
-    ``nats_ack_wait`` (float, default 300.0): seconds the broker waits for an
+    ``nats_ack_wait`` (float, unset = server default): seconds the broker waits for an
     acknowledgement before redelivering. Must exceed p99 handler duration.
-    ``nats_max_ack_pending`` (int, default 16): unacknowledged messages allowed at once
-    across every replica sharing the consumer; ``-1`` = unlimited.
-    ``nats_max_deliver`` (int, default 5): delivery attempts before a message is
-    dead-lettered; ``-1`` = unlimited, which disables dead-lettering on exhaustion.
+    ``nats_max_ack_pending`` (int, unset = server default): unacknowledged messages allowed
+    at once across every replica sharing the consumer; ``-1`` = unlimited.
+    ``nats_max_deliver`` (int, unset = server default, unlimited): delivery attempts before a
+    message is dead-lettered; unlimited disables dead-lettering on exhaustion.
     ``nats_dead_letter_subject`` (str, default ``"<queue group>.dead-letter"``): where a
     message goes when the framework gives up on it; ``""`` disables it and loses the payload.
     """
@@ -426,20 +428,25 @@ class NATSClient(IOClientBase):
         must fail the caller's startup rather than disappear into the background retry
         task, which would retry a config error forever.
 
+        **Each setting is opt-in.** An unset key is left out of the consumer and the server's
+        default applies (NATS: ``ack_wait`` 30 s, ``max_ack_pending`` 1000, ``max_deliver``
+        unlimited). The framework used to set 300 s / 16 / 5 on every consumer it created,
+        which changed the server's behaviour for deployments that had configured nothing.
+
         Raises:
-            ValueError: if a value is not a number, is zero, or is a negative value other
-                than ``-1``.
+            ValueError: if a configured value is not a number, is zero, or is a negative value
+                other than ``-1``.
         """
-        ack_wait = self._read_float("nats_ack_wait", 300.0)
-        if ack_wait <= 0:
+        ack_wait = self._read_optional_float("nats_ack_wait")
+        if ack_wait is not None and ack_wait <= 0:
             raise ValueError(f"'nats_ack_wait' must be greater than 0, got {ack_wait}. It is the redelivery timeout, in seconds.")
 
-        max_ack_pending = self._read_int("nats_max_ack_pending", 16)
-        if max_ack_pending == 0 or max_ack_pending < -1:
+        max_ack_pending = self._read_optional_int("nats_max_ack_pending")
+        if max_ack_pending is not None and (max_ack_pending == 0 or max_ack_pending < -1):
             raise ValueError(f"'nats_max_ack_pending' must be a positive count or -1 for unlimited, got {max_ack_pending}.")
 
-        max_deliver = self._read_int("nats_max_deliver", 5)
-        if max_deliver == 0 or max_deliver < -1:
+        max_deliver = self._read_optional_int("nats_max_deliver")
+        if max_deliver is not None and (max_deliver == 0 or max_deliver < -1):
             raise ValueError(f"'nats_max_deliver' must be a positive count or -1 for unlimited, got {max_deliver}.")
         if max_deliver == -1:
             logger.warning(
@@ -575,6 +582,18 @@ class NATSClient(IOClientBase):
             return float(raw)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"Config key '{key}' must be a number, got {raw!r}.") from exc
+
+    def _read_optional_float(self, key: str) -> float | None:
+        """Read ``key`` as a number, or ``None`` when it is not configured."""
+        if self.config.get(key, None) is None:
+            return None
+        return self._read_float(key, 0.0)
+
+    def _read_optional_int(self, key: str) -> int | None:
+        """Read ``key`` as an integer, or ``None`` when it is not configured."""
+        if self.config.get(key, None) is None:
+            return None
+        return self._read_int(key, 0)
 
     def _read_int(self, key: str, default: int) -> int:
         raw = self.config.get(key, default)
@@ -1264,7 +1283,22 @@ class NATSClient(IOClientBase):
             )
             return desired
 
-        drift = self._consumer_drift(info.config, desired)
+        legacy = not info.config.deliver_group
+        if legacy:
+            # A consumer from before 0.9: created by js.subscribe with an inbox deliver subject and
+            # no deliver group. Still used exactly as it is -- recreating it would replay or gap --
+            # but only one replica can bind to it, so the form is on its way out.
+            logger.warning(
+                "DEPRECATED: JetStream consumer '%s' on stream '%s' was created without a deliver group, the form "
+                "used before 0.9 (it delivers to '%s'). It is still used as it is, but this form will not be supported "
+                "in a future release: only one replica can consume from it. Delete it during a maintenance window and "
+                "the framework recreates it so that every replica shares it.",
+                durable,
+                stream,
+                info.config.deliver_subject,
+            )
+        # The missing deliver group is what the deprecation already says; not repeated as drift.
+        drift = self._consumer_drift(info.config, desired, ignore=("deliver_group",) if legacy else ())
         if drift:
             logger.warning(
                 "JetStream consumer '%s' on stream '%s' already exists with different settings (%s). "
@@ -1277,12 +1311,16 @@ class NATSClient(IOClientBase):
         return info.config
 
     @staticmethod
-    def _consumer_drift(actual: js_api.ConsumerConfig, desired: js_api.ConsumerConfig) -> list[str]:
-        """Name the settings on which an existing consumer differs from the wanted one."""
+    def _consumer_drift(actual: js_api.ConsumerConfig, desired: js_api.ConsumerConfig, *, ignore: tuple[str, ...] = ()) -> list[str]:
+        """Name the settings on which an existing consumer differs from the wanted one.
+
+        A setting the configuration leaves unset asks for nothing, so it cannot differ: the
+        broker's value, default or not, is what the deployment chose by not choosing.
+        """
         return [
             f"{field}: broker has {getattr(actual, field)!r}, config asks for {getattr(desired, field)!r}"
             for field in ("filter_subject", "deliver_group", "ack_wait", "max_ack_pending", "max_deliver")
-            if getattr(actual, field) != getattr(desired, field)
+            if field not in ignore and getattr(desired, field) is not None and getattr(actual, field) != getattr(desired, field)
         ]
 
     # ------------------------------------------------------------------
@@ -1412,8 +1450,9 @@ class NATSClient(IOClientBase):
         and is never exhausted. A message whose JetStream metadata cannot be read is treated
         as not exhausted, so an unreadable header can only cost a retry, never a payload.
         """
-        max_deliver = self._tuning.max_deliver if self._tuning else -1
-        if max_deliver < 0:
+        # Not configured means the server's default, which is unlimited.
+        max_deliver = self._tuning.max_deliver if self._tuning else None
+        if max_deliver is None or max_deliver < 0:
             return False
         delivered = self._delivery_count(msg)
         return delivered is not None and delivered >= max_deliver
