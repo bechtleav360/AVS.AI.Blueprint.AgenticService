@@ -131,13 +131,22 @@ class TestDisabled:
         assert load(settings_file).get("model_name") == "bare"
 
     @pytest.mark.parametrize("key", sorted(DEPLOYMENT_IDENTITY_KEYS))
-    def test_deployment_identity_stays_unreadable(self, settings_file: Path, monkeypatch: pytest.MonkeyPatch, key: str) -> None:
-        """The whole process environment is now in the tree -- C6 is what keeps identity out of reach."""
+    def test_deployment_identity_stays_unreadable_for_an_agent(
+        self, settings_file: Path, monkeypatch: pytest.MonkeyPatch, key: str
+    ) -> None:
+        """The whole process environment is now in the tree -- C6 is what keeps identity out of an agent's reach."""
         monkeypatch.setenv(ENVVAR_PREFIX_OVERRIDE, "false")
         monkeypatch.setenv(key.upper(), "leaked")
         config = load(settings_file)
         with pytest.raises(ValueError, match="deployment identity"):
-            config.get(key)
+            config.for_namespace("orders").get(key)
+
+    @pytest.mark.parametrize("key", sorted(DEPLOYMENT_IDENTITY_KEYS))
+    def test_a_standalone_agent_reads_it(self, settings_file: Path, monkeypatch: pytest.MonkeyPatch, key: str) -> None:
+        """No group, nothing to keep out of reach: unprefixed means the whole environment."""
+        monkeypatch.setenv(ENVVAR_PREFIX_OVERRIDE, "false")
+        monkeypatch.setenv(key.upper(), "visible")
+        assert load(settings_file).get(key) == "visible"
 
 
 class TestRejections:

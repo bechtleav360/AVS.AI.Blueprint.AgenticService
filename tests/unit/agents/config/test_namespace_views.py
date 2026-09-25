@@ -98,22 +98,23 @@ class TestDeploymentIdentityIsNotConfiguration:
     """C6 -- agent code that can read its group can be written to depend on it."""
 
     @pytest.mark.parametrize("key", sorted(DEPLOYMENT_IDENTITY_KEYS))
-    def test_deployment_keys_are_refused(self, two_agent_config: Config, key: str) -> None:
+    def test_deployment_keys_are_refused_to_an_agent(self, two_agent_config: Config, key: str) -> None:
         with pytest.raises(ValueError, match="deployment identity"):
-            two_agent_config.get(key)
-
-    def test_the_refusal_holds_for_a_view(self, two_agent_config: Config) -> None:
-        with pytest.raises(ValueError, match="deployment identity"):
-            two_agent_config.for_namespace("orders").get("BLUEPRINT_GROUP")
+            two_agent_config.for_namespace("orders").get(key)
 
     def test_the_check_is_case_insensitive(self, two_agent_config: Config) -> None:
         with pytest.raises(ValueError, match="deployment identity"):
-            two_agent_config.get("Pod_Name")
+            two_agent_config.for_namespace("orders").get("Pod_Name")
 
     def test_it_raises_rather_than_answering_none(self, two_agent_config: Config) -> None:
         """None would read as 'not configured' and send the caller hunting for a missing key."""
         with pytest.raises(ValueError):
-            two_agent_config.get("hostname", "a-default")
+            two_agent_config.for_namespace("orders").get("hostname", "a-default")
+
+    @pytest.mark.parametrize("key", sorted(DEPLOYMENT_IDENTITY_KEYS))
+    def test_the_process_configuration_reads_them_as_before(self, two_agent_config: Config, key: str) -> None:
+        """A standalone agent's configuration -- and the framework's -- is not a view; nothing is refused."""
+        assert two_agent_config.get(key, "a-default") == "a-default"
 
     def test_an_ordinary_key_is_unaffected(self, two_agent_config: Config) -> None:
         assert two_agent_config.get("app_name") == "root-app"

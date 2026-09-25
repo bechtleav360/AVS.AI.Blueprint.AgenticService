@@ -7807,6 +7807,20 @@ Guarded by `test_standalone_log_lines.py` (6 cases, including "building a standa
 health cache and actuator tests (10 cases); all 16 fail against the previous code. No existing test
 had pinned any of these lines, which is how they changed unnoticed.
 
+**`Config` behaviour, decided with the user.** `get("hostname" / "pod_name" / "blueprint_group")`
+raised `ValueError` on every configuration since the deployment-identity blocklist (C6). The user
+asked what those keys have to do with namespaces: nothing directly -- C6 keeps an agent from
+knowing *where* it runs, and the pod keys were blocked alongside the group because the connection
+name uses them. For a standalone agent there is no group to keep out of reach, and with the default
+prefix the keys are ordinary settings anyway. `Config.get` now refuses them only on a view
+(`self._is_view`), which is what agent code in a group holds; the process's own configuration --
+a standalone agent's and the framework's -- reads them as in v0.8.1. Tests: the refusal cases now go
+through a view, plus a case that the process configuration reads all three and, with the prefix
+disabled, a standalone agent reading the environment value. `reference/configuration-keys.md`
+says so, and its connection-name paragraph, stale since the pod-only change, is corrected.
+The two other `Config` changes stay, as breaking changes 15 and 16 in `CHANGELOG.md` [0.9.0]:
+`Config()` no longer configures logging, and `Config.settings` is read-only.
+
 **Not restored -- listed for the user, not worked around:** the Dapr degraded reason, the
 behaviour changes of the transport fixes, `Config` behaviour changes, the scheduler line, and the
 new outputs (metrics, span and resource attributes, new log lines).
