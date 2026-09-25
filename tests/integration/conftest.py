@@ -220,7 +220,7 @@ def integration_config(
         f'nats_queue_group = "{subject_prefix}"\n'
         "nats_use_jetstream = true\n"
         # Well above any handler here, and short enough that a test asserting *no* redelivery can
-        # afford to wait the whole window out. The framework default is 300.
+        # afford to wait the whole window out. Unset, it would be the server's default (30 s).
         "nats_ack_wait = 2.0\n"
         "nats_max_deliver = 3\n"
         # The client retries the initial connect forever by default, which turns "the broker

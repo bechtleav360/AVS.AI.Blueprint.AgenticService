@@ -339,12 +339,15 @@ scaling out and regrouping are independent of each other.
 
 Two keys to set deliberately:
 
-- **`nats_ack_wait`** (default `300.0` seconds) must exceed your p99 handler duration. Set it below
-  that and the broker redelivers work that is still in progress, to a second replica.
-- **`nats_max_ack_pending`** (default `16`) is the in-flight limit **across every replica sharing
-  the consumer**, not per replica. Scaling to eight replicas with the default gives you sixteen
-  concurrent messages in total, which is usually the reason throughput does not improve with pod
-  count.
+Unset, each is the server's default: the framework sets no consumer setting on its own.
+
+- **`nats_ack_wait`** (server default: 30 s on NATS) must exceed your p99 handler duration. Set it
+  below that and the broker redelivers work that is still in progress, to a second replica.
+- **`nats_max_ack_pending`** is the in-flight limit **across every replica sharing the consumer**,
+  not per replica. Set it deliberately: it decides how many messages all replicas together work on
+  at once.
+- **`nats_max_deliver`** bounds retries. Unset it is unlimited, so a message that keeps failing is
+  retried forever and never dead-lettered.
 
 ### 3. Deduplication, if your handlers need it
 
@@ -357,10 +360,11 @@ Two honest answers, and the framework will not choose for you:
 - set `idempotency_enabled = true` and `idempotency_ttl`.
 
 **The TTL must outlast the broker's redelivery window**, which is
-`nats_ack_wait * nats_max_deliver`:
+`nats_ack_wait * nats_max_deliver` -- so dedup needs `nats_max_deliver` set, since unlimited
+retries have no window to outlast:
 
 ```
-300 s x 5 = 1500 s     # the defaults
+300 s x 5 = 1500 s     # nats_ack_wait = 300, nats_max_deliver = 5
 idempotency_ttl = 1800 # with headroom for clock skew and a slow restart
 ```
 
@@ -369,9 +373,8 @@ prevent. Too long only costs cache entries. If you raise `nats_ack_wait` or `nat
 raise this with them.
 
 Two limits to know: dedup needs the agent to declare `with_cache()` -- the marker lives in that
-agent's own cache -- and `exists`-then-`set` is not atomic on either backend, so two replicas handed
-the same event in the same instant can both dispatch. It closes the ordinary window, not every
-window.
+agent's own cache -- and the claim is atomic only across replicas that share that cache (Redis, or
+a disk cache on a shared volume); a per-pod cache deduplicates within one pod.
 
 **Grouped Dapr is the exception that wants dedup on.** A group has one Dapr endpoint: it publishes
 the union of every agent's topics and fans each delivery out to the agents that declared it, and the
@@ -417,8 +420,8 @@ spec:
 
 CPU is a poor signal for an event-driven agent that spends its time waiting on an LLM. Consumer lag
 or in-flight count is the metric you actually want to scale on, and reaching it needs a metrics
-adapter. Raise `nats_max_ack_pending` before adding replicas: with the default, more pods share the
-same sixteen in-flight messages.
+adapter. Check `nats_max_ack_pending` before adding replicas: it limits the in-flight messages of all
+pods together, so more pods under the same limit do not process more at once.
 
 ---
 

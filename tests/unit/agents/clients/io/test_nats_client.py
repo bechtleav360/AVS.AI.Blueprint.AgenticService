@@ -893,16 +893,34 @@ class TestNATSClientConsumerTuning:
             await nats_client.subscribe({"topic.a": AsyncMock()})
         assert nats_client.consumer_tuning is None
 
-    async def test_defaults_are_resolved_when_jetstream_is_on(
+    async def test_unset_keys_leave_the_server_defaults(
+        self, nats_client: NATSClient, mock_config: MagicMock, mock_nats_jetstream: tuple
+    ) -> None:
+        """The framework used to set 300 s / 16 / 5 on every consumer; now it sets nothing unasked."""
+        await _prepare_js_client(nats_client, mock_config, mock_nats_jetstream, ["orders.created"])
+        assert nats_client.consumer_tuning == ConsumerTuning(
+            ack_wait=None,
+            max_ack_pending=None,
+            max_deliver=None,
+            dead_letter_subject="test-agent.dead-letter",
+        )
+
+    async def test_an_unset_value_is_left_out_of_the_consumer(
         self, nats_client: NATSClient, mock_config: MagicMock, mock_nats_jetstream: tuple
     ) -> None:
         await _prepare_js_client(nats_client, mock_config, mock_nats_jetstream, ["orders.created"])
-        assert nats_client.consumer_tuning == ConsumerTuning(
-            ack_wait=300.0,
-            max_ack_pending=16,
-            max_deliver=5,
-            dead_letter_subject="test-agent.dead-letter",
-        )
+        sent = nats_client._consumer_config("orders.created", "orders_created-durable").as_dict()
+        assert "max_deliver" not in sent
+        assert "max_ack_pending" not in sent
+
+    async def test_an_unset_max_deliver_never_exhausts(
+        self, nats_client: NATSClient, mock_config: MagicMock, mock_nats_jetstream: tuple
+    ) -> None:
+        """The server's default is unlimited, so no delivery is ever the last one."""
+        await _prepare_js_client(nats_client, mock_config, mock_nats_jetstream, ["orders.created"])
+        msg = MagicMock()
+        msg.metadata.num_delivered = 1000
+        assert nats_client._deliveries_exhausted(msg) is False
 
     async def test_configured_values_win(self, nats_client: NATSClient, mock_config: MagicMock, mock_nats_jetstream: tuple) -> None:
         await _prepare_js_client(
@@ -1192,9 +1210,13 @@ class TestNATSClientJetStreamConsumer:
     async def test_drift_from_an_existing_consumer_is_reported(
         self, nats_client: NATSClient, mock_config: MagicMock, mock_nats_jetstream: tuple, caplog: pytest.LogCaptureFixture
     ) -> None:
-        mock_js = await _prepare_js_client(nats_client, mock_config, mock_nats_jetstream, ["orders.created"])
+        mock_js = await _prepare_js_client(nats_client, mock_config, mock_nats_jetstream, ["orders.created"], nats_ack_wait=300.0)
         existing = js_api.ConsumerConfig(
-            durable_name="orders_created-durable", filter_subject="orders.created", deliver_subject="_DELIVER.old", ack_wait=30.0
+            durable_name="orders_created-durable",
+            filter_subject="orders.created",
+            deliver_subject="_DELIVER.old",
+            deliver_group="another-group",
+            ack_wait=30.0,
         )
         mock_js.consumer_info = AsyncMock(return_value=MagicMock(config=existing))
         with caplog.at_level("WARNING"):
@@ -1202,6 +1224,54 @@ class TestNATSClientJetStreamConsumer:
         assert "already exists with different settings" in caplog.text
         assert "deliver_group" in caplog.text
         assert "ack_wait" in caplog.text
+        assert "DEPRECATED" not in caplog.text
+
+    @staticmethod
+    def _pre_09_consumer() -> js_api.ConsumerConfig:
+        """What js.subscribe(topic, durable=..., manual_ack=True) left behind before 0.9."""
+        return js_api.ConsumerConfig(
+            durable_name="orders-durable",
+            filter_subject="orders",
+            deliver_subject="_INBOX.abc123",
+            ack_policy=js_api.AckPolicy.EXPLICIT,
+        )
+
+    async def test_a_pre_09_consumer_is_still_used_as_it_is(
+        self, nats_client: NATSClient, mock_config: MagicMock, mock_nats_jetstream: tuple
+    ) -> None:
+        mock_js = await _prepare_js_client(nats_client, mock_config, mock_nats_jetstream, ["orders"])
+        existing = self._pre_09_consumer()
+        mock_js.consumer_info = AsyncMock(return_value=MagicMock(config=existing))
+        await nats_client._subscribe_one("orders", AsyncMock())
+        mock_js.add_consumer.assert_not_awaited()
+        assert mock_js.subscribe_bind.await_args.kwargs["config"] is existing
+        assert mock_js.subscribe_bind.await_args.kwargs["consumer"] == "orders-durable"
+
+    async def test_a_pre_09_consumer_is_announced_as_deprecated(
+        self, nats_client: NATSClient, mock_config: MagicMock, mock_nats_jetstream: tuple, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        mock_js = await _prepare_js_client(nats_client, mock_config, mock_nats_jetstream, ["orders"])
+        mock_js.consumer_info = AsyncMock(return_value=MagicMock(config=self._pre_09_consumer()))
+        with caplog.at_level("WARNING", logger="blueprint.agents.clients.io.nats_client"):
+            await nats_client._subscribe_one("orders", AsyncMock())
+        deprecations = [message for message in caplog.messages if message.startswith("DEPRECATED")]
+        assert len(deprecations) == 1
+        assert "'orders-durable'" in deprecations[0]
+        assert "will not be supported in a future release" in deprecations[0]
+        # The missing deliver group is the deprecation; it is not reported a second time as drift.
+        assert not any("already exists with different settings" in message for message in caplog.messages)
+
+    async def test_an_unset_value_is_not_reported_as_drift(
+        self, nats_client: NATSClient, mock_config: MagicMock, mock_nats_jetstream: tuple, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Configuring nothing asks for nothing; the broker's value is not a difference."""
+        mock_js = await _prepare_js_client(nats_client, mock_config, mock_nats_jetstream, ["orders.created"])
+        existing = nats_client._consumer_config("orders.created", "orders_created-durable")
+        existing.ack_wait, existing.max_deliver = 30.0, 7
+        mock_js.consumer_info = AsyncMock(return_value=MagicMock(config=existing))
+        with caplog.at_level("WARNING"):
+            await nats_client._subscribe_one("orders.created", AsyncMock())
+        assert "already exists" not in caplog.text
 
     async def test_matching_existing_consumer_is_silent(
         self, nats_client: NATSClient, mock_config: MagicMock, mock_nats_jetstream: tuple, caplog: pytest.LogCaptureFixture

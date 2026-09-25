@@ -7840,6 +7840,53 @@ status for env <env>") for a standalone agent with the default prefix, keeps the
 for a custom prefix, and adds the namespace count only in a group. Two env-status tests expected
 `{}` and now expect no key; `test_standalone_readiness.py` checks the key is absent over HTTP.
 
+**JetStream consumer settings, decided with the user: "we do not change server defaults".** P1/P3
+made the framework set `ack_wait` 300 s, `max_ack_pending` 16 and `max_deliver` 5 on every consumer
+it created; v0.8.1 left all three to the server. Now:
+
+- `ConsumerTuning.ack_wait`, `.max_ack_pending`, `.max_deliver` are `None` when not configured.
+  `_resolve_consumer_tuning` reads them through new `_read_optional_float` / `_read_optional_int`
+  and validates only configured values; the warning for an explicit `-1` stays.
+- `_consumer_config` passes them as they are; nats-py leaves `max_deliver` and `max_ack_pending` out
+  and sends `ack_wait: 0`, which the server reads as its default (not verified against a broker).
+- `_deliveries_exhausted` treats an unset `max_deliver` as unlimited -- the server's default -- so no
+  delivery is the last one and exhaustion never dead-letters.
+- `_consumer_drift` ignores a setting the configuration leaves unset, so a consumer created by an
+  earlier alpha with 300 / 16 / 5 is not reported as drifting.
+
+Consequence, stated in the docs: unset `nats_max_deliver` means unlimited retries and no dead
+letter on exhaustion, and dedup's TTL window needs it set. Docs: the three rows and the example in
+`reference/configuration-keys.md`, `guides/deployment.md` (keys, the dedup window, scaling), the
+disposition table in `concepts/event-processing.md`, and the class docstring. While there, fixed
+`guides/deployment.md` still calling dedup "exists-then-set, not atomic", missed by the atomic-claim
+change. Tests: the tuning-defaults test now expects `None`; new cases for a value left out of the
+consumer, an unset `max_deliver` never exhausting, and an unset value not reported as drift; the
+drift test sets `nats_ack_wait` so it still has a difference to report.
+
+**The durable consumer's creation and binding, decided with the user: keep it, reuse old durables,
+deprecate them.** The user's worry was that the upgrade silently creates durables. It does not:
+Core NATS stays the default, and under `nats_use_jetstream = true` v0.8.1 already created a
+durable (`js.subscribe(topic, durable=f"{topic}-durable", manual_ack=True)`). What changed is the
+form of a *new* durable -- a named `_DELIVER.<durable>` subject and a deliver group -- because the
+v0.8.1 form can serve one replica: nats-py refuses a second `js.subscribe` to a push-bound consumer
+without a deliver group ("consumer is already bound to a subscription"). An existing durable was
+already left as it is by `_ensure_consumer`. New: when that existing consumer has no deliver group
+-- the pre-0.9 form -- a `DEPRECATED` WARNING names it, its deliver subject, and the fix (delete it
+in a maintenance window), and the missing deliver group is no longer also reported as drift
+(`_consumer_drift(..., ignore=("deliver_group",))`).
+
+Unit tests: `test_a_pre_09_consumer_is_still_used_as_it_is` (no `add_consumer`, bound with the
+broker's own config) and `test_a_pre_09_consumer_is_announced_as_deprecated` (one deprecation, no
+drift line); the drift test now uses a consumer with a *different* deliver group. Integration
+tests, `tests/integration/test_upgrade_from_0_8.py`, against the compose broker: a consumer created
+exactly as 0.8 left it is used as it is (no second consumer, same deliver subject, no deliver
+group, and it delivers), is announced as deprecated, and the broker (or nats-py) refuses a dotted
+durable name -- which is why the dotted-topic rename orphans nothing. Not run here: no Docker in
+this environment. `CHANGELOG.md` gains a Deprecated section and "Upgrading a standalone agent from
+0.8" (reused durables, the dotted name, `nats_durable_name` with several topics, the widened
+stream, the Core NATS queue group). Two stale comments fixed on the way: `integration_config`'s
+"the framework default is 300" and `docker-compose.yml`'s "falls back to Core NATS".
+
 **`Config` behaviour, decided with the user.** `get("hostname" / "pod_name" / "blueprint_group")`
 raised `ValueError` on every configuration since the deployment-identity blocklist (C6). The user
 asked what those keys have to do with namespaces: nothing directly -- C6 keeps an agent from
