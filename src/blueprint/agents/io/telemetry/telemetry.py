@@ -9,9 +9,12 @@ configures **one provider per namespace**, each with its own ``Resource``:
                          single-agent application's traces are identical to what it produced
                          before any of this existed.
 ``deployment.group``     Which group this pod runs, from the environment. Set by the framework
-                         and readable through no supported API (C6).
-``service.instance.id``  Which replica this is.
+                         and readable through no supported API (C6). Absent without a group.
+``service.instance.id``  Which replica this is. Absent when it cannot be told.
 ======================== ======================================================================
+
+A key the deployment declares in ``OTEL_RESOURCE_ATTRIBUTES`` or ``OTEL_SERVICE_NAME`` is never
+replaced -- see :func:`_framework_attributes`.
 
 **The empty namespace is the one that must not regress.** Implemented naively -- one provider,
 ``service.name`` set to the group -- every existing dashboard would go dark on the day the
@@ -37,16 +40,38 @@ from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExport
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
-from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.resources import OTELResourceDetector, Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
 from ...component.namespace import ROOT_NAMESPACE
-from ...deployment import deployment_group, pod_identity
+from ...deployment import UNGROUPED_LABEL, UNKNOWN_POD_LABEL, deployment_group, pod_identity
 from ..io_base import IOBase
 from .providers import has_providers, meter_provider, register_providers, tracer_provider
 
 logger = logging.getLogger(__name__)
+
+
+def _framework_attributes(service_name: str, group: str, pod: str) -> dict[str, str]:
+    """The resource attributes the framework sets, minus every key the deployment declared.
+
+    **What the deployment declares is used as it is.** ``OTEL_RESOURCE_ATTRIBUTES`` (and
+    ``OTEL_SERVICE_NAME``) are how a platform labels every service's telemetry without touching its
+    code, and ``Resource.create`` merges them underneath whatever it is given -- so an attribute
+    set here used to replace a declared one silently. Declared keys are left out of what the
+    framework sets; ``Resource.create`` then supplies them from the environment, unchanged.
+
+    **Only attributes that exist.** A group that is not set and a pod that cannot be told are not
+    written as placeholders: a standalone agent's resource carries no ``deployment.group``, since it
+    belongs to no group.
+    """
+    attributes = {"service.name": service_name}
+    if group != UNGROUPED_LABEL:
+        attributes["deployment.group"] = group
+    if pod != UNKNOWN_POD_LABEL:
+        attributes["service.instance.id"] = pod
+    declared = OTELResourceDetector().detect().attributes
+    return {key: value for key, value in attributes.items() if key not in declared}
 
 
 class TelemetryManager(IOBase):
@@ -130,13 +155,7 @@ class TelemetryManager(IOBase):
                 provider's own.
         """
         service_name = root_service_name if namespace == ROOT_NAMESPACE else namespace
-        resource = Resource.create(
-            {
-                "service.name": service_name,
-                "deployment.group": group,
-                "service.instance.id": pod,
-            }
-        )
+        resource = Resource.create(_framework_attributes(service_name, group, pod))
 
         provider = TracerProvider(resource=resource)
         for processor in span_processors:
@@ -150,7 +169,10 @@ class TelemetryManager(IOBase):
         readers = [PeriodicExportingMetricReader(exporter) for exporter in metric_exporters]
         register_providers(namespace, provider, MeterProvider(resource=resource, metric_readers=readers))
 
-        logger.info("OpenTelemetry configured for service '%s' in group '%s'", service_name, group)
+        if group == UNGROUPED_LABEL:
+            logger.info("OpenTelemetry configured for service '%s'", service_name)
+        else:
+            logger.info("OpenTelemetry configured for service '%s' in group '%s'", service_name, group)
 
     def _setup_instrumentation(self) -> None:
         """Enable automatic instrumentation for supported libraries."""

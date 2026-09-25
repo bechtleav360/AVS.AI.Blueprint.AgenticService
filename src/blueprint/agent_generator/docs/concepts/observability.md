@@ -43,8 +43,14 @@ its own resource:
 | Attribute | Value |
 |---|---|
 | `service.name` | The agent's own name. `otel_service_name` for the root namespace. |
-| `deployment.group` | `BLUEPRINT_GROUP`, or `<ungrouped>`. Set by the framework; no supported API exposes it (C6). |
-| `service.instance.id` | `POD_NAME`, else `HOSTNAME`, else the host name, else `<unknown-pod>`. |
+| `deployment.group` | `BLUEPRINT_GROUP`. Absent when no group is set -- a single-agent application belongs to none. Set by the framework; no supported API exposes it to an agent (C6). |
+| `service.instance.id` | `POD_NAME`, else `HOSTNAME`, else the host name. When none can be told, the framework sets nothing and the OpenTelemetry SDK's own default applies. |
+
+**What the deployment declares wins.** A key set in `OTEL_RESOURCE_ATTRIBUTES` (or
+`service.name` in `OTEL_SERVICE_NAME`) is used exactly as declared; the framework sets only the
+attributes the deployment left out, and never replaces a declared one. In a group, declaring
+`service.name` this way gives every agent the same name -- the deployment's choice, not the
+framework's.
 
 So an agent called `orders` reports `service.name = "orders"` whether it runs alone or beside
 nineteen others, and a dashboard keyed on it cannot tell which. A single-agent application keeps
