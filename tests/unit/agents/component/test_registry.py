@@ -583,3 +583,26 @@ class TestNamespaceViews:
     def test_the_application_registry_still_sees_everything(self, grouped_registry: Registry) -> None:
         """build() and the lifespan hold the unscoped registry and must keep iterating all of it."""
         assert len(grouped_registry.get_components_by_type(_Namespaced)) == 3
+
+
+# ---------------------------------------------------------------------------
+# A standalone agent logs what v0.8.1 logged
+# ---------------------------------------------------------------------------
+
+
+class TestStandaloneMessages:
+    def test_the_cache_registration_line(self, registry: Registry, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.INFO, logger="blueprint.agents.component.registry"):
+            registry.cache_service = MagicMock()
+        assert "Registering cache service: MagicMock" in caplog.messages
+
+    def test_no_cache_registered(self, registry: Registry) -> None:
+        with pytest.raises(ValueError) as caught:
+            _ = registry.cache_service
+        assert str(caught.value) == "No cache service registered"
+
+    def test_a_duplicate_name(self, registry: Registry) -> None:
+        registry.add_component("x", StubA())
+        with pytest.raises(ValueError) as caught:
+            registry.add_component("x", StubB())
+        assert str(caught.value) == "Component with name x already exists"

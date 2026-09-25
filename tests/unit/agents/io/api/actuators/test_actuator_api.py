@@ -431,3 +431,25 @@ class TestTheReadinessPolicy:
     def test_there_is_no_supervisor_before_startup(self, actuator_api: ActuatorApi) -> None:
         """The gauges belong to per-agent providers, which the lifespan configures first."""
         assert actuator_api.supervisor is None
+
+
+# ---------------------------------------------------------------------------
+# A standalone agent logs what v0.8.1 logged
+# ---------------------------------------------------------------------------
+
+
+class TestStandaloneReadinessLine:
+    async def test_the_failed_probe_line(self, actuator_api: ActuatorApi, mock_config: MagicMock, caplog: pytest.LogCaptureFixture) -> None:
+        from fastapi import HTTPException
+
+        from blueprint.agents.models.api import ComponentHealth, ReadinessResponse
+
+        mock_config.has_validation_errors = MagicMock(return_value=False)
+        components = {"cache": ComponentHealth(status="unhealthy", message="Redis unreachable")}
+        actuator_api._health_cache = MagicMock()
+        actuator_api._health_cache.get_health_status = AsyncMock(return_value=ReadinessResponse(status="DOWN", components=components))
+        actuator_api._health_cache.get_cache_age_seconds = MagicMock(return_value=0.5)
+
+        with caplog.at_level("WARNING"), pytest.raises(HTTPException):
+            await actuator_api.readiness_probe()
+        assert f"Readiness probe failed: {components}" in caplog.messages

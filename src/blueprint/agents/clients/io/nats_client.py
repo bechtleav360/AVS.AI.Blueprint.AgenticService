@@ -783,9 +783,9 @@ class NATSClient(IOClientBase):
             if self._use_jetstream:
                 self._js = self._nats_client.jetstream()
                 await self._require_jetstream(nats_url)
-                logger.info("Connected to NATS server with JetStream at %s as '%s'", nats_url, self._connection_name)
+                self._log_connected("with JetStream", nats_url)
             else:
-                logger.info("Connected to NATS server (Core NATS) at %s as '%s'", nats_url, self._connection_name)
+                self._log_connected("(Core NATS)", nats_url)
         except JetStreamUnavailableError:
             raise
         except Exception as e:
@@ -793,6 +793,13 @@ class NATSClient(IOClientBase):
             # decides for itself. Logging here as well doubled every connection failure.
             e.add_note(f"while connecting to NATS at {nats_url}")
             raise
+
+    def _log_connected(self, mode: str, nats_url: str) -> None:
+        """Log the connection; a standalone agent's line is the one it has always logged."""
+        if self.namespace:
+            logger.info("Connected to NATS server %s at %s as '%s'", mode, nats_url, self._connection_name)
+        else:
+            logger.info("Connected to NATS server %s at %s", mode, nats_url)
 
     async def _require_jetstream(self, nats_url: str) -> None:
         """Fail the connection if the server does not offer JetStream to this account.
@@ -1321,15 +1328,21 @@ class NATSClient(IOClientBase):
                     cb=message_handler,
                     manual_ack=True,
                 )
-                logger.info(
-                    "Subscribed to JetStream topic '%s' via durable '%s' in deliver group '%s'",
-                    topic,
-                    durable_name,
-                    consumer_config.deliver_group or "<none>",
-                )
+                if self.namespace:
+                    logger.info(
+                        "Subscribed to JetStream topic '%s' via durable '%s' in deliver group '%s'",
+                        topic,
+                        durable_name,
+                        consumer_config.deliver_group or "<none>",
+                    )
+                else:
+                    logger.info("Subscribed to JetStream topic '%s'", topic)
             else:
                 sub = await client.subscribe(topic, queue=self._queue_group, cb=message_handler)
-                logger.info("Subscribed to Core NATS topic '%s' in queue group '%s'", topic, self._queue_group)
+                if self.namespace:
+                    logger.info("Subscribed to Core NATS topic '%s' in queue group '%s'", topic, self._queue_group)
+                else:
+                    logger.info("Subscribed to Core NATS topic '%s'", topic)
 
             self._subscriptions.append(sub)
 

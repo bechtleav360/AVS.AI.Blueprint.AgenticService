@@ -5,7 +5,7 @@ from typing import Any
 
 from ....clients.client_base import DeliveryCallback
 from ....clients.io.nats_client import NATSClient
-from ....component.namespace import ROOT_LABEL, ROOT_NAMESPACE
+from ....component.namespace import ROOT_NAMESPACE
 from ....models.events import CloudEvent
 from ..rest_api_base import RestApiBase
 from .event_handling_base import EventHandlingBase
@@ -66,15 +66,21 @@ class NatsEventing(EventHandlingBase):
         topic_callbacks: dict[str, DeliveryCallback] = {topic: self._make_event_callback(topic) for topic in self._declared_topics()}
 
         if topic_callbacks:
-            logger.info(
-                "Namespace '%s' subscribes to %d topic(s): %s",
-                self.namespace or ROOT_LABEL,
-                len(topic_callbacks),
-                ", ".join(topic_callbacks),
-            )
+            if self.namespace:
+                logger.info(
+                    "Namespace '%s' subscribes to %d topic(s): %s",
+                    self.namespace,
+                    len(topic_callbacks),
+                    ", ".join(topic_callbacks),
+                )
+            else:
+                for topic in topic_callbacks:
+                    logger.info("NatsEventing: auto-subscribed to topic '%s'", topic)
             await self._client.subscribe(topic_callbacks)
+        elif self.namespace:
+            logger.info("NatsEventing: no auto-subscriptions configured for namespace '%s'", self.namespace)
         else:
-            logger.info("NatsEventing: no auto-subscriptions configured for namespace '%s'", self.namespace or ROOT_LABEL)
+            logger.info("NatsEventing: no auto-subscriptions configured")
 
     def _declared_topics(self) -> list[str]:
         """Return the topics this agent subscribes to, in declaration order.

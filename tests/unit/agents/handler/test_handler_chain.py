@@ -408,3 +408,18 @@ class TestIdempotencyPolicyResolution:
         await chain.on_startup()
 
         assert chain._policy == IdempotencyPolicy(enabled=True, ttl=900)
+
+
+# ---------------------------------------------------------------------------
+# A standalone agent logs what v0.8.1 logged
+# ---------------------------------------------------------------------------
+
+
+class TestStandaloneLogLines:
+    async def test_no_handler_line(
+        self, chain: HandlerChain, mock_registry: MagicMock, cloud_event: GenericCloudEvent, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        _wire_handlers(mock_registry, [StubHandler(result=None)])
+        with caplog.at_level("WARNING", logger="blueprint.agents.handler.handler_chain"):
+            await chain.process(cloud_event, {})
+        assert caplog.messages == [f"No handler processed event '{cloud_event.type}'"]

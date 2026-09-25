@@ -363,6 +363,8 @@ class Registry:
                 type(self._caches[key]).__name__,
                 type(cache).__name__,
             )
+        elif name == DEFAULT_CACHE_NAME and not agent:
+            logger.info("Registering cache service: %s", type(cache).__name__)
         else:
             logger.info("Registering cache '%s' for agent '%s': %s", name, agent or ROOT_LABEL, type(cache).__name__)
         self._caches[key] = cache
@@ -448,7 +450,8 @@ class Registry:
         """
 
         if not self.get_all_caches():
-            raise ValueError(f"No cache service registered for agent '{self._cache_owner(None) or ROOT_LABEL}'")
+            owner = self._cache_owner(None)
+            raise ValueError(f"No cache service registered for agent '{owner}'" if owner else "No cache service registered")
         return self.get_cache()
 
     @cache_service.setter
@@ -474,7 +477,9 @@ class Registry:
 
         if name in self._components:
             existing = type(self._components[name]).__name__
-            agent = namespace_of(component) or ROOT_LABEL
+            agent = namespace_of(component)
+            if not agent:
+                raise ValueError(f"Component with name {name} already exists")
             raise ValueError(
                 f"Component name '{name}' is already taken by a {existing}, so {type(component).__name__} in namespace "
                 f"'{agent}' cannot register under it. Registry names have to be unique across the whole process: they "
@@ -562,7 +567,7 @@ class Registry:
 
         component = self._lookup(name_or_class, namespace)
         if component is None:
-            in_namespace = "" if namespace is None else f" in namespace '{namespace or ROOT_LABEL}' or at the root"
+            in_namespace = f" in namespace '{namespace}' or at the root" if namespace else ""
             raise ValueError(f"Component with name {name_or_class} does not exist{in_namespace}")
         return component
 

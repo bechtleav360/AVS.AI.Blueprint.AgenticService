@@ -7770,6 +7770,47 @@ with it (and the now unused `model_validator` import). `tests/unit/agents/models
   docstring (since `75bc08e`) says they are never invoked.
 - `NamespaceSupervisor.clear_forced_down` has a caller since the startup-recovery change.
 
+### A standalone agent's existing output is restored (audit against v0.8.1)
+
+**Why.** The user's rule for this feature: nothing built for namespaces may change what a
+standalone agent (namespace `""`) emits. An audit of v0.8.1 against this branch, for namespace
+`""`, found `ROOT_LABEL` (`<root>`) -- which the spec mandates only for the NATS connection name
+(sec. 6) -- used as the general rendering of "no namespace", so lines a standalone agent had always
+logged were reworded. The namespace-derived identifiers themselves are clean for the root (no
+prefix on queue group, durable, routes, cache or registry names).
+
+**Scope, as decided:** outputs that existed in v0.8.1 and changed are restored where that needs no
+change of behaviour; outputs that are new are left alone for now; nothing is worked around.
+
+**Restored, each as `if namespace: <new> else: <v0.8.1>`:**
+
+- `AppBuilder`: "Caching disabled"; "Registered <Backend> with cache_dir=... (locking=...)" for the
+  root's default cache; the no-event-bus WARNING; "Eventing component startup completed / failed"
+  and "Eventing component shutdown failed" (the root's endpoint is now passed unlabelled to
+  `_start_component`, which omits an empty label).
+- `Registry`: "Registering cache service: <Backend>"; `ValueError("No cache service registered")`;
+  `ValueError("Component with name <n> already exists")`; the "does not exist" suffix only for a
+  named namespace.
+- `HandlerChain`: "No handler processed event '<type>'".
+- `NatsEventing`: one "NatsEventing: auto-subscribed to topic '<t>'" per topic, and
+  "NatsEventing: no auto-subscriptions configured".
+- `NATSClient`: "Connected to NATS server (Core NATS) / with JetStream at <url>" without the
+  connection name (`_log_connected`); "Subscribed to JetStream / Core NATS topic '<t>'" without
+  durable, deliver group or queue group. The URL stays redacted -- that is a security fix.
+- `HealthCheckCache`: "Health check failed for <key>: <error>"; `ActuatorApi`: "Readiness probe
+  failed: <components>" when the process hosts no agents.
+- `TelemetryManager`: "OpenTelemetry configured for service '<s>'" when no group is set;
+  `Config`: "Loading configuration properties for environment: <env>" with the default prefix.
+
+Guarded by `test_standalone_log_lines.py` (6 cases, including "building a standalone agent logs no
+`<root>`") and `Standalone*` cases in the NATS client, NATS eventing, handler chain, registry,
+health cache and actuator tests (10 cases); all 16 fail against the previous code. No existing test
+had pinned any of these lines, which is how they changed unnoticed.
+
+**Not restored -- listed for the user, not worked around:** the Dapr degraded reason, the
+behaviour changes of the transport fixes, `Config` behaviour changes, the scheduler line, and the
+new outputs (metrics, span and resource attributes, new log lines).
+
 ---
 
 ## Open points

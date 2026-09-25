@@ -367,7 +367,10 @@ class HandlerChain(Component):
                 span.record_exception(e)
                 raise
 
-        logger.warning("No handler in namespace '%s' processed event '%s'", self.namespace or ROOT_LABEL, event.type)
+        if self.namespace:
+            logger.warning("No handler in namespace '%s' processed event '%s'", self.namespace, event.type)
+        else:
+            logger.warning("No handler processed event '%s'", event.type)
         return None
 
     # ------------------------------------------------------------------

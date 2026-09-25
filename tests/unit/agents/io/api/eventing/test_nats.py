@@ -235,3 +235,39 @@ class TestNatsEventingDeliverySubject:
         await nats_eventing._make_event_callback("t.*.risk.>")(spoofed, "t.T1.risk.created")
 
         assert nats_eventing._process_cloud_event.await_args.args[1][NATS_SUBJECT_CONTEXT_KEY] == "t.T1.risk.created"
+
+
+# ---------------------------------------------------------------------------
+# A standalone agent logs what v0.8.1 logged
+# ---------------------------------------------------------------------------
+
+
+class TestStandaloneSubscriptionLines:
+    @staticmethod
+    def _wire(mock_registry: MagicMock, mock_config: MagicMock, topics: list[str]) -> None:
+        handler = MagicMock()
+        handler.get_subscribed_topics.return_value = topics
+        client = MagicMock()
+        client.subscribe = AsyncMock()
+        mock_registry.get_component.return_value = client
+        mock_registry.get_event_handler.return_value = [handler] if topics else []
+        mock_config.get_nats_subscription_config.return_value = []
+
+    async def test_one_line_per_topic(
+        self, nats_eventing: NatsEventing, mock_registry: MagicMock, mock_config: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        self._wire(mock_registry, mock_config, ["a.created", "b.created"])
+        with caplog.at_level("INFO", logger="blueprint.agents.io.api.eventing.nats"):
+            await nats_eventing.on_startup()
+        assert caplog.messages == [
+            "NatsEventing: auto-subscribed to topic 'a.created'",
+            "NatsEventing: auto-subscribed to topic 'b.created'",
+        ]
+
+    async def test_no_topics(
+        self, nats_eventing: NatsEventing, mock_registry: MagicMock, mock_config: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        self._wire(mock_registry, mock_config, [])
+        with caplog.at_level("INFO", logger="blueprint.agents.io.api.eventing.nats"):
+            await nats_eventing.on_startup()
+        assert caplog.messages == ["NatsEventing: no auto-subscriptions configured"]

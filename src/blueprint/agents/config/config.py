@@ -228,11 +228,14 @@ class Config:
         # environment the process loaded -- a fragment's [development] section is that agent's
         # development section, not a table it happens to have called that.
         self._environment = str(app_env)
-        logger.info(
-            "Loading configuration properties for environment: %s (environment overrides read from %s)",
-            app_env,
-            f"{self._envvar_prefix}_*" if self._envvar_prefix else "the whole process environment, unprefixed",
-        )
+        if self._envvar_prefix == DEFAULT_ENVVAR_PREFIX:
+            logger.info("Loading configuration properties for environment: %s", app_env)
+        else:
+            logger.info(
+                "Loading configuration properties for environment: %s (environment overrides read from %s)",
+                app_env,
+                f"{self._envvar_prefix}_*" if self._envvar_prefix else "the whole process environment, unprefixed",
+            )
 
         # A scoped view validates neither app_name nor a per-agent port.
         #

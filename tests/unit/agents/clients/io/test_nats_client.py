@@ -2170,3 +2170,28 @@ class TestTheDeclaredModeIsEnforced:
             await self._connect(nats_client, self._server(AsyncMock(side_effect=ServiceUnavailableError())))
         await asyncio.sleep(0)
         handler.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# A standalone agent logs what v0.8.1 logged
+# ---------------------------------------------------------------------------
+
+
+class TestStandaloneLogLines:
+    """No connection name, no queue group, no durable, no '<root>' in a standalone agent's lines."""
+
+    async def test_the_connect_line(self, nats_client: NATSClient, caplog: pytest.LogCaptureFixture) -> None:
+        nc = MagicMock(is_closed=False, is_connected=True)
+        with (
+            patch("blueprint.agents.clients.io.nats_client.nats.connect", new_callable=AsyncMock, return_value=nc),
+            caplog.at_level("INFO", logger="blueprint.agents.clients.io.nats_client"),
+        ):
+            await nats_client.connect()
+        assert "Connected to NATS server (Core NATS) at nats://localhost:4222" in caplog.messages
+        assert not any("<root>" in message for message in caplog.messages)
+
+    async def test_the_subscribe_line(self, connected_nats_client: NATSClient, caplog: pytest.LogCaptureFixture) -> None:
+        connected_nats_client._queue_group = "test-agent"
+        with caplog.at_level("INFO", logger="blueprint.agents.clients.io.nats_client"):
+            await connected_nats_client._subscribe_one("orders.created", AsyncMock())
+        assert caplog.messages == ["Subscribed to Core NATS topic 'orders.created'"]
