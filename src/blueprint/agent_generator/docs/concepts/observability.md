@@ -194,6 +194,9 @@ single-agent payload's keys are unchanged. `namespaces` exists because the polic
 no longer derivable from `components`: the pod above answers `UP` with a failing check in it, and
 without the per-agent section that reads as a contradiction.
 
+**`policy` and `namespaces` appear only when the process hosts a group.** A standalone agent's
+payload is `status` and `components`, exactly as before agents existed.
+
 ### Custom health checks
 
 A checker is an object implementing `HealthCheckerBase`, not a callable:

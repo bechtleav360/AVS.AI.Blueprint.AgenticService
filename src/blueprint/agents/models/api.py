@@ -223,14 +223,20 @@ class ReadinessResponse(BaseModel):
         ...,
         description="Health status of individual components.",
     )
-    policy: str = Field(
-        default="all",
-        description="The readiness policy in force, which decides how a degraded agent affects the overall status.",
+    # Both are about the agents of a group, so both exist only in a group's payload. A standalone
+    # agent's response has exactly the shape it had before agents existed: status and components.
+    policy: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The readiness policy in force, which decides how a degraded agent affects the overall status. "
+        "Present only when the process hosts a group of agents.",
         examples=["all", "critical", "any"],
     )
-    namespaces: dict[str, NamespaceReadiness] = Field(
-        default_factory=dict,
-        description="Per-agent health, keyed by agent name ('<root>' for the root namespace).",
+    namespaces: dict[str, NamespaceReadiness] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Per-agent health, keyed by agent name ('<root>' for the root namespace). Present only when the "
+        "process hosts a group of agents.",
     )
 
     model_config = ConfigDict(

@@ -541,7 +541,9 @@ single-agent application is entirely root.
 
 `components` is keyed by entry name -- bare at the root, `<agent>.<name>` for an agent -- so a
 single-agent payload's keys are unchanged. `namespaces` exists because the policy makes `status` no
-longer derivable from `components`: the pod above answers `UP` with a failing check in it.
+longer derivable from `components`: the pod above answers `UP` with a failing check in it. Both
+`policy` and `namespaces` appear only when the process hosts a group; a standalone agent's payload
+is `status` and `components`.
 
 ### Broker startup
 
