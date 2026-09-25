@@ -46,11 +46,13 @@ class EnvironmentStatus(BaseModel):
         ...,
         description="Sanitized configuration the root namespace resolves.",
     )
-    namespaces: dict[str, dict[str, Any]] = Field(
-        default_factory=dict,
+    namespaces: dict[str, dict[str, Any]] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
         description=(
             "Sanitized configuration each co-hosted agent resolves, flattened as that agent "
-            "reads it -- inherited root keys included. Empty for a single-agent service."
+            "reads it -- inherited root keys included. Present only when the process hosts a group "
+            "of agents."
         ),
     )
 

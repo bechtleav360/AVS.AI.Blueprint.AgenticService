@@ -7818,6 +7818,28 @@ with the exception; `reference/configuration-keys.md` and `guides/deployment.md`
 connection-name tests were rewritten for the standalone case and one added for the namespaced form
 with placeholders.
 
+**`/health/ready`, decided with the user:** "a `namespaces` key only in a group". `ReadinessResponse.policy`
+and `.namespaces` are now `None` by default with `Field(exclude_if=lambda value: value is None)`, so
+they are omitted from the JSON and from the 503 `detail` (`model_dump`) when unset -- without
+`exclude_none` on the route, which would also drop the `null` values inside `components` that
+v0.8.1 returned. `HealthCheckCache` sets both only when a namespace besides the root is supervised
+(`self._grouped`). `policy` goes with `namespaces` under the same rule: it decides between agents,
+and a standalone process has none. Nothing needed flattening: for a standalone agent the root's
+entry repeats the top-level `status`, `failing` is derivable from `components`, `critical` is always
+true, and `reason` is only ever set for a latched non-critical agent. Guarded by
+`test_standalone_readiness.py` over HTTP through the real lifespan (keys, a `null` inside
+`components` kept, and the group form). `guides/testing.md` had an example asserting
+`namespaces["<root>"]` for a single-agent application; corrected, and the two payload
+descriptions say when the fields appear.
+
+**`/status/env`, same rule:** `EnvironmentStatus.namespaces` is `None` by default with `exclude_if`,
+and `env_status` fills it only when the application's own configuration hosts namespaces -- so a
+standalone agent's response has no `namespaces` key, where it had `{}`. `envvar_prefix` stays, as the
+user decided: it is new and not about groups. The log line is the v0.8.1 one ("Returning environment
+status for env <env>") for a standalone agent with the default prefix, keeps the override source
+for a custom prefix, and adds the namespace count only in a group. Two env-status tests expected
+`{}` and now expect no key; `test_standalone_readiness.py` checks the key is absent over HTTP.
+
 **`Config` behaviour, decided with the user.** `get("hostname" / "pod_name" / "blueprint_group")`
 raised `ValueError` on every configuration since the deployment-identity blocklist (C6). The user
 asked what those keys have to do with namespaces: nothing directly -- C6 keeps an agent from

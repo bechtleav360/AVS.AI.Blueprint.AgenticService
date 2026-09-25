@@ -17,6 +17,7 @@ from ....component.component import Component, traced
 from ....component.namespace import ROOT_NAMESPACE
 from ....component.registry import Registry
 from ....config import Config
+from ....config.config import DEFAULT_ENVVAR_PREFIX
 from ....models.api import LivenessResponse, ReadinessResponse
 from ....models.status import BuildStatus, EnvironmentStatus, LLMStatus, ServiceInfo, VLLMInfo
 from .health.health_cache import HealthCheckCache
@@ -293,16 +294,23 @@ class ActuatorApi(RestApiBase):
         # The per-agent breakdown is the operator's view of the whole process, so it exists only
         # on the application's own configuration. Listing neighbours from inside an agent is the
         # thing C6 exists to prevent, and `config.namespaces` refuses on a view for that reason.
-        namespaces: dict[str, dict[str, Any]] = {}
-        if not config.is_view:
+        # It exists only for a group, too: a standalone agent's response has no "namespaces" key.
+        namespaces: dict[str, dict[str, Any]] | None = None
+        if not config.is_view and config.namespaces:
             namespaces = {name: self._sanitize_config(config.resolved_settings(name)) for name in config.namespaces}
 
-        logger.info(
-            "Returning environment status for env %s (%d namespace(s), overrides read from %s)",
-            environment,
-            len(namespaces),
-            f"{config.envvar_prefix}_*" if config.envvar_prefix else "the whole process environment, unprefixed",
-        )
+        overrides = f"{config.envvar_prefix}_*" if config.envvar_prefix else "the whole process environment, unprefixed"
+        if namespaces is not None:
+            logger.info(
+                "Returning environment status for env %s (%d namespace(s), overrides read from %s)",
+                environment,
+                len(namespaces),
+                overrides,
+            )
+        elif config.envvar_prefix == DEFAULT_ENVVAR_PREFIX:
+            logger.info("Returning environment status for env %s", environment)
+        else:
+            logger.info("Returning environment status for env %s (overrides read from %s)", environment, overrides)
 
         return EnvironmentStatus(
             environment=environment,

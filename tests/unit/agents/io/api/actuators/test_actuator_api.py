@@ -267,9 +267,10 @@ def grouped_config(tmp_path: Path, mock_registry: MagicMock) -> Config:
 
 class TestEnvStatus:
     async def test_a_single_agent_service_reports_no_namespaces(self, grouped_config: Config) -> None:
-        """Nothing has asked for a view, so the response is shaped as it always was."""
+        """Nothing has asked for a view, so the response is shaped as it always was -- no "namespaces" key."""
         result = await ActuatorApi().env_status()
-        assert result.namespaces == {}
+        assert result.namespaces is None
+        assert "namespaces" not in result.model_dump(mode="json")
         assert result.settings["MODEL_NAME"] == "root-model"
 
     async def test_each_namespace_that_asked_for_config_is_reported(self, grouped_config: Config) -> None:
@@ -338,7 +339,7 @@ class TestEnvStatus:
 
         result = await ActuatorApi().env_status()
 
-        assert result.namespaces == {}
+        assert result.namespaces is None
         # Its own scope: 'orders' overrides app_name, and this asserted the root's value until
         # the endpoint actually did what its comment claimed.
         assert result.settings["APP_NAME"] == "orders"

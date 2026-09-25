@@ -305,10 +305,11 @@ class TestAppIntegration:
         assert data["status"] == "UP"
         assert "components" in data
 
-    async def test_readiness_reports_each_agent(self, client):
-        # One entry per agent the process hosts, "<root>" for a single-agent application.
+    async def test_readiness_has_no_group_fields(self, client):
+        # A standalone agent's payload is status and components; "policy" and "namespaces"
+        # appear only when the process hosts a group of agents.
         response = await client.get("/health/ready")
-        assert response.json()["namespaces"]["<root>"]["status"] == "UP"
+        assert set(response.json()) == {"status", "components"}
 ```
 
 ### Testing Endpoint Behavior

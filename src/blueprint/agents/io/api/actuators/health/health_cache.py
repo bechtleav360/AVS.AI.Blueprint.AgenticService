@@ -61,10 +61,15 @@ class HealthCheckCache:
         self._scheduler: AsyncIOScheduler | None = None
         self._policy = policy
         self._supervisor = supervisor
+        # A group's payload says which policy decides and how each agent stands; a standalone
+        # agent's has neither, as before agents existed. Decided by whether any namespace besides
+        # the root is supervised.
+        self._grouped = supervisor is not None and any(supervisor.status)
         self._cached_response: ReadinessResponse = ReadinessResponse(
             status=initial_status,
             components={},
-            policy=policy.value,
+            policy=policy.value if self._grouped else None,
+            namespaces={} if self._grouped else None,
         )
         self._last_update: datetime = datetime.now()
         self._lock = asyncio.Lock()
@@ -179,8 +184,8 @@ class HealthCheckCache:
                 self._cached_response = ReadinessResponse(
                     status=overall_status,
                     components=components,
-                    policy=self._policy.value,
-                    namespaces=namespaces,
+                    policy=self._policy.value if self._grouped else None,
+                    namespaces=namespaces if self._grouped else None,
                 )
                 self._last_update = datetime.now()
 

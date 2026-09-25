@@ -6,6 +6,11 @@
 - **A standalone agent's `Config` reads `hostname`, `pod_name` and `blueprint_group` again.** Since
   the 0.9 alphas, `get()` raised for these keys everywhere. The refusal exists so that an agent in a
   group cannot depend on where it runs; it now applies only to an agent's view in a group.
+- **A standalone agent's `/health/ready` has its original shape again.** The body gained `policy`
+  and a `namespaces` section keyed `"<root>"`, which describe the agents of a group. They now appear
+  only when the process hosts a group; a standalone agent gets `status` and `components`, as before.
+  The same holds for `/status/env`: its `namespaces` breakdown appears only in a group (the new
+  `envvar_prefix` field stays), and its log line is the 0.8.1 one for a standalone agent.
 - **A standalone agent's NATS connection is named after its pod alone.** It was named
   `<root>.<ungrouped>.<pod>`, implying a namespace and a group that do not exist for it. Before the
   namespace feature it sent no name; now it sends the pod (or host) name, and none if that cannot
