@@ -1,6 +1,6 @@
 """Unit tests for RestApiBase."""
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 
 from blueprint.agents.io.api.rest_api_base import RestApiBase
@@ -253,3 +253,36 @@ class TestResolveStatusTitle:
 
     def test_unknown_status_code_returns_unknown_error(self) -> None:
         assert RestApiBase._resolve_status_title(999) == "Unknown Error"
+
+
+class TestProcessResourceLogging:
+    """#12 -- the request body was logged in full at INFO."""
+
+    async def test_the_payload_is_not_logged(self, mock_config: MagicMock, mock_registry: MagicMock, caplog) -> None:
+        api = _MinimalApi()
+        service = MagicMock()
+        service.process_rest_request = AsyncMock(return_value=MagicMock(status="processed", message="ok", result=[]))
+        mock_registry.get_service.return_value = service
+        request = MagicMock()
+        request.url.path = "/process"
+        request.method = "POST"
+        secret = {"email": "person@example.invalid", "token": "YOUR_TOKEN_HERE"}
+
+        with caplog.at_level("DEBUG"):
+            await api._process_resource(request, secret)
+
+        for record in caplog.records:
+            assert "person@example.invalid" not in repr(record.__dict__)
+            assert "YOUR_TOKEN_HERE" not in repr(record.__dict__)
+
+    async def test_the_request_id_reaches_processing(self, mock_config: MagicMock, mock_registry: MagicMock) -> None:
+        api = _MinimalApi()
+        service = MagicMock()
+        service.process_rest_request = AsyncMock(return_value=MagicMock(status="processed", message="ok", result=[]))
+        mock_registry.get_service.return_value = service
+        request = MagicMock()
+
+        await api._process_resource(request, {})
+
+        context = service.process_rest_request.await_args.args[1]
+        assert context["request_id"] == request.state.trace_id

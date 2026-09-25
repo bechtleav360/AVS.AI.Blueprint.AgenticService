@@ -1,11 +1,27 @@
 """Unit tests for TelemetryManager and TracingContext."""
 
+from collections.abc import Iterator
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from blueprint.agents.io.telemetry.providers import agent_meter, agent_tracer, configured_namespaces, reset_providers, tracer_provider
 from blueprint.agents.io.telemetry.telemetry import TelemetryManager, TracingContext
 from blueprint.agents.models.config import ObservabilityConfig
+
+
+@pytest.fixture(autouse=True)
+def _forget_providers() -> Iterator[None]:
+    """Clear the per-namespace providers around every case.
+
+    They live in a module-level register, which is what lets a component reach its own without
+    holding the manager (C6). That makes them process state, so one case's providers would
+    otherwise satisfy the next case's assertions -- and ``configure_tracing`` skips a namespace
+    that already has one, so the second case would configure nothing at all.
+    """
+    reset_providers()
+    yield
+    reset_providers()
 
 
 @pytest.fixture
@@ -41,7 +57,7 @@ class TestConfigureTracing:
     def test_raises_when_config_is_none(self, telemetry_manager: TelemetryManager) -> None:
         from blueprint.agents.component.component import Component
 
-        Component.shared_config = None
+        Component.reset_shared_state()
         with pytest.raises((ValueError, RuntimeError)):
             telemetry_manager.configure_tracing()
 
@@ -68,12 +84,86 @@ class TestConfigureTracing:
             patch("blueprint.agents.io.telemetry.telemetry.Resource"),
             patch("blueprint.agents.io.telemetry.telemetry.trace"),
             patch.object(telemetry_manager, "_build_exporters", return_value=[MagicMock()]),
+            patch.object(telemetry_manager, "_build_metric_exporters", return_value=[]),
             patch.object(telemetry_manager, "_setup_instrumentation"),
         ):
             mock_provider = MagicMock()
             mock_provider_cls.return_value = mock_provider
             telemetry_manager.configure_tracing()
         mock_provider_cls.assert_called_once()
+
+
+class TestOneIdentityPerAgent:
+    """C2: each agent gets its own providers, and the root keeps the one it always had."""
+
+    @pytest.fixture
+    def configure(self, telemetry_manager: TelemetryManager, mock_config: MagicMock, enabled_observability: ObservabilityConfig):
+        """Return a callable that configures telemetry for the given agents, exporting nothing."""
+
+        def _configure(*namespaces: str) -> None:
+            mock_config.get_observability_config.return_value = enabled_observability
+            with (
+                patch.object(telemetry_manager, "_build_exporters", return_value=[MagicMock()]),
+                patch.object(telemetry_manager, "_build_metric_exporters", return_value=[]),
+                patch.object(telemetry_manager, "_setup_instrumentation"),
+            ):
+                telemetry_manager.configure_tracing(namespaces)
+
+        return _configure
+
+    @staticmethod
+    def _attributes(namespace: str) -> dict[str, object]:
+        provider = tracer_provider(namespace)
+        assert provider is not None
+        return dict(provider.resource.attributes)
+
+    def test_the_root_is_configured_even_when_no_agent_is(self, configure) -> None:
+        configure()
+        assert configured_namespaces() == ("",)
+
+    def test_the_root_keeps_the_configured_service_name(self, configure) -> None:
+        configure("orders")
+        assert self._attributes("")["service.name"] == "test-service"
+
+    def test_an_agent_is_its_own_service(self, configure) -> None:
+        configure("orders", "billing")
+        assert self._attributes("orders")["service.name"] == "orders"
+        assert self._attributes("billing")["service.name"] == "billing"
+
+    def test_every_resource_carries_the_deployment(self, configure, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("BLUEPRINT_GROUP", "finance")
+        monkeypatch.setenv("POD_NAME", "pod-7")
+        configure("orders")
+        for namespace in ("", "orders"):
+            assert self._attributes(namespace)["deployment.group"] == "finance"
+            assert self._attributes(namespace)["service.instance.id"] == "pod-7"
+
+    def test_one_span_processor_serves_every_provider(self, configure) -> None:
+        """A processor per agent would be a queue and an export thread per agent."""
+        configure("orders", "billing")
+        processors = {id(tracer_provider(namespace)._active_span_processor) for namespace in ("", "orders", "billing")}
+        assert len(processors) == 3, "each provider has its own multi-processor wrapper"
+        underlying = {
+            id(processor)
+            for namespace in ("", "orders", "billing")
+            for processor in tracer_provider(namespace)._active_span_processor._span_processors
+        }
+        assert len(underlying) == 1
+
+    def test_a_tracer_comes_from_its_own_agents_provider(self, configure) -> None:
+        configure("orders")
+        assert agent_tracer("orders", "X") is not agent_tracer("", "X")
+
+    def test_an_unconfigured_agent_falls_back_rather_than_failing(self, configure) -> None:
+        configure("orders")
+        assert agent_tracer("nobody", "X") is not None
+        assert agent_meter("nobody", "X") is not None
+
+    def test_configuring_twice_does_not_replace_a_provider(self, configure) -> None:
+        configure("orders")
+        first = tracer_provider("orders")
+        configure("orders")
+        assert tracer_provider("orders") is first
 
 
 class TestBuildExporters:
@@ -144,3 +234,63 @@ class TestTracingContext:
         called_keys = [call[0][0] for call in mock_span.set_attribute.call_args_list]
         assert "key" not in called_keys
         assert "other" in called_keys
+
+
+class TestTheDeploymentDeclaresTheResource:
+    """OTEL_RESOURCE_ATTRIBUTES is the deployment's word: declared values are used as they are."""
+
+    @pytest.fixture
+    def configure(self, telemetry_manager: TelemetryManager, mock_config: MagicMock, enabled_observability: ObservabilityConfig):
+        def _configure(*namespaces: str) -> None:
+            mock_config.get_observability_config.return_value = enabled_observability
+            with (
+                patch.object(telemetry_manager, "_build_exporters", return_value=[MagicMock()]),
+                patch.object(telemetry_manager, "_build_metric_exporters", return_value=[]),
+                patch.object(telemetry_manager, "_setup_instrumentation"),
+            ):
+                telemetry_manager.configure_tracing(namespaces)
+
+        return _configure
+
+    @staticmethod
+    def _attributes(namespace: str) -> dict[str, object]:
+        provider = tracer_provider(namespace)
+        assert provider is not None
+        return dict(provider.resource.attributes)
+
+    def test_a_declared_value_is_not_replaced(self, configure, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OTEL_RESOURCE_ATTRIBUTES", "service.instance.id=declared-7,service.name=declared-service")
+        monkeypatch.setenv("POD_NAME", "pod-7")
+        configure()
+        attributes = self._attributes("")
+        assert attributes["service.instance.id"] == "declared-7"
+        assert attributes["service.name"] == "declared-service"
+
+    def test_an_undeclared_key_is_still_filled(self, configure, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OTEL_RESOURCE_ATTRIBUTES", "deployment.environment=prod")
+        monkeypatch.setenv("POD_NAME", "pod-7")
+        configure()
+        attributes = self._attributes("")
+        assert attributes["deployment.environment"] == "prod"
+        assert attributes["service.instance.id"] == "pod-7"
+        assert attributes["service.name"] == "test-service"
+
+    def test_a_standalone_agent_has_no_deployment_group(self, configure, monkeypatch: pytest.MonkeyPatch) -> None:
+        """No group exists for it, so no placeholder group is written."""
+        monkeypatch.delenv("OTEL_RESOURCE_ATTRIBUTES", raising=False)
+        monkeypatch.delenv("BLUEPRINT_GROUP", raising=False)
+        configure()
+        assert "deployment.group" not in self._attributes("")
+
+    def test_an_unknown_pod_writes_no_placeholder(self, configure, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The framework writes nothing; the SDK's own default instance id stands, as without the framework."""
+        monkeypatch.delenv("OTEL_RESOURCE_ATTRIBUTES", raising=False)
+        monkeypatch.delenv("POD_NAME", raising=False)
+        monkeypatch.delenv("HOSTNAME", raising=False)
+
+        def _raise() -> str:
+            raise OSError("no host name")
+
+        monkeypatch.setattr("blueprint.agents.deployment.socket.gethostname", _raise)
+        configure()
+        assert self._attributes("").get("service.instance.id") != "<unknown-pod>"

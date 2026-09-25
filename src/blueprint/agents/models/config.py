@@ -125,6 +125,7 @@ class AIConfig(BaseModel):
     api_key: str | None = Field(None, description="API key")
     base_url: str | None = Field(None, description="Base URL for API")
     max_tokens: int | None = Field(None, description="Max tokens per request")
+    timeout: float | None = Field(None, gt=0, description="HTTP timeout per model request, in seconds")
     temperature: float | None = Field(None, description="Temperature for generation")
     concurrency_limit: int | None = Field(None, description="Max concurrent requests")
     usage_limits: UsageLimits = Field(default_factory=UsageLimits, description="Usage limits")

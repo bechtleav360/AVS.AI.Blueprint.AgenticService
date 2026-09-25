@@ -1,4 +1,549 @@
 # Changelog
+## [Unreleased]
+
+### Fixed
+
+- **A standalone agent's `Config` reads `hostname`, `pod_name` and `blueprint_group` again.** Since
+  the 0.9 alphas, `get()` raised for these keys everywhere. The refusal exists so that an agent in a
+  group cannot depend on where it runs; it now applies only to an agent's view in a group.
+- **`OTEL_RESOURCE_ATTRIBUTES` is honoured.** The framework set `service.name`, `deployment.group`
+  and `service.instance.id` in code, which the OpenTelemetry SDK lets win over the environment, so
+  a value a deployment declared was silently replaced -- `service.name` included, since 0.8. A key
+  declared in `OTEL_RESOURCE_ATTRIBUTES` or `OTEL_SERVICE_NAME` is now used exactly as declared;
+  the framework fills only what was left out. A standalone agent's resource carries no
+  `deployment.group` (it was `<ungrouped>`), and no placeholder instance id when the pod is unknown.
+- **A standalone agent's `/health/ready` has its original shape again.** The body gained `policy`
+  and a `namespaces` section keyed `"<root>"`, which describe the agents of a group. They now appear
+  only when the process hosts a group; a standalone agent gets `status` and `components`, as before.
+  The same holds for `/status/env`: its `namespaces` breakdown appears only in a group (the new
+  `envvar_prefix` field stays), and its log line is the 0.8.1 one for a standalone agent.
+- **A standalone agent's NATS connection is named after its pod alone.** It was named
+  `<root>.<ungrouped>.<pod>`, implying a namespace and a group that do not exist for it. Before the
+  namespace feature it sent no name; now it sends the pod (or host) name, and none if that cannot
+  be determined. Agents in a group keep `<agent>.<group>.<pod>`.
+- **A standalone agent logs what it logged before the namespace feature.** Log lines and error
+  messages that existed in 0.8.1 had been reworded for groups, with `<root>` standing in for a
+  standalone agent's empty namespace -- e.g. `Eventing component <root> startup completed`,
+  `No handler in namespace '<root>' processed event`, the NATS connect and subscribe lines, the
+  cache registration lines, `Health check failed for …`, `Readiness probe failed: …`, the
+  configuration and OpenTelemetry lines, and the registry's "no cache" and "already exists"
+  errors. A standalone agent emits the 0.8.1 wording again; a grouped process keeps the new one.
+- **A handler failure is logged once.** The handler chain and `EventProcessingService` each logged
+  it at ERROR before re-raising, and the transport edge logged it again with its disposition --
+  up to three copies per failure. Only the edge logs it now. `DaprClient.publish`, `NATSClient.connect`
+  and `Config.validate` stop logging before raising, too.
+- **The documented health-check example reported a failing check.** `HealthCheckerBase`'s example
+  returned `status="UP"`, but readiness counts anything other than `"healthy"` as failing;
+  `SessionsServiceHealthChecker` returned `UP`/`DOWN` and so always counted as down. Both now use
+  `"healthy"`/`"unhealthy"`.
+- **Stale documentation:** the health package README described three classes that do not exist
+  (rewritten); `components/services.md` said `ServiceBase` has no abstract methods (it has two);
+  the `RestApiBase` and `EventHandlerBase` docstring examples did not run; `namespace_of` and the
+  registry's log line described code that has moved on.
+- **`opentelemetry-instrumentation-httpx` is a declared dependency.** `telemetry.py` imports it,
+  and it was installed only because something else happened to pull it in.
+- **Scaffolding fixes.** The generated `Dockerfile` copied a `README.md` that nothing generates, so
+  `docker build` on a fresh project failed; the generated `settings.toml` chose `scheduler_mode =
+  "in_process"`, defeating its deliberate lack of a default, and carried an internal model host;
+  `asbs validate` told an agent to add an `agents.toml`, which an agent must not carry, and now
+  points at the image's map instead (as a notice); `asbs setup` said a standalone agent's routes
+  were under `/api/<name>`; the generator called `sys.exit(1)` from library code on an invalid
+  config and now raises `ValueError`. The unreferenced `assistant_integrations/CLAUDE.md` is no
+  longer packaged.
+- **`SessionsJobHandler` no longer grows without bound.** Its replay guard kept every finished
+  job's id for the life of the process. It now remembers an id for an hour and at most 10,000 ids
+  (`SEEN_TTL_SECONDS`, `SEEN_MAX_ENTRIES`, overridable per subclass).
+- **REST request bodies are no longer logged.** `RestApiBase._process_resource` put the whole
+  payload into the `extra` of an INFO line, so personal data and secrets in a request body reached
+  the logs. Only the payload's type is logged now.
+- **A REST request keeps one request id.** `process_event` replaced the id the REST layer had
+  created, logged and returned as the RFC 7807 `traceId`, so processing ran under a second id that
+  matched nothing the caller saw. A caller's id is now kept.
+- **The vLLM request timeout has its own key.** It was taken from `model_max_tokens`, so 4096
+  tokens meant a 68-minute HTTP timeout and 5 tokens a 5-second one. `model_timeout` (seconds,
+  default 60 for vLLM) sets it now, and applies to the OpenAI client too when set.
+- **The Dapr routing key reaches the sidecar.** It was sent as an HTTP header, which Dapr's publish
+  API does not read; it is now the `metadata.routingKey` query parameter.
+- **One declaration with an `AgentBuilder` can serve several agents of a group.** A group replays
+  a declaration once per agent, and `AgentBuilder.build()` is single-use, so the second agent failed
+  with "AgentBuilder.build() has already been called". Each agent now builds from its own copy of
+  the builder, with its own tool list.
+- **`AgentBuilder.with_result_type()` and `with_deps_type()` take effect.** Both were stored and
+  never passed to the agent, so a structured-output agent returned plain `str` and the documented
+  `result.output.<field>` failed. They are now passed as `output_type` and `deps_type`. Giving the
+  same value to `build()` as a keyword as well is refused.
+- **Event deduplication claims atomically.** The handler chain checked for the marker with
+  `exists()` and then wrote it with `set()`, so two replicas handed the same event at the same moment
+  both passed the check and both dispatched. It now uses the cache's atomic `claim()`, which already
+  existed for the scheduler's tick claim.
+- **A handler result that fails to publish fails the delivery.** `publish_handler_event` caught
+  every exception and logged a WARNING, so the inbound event was acknowledged and the handler's
+  output was lost. The failure now naks the event -- the handler runs again on redelivery -- and the
+  dedup marker is released so the redelivery is not skipped. Result events get a deterministic id
+  (UUIDv5 over agent, source event, type and position) instead of a random one, so a republished
+  result keeps its id and consumers can deduplicate it.
+- **An agent latched down at startup is shown as down in `/health/ready`.** The latch paused the
+  agent and set its gauge to 0, but readiness was computed from health checks alone, so the probe
+  and the payload reported it `UP` with nothing failing. The payload now shows it `DOWN` with a
+  `reason`, and the readiness policy counts it. The poll also no longer skips everything when no
+  health check is registered, which had left both the verdict and resumption unevaluated.
+- **An agent latched down at startup recovers without a restart.** Its failed components are
+  retried every `startup_retry_interval_seconds` (default 30), in start order; when all have
+  started the latch is released and health checks decide. It never ends the process. `on_startup`
+  must therefore be safe to call again after it raised.
+- **A non-critical agent marked down at startup no longer consumes events anyway.** When its
+  client failed `on_startup`, the agent was paused before its eventing endpoint subscribed, and the
+  subscribe path ignored the pause -- so the latched-down agent connected and took events it could
+  not process. A paused client now registers its topics and waits; it connects and subscribes only
+  if the agent is released.
+- **Credentials inside `nats_url` no longer reach the log or `/health`.** The connect log line
+  printed the URL verbatim, and the NATS health message printed the parsed URL including
+  `user:password@`. Both now show `***@host:port`.
+- **An environment override of a key an agent's own `settings.toml` also sets now wins in a group.**
+  `DYNACONF_<AGENT>__KEY` was compared against the agent file's keys case-sensitively -- Dynaconf
+  upper-cases what it loads, the file keeps lower case -- so the override was never seen: a list
+  was concatenated with the file's, a scalar was replaced by the file's value, and the key was
+  reported as merged. Keys are now matched case-insensitively, at every nesting level.
+- **Both scaffolded `Dockerfile`s declared a `HEALTHCHECK` against a route that does not exist.**
+  `curl -f http://localhost:8000/health` -- but `ActuatorApi` serves `/health/live` and
+  `/health/ready`, and nothing at `/health`. `curl -f` fails on the 404, so every container built
+  from a scaffold reported `unhealthy` for its whole life: compose's `depends_on:
+  service_healthy` never released, and anything reading Docker's health state saw a permanently
+  failing container that was in fact serving traffic. Both now probe `/health/live`, which is what
+  the deployment guide has always shown. A generated-project test holds the path.
+
+- **`asbs validate --group` contradicted the runtime about where an agent's `root` points.** The
+  runtime resolves every `root` against the **image root** -- the directory the process runs in --
+  and `BLUEPRINT_AGENT_MAP` may put the map anywhere, so a repository keeping `deploy/agents.toml`
+  with its agents at the top runs correctly. The validator resolved each `root` against whichever
+  directory the map sat in, so it reported that layout as `... is not a directory` under the
+  verdict "would stop this image starting" -- a false statement about a working image, whose
+  correct reading is to break a layout that worked. The two coincide only where the map is at the
+  image root, which is what `asbs setup --group` writes, so no test caught it. The command now
+  takes the directory argument as the image root and `--agent-map PATH` (or `BLUEPRINT_AGENT_MAP`)
+  as where the map is; a relative path resolves against the image root, as at runtime. The error
+  for an absent map names the flag. Present since `root` became required in 0.9.0a4.
+- **An agent settings file that scoped keys under the agent's own name merged into nothing.**
+  `[default.<agent>]` in that agent's own `settings.toml` nested to `<agent>.<agent>.*` once the
+  file was merged under the agent's namespace, so every key in it was unreachable -- and the
+  failure surfaced far from the cause, as `No model name for runtime agent '<agent>_agent'
+  configured`, naming the agent rather than the file. Found migrating a real project. It is now
+  refused at merge, naming the section and the fix, and `asbs validate --group` reports it without
+  starting anything. Plain `[default]` serves both shapes: standalone resolves it because a scoped
+  lookup falls back to the root key.
+- **A grouped agent's own `settings.toml` was never read.** The group looked for it beside the
+  *declaration module* -- inside `src/` -- while every scaffolded project writes it beside `src/`,
+  so the file existed, looked right, and was never opened. Nothing failed: the agent ran on the
+  group's defaults and said so nowhere. It is now read from the directory the agent map states.
+- **Prompts resolved against the process working directory.** One directory for a whole group, so
+  it was right for at most one agent; the others found nothing, or found a neighbour's prompt of
+  the same name. Each agent's configuration view now reports its own directory as the package
+  root, so `<agent>/src/prompts` resolves exactly as it does standalone.
+- **A scaffolded agent no longer ships process-wide keys.** `log_level` and `log_format` were
+  written into every agent's `settings.toml`, so every group one joined dropped them with a
+  warning about a file the scaffolder itself wrote. They are now commented out, with the reason.
+
+### Added
+
+- **Handlers see the subject a NATS message was delivered on**, as `context["nats_subject"]`
+  (`NATS_SUBJECT_CONTEXT_KEY`), beside `nats_topic`, which is the subscription and may be a
+  wildcard. It comes from the broker, not the event, so a tenant can be derived from the subject the
+  broker checked rather than from the publisher-controlled `tenantid`.
+- **NATS credentials from their own keys.** `nats_user`/`nats_password`, `nats_token`,
+  `nats_creds_file` and `nats_nkey_seed` are passed to the connection, so an account under
+  tenant-scoped auth no longer has to put its credentials inside `nats_url`. At most one method may
+  be configured; a half-set login, a creds file that is not there, or two methods at once fail
+  startup. `nats_inbox_prefix` replaces `_INBOX` for accounts not permitted `_INBOX.>`. All are read
+  per agent, so each agent of a group can have its own account. The dependency on `nats-py` is now
+  `nats-py[nkeys]`, which creds files and nkey seeds need.
+- **A `blueprint-migration` Claude Code skill**, installed by `asbs claude`: moving an existing
+  single-agent project into a group -- the files it touches, the mistakes that break it, and how
+  `asbs validate --group` checks it. The migration guide was previously reachable only from inside
+  `blueprint-multi-agent`. `asbs claude` now lists the skills and agents it installed by reading
+  them from the package, rather than from a hand-kept list that would have left any new skill
+  unannounced.
+- **A standalone agent declares nothing group-related.** `asbs setup` writes a `create_app()`
+  factory beside the declaration, and the generated Dockerfile serves it with
+  `uvicorn src.main:create_app --factory` -- no agent map, no group, no namespace. A group of one
+  is still a group, and requiring an agent to declare itself one in order to run alone is what put
+  the group's own file inside the agent. The same directory is still hosted by a group image
+  without changing a line; its components simply gain that agent's namespace, and with it the
+  `/api/<agent>` route prefix.
+- **`.dockerignore`**, written by both `asbs setup` and `asbs setup --group`. Not tidy-up: the
+  group image copies the whole `agents/` tree, because which agents a process runs is decided at
+  startup rather than at build time -- and Docker's build context is the filesystem, not the
+  repository, so `**/.secrets.toml` being in `.gitignore` did nothing to keep real keys out of a
+  layer.
+- **`asbs setup --group` writes a `pyproject.toml`** as well. The group Dockerfile's builder stage
+  installs from one, so without it the image could not be built.
+- **The declaration rules apply to `create_app` too.** A component registered as an already-built
+  instance is refused when a *host* builds a declaration -- `create_app()` or a group -- because an
+  agent that works standalone only because nobody checked is an agent that fails the day it joins a
+  group. The older shape, `AppBuilder(config)` built in place, stays permissive and keeps working.
+- **`root` in the agent map**, required per agent, relative to the directory `agents.toml` is in.
+  Stated rather than derived: a root guessed from where a declaration happens to sit is right for
+  one layout and silently wrong for every other, and nesting an agent at any depth now costs
+  nothing. A missing `root`, one that escapes the image, one that is not a directory, and two
+  agents sharing one are each refused at startup, naming the agent.
+- **Misplaced files are refused, not ignored** (`blueprint.agents.layout`). One table of artefacts
+  with a single legal location, enforced at group assembly and reported by `asbs validate
+  --group`: `settings.toml` and `.secrets.toml` beside `src/`, `agents.toml` at the image root.
+  `Dockerfile` is deliberately absent from it -- an agent may own one while living in a group
+  repository. Adding an artefact is one tuple.
+- **`asbs setup --group`** writes the image's files -- an empty agent map, the process settings
+  and a group Dockerfile -- and creates no agent.
+- **`asbs validate --group`** validates an image: every `root`, each agent's layout, misplaced
+  files, process-wide keys left in an agent, and which `settings.toml` each agent actually reads.
+- **`asbs dev --name`**, and `asbs dev` no longer needs an `agents.toml` in an agent's directory.
+  It writes the one-agent map outside the project for that run.
+
+### Breaking
+
+- **Removed unused internals:** the empty module `blueprint.agents.models.event_routing`, and the
+  example-domain models `AnalysisRequest` and `AnalysisResponse` in `blueprint.agents.models.result`,
+  which nothing in the framework used and the package did not export.
+- **`blueprint.events.unhandled` and `blueprint.events.duplicate` carry `agent`, not
+  `namespace`,** and are recorded on the agent's own meter. They were created at import on the
+  global meter, so they reported under the root's resource for every agent, with a label no other
+  metric uses. The root is labelled `<root>`, as everywhere else. Dashboards on the old label need
+  the new one.
+- **`nats_use_jetstream = true` is enforced against the server; there is no fallback to Core
+  NATS.** The server is asked for the account's JetStream information on connecting. If it does not
+  offer JetStream, the agent fails: at startup through the startup failure policy, later (broker
+  unreachable at startup) by shutting the process down for the root or a critical agent and marking
+  a non-critical one down. The previous fallback rarely triggered, and when it did it dropped
+  durable consumers and acknowledgements without anyone deciding it.
+- **JetStream consumer settings are opt-in again.** The framework set `ack_wait` 300 s,
+  `max_ack_pending` 16 and `max_deliver` 5 on every consumer it created, overriding the server's
+  defaults for deployments that had configured nothing. `nats_ack_wait`, `nats_max_ack_pending` and
+  `nats_max_deliver` are now applied only when set; unset, the server's default stands (NATS: 30 s,
+  1000, unlimited). With `nats_max_deliver` unset, a message that keeps failing is retried without
+  limit and never dead-lettered, as before 0.9.0 -- set it to bound retries. Consumers that already
+  exist keep their settings, and an unset key is not reported as a difference.
+- **`ClientBase.subscribe()` callbacks take the delivery subject.** The contract is now
+  `DeliveryCallback = Callable[[CloudEvent, str], Awaitable[None]]` (in `clients/client_base.py`):
+  the event, then the subject it arrived on. Only code that calls `NATSClient.subscribe()` directly,
+  or implements `ClientBase`, is affected -- handlers are not. A one-argument callback now fails
+  with a `TypeError` on the first message.
+- **`nats_url` has no default outside development.** With `event_bus = "nats"` and no `nats_url`,
+  a process whose `app_environment` is anything but `"development"` now fails startup naming the
+  key -- a standalone or critical agent before the port is bound, a non-critical agent of a group
+  by being marked down. It used to connect to `nats://localhost:4222`, which in a pod reaches
+  nothing and retried forever while the pod reported healthy. Development keeps the localhost
+  fallback, with a WARNING. A broker in the same pod needs `nats_url` set explicitly.
+- **A process in development mode logs a WARNING at startup** that it is not suitable for
+  production. `app_environment` defaults to `"development"`, so a deployment that sets nothing now
+  says so in its own log.
+- **`root` is required in `agents.toml`.** Every existing entry needs one line added; a map
+  without it refuses to start rather than guessing. For an image that copied one agent to `/app`,
+  that is `root = "."`.
+- **The standalone image no longer runs the group entry point.** It serves
+  `src.main:create_app` directly. An existing project keeps working: `uvicorn src.main:app` is
+  still served for a pre-split `main.py`, and a project that wants the old command can keep it.
+- **`agents.toml` inside an agent is refused unconditionally**, with no exception for an agent
+  mapped at the image root. That shape only existed to let a standalone agent be a group of one,
+  which it no longer has to be.
+- **`asbs setup` no longer writes `agents.toml` into an agent.** The map says which agents an
+  *image* contains, which is a packaging decision -- an agent carrying one is an agent that knows
+  whether it is running alone. The single-agent `Dockerfile` writes a one-agent map into its own
+  image instead. Existing projects keep working; delete the file when the agent joins a group,
+  where it is refused.
+- **The `src/<agent>/main.py` group layout is retired.** An agent is now the same directory alone
+  or in a group -- `<agent>/settings.toml` beside `<agent>/src/` -- which is what lets it move
+  between repositories untouched. Multi-agent grouping has only ever shipped in 0.9.0 alphas, so
+  nothing stable depended on the old shape.
+- **`AgentMapPartGenerator` is gone.** It generated a file that is no longer written; its
+  `agent_namespace` helper moved to `PartGeneratorBase`.
+
+### Added
+
+- **The documentation ships inside the package.** The user-facing guides moved from the repository
+  root to `src/blueprint/agent_generator/docs/` and are now installed with the wheel, so a
+  developer or an AI assistant working in a consuming project can read them with no network access.
+  Previously `README.md` became the wheel's `METADATA` while the 21 documentation pages it links to
+  stayed behind in the repository, and every one of those links resolved to nothing once installed.
+- **`asbs docs`** locates the packaged documentation: `asbs docs` lists every page, `asbs docs
+  <topic>` prints the path to one, `asbs docs <topic> --cat` prints its contents, and `--root`
+  prints the directory. A bare page name is accepted when it is unambiguous.
+- **Seven Claude Code skills**, installed by `asbs claude` alongside the two that already existed:
+  `blueprint-cli`, `blueprint-config`, `blueprint-events`, `blueprint-multi-agent`,
+  `blueprint-testing`, `blueprint-deployment` and `blueprint-troubleshooting`. Each carries the
+  rules that are expensive to get wrong and points at the packaged page for the rest, rather than
+  restating it -- the docs stay the single source of truth.
+- **`LICENSE`** (MIT). The repository claimed MIT in its classifiers and linked a `LICENSE` file
+  that did not exist; the license is now declared as an SPDX expression and ships in the wheel.
+
+### Changed
+
+- **`docs/guides/cli-reference.md` is an index**, with one page per command under `guides/cli/`
+  (`setup`, `create`, `validate`, `dev`, `claude`, plus `naming` and `auto-registration`). It was a
+  single 1,023-line page, which meant reading about one flag cost the whole file.
+- **Migrating an existing agent into a group is its own page**,
+  `guides/multi-agent-migration.md`, split out of `guides/multi-agent-setup.md`.
+- **`README.md` links are absolute.** Relative links do not resolve on the PyPI project page or in
+  the installed `METADATA`. The CI badge pointed at an unrelated repository.
+
+### Fixed
+
+- **`pytest` and `pytest-asyncio` are no longer runtime dependencies.** They were listed in
+  `[project.dependencies]`, so every consumer installed the test suite's tooling in production.
+  They remain in the `ci` extra.
+
+### Deprecated
+
+- **JetStream consumers created before 0.9.** 0.8 left each durable delivering to a random inbox
+  with no deliver group, so only one replica can consume from it. Such a consumer is still found
+  under its name and used exactly as it is -- it is never recreated, which would replay or gap --
+  but it is logged at startup as `DEPRECATED` and will not be supported in a future release.
+  Delete it during a maintenance window; the framework then recreates it so that every replica
+  shares it.
+
+### Upgrading a standalone agent from 0.8
+
+What the broker sees change when an agent that ran on 0.8 starts on this version, with
+`nats_use_jetstream = true`:
+
+- **Existing durables are reused**, found under the same name for a topic without `.`, `*`, `>` or
+  whitespace (`orders` -> `orders-durable`), and announced as deprecated (above). For a topic with a
+  dot the name is now `orders_created-durable`; 0.8's `orders.created-durable` is a name the broker
+  refuses, so no such consumer can exist to be orphaned.
+- **`nats_durable_name` with several topics fails startup.** 0.8 gave all of them one consumer, of
+  which only the first topic's subscription worked.
+- **The stream is widened, never narrowed.** 0.8 created it over `<first topic>.>` and never touched
+  it again; this version adds every subscribed topic, the dead-letter subject and, when publishing
+  through JetStream, the publish subjects.
+- **Core NATS subscriptions join a queue group** (`nats_queue_group`, else `app_name`), so each
+  message reaches one replica instead of every one.
+
+## [0.9.0] - 2026-09-14
+
+**Multi-agent grouping.** How many agents share a process becomes a *deployment* parameter rather
+than an architectural commitment. An agent's code is identical whether it runs alone or beside
+nineteen others; only what starts the process differs. A standalone agent is unaffected by almost
+all of this — see **Breaking** for the exceptions, which are listed in the order you are likely to
+hit them.
+
+Full migration path, including the one decision to get right before the first deploy:
+[`guides/multi-agent-setup.md`](src/blueprint/agent_generator/docs/guides/multi-agent-setup.md). The normative spec is
+`docs/specs/2026-08-28-multi-agent-grouping.md`.
+
+### Added
+
+- **Agent grouping.** `agents.toml` names the agents an image contains and the module each
+  declaration lives in; `BLUEPRINT_AGENTS`, or `BLUEPRINT_GROUP` plus a mounted
+  `BLUEPRINT_GROUP_CONFIG` file, decides which of them a given process runs;
+  `python -m blueprint.agents.entrypoint` resolves, builds and serves them. Each hosted agent owns
+  its handlers, agent runtime, REST routes (`/api/<agent>`), AI client, thread pool, caches and
+  broker connection; the port, the health endpoint and the process are shared.
+  `BLUEPRINT_CRITICAL_AGENTS` says which agents failing should fail the process.
+- **Agents in one process are isolated, and the barrier is enforced rather than conventional.** An
+  agent resolves its own components, caches and configuration plus the root's shared ones. Reaching
+  a neighbour by its registry key, by an explicit `namespace=` on a view, by a dotted configuration
+  key, or by sharing one declaration's mutable argument between two agents is refused or reported
+  absent. `Config.settings` remains the documented escape hatch and logs a WARNING naming the agent.
+- **An agent's identity is stable across regrouping** (spec C1): its NATS queue group, JetStream
+  durable, cache partition, OpenTelemetry `service.name`, registry prefix and REST prefix all derive
+  from the agent's own name and never from the group or the pod.
+- **Per-agent observability.** `service.name` per agent, `blueprint_namespace_up{agent}`, a
+  readiness entry and health checks attributed per agent, `blueprint.scheduler.tick_age_seconds`,
+  `blueprint.events.dead_lettered`, `blueprint.events.unhandled` and `blueprint.events.duplicate`.
+- **`CacheService.claim`** — set-if-absent, atomic on both backends (`add` on disk, `SET NX EX` on
+  Redis). This is the compare-and-set primitive the deduplication work flagged as missing.
+- **Named caches.** `with_cache(name=...)`, `/cache/*` endpoints take `?name=`, and `/readiness`
+  gains a `cache:<name>` entry per named cache.
+- **Opt-in event deduplication** — `idempotency_enabled` and a required `idempotency_ttl`. Off by
+  default; a failed dispatch releases its claim so the nak's redelivery still runs.
+- **`nats_publish_mode`** (`"core"` / `"jetstream"`) separates publishing from durable consumption,
+  with `nats_publish_subjects` for subjects not already in `event_publishing.topic_mapping`. Unset,
+  it follows `nats_use_jetstream`, so nothing existing changes.
+- **`run_app`**, so a project can serve itself from its own settings.
+- **Scaffolding**: `asbs setup` now writes `agents.toml`, a `pyproject.toml` and two tests, so
+  `asbs setup` → `pytest` → `asbs validate` closes; `asbs validate` reports what a project has not
+  said about grouping and about idempotency; the CLI no longer crashes on a Windows console.
+- New config keys: `event_client_drain_timeout`, `dapr_pubsub_name`,
+  `dapr_declarative_subscriptions`, `idempotency_enabled`, `idempotency_ttl`, `scheduler_mode`,
+  `event_publishing_enabled`, `nats_publish_mode`, `nats_publish_subjects`. All default to current
+  behaviour except `scheduler_mode`, which is required — see below.
+- `pyyaml>=6.0` is now a declared dependency (it reads the group file). Already present in every
+  environment via `uvicorn[standard]`, so no installed set changes.
+
+### Breaking
+
+1. **`scheduler_mode` is required.** A project that registers a scheduler and does not set it fails
+   at `build()`, with an error naming both values and what each costs. `"in_process"` reproduces
+   today's behaviour exactly and is the no-op migration; `"event"` is the one that fixes #73.
+   Defaulting the key would either keep firing a timer per replica or silently stop ticking a
+   service with no broker, and neither is safe to inherit.
+2. **A subject-unsafe `app_name` or `nats_queue_group` now fails at startup** instead of being
+   rewritten or reaching the broker. `app_name = "Health Monitor"` with an event-mode scheduler used
+   to derive `Health_Monitor.scheduler.<name>`; the rewrite was invisible to whoever wrote the
+   `CronJob`, so the symptom was a tick that never arrived. Rename to a subject-safe value, or pass
+   `topic=` explicitly.
+3. **A scoped `Config`'s dotted key no longer resolves against the whole tree.** `_scoped_get` used
+   to fall back from `<scope>.<key>` to the raw key, and since an agent's section is
+   `[default.<agent>]`, that let one agent read another's settings. The fallback is now an allowlist
+   of the four prefixes the framework itself owns (`cache`, `event_publishing`, `runtimes`,
+   `runtime`). A project reading its *own custom* nested key through a scoped view now gets an error
+   naming the rule; flat keys and `Config.settings` are unaffected.
+4. **A registry view that names another agent is refused.** `get_component(..., namespace="other")`
+   and `get_cache(..., namespace="other")` raise on a scoped view. Every in-framework caller passes
+   its own namespace or holds the application registry, so nothing internal is affected.
+5. **A scoped `Config`'s telemetry `service.name` is the agent's name.** Affects a project using
+   `Config(agent_scope=...)`, which has shipped since April. A repo with `foo.app_name = "Foo
+   Service"` and no `foo.otel_service_name` sees `service.name` change from `Foo Service` to `foo`.
+   Migration is one line: set `<scope>.otel_service_name` to whatever the dashboards key on. A
+   project that passes no `agent_scope` is unaffected.
+6. **Cache keys moved, twice -- for named caches and for agents in a group.** A cache is now
+   private to the agent that declared it, keyed on `(namespace, name)` with its own subdirectory
+   and Redis prefix. Such a cache upgrading with persistent Redis or a mounted disk cache sees its
+   old entries as **absent** — a cold cache, not an error. **A standalone agent's default cache is
+   unaffected:** its directory, Redis prefix and keys are unchanged, so it keeps its entries. A
+   group still needs exactly one writable mount, since an agent's store is a subdirectory of
+   `cache.cache_dir`. If any cache entry is load-bearing rather than an optimisation, migrate it
+   deliberately.
+7. **Four declaration surfaces are deleted**: `AgentRegistration`, `RegisteredComponent`,
+   `NamespaceBuilder`, and `AppBuilder.with_namespace` / `with_registration`. `AppBuilder` is the one
+   declaration surface; `AgentGroup` collects named declarations into a process. Passing an
+   already-built component instance (`with_service(MyService())`) still works for a single standalone
+   agent and is refused in a group — pass the class, or a zero-argument factory.
+8. **`ClientBase.subscribe` changed from `(topic, callback)` to `(topic_callbacks)`**, and
+   `EventHandlingBase.subscribe` and `POST /nats/subscribe/{topic}` are removed. This affects
+   third-party transport implementations; both in-repo clients are updated.
+9. **On grouped Dapr, one delivery is fanned out in-process to every agent that declared the
+   topic, and the single acknowledgement the sidecar receives is their combination** — so a retry
+   asked for by one agent redelivers to all of them. The sidecar fetches the subscription document
+   from one fixed path, which is why there is one endpoint at the root that routes rather than one
+   document per agent. Set `idempotency_enabled` for grouped Dapr, or keep handlers
+   repeat-tolerant. Single-agent Dapr and NATS are both unaffected.
+10. **`Registry.update_component_name` refuses a name that is already taken** instead of overwriting
+    it. Anything relying on the overwrite was losing a component silently.
+11. **`asbs setup` now scaffolds `.secrets.toml`**, the name `DEFAULT_SETTINGS_FILES` actually loads;
+    it used to write `secrets.toml`, which nothing read. This is a change to the *scaffolder* only —
+    the framework's file list is untouched, so no existing deployment changes. `asbs validate`
+    reports an undotted file as the rename it needs. An already-scaffolded project should rename its
+    file.
+12. **`Component.shared_config` is now private (`Component._shared_config`)**, with
+    `Component.reset_shared_state()` as the one supported way to clear it. The old attribute was
+    public and writable but read by nothing outside `_ComponentMeta`, so hiding it looked like
+    code-only cleanup. It is not: a test suite that rebuilds its `AppBuilder` app once per test case
+    and resets state between cases with the old `Component.shared_config = None` now silently
+    no-ops, since the real state lives on `_shared_config` — `Component.configure()`'s "already set"
+    guard then trips starting from the second test in the run, with an error that does not name this
+    rename. **Any project resetting shared state between test cases must switch to
+    `Component.reset_shared_state()`** in its fixtures; this also clears `shared_registry`, which
+    stays public and is otherwise unaffected. A project that never resets shared state between
+    builds is unaffected.
+13. **A scheduler tick runs in one replica, not in every one.** Before, every replica -- and every
+    worker -- ran its own timer and each ran every tick. Now `scheduler_mode = "event"` delivers the
+    tick through the queue group to one replica, and `"in_process"` claims each tick in the cache so
+    one replica runs it. A deployment that relied on every replica running a tick in parallel -- a
+    per-pod cleanup, say -- now runs it once per tick; register the cache per pod, or do the per-pod
+    work outside the scheduler. Without a registered cache, `"in_process"` still runs every tick in
+    every replica, and says so with a WARNING at startup where it used to log an INFO.
+14. **A Core NATS event reaches one replica, not every one.** Subscriptions now join a queue group
+    (`nats_queue_group`, else `app_name`); before, every replica received and processed every event.
+    A deployment that relied on each replica seeing each event now sees each event once.
+15. **`Config()` no longer configures logging.** Constructing a `Config` used to set up the root
+    logger; library code must not, so `AppBuilder` does it now. A script or test that builds only a
+    `Config` and relied on its logging setup has to configure logging itself.
+16. **`Config.settings` is read-only.** It was a plain attribute; assigning to it now raises
+    `AttributeError`. Replacing the settings tree underneath a running configuration bypasses every
+    agent's view of it and is not supported.
+17. **Metrics a project records itself are now exported.** With OpenTelemetry enabled, the framework
+    registers a global `MeterProvider` that exports over OTLP. Before, it registered none, so a
+    counter a project created through `metrics.get_meter(...)` was silently discarded; the same
+    unchanged code now reaches the collector, which can add series -- and cost -- to a metrics
+    backend. A project that registered its own `MeterProvider` first keeps it: the SDK refuses a
+    second one and the framework's is not installed.
+
+### Fixed
+
+- **⚠️ The environment a project selects is now actually the one that loads** (#89). `Config`
+  passed the resolved `app_environment` to Dynaconf as `current_env=`, which is a *derived*
+  property reporting the active environment, not the parameter that selects one. That parameter
+  is `env=`. The resolved environment was therefore never applied: a deployment could log
+  `Loading configuration properties for environment: production` and read every value from the
+  default section, with nothing anywhere disagreeing. Verified against dynaconf 3.3.5 — with two
+  sections that differ, `current_env=` returns the default's value and `env=` returns
+  production's.
+
+  **This is a behavioural change, and it is not opt-in.** A project that declares a non-default
+  `app_environment` *and* has a matching `[<environment>]` section has been silently running the
+  default section; on upgrade it starts getting the section it always asked for. If that section
+  is stale — written once, never exercised, never corrected because it never took effect — the
+  values in it go live on upgrade. **Check your non-default sections before upgrading.** A
+  project with no `app_environment`, or with no section for it, is unaffected.
+
+  Note `app_environment` is read by the first configuration pass, which loads with
+  `environments=False` and so sees **top-level keys only** — the same shape `envvar_prefix`
+  requires. Declared inside a section it is invisible to that pass and selects nothing, before
+  this fix or after; set it at the top level of `settings.toml`, or as `<PREFIX>_APP_ENVIRONMENT`
+  in the environment. Pinned by `TestTheResolvedEnvironmentIsTheOneLoaded`, whose cases fail
+  against the old keyword.
+- **`/status/env` no longer returns credentials in clear** (#91). Config masking matched whole keys
+  only, so anything with a prefix or suffix around the secret word came back readable. Present since
+  `4e6421b`, unrelated to grouping. An agent-scoped actuator also now reports its own scope rather
+  than the whole tree.
+- **Dapr declared topics actually subscribe** (#81). `GET /dapr/subscribe` served nothing usable and
+  answered 422 to the sidecar. A project that overrides `get_subscribed_topics()` will see Dapr
+  behaviour change by design — declared topics went from subscribing to nothing to subscribing.
+- **Resilient broker startup and subscription readiness** (#28). Connection and subscription setup
+  run asynchronously with background retry, `/health/live` succeeds while retrying,
+  `/health/ready` stays unhealthy until subscriptions are established, and NATS and Dapr behave
+  consistently. Configurable via `event_client_max_retries` and `event_client_retry_delay`.
+- **Schedulers no longer fire duplicate cron ticks under multiple replicas or workers** (#73).
+  `scheduler_mode = "event"` delivers the tick as an ordinary event, so the queue group picks one
+  replica; `"in_process"` claims each tick in the shared cache so one replica runs it.
+- **Schedulers no longer start twice** (#43), on both causes: a second `build()` pass no longer
+  starts a second timer, and `SchedulerBase` sitting in the REST-API lifespan loop as well as the
+  scheduler loop no longer creates two `AsyncIOScheduler` instances per scheduler. The manual
+  trigger route is now registered before `include_router` copies it, so it is actually served.
+- **`AgentBuilder` no longer needs a `Config` at construction and builds no model during `__init__`**
+  (#4). The AI client and model are resolved in `build()`, against the agent's own configuration view.
+- **The unit/integration test split is enforced** (#80). `tests/integration/` was not run by CI and
+  sat at 28 failures asserting on examples that had been removed.
+- **A handler's published result is no longer silently lost under JetStream.** The client declared
+  no publishable subjects, so `js.publish` waited for an acknowledgement no stream would send, timed
+  out, and was swallowed as a WARNING while a Core NATS listener still saw the message. Found
+  against a real broker.
+- **`AgentRuntime` is constructed with its name and registered like every other component.** It
+  registered itself under the bare name, so two agents in a group sharing a runtime name collided on
+  one registry key. This also made a freshly scaffolded project fail to start with
+  `TypeError: AgentRuntime.__init__() missing 1 required positional argument: 'name'`.
+- **A scaffolded project starts, tests and validates.** Its settings file wrote `[default.logging]`
+  and `[default.observability]` tables the framework never reads; `asbs create agent` wrote
+  `[default.runtimes.<agent>.models]` where the framework reads `model_settings`; `asbs create` wrote
+  absolute imports into files using relative ones; `asbs create handler` could die mid-command on a
+  Windows console leaving the project half-edited; and `asbs setup` printed
+  `pip install -e .` without writing a `pyproject.toml`.
+- **`token_metrics_enabled` is actually read.** `get_observability_config()` never passed it, so the
+  per-call token and latency metrics stayed on however the key was set.
+- **`GET /cache/stats` no longer returns 500**, and the four overlapping cache documents are one,
+  rewritten against the code.
+- **Five bundled examples declared an `app_name` the broker refuses**; `webhook_relay` was broken
+  outright. All renamed, and a test now holds every example's `app_name` to the subject alphabet.
+- Events that match no handler are counted rather than flagged, acknowledged rather than redelivered
+  to `max_deliver`; a critical error drops on Dapr and terms on NATS; an unparseable body drops
+  instead of answering 422; in-flight handlers drain before the connection closes; JetStream
+  consumers share load via a deliver group; and what the framework gives up on is republished to
+  `<queue group>.dead-letter` before being termed.
+
+### Known issues
+
+- Generating the `CronJob` for `scheduler_mode = "event"` is deliberately deferred, so the publisher
+  must be written by hand.
+- No CI gate enforces that an environment's group declaration covers the in-image agent map;
+  `asbs validate` reports it locally.
+- The memory number this feature exists to produce — marginal RSS per additional hosted agent — has
+  not been measured (#32, #35, #36).
+- **#75** (supervisord multi-agent-per-host vs. Kubernetes per-agent Pod) is materially answered by
+  the spec: grouping makes the choice a deployment parameter and Kubernetes runs one Deployment per
+  group. The ADR the issue asks for is still outstanding.
+- Dead letters accumulate on `<queue group>.dead-letter` with no consumer; draining it is an
+  operational task the framework does not perform.
+- `size` in the cache statistics counts TTL metadata entries, so a cache holding two values reports
+  `4`. Documented as-is rather than changed, because a reported metric is somebody's dashboard.
+
 ## [0.8.1] - 2026-09-17
 
 ### Fixed
@@ -220,7 +765,7 @@ default_ttl = 3600                       # 1 hour default TTL
 
 ### Added
 - New `/info` actuator endpoint exposing app name, version, and all dependency versions.
-- [ServiceInfo](/src/blueprint/agents/models/status.py:8:0-25:5) model for structured `/info` responses.
+- `ServiceInfo` model (`src/blueprint/agents/models/status.py`) for structured `/info` responses.
 - Actuator links (`/info`, `/status/env`, `/status/llm`, `/status/build`) in root `/` metadata.
 - Supporting classes in component registry in addition to names
 - Fetching an unregistered component now throws an exception

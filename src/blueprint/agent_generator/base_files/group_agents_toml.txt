@@ -1,0 +1,43 @@
+# Which agents this image contains, and where each one's files and code live.
+#
+# Baked into the image on purpose: adding or removing an agent is a rebuild anyway. Which of
+# these agents a given *process* runs is a separate decision, made by the deployment rather
+# than by the image -- set BLUEPRINT_AGENTS to a comma-separated list, or mount a group file
+# and name the group with BLUEPRINT_GROUP. Nothing here says which agents run together.
+#
+# The name in brackets is the agent's namespace, and it is the agent's identity everywhere
+# outside this file: the registry key prefix, the NATS queue group, part of the JetStream
+# durable name, the cache partition, the OpenTelemetry service.name and the REST route prefix
+# (/api/<name>). Renaming it after the first deploy is therefore a consumer migration, not a
+# rename. It must match [a-z][a-z0-9_]* -- lower case, no dashes.
+#
+# Each agent needs two keys, and both are required:
+#
+#   root    Where the agent's own directory is, relative to the image root -- the directory the
+#           process runs in, which is normally the one this file sits in too. It is the image
+#           root and not this file: BLUEPRINT_AGENT_MAP may put this file elsewhere, and moving
+#           it must not move every agent. Its settings.toml and its src/prompts are read from
+#           there. Stated rather than guessed from the module:
+#           a root derived from where a declaration happens to sit is right for one layout and
+#           silently wrong for every other, and an agent reading the group's defaults instead
+#           of its own settings does not announce itself.
+#   module  "package.module:attribute", naming the AppBuilder that module assigns.
+#
+# An agent directory is created by running `asbs setup <name>` inside it, and is the same
+# directory whether it is hosted here or built as its own image -- it carries no agents.toml
+# of its own, which is what lets it move between the two untouched.
+#
+# This file starts empty. A group with no agents cannot run: the process refuses to start
+# rather than bind a port and consume nothing. Add an entry per agent, for example:
+#
+#   [agents.order_processor]
+#   root   = "agents/order_processor"
+#   module = "agents.order_processor.src.main:agent"
+#
+#   [agents.billing]
+#   root   = "agents/some_topic/billing"
+#   module = "agents.some_topic.billing.src.main:agent"
+#
+# Renaming or moving an agent directory means updating its entry here. That is deliberate:
+# the map is the one place the change has to be made on purpose, so a moved directory fails
+# loudly at startup instead of quietly removing an agent from the image.

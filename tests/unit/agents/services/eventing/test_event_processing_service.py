@@ -1,9 +1,10 @@
 """Unit tests for EventProcessingService."""
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from blueprint.agents.component.namespace import ROOT_NAMESPACE
 from blueprint.agents.models.events import GenericCloudEvent, HandlerResult
 from blueprint.agents.models.result import ProcessingStatus
 from blueprint.agents.services.eventing.event_processing_service import EventProcessingService
@@ -119,12 +120,53 @@ class TestUnwrapDaprEvent:
 # ---------------------------------------------------------------------------
 
 
+class StubbedHandler:
+    """Just enough handler for the chain map: a namespace, an ordering, and no declarations.
+
+    A bare ``MagicMock`` will not do any more: a chain builds its dispatch index at startup,
+    which sorts the handlers and reads their declarations.
+    """
+
+    def __init__(self, namespace: str) -> None:
+        self.namespace = namespace
+        self.name = f"{namespace}_handler"
+
+    def __lt__(self, other: "StubbedHandler") -> bool:
+        return False
+
+    def get_handled_event_types(self) -> list[str]:
+        return []
+
+
 class TestLifecycle:
-    async def test_on_startup_is_noop(self, event_processing_service: EventProcessingService) -> None:
+    async def test_on_startup_starts_the_root_chain(self, event_processing_service: EventProcessingService) -> None:
+        chain = MagicMock()
+        chain.on_startup = AsyncMock()
+        event_processing_service._handler_chains = {ROOT_NAMESPACE: chain}
+
         await event_processing_service.on_startup()
 
-    async def test_on_shutdown_is_noop(self, event_processing_service: EventProcessingService) -> None:
+        chain.on_startup.assert_awaited_once()
+
+    async def test_on_startup_builds_a_chain_for_every_namespace_with_handlers(
+        self, event_processing_service: EventProcessingService, mock_registry: MagicMock
+    ) -> None:
+        """Built at startup, not on first delivery: a bad dedup window must fail the pod."""
+        mock_registry.get_event_handler.return_value = [StubbedHandler("orders"), StubbedHandler("billing")]
+
+        await event_processing_service.on_startup()
+
+        assert sorted(event_processing_service._handler_chains) == [ROOT_NAMESPACE, "billing", "orders"]
+
+    async def test_on_shutdown_stops_every_chain(self, event_processing_service: EventProcessingService) -> None:
+        root, orders = MagicMock(), MagicMock()
+        root.on_shutdown, orders.on_shutdown = AsyncMock(), AsyncMock()
+        event_processing_service._handler_chains = {ROOT_NAMESPACE: root, "orders": orders}
+
         await event_processing_service.on_shutdown()
+
+        root.on_shutdown.assert_awaited_once()
+        orders.on_shutdown.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -157,3 +199,69 @@ class TestProcessRestRequest:
         event_processing_service.process_event = _capture
         await event_processing_service.process_rest_request({})
         assert captured["event"].type == "rest.request"
+
+
+class TestAFailedResultPublish:
+    """#1 -- the delivery fails, and the dedup marker is released so the redelivery runs."""
+
+    @staticmethod
+    def _wire(service: EventProcessingService, mock_registry: MagicMock, results: list[HandlerResult]) -> tuple[MagicMock, MagicMock]:
+        chain = MagicMock()
+        chain.process = AsyncMock(return_value=results)
+        service._handler_chains[ROOT_NAMESPACE] = chain
+        publisher = MagicMock()
+        publisher.publish_handler_event = AsyncMock()
+        mock_registry.get_component.return_value = publisher
+        return chain, publisher
+
+    async def test_it_fails_the_delivery_and_releases_the_marker(
+        self, event_processing_service: EventProcessingService, mock_registry: MagicMock
+    ) -> None:
+        chain, publisher = self._wire(event_processing_service, mock_registry, [HandlerResult(event_type="done", data={})])
+        publisher.publish_handler_event.side_effect = ConnectionError("broker gone")
+        event = GenericCloudEvent(id="e1", type="t", source="s")
+
+        with pytest.raises(ConnectionError):
+            await event_processing_service.process_event(event)
+        chain.release.assert_called_once()
+        assert chain.release.call_args.args[0].id == "e1"
+
+    async def test_a_successful_publish_keeps_the_marker(
+        self, event_processing_service: EventProcessingService, mock_registry: MagicMock
+    ) -> None:
+        chain, _ = self._wire(event_processing_service, mock_registry, [HandlerResult(event_type="done", data={})])
+        await event_processing_service.process_event(GenericCloudEvent(id="e1", type="t", source="s"))
+        chain.release.assert_not_called()
+
+    async def test_each_result_is_published_with_its_position(
+        self, event_processing_service: EventProcessingService, mock_registry: MagicMock
+    ) -> None:
+        results = [HandlerResult(event_type="a", data={}), HandlerResult(event_type="b", data={})]
+        _, publisher = self._wire(event_processing_service, mock_registry, results)
+        await event_processing_service.process_event(GenericCloudEvent(id="e1", type="t", source="s"))
+        assert [call.kwargs["index"] for call in publisher.publish_handler_event.await_args_list] == [0, 1]
+
+
+class TestTheRequestIdIsKept:
+    """#13 -- process_event replaced the caller's request_id with a new uuid4."""
+
+    async def test_a_callers_id_survives_processing(self, event_processing_service: EventProcessingService) -> None:
+        chain = MagicMock()
+        chain.process = AsyncMock(return_value=None)
+        event_processing_service._handler_chains[ROOT_NAMESPACE] = chain
+        context = {"request_id": "rest-123"}
+
+        result = await event_processing_service.process_event(GenericCloudEvent(id="e1", type="t", source="s"), context)
+
+        assert context["request_id"] == "rest-123"
+        assert result.request_id == "rest-123"
+
+    async def test_without_one_an_id_is_made(self, event_processing_service: EventProcessingService) -> None:
+        chain = MagicMock()
+        chain.process = AsyncMock(return_value=None)
+        event_processing_service._handler_chains[ROOT_NAMESPACE] = chain
+        context: dict = {}
+
+        await event_processing_service.process_event(GenericCloudEvent(id="e1", type="t", source="s"), context)
+
+        assert context["request_id"]

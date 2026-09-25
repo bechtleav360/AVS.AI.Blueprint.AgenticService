@@ -1,21 +1,23 @@
 """Generic RESTful API base class for the agent service (framework-level).
 
-Subclasses register routes by decorating methods the class-level HTTP verb helpers.
+Subclasses register routes by decorating methods with the class-level HTTP verb helpers.
 
 Example::
 
-    class MyApi(RestApiBase):
-        def __init__(self) -> None:
-            super().__init__()
+    class ItemApi(RestApiBase):
+        async def on_startup(self) -> None:
+            self._items = self.registry.get_service(ItemService)
 
-            tags=["Status"],
-        @RestApiBase.get("/items", response_model=list[Item], tags=["Items"], summary="Get for Items")
+        async def on_shutdown(self) -> None:
+            pass
+
+        @RestApiBase.get("/items", response_model=list[Item], tags=["Items"], summary="List items")
         async def list_items(self) -> list[Item]:
-            return await self.get_registry().get_service("item_service").all()
+            return await self._items.all()
 
-        @RestApiBase.post("/items", response_model=Item, tags=["Items"], summary="Create for Items")
+        @RestApiBase.post("/items", response_model=Item, tags=["Items"], summary="Create an item")
         async def create_item(self, payload: ItemRequest) -> Item:
-            return await self.get_registry().get_service("item_service").create(payload)
+            return await self._items.create(payload)
 """
 
 from __future__ import annotations
@@ -30,10 +32,12 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Request, status
+from fastapi.routing import APIRoute
 from fastapi.responses import JSONResponse
 from opentelemetry import trace
 
 from ...component.component import traced
+from ...component.namespace import ROOT_NAMESPACE
 from ...models import ProcessResourceResponse, ProcessingStatus
 from ..io_base import IOBase
 
@@ -50,10 +54,46 @@ class RestApiBase(IOBase, ABC):
     never need to call ``_wire_routes()`` or touch the router directly.
     """
 
-    def __init__(self, should_register: bool = True) -> None:
-        super().__init__(should_register)
-        self._router = APIRouter()
+    route_class: type[APIRoute] = APIRoute
+    """Route class for this component's router.
+
+    Override in a subclass whose routes need behaviour FastAPI applies per route rather
+    than per application -- turning a request-validation failure into a domain response,
+    for instance. An application-wide exception handler cannot do that without knowing
+    which routes it is allowed to answer for.
+    """
+
+    def __init__(self, should_register: bool = True, *, namespace: str = ROOT_NAMESPACE) -> None:
+        """Initialize the REST API and wire its declared routes.
+
+        Args:
+            should_register: Whether to add this instance to the shared registry.
+            namespace: The agent this API belongs to. Keyword-only and defaulting to the root,
+                so no existing subclass changes. A developer's API never passes it -- it is
+                read from the ambient scope by ``Component`` -- but the framework's own
+                per-agent endpoints are built outside any scope and name it.
+        """
+        super().__init__(should_register, namespace=namespace)
+        self._router = APIRouter(route_class=type(self).route_class)
         self._wire_routes()
+
+    @property
+    def route_prefix(self) -> str:
+        """The path prefix this component's routes are mounted under.
+
+        ``""`` for the root, so every path an existing application serves is unchanged, and
+        ``/api/<agent>`` for a component that belongs to one. An agent's whole HTTP surface
+        therefore lives under one prefix, and two agents in a group cannot collide on a path --
+        which they otherwise would, since a group applies the same registration twice and both
+        copies declare the same routes.
+
+        It is a property on this class rather than a rule inside ``AppBuilder`` because two
+        places have to agree on it: the builder, which mounts the router, and
+        ``DaprEventing.subscribe``, which tells the sidecar where to post deliveries. If those
+        two disagreed the sidecar would post to a path FastAPI does not serve, and every
+        delivery would 404 -- with the application otherwise healthy.
+        """
+        return f"/api/{self.namespace}" if self.namespace else ""
 
     @property
     def router(self) -> APIRouter:
@@ -144,7 +184,9 @@ class RestApiBase(IOBase, ABC):
                 "path": request.url.path,
                 "method": request.method,
                 "client_ip": request.client.host if request.client else None,
-                "payload": payload,
+                # The type, never the body: a request body is where personal data and secrets
+                # arrive, and it used to be logged here in full, at INFO.
+                "payload_type": type(payload).__name__,
             },
         )
 
@@ -158,7 +200,9 @@ class RestApiBase(IOBase, ABC):
             from ...services.eventing.event_processing_service import EventProcessingService  # noqa: PLC0415
 
             event_processing_service = self.registry.get_service(EventProcessingService)
-            processing_result = await event_processing_service.process_rest_request(payload, context)
+            # This API's own namespace: a REST call into one agent must not be offered to
+            # another agent's handlers.
+            processing_result = await event_processing_service.process_rest_request(payload, context, namespace=self.namespace)
 
             success = processing_result.status == ProcessingStatus.PROCESSED
             success_message = processing_result.message or "Processing completed successfully"

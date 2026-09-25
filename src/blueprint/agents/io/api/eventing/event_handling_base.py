@@ -6,14 +6,28 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Any
 
+from opentelemetry.metrics import Counter
+
 from ....component.component import traced
+from ....component.namespace import ROOT_LABEL
+from ....handler.handler_chain import DUPLICATE_CONTEXT_KEY
+from ....io.telemetry.providers import agent_meter
 from ....models import ProcessingResult, ProcessingStatus
-from ....models.errors import CriticalHandlerError, InvalidEventError, RetryableHandlerError
+from ....models.errors import DeliveryDisposition
 from ....models.events import CloudEvent
 from ..rest_api_base import RestApiBase
 from .cloud_event_processor_mixin import CloudEventProcessorMixin
+from .dapr_response import dapr_status
 
 logger = logging.getLogger(__name__)
+
+UNHANDLED_EVENTS_COUNTER = "blueprint.events.unhandled"
+DUPLICATE_EVENTS_COUNTER = "blueprint.events.duplicate"
+
+_COUNTER_DESCRIPTIONS = {
+    UNHANDLED_EVENTS_COUNTER: "Events an agent received and found nothing to do with",
+    DUPLICATE_EVENTS_COUNTER: "Events an agent recognised as already processed and did not dispatch",
+}
 
 
 class EventHandlingBase(RestApiBase, CloudEventProcessorMixin, ABC):
@@ -22,60 +36,95 @@ class EventHandlingBase(RestApiBase, CloudEventProcessorMixin, ABC):
     Combines REST API routing (RestApiBase) with CloudEvent processing
     (CloudEventProcessorMixin) and adds structured error-handling and logging
     around the dispatch pipeline.
+
+    Transport connection, topic subscriptions, and retry logic live entirely
+    in the transport client (NATSClient, DaprClient). Subclasses implement
+    ``on_startup`` to wire the client's managed subscription flow and declare
+    their own REST endpoints via concrete ``publish`` implementations.
     """
 
     @traced("topic", "cloud_event")
     async def handle_event(self, topic: str, cloud_event: CloudEvent[Any]) -> dict[str, Any]:
-        processing_result = await self._process_cloud_event(cloud_event, {"topic": topic})
-        if processing_result.status == ProcessingStatus.PROCESSED:
-            return {"status": "SUCCESS"}
-        else:
-            failure_reason = processing_result.message or processing_result.status.value or "unknown_status"
-            return {"status": "RETRY", "reason": failure_reason}
+        """Dispatch an event and return the acknowledgement dict Dapr reads.
+
+        A handler chain that returned acknowledges whatever its status, per spec sec. 7.2:
+        ``ProcessingStatus`` carries no failure value, so ``NO_HANDLER_FOUND`` means the
+        dispatch completed and found nothing to do -- and no amount of redelivery makes a
+        handler appear. Exceptions are not caught here; the transport edge classifies them.
+        """
+        await self._process_cloud_event(cloud_event, {"topic": topic}, topic)
+        return {"status": dapr_status(DeliveryDisposition.ACK)}
 
     @abstractmethod
     async def publish(self, topic: str, event: CloudEvent[Any]) -> dict[str, Any]:
-        """Abstract method for publishing events (output)"""
-        raise NotImplementedError()
-
-    @abstractmethod
-    async def subscribe(self, topic: str, queue_group: str | None = None) -> dict[str, Any]:
-        """Abstract method for subscribing for events (input)"""
+        """Publish a CloudEvent to the broker (output path)."""
         raise NotImplementedError()
 
     async def _process_cloud_event(
         self,
         cloud_event: CloudEvent[Any],
         context: dict[str, Any],
+        topic: str,
+        namespace: str | None = None,
     ) -> ProcessingResult:
-        """Process a CloudEvent with error handling and logging.
+        """Dispatch a CloudEvent through one agent's handler chain, letting failures propagate.
 
-        Wraps ``_dispatch_cloud_event`` with structured logging and exception
-        handling for the four known error types. All exceptions are re-raised
-        after logging.
+        ``namespace`` names the agent to dispatch to, defaulting to this endpoint's own -- which
+        is every case but one. The exception is the Dapr path in a grouped process: the sidecar
+        delivers to one fixed path, so a single root endpoint receives the delivery and fans it
+        out, naming a different agent on each call.
 
-        Args:
-            cloud_event: The CloudEvent to process
-            context: Additional context for processing
+        Deliberately does not log those failures. Every caller of this method is a transport
+        edge that must both decide the delivery disposition and report the failure (spec
+        sec. 7.2), so logging here duplicated each error in the caller's output while adding
+        nothing the edge does not already know -- and the edge knows the topic and the
+        disposition, which this layer does not.
 
-        Returns:
-            The processing result
+        A dispatch that matched no handler is counted, not reported. Deciding there is
+        nothing to do is a handler's job and an ordinary outcome of it: an agent reads an
+        event, finds no work in it, and says so. The count exists so an operator can see the
+        *proportion* -- a namespace that declines nearly everything it receives is subscribed
+        too broadly (spec sec. 7.7) -- and for no other reason. Nothing about it is an error,
+        so it is not logged as one, and no per-topic state is kept: the topic arrives from a
+        URL path under Dapr, and remembering each distinct value would let a caller grow this
+        process's memory.
 
-        Raises:
-            Exception: Re-raises all exceptions after logging
+        A dispatch the chain skipped as a duplicate is counted apart from both (spec
+        sec. 7.4). It reaches here looking exactly like an unmatched event -- no handler
+        ran, so no result came back -- but the two say opposite things about the
+        subscription: an unmatched event is one this namespace had no use for, while a
+        duplicate is one it did use, once. Counting them together would make a redelivery
+        storm read as a namespace subscribed too broadly.
+
+        ``topic`` is passed separately from ``context`` because each transport spells its
+        own key there (``nats_topic``, ``dapr_topic``), and those keys reach user handlers,
+        so they cannot be unified without breaking them.
         """
-        try:
-            logger.debug("Processing CloudEvent: %s", cloud_event.id)
-            return await self._dispatch_cloud_event(cloud_event, context)
-        except RetryableHandlerError as exc:
-            logger.error("Retrying event: %s", str(exc), exc_info=True)
-            raise
-        except InvalidEventError as exc:
-            logger.error("Dropping invalid event: %s", str(exc), exc_info=True)
-            raise
-        except CriticalHandlerError as exc:
-            logger.error("Critical error processing event: %s", str(exc), exc_info=True)
-            raise
-        except Exception as exc:
-            logger.error("Processing service failed: %s", str(exc), exc_info=True)
-            raise
+        agent = self.namespace if namespace is None else namespace
+        logger.debug("Processing CloudEvent %s for namespace '%s'", cloud_event.id, agent or ROOT_LABEL)
+        processing_result = await self._dispatch_cloud_event(cloud_event, context, namespace=agent)
+        # The agent this dispatch was for, not a hardcoded root: a group would otherwise report one
+        # agent's broad subscription as everybody's.
+        if context.get(DUPLICATE_CONTEXT_KEY):
+            self._count(DUPLICATE_EVENTS_COUNTER, agent, topic)
+            logger.debug("Event %s on topic '%s' was already processed by '%s'", cloud_event.id, topic, agent or ROOT_LABEL)
+        elif processing_result.status is ProcessingStatus.NO_HANDLER_FOUND:
+            self._count(UNHANDLED_EVENTS_COUNTER, agent, topic)
+            logger.debug("No handler in '%s' had work for event %s on topic '%s'", agent or ROOT_LABEL, cloud_event.id, topic)
+        return processing_result
+
+    def _count(self, name: str, namespace: str, topic: str) -> None:
+        """Add one to ``name`` on ``namespace``'s own meter, labelled like every other agent metric.
+
+        The two counters used to be created once, at import, on the global meter -- so they
+        reported under the root's resource whatever agent they counted (C2), and they were
+        labelled ``namespace`` where every other metric says ``agent``. They are created per agent
+        on first use instead: the per-agent meter providers do not exist until the lifespan has
+        configured telemetry, which is after this component is constructed.
+        """
+        counters: dict[tuple[str, str], Counter] = self.__dict__.setdefault("_event_counters", {})
+        counter = counters.get((name, namespace))
+        if counter is None:
+            counter = agent_meter(namespace, __name__).create_counter(name=name, description=_COUNTER_DESCRIPTIONS[name], unit="{event}")
+            counters[(name, namespace)] = counter
+        counter.add(1, {"agent": namespace or ROOT_LABEL, "topic": topic})

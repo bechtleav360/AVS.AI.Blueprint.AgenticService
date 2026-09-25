@@ -33,8 +33,7 @@ class ClaudeGenerator:
         └── skills/
             ├── new-agent-service/
             │   └── SKILL.md
-            └── add-component/
-                └── SKILL.md
+            └── ...  one directory per skill under claude_docs/skills/
     """
 
     def __init__(self, output_dir: str | Path) -> None:
@@ -112,9 +111,25 @@ class ClaudeGenerator:
         print("\nNext steps:")
         print("  1. Open the project in Claude Code — it will pick up src/CLAUDE.md automatically.")
         print("  2. Use slash commands:")
-        print("       /new-agent-service   /add-component")
+        for name in self.skill_names():
+            print(f"       /{name}")
         print("  3. Use agents:")
-        print("       @blueprint-architect   @blueprint-builder")
+        for name in self.agent_names():
+            print(f"       @{name}")
+        print("  4. The framework docs are on disk; find them with 'asbs docs'.")
+
+    def skill_names(self) -> list[str]:
+        """Return the name of every skill this generator copies, sorted.
+
+        A skill is a directory under ``skills/`` holding a ``SKILL.md``; the directory name is the
+        slash command. Read from disk rather than listed by hand, so that a skill added to
+        ``claude_docs/`` is announced without a second edit here.
+        """
+        return sorted(path.parent.name for path in (self._source_dir / "skills").glob("*/SKILL.md"))
+
+    def agent_names(self) -> list[str]:
+        """Return the name of every agent this generator copies, sorted."""
+        return sorted(path.stem for path in (self._source_dir / "agents").glob("*.md"))
 
     # ------------------------------------------------------------------
     # Private helpers

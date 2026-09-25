@@ -1,7 +1,6 @@
 """VLLM client implementation."""
 
 import logging
-from collections.abc import Awaitable, Callable
 from typing import Any
 
 from openai import AsyncOpenAI
@@ -10,6 +9,7 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.profiles import ModelProfile
 from pydantic_ai.providers.openai import OpenAIProvider
 
+from ..client_base import DeliveryCallback
 from .ai_client_base import AIClientBase
 from ...models.api import ComponentHealth
 from ...models.events import CloudEvent
@@ -22,6 +22,10 @@ _VLLM_PROFILE = ModelProfile(
     supports_json_schema_output=True,
     default_structured_output_mode="native",
 )
+
+
+DEFAULT_VLLM_TIMEOUT = 60.0
+"""Seconds per model request when ``model_timeout`` is not set."""
 
 
 class VLLMClient(AIClientBase):
@@ -38,7 +42,7 @@ class VLLMClient(AIClientBase):
             await self._client.close()
             self._client = None
 
-    async def subscribe(self, topic: str, callback: Callable[[CloudEvent[Any]], Awaitable[None]]) -> None:
+    async def subscribe(self, topic_callbacks: dict[str, DeliveryCallback]) -> None:
         logger.warning("VLLM client does not support subscriptions")
 
     async def publish(self, topic: str, event: CloudEvent[Any], routing_key: str | None = None) -> None:
@@ -54,7 +58,9 @@ class VLLMClient(AIClientBase):
             max_retries=3,
             base_url=ai_config.base_url,
             api_key=ai_config.api_key,
-            timeout=ai_config.max_tokens if ai_config.max_tokens else 60,
+            # Its own key. It used to be max_tokens -- a token count read as seconds, so
+            # 4096 tokens meant a 68-minute timeout and 5 tokens a 5-second one.
+            timeout=ai_config.timeout or DEFAULT_VLLM_TIMEOUT,
         )
         provider = OpenAIProvider(openai_client=self._client)
         self._model = OpenAIChatModel(

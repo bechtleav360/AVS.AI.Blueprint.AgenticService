@@ -16,15 +16,13 @@ from .part_generators import (
     InitPartGenerator,
     MainPartGenerator,
     MapperPartGenerator,
+    PyprojectPartGenerator,
+    SecretsPartGenerator,
     ServicePartGenerator,
     SettingsPartGenerator,
-    SecretsPartGenerator,
+    TestsPartGenerator,
 )
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", handlers=[logging.StreamHandler(sys.stdout)]
-)
 logger = logging.getLogger(__name__)
 
 
@@ -79,10 +77,6 @@ class AgentGenerator:
                 self.config = json.load(f)
                 logger.debug(f"Loaded config: {json.dumps(self.config, indent=2, default=str)}")
 
-            if not self._config_is_valid():
-                sys.exit(1)
-            logger.info("Configuration is valid")
-
         except json.JSONDecodeError as e:
             error_msg = f"Invalid JSON in config file {self.config_path}: {e}"
             logger.error(error_msg, exc_info=True)
@@ -91,6 +85,14 @@ class AgentGenerator:
             error_msg = f"Error loading config file {self.config_path}: {e}"
             logger.error(error_msg, exc_info=True)
             raise
+
+        # Raised, not sys.exit(1): this is library code, and exiting the interpreter from it took
+        # the decision away from every caller -- a test, or a tool embedding the generator. The
+        # command-line entry point already turns an exception into a message and exit status 1.
+        # _config_is_valid has logged each problem it found.
+        if not self._config_is_valid():
+            raise ValueError(f"Config file {self.config_path} is not valid; the problems are logged above.")
+        logger.info("Configuration is valid")
 
     def _config_is_valid(self) -> bool:
         """Validate the configuration structure and cross-references.
@@ -339,17 +341,54 @@ class AgentGenerator:
                     f"{self.config['agent_layer'][agent_name]['runtime_name']}_instruction.prompt",
                 ).create_file(out)
 
+            # No agent map here. It says which agents an *image* contains, which is a packaging
+            # decision, so an agent that carried one would be an agent that knows whether it is
+            # running alone -- and in a group only the image's own map is read, so the copy would
+            # be dead weight that looks authoritative. The standalone Dockerfile writes a
+            # one-agent map into its image; `asbs setup --group` writes the image-level one.
+
             # Create Dockerfile
-            CopyPartGenerator(self.config, self.template_dir, "", "Dockerfile", "Dockerfile").create_file(out)
+            CopyPartGenerator(
+                self.config,
+                self.template_dir,
+                "",
+                "Dockerfile",
+                "Dockerfile",
+            ).create_file(out)
 
             # Create .gitignore
             CopyPartGenerator(self.config, self.template_dir, "", "template_for_git_ignore.txt", ".gitignore").create_file(out)
 
+            # Create .dockerignore. Not tidy-up: .secrets.toml holds real keys during development
+            # and git ignores it, but Docker's build context is the filesystem rather than the
+            # repository, so without this a COPY bakes them into a layer.
+            CopyPartGenerator(self.config, self.template_dir, "", "template_for_docker_ignore.txt", ".dockerignore").create_file(out)
+
             # Create settings.toml
             SettingsPartGenerator(self.config, self.template_dir, "").create_file(out)
 
-            # Create secrets.toml with API key placeholder
-            SecretsPartGenerator(self.config, self.template_dir, "").create_file()
+            # Create .secrets.toml with API key placeholder, and the template it is copied from.
+            # Both into the project: create_file() with no argument writes relative to the current
+            # working directory, so `asbs setup` left the secrets file wherever it was run from and
+            # the project it scaffolded had none.
+            SecretsPartGenerator(self.config, self.template_dir, "").create_file(out)
+            SecretsPartGenerator(self.config, self.template_dir, "", example=True).create_file(out)
+
+            # pyproject.toml, and ONLY if the project has none. `asbs` is installed into the
+            # project's own environment, so by the time it can run there is usually a pyproject
+            # already -- somebody's, with their dependencies in it. Writing over that would be
+            # this tool destroying the file that made it runnable. The generated tests do not
+            # need it either: tests/conftest.py puts the project root on the path itself.
+            if not (Path(out) / "pyproject.toml").exists():
+                PyprojectPartGenerator(self.config, self.template_dir, "").create_file(out)
+            else:
+                logger.info("pyproject.toml already exists; leaving it alone")
+
+            # A tests/ directory: `asbs validate` requires one, so a scaffolded project used to
+            # fail the validation of the tool that made it.
+            TestsPartGenerator(self.config, self.template_dir, "tests", part="conftest").create_file(out)
+            TestsPartGenerator(self.config, self.template_dir, "tests", part="declaration").create_file(out)
+            TestsPartGenerator(self.config, self.template_dir, "tests", part="mapper").create_file(out)
 
             # Create __init__ files with imports
             InitPartGenerator(self.config, self.template_dir, "src", out).create_file(out)
@@ -383,8 +422,18 @@ def main(config_path: str, output_dir: str) -> None:
 
 
 def cli() -> None:
-    """Command line interface for the generator."""
+    """Command line interface for the generator.
+
+    Logging is configured here rather than at module level: this function is an entry point, so
+    it is the application. Configured on import, it would install a root handler for anything
+    that merely imports ``AgentGenerator`` -- which is what ``asbs setup`` does, and its own
+    ``basicConfig`` (and with it ``--verbose``) would then silently do nothing.
+    """
     import argparse
+
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", handlers=[logging.StreamHandler(sys.stdout)]
+    )
 
     parser = argparse.ArgumentParser(description="Generate an agent microservice from a template.")
     parser.add_argument("config", help="Path to the JSON configuration file")

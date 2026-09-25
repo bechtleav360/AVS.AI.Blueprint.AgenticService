@@ -6,8 +6,39 @@ from unittest.mock import MagicMock
 import pytest
 
 from blueprint.agents.app_builder import AppBuilder
+from blueprint.agents.component.namespace import namespace_scope
 from blueprint.agents.services.service_base import ServiceBase
-from tests.unit.agents.app_builder.conftest import StubHandler, wire_empty_registry
+from tests.unit.agents.app_builder.conftest import StubHandler, realize, wire_empty_registry
+
+# ---------------------------------------------------------------------------
+# logging ownership
+# ---------------------------------------------------------------------------
+
+
+class TestLoggingOwnership:
+    """The application configures logging; Config only supplies the values."""
+
+    def test_construction_configures_logging(self, mock_config: MagicMock) -> None:
+        AppBuilder(mock_config)
+        mock_config.configure_logging.assert_called_once()
+
+    def test_it_happens_before_any_component_is_registered(self, mock_config: MagicMock, mock_registry: MagicMock) -> None:
+        """A with_*() call constructs components that log, so the format must already be set."""
+        builder = AppBuilder(mock_config)
+        assert mock_config.configure_logging.call_count == 1
+        builder.with_service(StubService)
+        assert mock_config.configure_logging.call_count == 1
+
+
+class StubService(ServiceBase):
+    """Minimal service for the ordering test above."""
+
+    async def on_startup(self) -> None:
+        pass
+
+    async def on_shutdown(self) -> None:
+        pass
+
 
 # ---------------------------------------------------------------------------
 # with_handler
@@ -23,8 +54,13 @@ class TestWithHandler:
             builder.with_handler(NotAHandler)
 
     def test_class_is_instantiated_and_registered(self, builder: AppBuilder, mock_registry: MagicMock) -> None:
-        builder.with_handler(StubHandler)
+        realize(builder.with_handler(StubHandler))
         mock_registry.add_component.assert_called_once()
+
+    def test_a_class_is_not_instantiated_before_build(self, builder: AppBuilder, mock_registry: MagicMock) -> None:
+        """Recording is the whole of a with_*() call: a component built now predates every namespace."""
+        builder.with_handler(StubHandler)
+        mock_registry.add_component.assert_not_called()
 
     def test_instance_is_accepted_without_re_instantiation(self, builder: AppBuilder, mock_registry: MagicMock) -> None:
         instance = StubHandler()
@@ -33,7 +69,7 @@ class TestWithHandler:
         mock_registry.add_component.assert_not_called()
 
     def test_name_set_on_created_instance(self, builder: AppBuilder, mock_registry: MagicMock) -> None:
-        builder.with_handler(StubHandler, name="custom_handler")
+        realize(builder.with_handler(StubHandler, name="custom_handler"))
         mock_registry.update_component_name.assert_called_once()
 
     def test_returns_self_for_chaining(self, builder: AppBuilder, mock_registry: MagicMock) -> None:
@@ -103,16 +139,34 @@ class TestWithCache:
 
 
 class TestWithHealthChecker:
-    def test_stored_pending_before_build(self, builder: AppBuilder) -> None:
+    def test_recorded_before_build(self, builder: AppBuilder) -> None:
+        """Recorded like every other declaration, so a group carries it over with the rest."""
         checker = MagicMock()
         builder.with_health_checker("my_service", checker)
-        assert builder._custom_health_checkers["my_service"] is checker
+        declaration = builder.declarations[0]
+        assert (declaration.kind, declaration.name, declaration.target) == ("health_checker", "my_service", checker)
 
     def test_multiple_checkers_accumulated_before_build(self, builder: AppBuilder) -> None:
         a, b = MagicMock(), MagicMock()
         builder.with_health_checker("svc_a", a)
         builder.with_health_checker("svc_b", b)
-        assert len(builder._custom_health_checkers) == 2
+        realize(builder)
+        assert [(entry.name, entry.checker) for entry in builder._health_checkers] == [("svc_a", a), ("svc_b", b)]
+
+    def test_a_checker_is_never_constructed(self, builder: AppBuilder) -> None:
+        """A checker is not a Component: the object declared is the object used."""
+        checker = MagicMock()
+        realize(builder.with_health_checker("db", checker))
+        assert builder._health_checkers[0].checker is checker
+
+    def test_a_checker_carries_the_agent_it_was_declared_in(self, builder: AppBuilder) -> None:
+        """D4: the agent travels with the checker as data, not folded into its name."""
+        with namespace_scope("orders"):
+            builder.with_health_checker("db", MagicMock())
+        realize(builder)
+
+        entry = builder._health_checkers[0]
+        assert (entry.name, entry.namespace, entry.key) == ("db", "orders", "orders.db")
 
     def test_added_immediately_after_build(self, builder: AppBuilder) -> None:
         mock_actuator = MagicMock()
@@ -121,7 +175,8 @@ class TestWithHealthChecker:
         checker = MagicMock()
         builder.with_health_checker("live_service", checker)
 
-        mock_actuator.add_health_providers.assert_called_once_with({"live_service": checker})
+        entries = mock_actuator.add_health_providers.call_args[0][0]
+        assert [(entry.name, entry.namespace, entry.checker) for entry in entries] == [("live_service", "", checker)]
 
     def test_returns_self_for_chaining(self, builder: AppBuilder) -> None:
         assert builder.with_health_checker("svc", MagicMock()) is builder
@@ -280,8 +335,8 @@ class TestBuild:
 
         actuator_instance = all_build_mocks.actuator.return_value
         actuator_instance.add_health_providers.assert_called_once()
-        call_kwargs = actuator_instance.add_health_providers.call_args[0][0]
-        assert "my_svc" in call_kwargs
+        entries = actuator_instance.add_health_providers.call_args[0][0]
+        assert "my_svc" in [entry.key for entry in entries]
 
 
 # ----------------------------------------------------------------------
@@ -315,9 +370,9 @@ class TestBuildSessionsBranch:
 
         builder_for_build.build()
 
-        all_build_mocks.sessions_api_client.assert_called_once_with()
-        all_build_mocks.session_key_provider.assert_called_once_with()
-        all_build_mocks.sessions_bus.assert_called_once_with()
+        all_build_mocks.sessions_api_client.assert_called_once_with(namespace="")
+        all_build_mocks.session_key_provider.assert_called_once_with(namespace="")
+        all_build_mocks.sessions_bus.assert_called_once_with(namespace="")
         all_build_mocks.dapr_client.assert_not_called()
         all_build_mocks.nats_client.assert_not_called()
 
@@ -335,7 +390,7 @@ class TestBuildSessionsBranch:
 
         builder_for_build.build()
 
-        assert builder_for_build._eventing_component is None
+        assert builder_for_build._eventing_components == []
         assert all_build_mocks.sessions_bus.return_value in builder_for_build._lifecycle_components
 
     def test_sessions_bus_router_never_mounted(
@@ -386,7 +441,7 @@ class TestBuildDaprRegression:
 
         builder_for_build.build()
 
-        all_build_mocks.dapr_client.assert_called_once_with()
+        all_build_mocks.dapr_client.assert_called_once_with(namespace="")
         all_build_mocks.dapr_eventing.assert_called_once_with()
         all_build_mocks.sessions_bus.assert_not_called()
 
@@ -417,8 +472,8 @@ class TestBuildNatsRegression:
 
         builder_for_build.build()
 
-        all_build_mocks.nats_client.assert_called_once_with()
-        all_build_mocks.nats_eventing.assert_called_once_with()
+        all_build_mocks.nats_client.assert_called_once_with(namespace="")
+        all_build_mocks.nats_eventing.assert_called_once_with(namespace="")
         all_build_mocks.sessions_bus.assert_not_called()
 
 
@@ -532,3 +587,187 @@ class TestBuildDocsUrls:
         assert kwargs["docs_url"] is None
         assert kwargs["redoc_url"] is None
         assert kwargs["openapi_url"] is None
+
+
+# ---------------------------------------------------------------------------
+# build -- scheduler wiring (P5)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildSchedulerWiring:
+    """build() must wire the schedulers before it decides on a transport.
+
+    A scheduler in event mode has no in-process timer: its tick arrives as an event. If
+    its tick handler is not registered by the time build() checks for handlers, an
+    application whose only event consumer is a scheduler gets no transport at all and can
+    never be ticked.
+    """
+
+    def _config(self, build_config: MagicMock, **values: object) -> None:
+        build_config.get.side_effect = lambda key, default=None: values.get(key, default)
+
+    def test_event_mode_scheduler_is_wired_before_the_transport_decision(
+        self,
+        builder_for_build: AppBuilder,
+        mock_registry: MagicMock,
+        all_build_mocks: types.SimpleNamespace,
+        build_config: MagicMock,
+    ) -> None:
+        wire_empty_registry(mock_registry)
+        scheduler = MagicMock()
+        mock_registry.get_schedulers.return_value = [scheduler]
+        # The tick handler wire() registers is what makes get_event_handler() non-empty.
+        # build() now asks per namespace, so the stub takes the argument it is given.
+        mock_registry.get_event_handler.side_effect = lambda namespace=None: [MagicMock()] if scheduler.wire.called else []
+        self._config(build_config, event_bus="nats")
+
+        builder_for_build.build()
+
+        scheduler.wire.assert_called_once()
+        all_build_mocks.nats_client.assert_called_once()
+        all_build_mocks.nats_eventing.assert_called_once()
+
+    def test_in_process_scheduler_alone_creates_no_transport(
+        self,
+        builder_for_build: AppBuilder,
+        mock_registry: MagicMock,
+        all_build_mocks: types.SimpleNamespace,
+        build_config: MagicMock,
+    ) -> None:
+        wire_empty_registry(mock_registry)
+        scheduler = MagicMock()
+        scheduler.wire.return_value = None
+        mock_registry.get_schedulers.return_value = [scheduler]
+        self._config(build_config, event_bus="nats")
+
+        builder_for_build.build()
+
+        scheduler.wire.assert_called_once()
+        all_build_mocks.nats_client.assert_not_called()
+        all_build_mocks.nats_eventing.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# build -- publishing without consuming
+# ---------------------------------------------------------------------------
+
+
+class TestBuildPublishOnly:
+    """Publishing and consuming are separate decisions.
+
+    An application that only emits events -- a scheduler reporting what it did, a REST API
+    handing work on -- needs a transport client but must not be subscribed to anything. The
+    opt-in exists because publishing needs broker access a scheduler-only project may not
+    have, so no client is created unless it is asked for.
+    """
+
+    def _config(self, build_config: MagicMock, **values: object) -> None:
+        build_config.get.side_effect = lambda key, default=None: values.get(key, default)
+
+    def test_no_client_without_the_opt_in(
+        self,
+        builder_for_build: AppBuilder,
+        mock_registry: MagicMock,
+        all_build_mocks: types.SimpleNamespace,
+        build_config: MagicMock,
+    ) -> None:
+        wire_empty_registry(mock_registry)
+        self._config(build_config, event_bus="nats")
+
+        builder_for_build.build()
+
+        all_build_mocks.nats_client.assert_not_called()
+        all_build_mocks.epubs.assert_not_called()
+
+    def test_opt_in_creates_a_client_but_subscribes_to_nothing(
+        self,
+        builder_for_build: AppBuilder,
+        mock_registry: MagicMock,
+        all_build_mocks: types.SimpleNamespace,
+        build_config: MagicMock,
+    ) -> None:
+        wire_empty_registry(mock_registry)
+        mock_registry.get_io_clients.return_value = [MagicMock()]
+        self._config(build_config, event_bus="nats", event_publishing_enabled=True)
+
+        builder_for_build.build()
+
+        all_build_mocks.nats_client.assert_called_once()
+        all_build_mocks.nats_eventing.assert_not_called()
+        all_build_mocks.eps.assert_not_called()
+        all_build_mocks.epubs.assert_called_once()
+        assert builder_for_build._eventing_components == []
+
+    def test_opt_in_accepts_the_string_an_environment_variable_delivers(
+        self,
+        builder_for_build: AppBuilder,
+        mock_registry: MagicMock,
+        all_build_mocks: types.SimpleNamespace,
+        build_config: MagicMock,
+    ) -> None:
+        wire_empty_registry(mock_registry)
+        self._config(build_config, event_bus="dapr", event_publishing_enabled="true")
+
+        builder_for_build.build()
+
+        all_build_mocks.dapr_client.assert_called_once()
+        all_build_mocks.dapr_eventing.assert_not_called()
+
+    def test_opt_in_without_a_transport_raises(
+        self,
+        builder_for_build: AppBuilder,
+        mock_registry: MagicMock,
+        all_build_mocks: types.SimpleNamespace,
+        build_config: MagicMock,
+    ) -> None:
+        wire_empty_registry(mock_registry)
+        self._config(build_config, event_publishing_enabled=True)
+
+        with pytest.raises(ValueError, match="event_publishing_enabled"):
+            builder_for_build.build()
+
+    def test_opt_in_with_sessions_raises(
+        self,
+        builder_for_build: AppBuilder,
+        mock_registry: MagicMock,
+        all_build_mocks: types.SimpleNamespace,
+        build_config: MagicMock,
+    ) -> None:
+        """SessionsBus carries no topics, so it cannot publish one."""
+        wire_empty_registry(mock_registry)
+        self._config(build_config, event_bus="sessions", event_publishing_enabled=True)
+
+        with pytest.raises(ValueError, match="event_bus"):
+            builder_for_build.build()
+
+    def test_non_boolean_opt_in_raises(
+        self,
+        builder_for_build: AppBuilder,
+        mock_registry: MagicMock,
+        all_build_mocks: types.SimpleNamespace,
+        build_config: MagicMock,
+    ) -> None:
+        wire_empty_registry(mock_registry)
+        self._config(build_config, event_bus="nats", event_publishing_enabled="maybe")
+
+        with pytest.raises(ValueError, match="must be a boolean"):
+            builder_for_build.build()
+
+    def test_consuming_still_publishes_without_the_opt_in(
+        self,
+        builder_for_build: AppBuilder,
+        mock_registry: MagicMock,
+        all_build_mocks: types.SimpleNamespace,
+        build_config: MagicMock,
+    ) -> None:
+        """A handler returning a HandlerResult has always published through the same client."""
+        wire_empty_registry(mock_registry)
+        mock_registry.get_event_handler.return_value = [MagicMock()]
+        mock_registry.get_io_clients.return_value = [MagicMock()]
+        self._config(build_config, event_bus="nats")
+
+        builder_for_build.build()
+
+        all_build_mocks.nats_eventing.assert_called_once()
+        all_build_mocks.eps.assert_called_once()
+        all_build_mocks.epubs.assert_called_once()

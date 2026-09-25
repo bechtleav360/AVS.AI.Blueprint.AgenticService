@@ -5,7 +5,7 @@ This module contains:
 
 All components extend Component and inherit:
 - name -> str
-- registry -> ComponentRegistry
+- registry -> Registry
 - config -> Config
 - on_startup() and on_shutdown() for lifecycle management
 """

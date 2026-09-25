@@ -1,0 +1,69 @@
+# syntax=docker/dockerfile:1.7
+
+# ============================================================================
+# Group image - hosts several agents in one process
+# ============================================================================
+#
+# The difference from an agent's own Dockerfile is what gets copied, not how it runs: both end
+# at the same entry point, because a standalone agent is a group of one. Here the agent
+# directories are copied as they are, beside the map that names them.
+#
+# Each agent directory is exactly what `asbs setup <name>` wrote -- its own settings.toml,
+# .secrets.toml and src/ -- and carries no agents.toml. That is what lets the same directory be
+# built by its own Dockerfile as a single-agent image without editing anything.
+
+FROM python:3.13-bookworm AS builder
+
+RUN pip install --no-cache-dir --upgrade pip uv
+
+WORKDIR /app
+
+COPY pyproject.toml ./
+RUN uv pip install --system --no-cache .
+
+# ============================================================================
+# Runtime
+# ============================================================================
+FROM python:3.13-slim-bookworm AS runtime
+
+RUN useradd --create-home --shell /bin/bash appuser
+
+WORKDIR /app
+
+COPY --from=builder /usr/local/lib/python3.13/site-packages /usr/local/lib/python3.13/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+
+# The agents, each in the directory its entry in agents.toml points at with `root`. Copy the
+# directories this image actually contains; a blanket `COPY . .` would bake in whatever else
+# the repository holds, including other images' build context.
+COPY --chown=appuser:appuser agents ./agents
+
+# The image's own settings: the process-wide keys -- app_port, app_host, event_bus, log_level
+# and the rest. One process has one of each, so an agent that sets them in its own settings
+# file has them dropped before the merge, with a warning naming the value the process uses.
+COPY --chown=appuser:appuser settings.toml ./
+
+# The map: which agents this image contains, and where each one's files are. The group file
+# does NOT belong here -- which of these agents a process runs is a deployment decision, so it
+# arrives as a mount or as BLUEPRINT_AGENTS.
+COPY --chown=appuser:appuser agents.toml ./
+
+# The disk cache backend writes here and cannot create it itself: WORKDIR made /app
+# root-owned, so mkdir() as appuser fails with EACCES. Created and handed over at build time.
+RUN mkdir -p /app/.cache && chown -R appuser:appuser /app/.cache
+
+USER appuser
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD curl -f http://localhost:8000/health/live || exit 1
+
+# Which agents this process runs is the deployment's to say:
+#
+#   docker run -e BLUEPRINT_AGENTS=order_processor,billing <image>
+#   docker run -v ./deployment-groups.yaml:/app/deployment-groups.yaml:ro \
+#              -e BLUEPRINT_GROUP=<group> <image>
+#
+# Nothing in the image names a group, so one image serves every one of them.
+ENTRYPOINT ["python", "-m", "blueprint.agents.entrypoint"]
