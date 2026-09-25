@@ -987,12 +987,15 @@ class Config:
         """Get a configuration value, scope-aware when ``agent_scope`` is set.
 
         Raises:
-            ValueError: for a key in :data:`DEPLOYMENT_IDENTITY_KEYS`. Raised rather than answered
-                with ``None``, because ``None`` reads as "not configured" and would send the caller
-                hunting for a missing setting instead of telling them the value is deliberately out
-                of reach (C6). Every typed getter funnels through here, so one check covers them all.
+            ValueError: for a key in :data:`DEPLOYMENT_IDENTITY_KEYS`, **asked through an agent's view**.
+                Raised rather than answered with ``None``, because ``None`` reads as "not configured"
+                and would send the caller hunting for a missing setting instead of telling them the
+                value is deliberately out of reach (C6). Every typed getter funnels through here, so
+                one check covers them all. The process's own configuration -- a standalone agent's,
+                and the framework's -- reads these keys as it always could: there is no group to be
+                kept out of reach of, and refusing them changed what a standalone agent could read.
         """
-        if key.lower() in DEPLOYMENT_IDENTITY_KEYS:
+        if self._is_view and key.lower() in DEPLOYMENT_IDENTITY_KEYS:
             raise ValueError(
                 f"'{key}' is deployment identity, not configuration, and is deliberately unreadable through "
                 "Config (C6): code that can read the group or the pod can be written to depend on them, and "

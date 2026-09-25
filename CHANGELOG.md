@@ -3,6 +3,9 @@
 
 ### Fixed
 
+- **A standalone agent's `Config` reads `hostname`, `pod_name` and `blueprint_group` again.** Since
+  the 0.9 alphas, `get()` raised for these keys everywhere. The refusal exists so that an agent in a
+  group cannot depend on where it runs; it now applies only to an agent's view in a group.
 - **A standalone agent logs what it logged before the namespace feature.** Log lines and error
   messages that existed in 0.8.1 had been reworded for groups, with `<root>` standing in for a
   standalone agent's empty namespace -- e.g. `Eventing component <root> startup completed`,
@@ -392,6 +395,12 @@ Full migration path, including the one decision to get right before the first de
     `Component.reset_shared_state()`** in its fixtures; this also clears `shared_registry`, which
     stays public and is otherwise unaffected. A project that never resets shared state between
     builds is unaffected.
+15. **`Config()` no longer configures logging.** Constructing a `Config` used to set up the root
+    logger; library code must not, so `AppBuilder` does it now. A script or test that builds only a
+    `Config` and relied on its logging setup has to configure logging itself.
+16. **`Config.settings` is read-only.** It was a plain attribute; assigning to it now raises
+    `AttributeError`. Replacing the settings tree underneath a running configuration bypasses every
+    agent's view of it and is not supported.
 
 ### Fixed
 
