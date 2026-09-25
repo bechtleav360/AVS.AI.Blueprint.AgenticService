@@ -7901,6 +7901,22 @@ says so, and its connection-name paragraph, stale since the pod-only change, is 
 The two other `Config` changes stay, as breaking changes 15 and 16 in `CHANGELOG.md` [0.9.0]:
 `Config()` no longer configures logging, and `Config.settings` is read-only.
 
+**Telemetry, decided with the user.** (1) "We *must* use the values in `OTEL_RESOURCE_ATTRIBUTES`:
+without the variable, do your own thing; with it, follow it strictly." `Resource.create(attrs)`
+lets explicit attributes override the environment, so the framework's `service.name`,
+`deployment.group` and `service.instance.id` replaced declared values -- `service.name` already in
+v0.8.1. New module function `_framework_attributes(service_name, group, pod)` in `telemetry.py`:
+builds the framework's attributes, omits `deployment.group` without a group and
+`service.instance.id` for an unknown pod (no placeholders), then drops every key that
+`OTELResourceDetector().detect()` reports as declared (it reads `OTEL_RESOURCE_ATTRIBUTES` and
+`OTEL_SERVICE_NAME`); `Resource.create` supplies those from the environment. Read as "declared keys
+win, the framework fills the rest"; in a group a declared `service.name` therefore names every
+agent alike, which the docs state. Found on the way: OpenTelemetry SDK 1.44 sets a random
+`service.instance.id` itself when none is given, so an unknown pod now shows the SDK's default.
+Tests: `TestTheDeploymentDeclaresTheResource` (4 cases; three fail against the previous code).
+(2) The global `MeterProvider` stays; its side effect -- a project's own `metrics.get_meter()`
+metrics are now exported -- is breaking change 17 in `CHANGELOG.md` [0.9.0].
+
 **Not restored -- listed for the user, not worked around:** the Dapr degraded reason, the
 behaviour changes of the transport fixes, `Config` behaviour changes, the scheduler line, and the
 new outputs (metrics, span and resource attributes, new log lines).

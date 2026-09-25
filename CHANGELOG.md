@@ -6,6 +6,12 @@
 - **A standalone agent's `Config` reads `hostname`, `pod_name` and `blueprint_group` again.** Since
   the 0.9 alphas, `get()` raised for these keys everywhere. The refusal exists so that an agent in a
   group cannot depend on where it runs; it now applies only to an agent's view in a group.
+- **`OTEL_RESOURCE_ATTRIBUTES` is honoured.** The framework set `service.name`, `deployment.group`
+  and `service.instance.id` in code, which the OpenTelemetry SDK lets win over the environment, so
+  a value a deployment declared was silently replaced -- `service.name` included, since 0.8. A key
+  declared in `OTEL_RESOURCE_ATTRIBUTES` or `OTEL_SERVICE_NAME` is now used exactly as declared;
+  the framework fills only what was left out. A standalone agent's resource carries no
+  `deployment.group` (it was `<ungrouped>`), and no placeholder instance id when the pod is unknown.
 - **A standalone agent's `/health/ready` has its original shape again.** The body gained `policy`
   and a `namespaces` section keyed `"<root>"`, which describe the agents of a group. They now appear
   only when the process hosts a group; a standalone agent gets `status` and `components`, as before.
@@ -443,6 +449,12 @@ Full migration path, including the one decision to get right before the first de
 16. **`Config.settings` is read-only.** It was a plain attribute; assigning to it now raises
     `AttributeError`. Replacing the settings tree underneath a running configuration bypasses every
     agent's view of it and is not supported.
+17. **Metrics a project records itself are now exported.** With OpenTelemetry enabled, the framework
+    registers a global `MeterProvider` that exports over OTLP. Before, it registered none, so a
+    counter a project created through `metrics.get_meter(...)` was silently discarded; the same
+    unchanged code now reaches the collector, which can add series -- and cost -- to a metrics
+    backend. A project that registered its own `MeterProvider` first keeps it: the SDK refuses a
+    second one and the framework's is not installed.
 
 ### Fixed
 

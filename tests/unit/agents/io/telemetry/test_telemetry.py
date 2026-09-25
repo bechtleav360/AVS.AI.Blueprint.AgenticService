@@ -234,3 +234,63 @@ class TestTracingContext:
         called_keys = [call[0][0] for call in mock_span.set_attribute.call_args_list]
         assert "key" not in called_keys
         assert "other" in called_keys
+
+
+class TestTheDeploymentDeclaresTheResource:
+    """OTEL_RESOURCE_ATTRIBUTES is the deployment's word: declared values are used as they are."""
+
+    @pytest.fixture
+    def configure(self, telemetry_manager: TelemetryManager, mock_config: MagicMock, enabled_observability: ObservabilityConfig):
+        def _configure(*namespaces: str) -> None:
+            mock_config.get_observability_config.return_value = enabled_observability
+            with (
+                patch.object(telemetry_manager, "_build_exporters", return_value=[MagicMock()]),
+                patch.object(telemetry_manager, "_build_metric_exporters", return_value=[]),
+                patch.object(telemetry_manager, "_setup_instrumentation"),
+            ):
+                telemetry_manager.configure_tracing(namespaces)
+
+        return _configure
+
+    @staticmethod
+    def _attributes(namespace: str) -> dict[str, object]:
+        provider = tracer_provider(namespace)
+        assert provider is not None
+        return dict(provider.resource.attributes)
+
+    def test_a_declared_value_is_not_replaced(self, configure, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OTEL_RESOURCE_ATTRIBUTES", "service.instance.id=declared-7,service.name=declared-service")
+        monkeypatch.setenv("POD_NAME", "pod-7")
+        configure()
+        attributes = self._attributes("")
+        assert attributes["service.instance.id"] == "declared-7"
+        assert attributes["service.name"] == "declared-service"
+
+    def test_an_undeclared_key_is_still_filled(self, configure, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OTEL_RESOURCE_ATTRIBUTES", "deployment.environment=prod")
+        monkeypatch.setenv("POD_NAME", "pod-7")
+        configure()
+        attributes = self._attributes("")
+        assert attributes["deployment.environment"] == "prod"
+        assert attributes["service.instance.id"] == "pod-7"
+        assert attributes["service.name"] == "test-service"
+
+    def test_a_standalone_agent_has_no_deployment_group(self, configure, monkeypatch: pytest.MonkeyPatch) -> None:
+        """No group exists for it, so no placeholder group is written."""
+        monkeypatch.delenv("OTEL_RESOURCE_ATTRIBUTES", raising=False)
+        monkeypatch.delenv("BLUEPRINT_GROUP", raising=False)
+        configure()
+        assert "deployment.group" not in self._attributes("")
+
+    def test_an_unknown_pod_writes_no_placeholder(self, configure, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The framework writes nothing; the SDK's own default instance id stands, as without the framework."""
+        monkeypatch.delenv("OTEL_RESOURCE_ATTRIBUTES", raising=False)
+        monkeypatch.delenv("POD_NAME", raising=False)
+        monkeypatch.delenv("HOSTNAME", raising=False)
+
+        def _raise() -> str:
+            raise OSError("no host name")
+
+        monkeypatch.setattr("blueprint.agents.deployment.socket.gethostname", _raise)
+        configure()
+        assert self._attributes("").get("service.instance.id") != "<unknown-pod>"
