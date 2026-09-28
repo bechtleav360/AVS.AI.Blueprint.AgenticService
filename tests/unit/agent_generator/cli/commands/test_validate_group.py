@@ -98,3 +98,70 @@ class TestResolvingTheMapPath:
         monkeypatch.setenv(MAP_ENV, "from/env.toml")
 
         assert _agent_map_path(tmp_path, "from/flag.toml") == tmp_path / "from" / "flag.toml"
+
+
+class TestAbsoluteSrcImports:
+    """An agent importing its own code as `src` works standalone and is skipped in a group."""
+
+    @staticmethod
+    def _image_with(tmp_path: Path, files: dict[str, str]) -> Path:
+        _agent_dir(tmp_path / "agents" / "orders")
+        for relative, text in files.items():
+            target = tmp_path / "agents" / "orders" / "src" / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8")
+        (tmp_path / "agents.toml").write_text(_map_text("agents/orders"), encoding="utf-8")
+        return tmp_path
+
+    def test_an_absolute_src_import_is_a_warning_naming_file_and_line(self, tmp_path: Path) -> None:
+        image = self._image_with(
+            tmp_path,
+            {"main.py": "from src.services.order_service import OrderService\nagent = None\n", "api/routes.py": "import src.models\n"},
+        )
+
+        issues, warnings, _ = _findings(image, _agent_map_path(image, None))
+
+        assert issues == [], "Both styles are legitimate standalone; this must not claim the image cannot start."
+        found = [w for w in warnings if "imports its own code as 'src'" in w]
+        assert len(found) == 1
+        assert "src/main.py:1" in found[0] and "src/api/routes.py:1" in found[0]
+        assert "from .x import Y" in found[0], "The warning has to carry the fix."
+
+    def test_relative_imports_are_not_reported(self, tmp_path: Path) -> None:
+        image = self._image_with(tmp_path, {"main.py": "from .services.order_service import OrderService\nagent = None\n"})
+
+        _, warnings, _ = _findings(image, _agent_map_path(image, None))
+
+        assert not any("imports its own code as 'src'" in w for w in warnings)
+
+    def test_a_name_in_a_docstring_or_comment_is_not_an_import(self, tmp_path: Path) -> None:
+        image = self._image_with(tmp_path, {"main.py": '"""Once: from src.x import Y."""\n# import src\nagent = None\n'})
+
+        _, warnings, _ = _findings(image, _agent_map_path(image, None))
+
+        assert not any("imports its own code as 'src'" in w for w in warnings)
+
+    def test_a_package_merely_starting_with_src_is_not_reported(self, tmp_path: Path) -> None:
+        image = self._image_with(tmp_path, {"main.py": "import srcutils\nfrom srclib.x import Y\nagent = None\n"})
+
+        _, warnings, _ = _findings(image, _agent_map_path(image, None))
+
+        assert not any("imports its own code as 'src'" in w for w in warnings)
+
+    def test_an_agent_whose_src_is_the_image_roots_is_not_reported(self, tmp_path: Path) -> None:
+        """A single agent at the image root: there `src` really is its own package."""
+        _agent_dir(tmp_path)
+        (tmp_path / "src" / "main.py").write_text("from src.services import x\nagent = None\n", encoding="utf-8")
+        (tmp_path / "agents.toml").write_text(_map_text(".", "src.main:agent"), encoding="utf-8")
+
+        _, warnings, _ = _findings(tmp_path, _agent_map_path(tmp_path, None))
+
+        assert not any("imports its own code as 'src'" in w for w in warnings)
+
+    def test_a_long_list_is_summarised(self, tmp_path: Path) -> None:
+        image = self._image_with(tmp_path, {"main.py": "".join(f"import src.m{i}\n" for i in range(8)) + "agent = None\n"})
+
+        _, warnings, _ = _findings(image, _agent_map_path(image, None))
+
+        found = [w for w in warnings if "imports its own code as 'src'" in w]
+        assert "and 3 more" in found[0]
