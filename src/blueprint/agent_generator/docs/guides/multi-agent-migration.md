@@ -278,6 +278,23 @@ imports keep working standalone as well, so the change needs no second copy. `as
 grep -rnE "^\s*(from|import) src(\.|\s|$)" src/
 ```
 
+### Routes under `/nats`, `/cache` or `/scheduler`
+
+In a group, `nats`, `cache` and `scheduler` directly under `/api/<agent>/` belong to the framework:
+the agent's NATS publish endpoint, its cache management and its scheduler triggers live there. A
+route of your own that starts with one of them -- `@RestApiBase.get("/cache/warmup")`, or a
+`path_prefix = "cache"` -- is refused and **the image does not start**:
+
+```
+ValueError: WarmupApi in agent 'order' serves '/cache/warmup', which starts with the reserved
+segment 'cache': in a group, /api/order/cache/ belongs to the framework's CacheManagementApi.
+Rename the route, or set a path_prefix on the class.
+```
+
+Standalone the same route is served at `/api/cache/warmup` as before, so this only appears on the
+move. Rename the route, or give the class a `path_prefix` (see
+[REST APIs](../components/rest-apis.md#path-prefix)) -- both work standalone too.
+
 ---
 
 ## After the move
@@ -286,6 +303,12 @@ Your **broker-side identity changes once**, on the first grouped deploy. What th
 durables, queue groups, cache directories, telemetry -- is set out in
 [What changes, and what does not](multi-agent-setup.md#what-changes-and-what-does-not), and the cold-cache
 consequence in [The cache is cold after the move](multi-agent-setup.md#the-cache-is-cold-after-the-move).
+
+Your **HTTP surface moves** too. Every route gains the `/api/<agent>` prefix, the NATS publish
+endpoint becomes `/api/<agent>/nats/events/{topic}`, a scheduler trigger becomes
+`/api/<agent>/scheduler/<name>/trigger`, and in Swagger UI all of the agent's operations form one
+group named after it, whatever tags they declared. Clients calling the agent directly need the new
+paths; see [An agent's Swagger group and its reserved paths](multi-agent-setup.md#an-agents-swagger-group-and-its-reserved-paths).
 
 ---
 

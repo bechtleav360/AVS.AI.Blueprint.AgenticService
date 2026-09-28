@@ -262,6 +262,13 @@ Use these to decorate methods on your subclass:
 |----------|------|-------------|
 | `router` | `APIRouter` | The FastAPI router containing all declared routes. |
 
+### Class Attributes
+
+| Attribute | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `path_prefix` | `str` | `""` | Prefix for every route of the class, applied standalone and in a group alike (`"reports"` -> `/api/reports/...`, or `/api/<agent>/reports/...` in a group). Surrounding slashes are ignored. |
+| `group_segment` | `str` | `""` | Framework-internal: the reserved segment (`"nats"`, `"scheduler"`) a framework component's routes sit under in a group. Not for application code. |
+
 ### Inherited Members
 
 | Member | Type | Description |
@@ -314,7 +321,8 @@ Each registered scheduler exposes:
 POST /{name}/trigger
 ```
 
-This endpoint allows manual invocation of the `tick()` method outside the cron schedule.
+This endpoint allows manual invocation of the `tick()` method outside the cron schedule. It is
+served at `/api/{name}/trigger` standalone and at `/api/<agent>/scheduler/{name}/trigger` in a group.
 
 ---
 

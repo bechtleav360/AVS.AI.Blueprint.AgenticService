@@ -23,7 +23,6 @@ from .component.namespace import (
     construction_scope,
     current_namespace,
     namespace_of,
-    qualified_entry_name,
     validate_namespace,
 )
 from .component.registry import DEFAULT_CACHE_NAME, Registry
@@ -64,6 +63,19 @@ _UNCONSTRUCTED_KINDS = frozenset({"cache", "health_checker"})
 
 A cache is created by ``CacheBackendFactory`` rather than by calling a class, and a health
 checker is not a ``Component`` at all -- the object declared is the object used.
+"""
+
+_RESERVED_SEGMENTS: dict[str, type] = {  # `type`, not `type[RestApiBase]`: mypy rejects abstract classes there
+    "nats": NatsEventing,
+    "cache": CacheManagementApi,
+    "scheduler": SchedulerBase,
+}
+"""The first path segments under ``/api/<agent>/`` the framework owns, each with its owner (spec sec. 11.2).
+
+Keyed on the owner's class rather than on "has a ``group_segment``": the cache API reserves
+``cache`` through its own route paths, which have always read ``/cache/...``, and declares no
+segment -- while a developer's scheduler subclass *is* the owner of ``scheduler``, because the
+segment is inherited from ``SchedulerBase``.
 """
 
 HandlerT = TypeVar("HandlerT", bound=EventHandlerBase)
@@ -523,7 +535,8 @@ class AppBuilder:
         Both modes need something of this agent's own -- ``"in_process"`` claims each tick in a
         cache **this** agent declared (:meth:`with_cache`), and ``"event"`` needs ``event_bus``,
         which is the group's to set. The scheduler's own REST routes move under
-        ``/api/<agent>`` with every other route of this agent.
+        ``/api/<agent>/scheduler`` -- a segment reserved for schedulers -- and join the agent's
+        one Swagger group (spec sec. 11.2).
         """
         return self._record("scheduler", scheduler, kwargs, name=name, method="with_scheduler")
 
@@ -534,8 +547,9 @@ class AppBuilder:
 
         **In a group:** the routes move. A root component keeps the paths it always served
         under ``/api``; a component belonging to an agent serves them under ``/api/<agent>``,
-        and its OpenAPI tags are prefixed with the agent, so two agents that declare the same
-        path do not collide and each agent's operations group together in Swagger UI. Nothing in
+        and every operation's OpenAPI tag is replaced by the agent's name, so two agents that
+        declare the same path do not collide and each agent's operations form one group in
+        Swagger UI (spec sec. 11.2). Standalone, the declared tags are kept. Nothing in
         the component changes -- the prefix comes from ``RestApiBase.route_prefix``, which the
         namespace decides -- but a client of a grouped agent addresses the prefixed path.
         """
@@ -1182,8 +1196,9 @@ class AppBuilder:
             # No blanket `tags=["rest"]`: it stamps every operation with a redundant "rest" tag on
             # top of its own resource tag, so the whole business API collapses into one "rest" group
             # in Swagger UI. Routes carry their per-operation tags (set via the RestApiBase decorators)
-            # and group correctly; untagged routes fall under FastAPI's "default", which is the nudge
-            # for services to tag their routes rather than hide behind a catch-all.
+            # and group correctly; standalone, untagged routes fall under FastAPI's "default", which
+            # is the nudge for services to tag their routes rather than hide behind a catch-all. In
+            # a group `_mount` replaces every tag with the agent's name, so nothing lands there.
             self._mount(app, rest_api, root_prefix="/api")
 
         for eventing_component in self._eventing_components:
@@ -1255,11 +1270,17 @@ class AppBuilder:
         A namespaced component ignores it and takes ``route_prefix`` instead, so both kinds end
         up under one prefix per agent.
 
-        The tags are rewritten rather than added to, so an agent's operations form their own
-        group in Swagger UI instead of appearing twice -- once under the agent and once under
-        the bare resource name. ``include_router(tags=...)`` appends, which is why this is done
-        on the routes. Mutating them is safe because a router belongs to exactly one component
-        and ``build()`` runs once per process (``Component.configure`` refuses a second call).
+        A namespaced component's operations are all tagged with exactly the agent's name, replacing
+        whatever the framework or the developer declared, and untagged ones included (spec sec.
+        11.2). A reader of a grouped image's Swagger UI starts from *which agent*, and Swagger UI
+        has one tag level: a declared tag kept beside the agent's would list the operation in two
+        groups, and an untagged one would land in "default", mixed with every other agent's. The
+        second level is the path (``RestApiBase.group_segment``), not a tag.
+
+        ``include_router(tags=...)`` appends, which is why this is done on the routes. Mutating
+        them is safe because a router belongs to exactly one component and ``build()`` runs once
+        per process (``Component.configure`` refuses a second call). A root component's tags are
+        left exactly as declared.
 
         Args:
             app: The application to mount on.
@@ -1268,12 +1289,49 @@ class AppBuilder:
         """
         prefix = component.route_prefix or root_prefix
         if component.namespace:
+            AppBuilder._refuse_reserved_segments(component)
             for route in component.router.routes:
                 # A Starlette BaseRoute has no tags; an APIRoute does, and those are the
                 # ones the decorators produce. Anything else is left alone.
-                if isinstance(route, APIRoute) and route.tags:
-                    route.tags = [qualified_entry_name(component.namespace, str(tag)) for tag in route.tags]
+                if isinstance(route, APIRoute):
+                    route.tags = [component.namespace]
         app.include_router(component.router, prefix=prefix)
+
+    @staticmethod
+    def _refuse_reserved_segments(component: RestApiBase) -> None:
+        """Raise if a grouped agent's route claims a path segment the framework owns.
+
+        Inside ``/api/<agent>/`` the segments ``nats``, ``cache`` and ``scheduler`` belong to the
+        framework (spec sec. 11.2). FastAPI does not detect duplicate routes -- it serves the
+        first match -- so a developer's ``/cache/stats`` beside the framework's would silently
+        answer for one of them, depending on mount order. Refused here, in ``build()``, because
+        that is the first point at which both the routes and the agent are known.
+
+        Only called for a namespaced component: a standalone agent's paths are its own, and a
+        route it has always served at ``/api/cache/...`` must keep working (spec sec. 10).
+
+        The segment is read from the path *relative to the agent's prefix*, so a component with a
+        :attr:`~RestApiBase.group_segment` is judged by that segment, and a :attr:`~RestApiBase.path_prefix`
+        is judged as part of the route. Every route kind with a path is checked, not only
+        ``APIRoute``: a websocket at ``/cache/live`` collides just the same.
+
+        Raises:
+            ValueError: naming the component, the agent, the route and the owner of the segment.
+        """
+        agent_prefix = f"/api/{component.namespace}"
+        for route in component.router.routes:
+            path = getattr(route, "path", None)
+            if not isinstance(path, str):
+                continue
+            relative = component.route_prefix.removeprefix(agent_prefix) + path
+            segment = relative.lstrip("/").split("/", 1)[0]
+            owner = _RESERVED_SEGMENTS.get(segment)
+            if owner is not None and not isinstance(component, owner):
+                raise ValueError(
+                    f"{type(component).__name__} in agent {component.namespace!r} serves {path!r}, which starts with "
+                    f"the reserved segment {segment!r}: in a group, {agent_prefix}/{segment}/ belongs to the framework's "
+                    f"{owner.__name__}. Rename the route, or set a path_prefix on the class."
+                )
 
     # ------------------------------------------------------------------
     # Lifespan

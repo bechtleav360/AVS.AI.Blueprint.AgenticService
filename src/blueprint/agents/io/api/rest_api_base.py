@@ -44,6 +44,16 @@ from ..io_base import IOBase
 logger = logging.getLogger(__name__)
 
 
+def _normalise_path_prefix(value: str) -> str:
+    """Return ``value`` in the form ``APIRouter(prefix=...)`` requires: ``""`` or ``/segment``.
+
+    FastAPI asserts a prefix starts with ``/`` and does not end with one; a developer writing
+    ``"reports"`` or ``"/reports/"`` means the same thing, so both are accepted.
+    """
+    stripped = value.strip().strip("/")
+    return f"/{stripped}" if stripped else ""
+
+
 class RestApiBase(IOBase, ABC):
     """Base class for REST API components.
 
@@ -63,6 +73,29 @@ class RestApiBase(IOBase, ABC):
     which routes it is allowed to answer for.
     """
 
+    group_segment: str = ""
+    """Path segment this component's routes sit under inside an agent's prefix, in a group only.
+
+    Set by the framework's own components that belong to an agent (``"nats"``, ``"scheduler"``)
+    so an agent's paths read ``/api/<agent>/<segment>/...`` and those segments stay reserved
+    for the framework (spec sec. 11.2). A root component ignores it: a standalone agent's paths
+    are a contract with its existing clients and do not move. ``""`` adds no segment.
+    """
+
+    path_prefix: str = ""
+    """Path prefix a developer puts in front of every route of this API, in both modes.
+
+    ``path_prefix = "reports"`` serves ``@RestApiBase.get("/daily")`` at ``/api/reports/daily``
+    standalone and at ``/api/<agent>/reports/daily`` in a group -- the same code either way
+    (spec sec. 11.2, C6). Optional: ``""``, the default, adds nothing, so an existing API's paths
+    do not move. Surrounding slashes are ignored, so ``"reports"`` and ``"/reports/"`` are the
+    same prefix.
+
+    Applied as the router's own prefix, so it reaches routes added to :attr:`router` directly as
+    well as decorated ones. Unlike :attr:`group_segment` it is part of each route's path, not of
+    the mount, which is why it applies at the root too.
+    """
+
     def __init__(self, should_register: bool = True, *, namespace: str = ROOT_NAMESPACE) -> None:
         """Initialize the REST API and wire its declared routes.
 
@@ -74,7 +107,7 @@ class RestApiBase(IOBase, ABC):
                 per-agent endpoints are built outside any scope and name it.
         """
         super().__init__(should_register, namespace=namespace)
-        self._router = APIRouter(route_class=type(self).route_class)
+        self._router = APIRouter(prefix=_normalise_path_prefix(type(self).path_prefix), route_class=type(self).route_class)
         self._wire_routes()
 
     @property
@@ -82,7 +115,8 @@ class RestApiBase(IOBase, ABC):
         """The path prefix this component's routes are mounted under.
 
         ``""`` for the root, so every path an existing application serves is unchanged, and
-        ``/api/<agent>`` for a component that belongs to one. An agent's whole HTTP surface
+        ``/api/<agent>`` for a component that belongs to one -- ``/api/<agent>/<segment>`` when
+        the component declares a :attr:`group_segment`. An agent's whole HTTP surface
         therefore lives under one prefix, and two agents in a group cannot collide on a path --
         which they otherwise would, since a group applies the same registration twice and both
         copies declare the same routes.
@@ -93,7 +127,11 @@ class RestApiBase(IOBase, ABC):
         two disagreed the sidecar would post to a path FastAPI does not serve, and every
         delivery would 404 -- with the application otherwise healthy.
         """
-        return f"/api/{self.namespace}" if self.namespace else ""
+        if not self.namespace:
+            return ""
+        if self.group_segment:
+            return f"/api/{self.namespace}/{self.group_segment}"
+        return f"/api/{self.namespace}"
 
     @property
     def router(self) -> APIRouter:

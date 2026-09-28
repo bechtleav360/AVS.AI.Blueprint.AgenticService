@@ -7,6 +7,7 @@
 | **Unblocks** | #32 (100 agents in 4 GB), #35 (shared interpreter), #20 (worker scaling) |
 | **Related** | #33 (lazy heavy imports), #34 / #74 (dependency slimming), #36 (concurrency bounds + benchmark), #43 (scheduler double-start), #6 (config service) |
 | **Amended by** | `docs/plans/2026-09-10-builder-unification.md` -- decided 2026-09-10, folded into sec. 2, 4, 5.3, 8, 9, 10 and 11 below. |
+| **Amended by** | `docs/plans/2026-09-28-grouped-http-surface.md` -- decided 2026-09-28, folded into sec. 10 and 11.2 below. |
 | **Deferred out of** | `docs/plans/2026-09-10-config-validation-unification.md` -- configuration validation is not part of this feature. |
 
 Requirement keywords (**MUST**, **MUST NOT**, **SHOULD**, **MAY**) are used in the RFC 2119 sense.
@@ -815,6 +816,7 @@ change, and `uvicorn src.main:app` as its entrypoint. Specifically:
 | Passing a constructed instance to `with_*` | Unchanged standalone; refused only when the builder is collected into a group (sec. 4.2). |
 | Component construction timing | Deferred to `build()`. Reading a component out of the registry between `with_*` calls was never supported -- collaborators resolve in `on_startup` -- and now breaks. |
 | `with_health_checker` keys | Bare name at the root, so an existing readiness payload is unchanged; qualified per agent in a group. |
+| OpenAPI tags and paths | Unchanged at the root: tags as the framework and the developer declare them, untagged routes under "default", every path as served today. Rewritten only per agent in a group (sec. 11.2). |
 | `with_cache(False)` / `with_cache(True, False)` | Unchanged (sec. 4.2). |
 | `Component` subclasses | No constructor change (sec. 4.3). |
 | `registry.cache_service` | Retained as alias. |
@@ -894,6 +896,40 @@ mechanically, because a rule that cannot be violated locally will not be followe
 | Non-idempotent handlers | explicit flag at scaffold time and in `asbs validate` (sec. 7.4) |
 
 Two things an author still needs to know: their agent's name, and that handlers must not block.
+
+### 11.2 An agent's HTTP surface
+
+The first question a reader of a grouped image's Swagger UI asks is *which agent*, so an agent's
+operations **MUST** form one group, and nothing an agent serves may fall outside it. Swagger UI
+renders tags on one level only; the second level is therefore carried by the path, never by a
+sub-tag.
+
+Every requirement below applies to a component **with a namespace**. A root component -- every
+component of a standalone agent, and the process-wide `root`, `actuators` and Dapr endpoints of a
+grouped app -- keeps its declared tags and its paths (sec. 10).
+
+- **Tags.** Every operation of agent `<ns>` **MUST** carry exactly the tag `<ns>`, replacing any
+  tag the framework or the developer declared. An operation **MUST NOT** be untagged, which is what
+  would file it under Swagger UI's "default" group.
+- **Paths.** Every path of agent `<ns>` lives under `/api/<ns>/` (sec. 11). Within it, the
+  segments `nats`, `cache` and `scheduler` are **reserved** for the framework:
+
+  | Endpoint | Grouped path | Standalone path (unchanged) |
+  |---|---|---|
+  | NATS publish | `/api/<ns>/nats/events/{topic}` | `/events/{topic}` |
+  | Scheduler trigger | `/api/<ns>/scheduler/<name>/trigger` | `/api/<name>/trigger` |
+  | Cache management | `/api/<ns>/cache/...` | `/api/cache/...` |
+
+  The Dapr endpoints are not an agent's: one process-wide pair at the root, fixed by Dapr's
+  protocol (sec. 6).
+- **Developer paths.** A developer **MAY** declare a path prefix on their REST API class. It
+  applies standalone and grouped alike, so the agent's code does not depend on its grouping (C6);
+  it is not required, so an existing agent joins a group without a source change. `build()`
+  **MUST** refuse a grouped agent whose developer-declared route starts with a reserved segment,
+  naming the component, the route and the segment -- otherwise it would silently collide with the
+  framework's route of the same path.
+- **Not covered.** Routes added to the `FastAPI` application directly in `main.py` do not belong
+  to any agent and are not subject to these rules.
 
 ---
 

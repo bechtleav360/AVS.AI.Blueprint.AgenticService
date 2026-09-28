@@ -111,6 +111,10 @@ The `scheduler_name` is derived from the class name. For a class named `DataSync
 POST /api/data_sync_scheduler/trigger
 ```
 
+In a group, the trigger moves under the agent's reserved `scheduler` segment:
+`POST /api/<agent>/scheduler/<name>/trigger`. The name there is the scheduler's registry name,
+which a group qualifies with the agent -- `/api/order/scheduler/order_data_sync_scheduler/trigger`.
+
 This is useful for testing, debugging, and on-demand execution without waiting for the next cron interval.
 
 ## Accessing Registry and Config

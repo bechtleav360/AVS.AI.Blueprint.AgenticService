@@ -78,6 +78,19 @@ beside the directory being checked.
   (`from .x` in `src/main.py`, `from ..x` one package down); that still works standalone. Missed,
   a non-critical agent is **skipped** at startup with one ERROR line naming `ModuleNotFoundError:
   No module named 'src'`, and its routes are silently missing from `/docs`.
+- **Routes under a reserved segment.** In a group, `/api/<agent>/nats/`, `/cache/` and
+  `/scheduler/` belong to the framework. An agent route starting with one of them (a
+  `@RestApiBase.get("/cache/...")`, or `path_prefix = "cache"`) raises `ValueError` at startup and
+  the **whole image** does not start. Standalone the same route is served, so it only shows on the
+  move. Rename it, or set `path_prefix` on the API class - that works standalone too.
+
+## Swagger in a group
+
+Every operation of a grouped agent is tagged with the agent's name, replacing declared tags and
+tagging untagged routes, so each agent is exactly one Swagger group and nothing is under
+"default". Do not add tags to "fix" grouping - they are replaced. The second level is the path:
+`/api/<agent>/nats/...`, `/cache/...`, `/scheduler/...`, and the developer's own paths, optionally
+under a `path_prefix`. A standalone agent keeps its declared tags and paths.
 
 ## Before calling the move invisible
 

@@ -86,6 +86,9 @@ uv pip install --no-cache-dir --find-links file:///home/pajoma/pypi/ avs-bluepri
   spec, the spec wins.
 - **Implementation plan:** `docs/plans/2026-08-28-multi-agent-grouping.md` -- prerequisites P0-P6
   (blocking defects) and phases 0-10.
+- **Follow-up plan -- grouped HTTP surface:** `docs/plans/2026-09-28-grouped-http-surface.md` --
+  one Swagger tag per agent, reserved path segments (`nats`, `cache`, `scheduler`), steps 0-4.
+  Spec sec. 11.2. Standalone tags and paths never change.
 
 **Work this feature in reviewable steps.** Make one change, then stop and report what changed and
 why before starting the next. Do not chain phases together, and do not chain the work items within
