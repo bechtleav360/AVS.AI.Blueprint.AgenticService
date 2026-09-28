@@ -47,6 +47,22 @@ on_shutdown
         Returns:
             HandlerResult: The resulting event to publish, when the handlers work is done.
         """
+        # DECIDE: can this handler run twice on the same event?
+        #
+        # Delivery is at-least-once. A redelivery arrives whenever an acknowledgement is
+        # lost -- a pod restart, a rolling deploy, a connection blip mid-handler -- and the
+        # side effects of the first attempt have already happened by then. Running twice is
+        # not an edge case; it is the normal behaviour of the transport.
+        #
+        # Either make this method safe to repeat (upsert instead of insert, key the outbound
+        # request on event.id, check before you charge), or switch the framework dedup on:
+        #
+        #     settings.toml
+        #     idempotency_enabled = true
+        #     idempotency_ttl = 1500     # seconds; must outlast the redelivery window
+        #
+        # Dedup keys on the event id and source and is best-effort: it narrows the window,
+        # it does not close it. Whichever you choose, delete this comment once you have.
 
         logger.info("MyHandler processing event '%s'", event.type)
         raise NotImplementedError()

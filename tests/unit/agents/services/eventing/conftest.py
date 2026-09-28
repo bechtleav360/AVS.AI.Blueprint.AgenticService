@@ -29,9 +29,10 @@ def pub_config() -> EventPublishingConfig:
 
 @pytest.fixture
 def mock_io_client() -> MagicMock:
-    """Mock IOClientBase with async publish."""
+    """Mock IOClientBase with async publish, belonging to the root namespace."""
     client = MagicMock()
     client.publish = AsyncMock()
+    client.namespace = ""
     return client
 
 
@@ -54,5 +55,10 @@ def event_publishing_service(
 
 @pytest.fixture
 def event_processing_service(mock_registry: MagicMock, mock_config: MagicMock) -> EventProcessingService:
-    """EventProcessingService with mocked registry and config."""
+    """EventProcessingService with mocked registry and config.
+
+    ``config.get`` returns the caller's default so the handler chain's startup reads
+    ``idempotency_enabled`` as unset rather than as a truthy MagicMock.
+    """
+    mock_config.get.side_effect = lambda key, default=None: default
     return EventProcessingService()

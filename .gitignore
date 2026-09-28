@@ -146,7 +146,11 @@ cython_debug/
 custom/dapr/components/rabbitmq-pubsub.yaml
 
 # Secrets
+# Both names: the framework loads '.secrets.toml' (DEFAULT_SETTINGS_FILES) and asbs
+# scaffolds that name, while 'secrets.toml' is the older name still found in the wild.
+# Named exactly rather than '.secrets.*', which would also hide the committed example.
 **/secrets.toml
+**/.secrets.toml
 .env.rabbitmq
 uv.lock
 
@@ -158,3 +162,6 @@ uv.lock
 
 
 ARCHITECTURE_DECISIONS.md
+
+# Private, machine-local Claude Code instructions
+CLAUDE.local.md

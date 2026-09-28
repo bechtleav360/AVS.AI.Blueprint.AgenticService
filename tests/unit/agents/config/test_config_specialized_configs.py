@@ -49,6 +49,24 @@ class TestGetObservabilityConfig:
         assert result.otel_endpoint == "http://collector:4317"
         assert result.otel_service_name == "my-service"
 
+    def test_token_metrics_can_be_turned_off(self, write_settings) -> None:
+        """The key gates the per-call token metrics, and was not read at all until now."""
+        settings_file = write_settings("""
+            [development]
+            app_name = "test"
+            app_port = 8000
+            app_environment = "development"
+            model_provider = "openai"
+            model_api_key = "key"
+            otel_enabled = true
+            token_metrics_enabled = false
+        """)
+        config = Config(settings_files=[str(settings_file)], root_path=str(settings_file.parent))
+        assert config.get_observability_config().token_metrics_enabled is False
+
+    def test_token_metrics_are_on_when_nothing_says_otherwise(self, base_config: Config) -> None:
+        assert base_config.get_observability_config().token_metrics_enabled is True
+
     def test_service_name_falls_back_to_app_name(self, write_settings) -> None:
         settings_file = write_settings("""
             [development]

@@ -195,11 +195,45 @@ def add_import_to_main(main_content: str, import_statement: str, component_type:
     return "\n".join(lines)
 
 
+def insert_before_declaration(main_content: str, block: str) -> str:
+    """Insert ``block`` immediately above the statement that opens the AppBuilder chain.
+
+    The chain is written as an assignment whose right-hand side opens a parenthesis --
+    ``agent = (`` in a scaffolded project, ``app = (`` in one that still builds itself -- so
+    the anchor is the assignment line, found by matching that shape and confirming the builder
+    appears on the next line. Matching on the variable's *name* is what this replaces: it hard
+    coded ``app = (``, which the declaration-only shape does not contain, so a new agent's
+    declaration was silently not inserted and the registration referred to a name that did not
+    exist.
+
+    Args:
+        main_content: Current content of main.py
+        block: The source to insert, ending in a newline.
+
+    Returns:
+        The updated content, unchanged if no AppBuilder assignment could be found.
+    """
+    lines = main_content.split("\n")
+    for index, line in enumerate(lines):
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]* = \(", line.strip()):
+            continue
+        if index + 1 < len(lines) and "AppBuilder(" in lines[index + 1]:
+            lines.insert(index, block)
+            return "\n".join(lines)
+    return main_content
+
+
 def extract_component_registrations(main_content: str) -> tuple[list[tuple[str, str]], int, int]:
     """
     Extract all component registrations from the AppBuilder chain.
 
     Finds and returns all .with_* method calls along with their line indices.
+
+    A declaration ends in one of two ways, and both have to be recognised. A scaffolded
+    ``main.py`` assigns the builder and stops -- ``agent = (AppBuilder()...)`` with no
+    ``build()`` call, because the host builds it -- so the chain closes at the ``)`` in the
+    first column. A project written before that shape, or one that still serves itself, ends
+    the chain with ``.build()``. Finding neither is what the caller treats as malformed.
 
     Args:
         main_content: Content of main.py file
@@ -208,7 +242,8 @@ def extract_component_registrations(main_content: str) -> tuple[list[tuple[str, 
         Tuple of:
         - List of (component_type, full_line) tuples
         - Index of line with "AppBuilder("
-        - Index of line with ".build()"
+        - Index of the line that closes the chain: the ``.build()`` call, or the ``)`` that
+          ends the assignment, whichever the file uses. ``-1`` if neither is present.
     """
     lines = main_content.split("\n")
     components = []
@@ -238,7 +273,27 @@ def extract_component_registrations(main_content: str) -> tuple[list[tuple[str, 
                 components.append((comp_type, line))
                 break
 
+    if build_idx < 0 <= app_builder_idx:
+        build_idx = _closing_parenthesis_index(lines, app_builder_idx)
+
     return components, app_builder_idx, build_idx
+
+
+def _closing_parenthesis_index(lines: list[str], app_builder_idx: int) -> int:
+    """Return the index of the ``)`` that closes a declaration-only AppBuilder chain.
+
+    The first line after the builder that begins a statement of its own -- unindented, and
+    opening with ``)``. Searching for that rather than counting brackets keeps this honest
+    about what it is: a line-oriented editor for a file the generator wrote in a known shape,
+    not a parser. A hand-edited file it cannot read is reported, never guessed at.
+
+    Returns:
+        The line index, or ``-1`` if the chain is never closed in the first column.
+    """
+    for index in range(app_builder_idx + 1, len(lines)):
+        if lines[index].startswith(")"):
+            return index
+    return -1
 
 
 def sort_components(components: list[tuple[str, str]]) -> list[tuple[str, str]]:
@@ -292,11 +347,16 @@ def add_component_registration_to_main(
     previously out of order.
 
     Modifies the AppBuilder chain to include the new component:
-    - For services: adds .with_service(ServiceClass())
-    - For handlers: adds .with_handler(HandlerClass())
-    - For APIs: adds .with_rest_api(ApiClass())
-    - For schedulers: adds .with_scheduler(SchedulerClass())
-    - For agents: adds .with_agent(agent_name)
+    - For services: adds .with_service(ServiceClass)
+    - For handlers: adds .with_handler(HandlerClass)
+    - For APIs: adds .with_rest_api(ApiClass)
+    - For schedulers: adds .with_scheduler(SchedulerClass)
+    - For agents: adds .with_agent(agent_name, name="agent_name")
+
+    The class, not an instance of it. A component constructed on the ``with_*`` line is
+    constructed before any namespace exists and belongs to the root for ever, which is why a
+    group refuses an already-built instance; the class is constructed by ``build()`` inside the
+    agent's own scope and works in both shapes.
 
     Args:
         main_content: Current content of main.py
@@ -318,12 +378,9 @@ def add_component_registration_to_main(
 
     method_name = methods.get(component_type, "with_service")
 
-    # Build the instantiation if not provided
-    if not instantiation:
-        if component_type == "agent":
-            instantiation = class_name
-        else:
-            instantiation = f"{class_name}()"
+    # Build the instantiation if not provided. The class itself, never a call: see the
+    # docstring -- an instance is refused when the agent is hosted in a group.
+    instantiation = instantiation or class_name
 
     # Build the registration line for the new component
     new_registration_line = f"    .{method_name}({instantiation})"

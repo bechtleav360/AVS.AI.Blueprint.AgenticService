@@ -333,3 +333,35 @@ class TestLifecycle:
             stats = redis_cache_service.get_stats()
         assert stats["redis_url"] == "<SAFE_REDIS_URL_MARKER>"
         assert "supersecret" not in stats["redis_url"]
+
+
+class TestClaim:
+    """`SET NX EX` is one server-side operation, so there is no stale-takeover branch."""
+
+    def test_first_claim_succeeds(self, redis_cache_service: RedisCacheService) -> None:
+        assert redis_cache_service.claim("slot", {"by": "a"}) is True
+
+    def test_second_claim_on_the_same_key_fails(self, redis_cache_service: RedisCacheService) -> None:
+        redis_cache_service.claim("slot", {"by": "a"})
+        assert redis_cache_service.claim("slot", {"by": "b"}) is False
+
+    def test_the_loser_does_not_overwrite_the_winner(self, redis_cache_service: RedisCacheService) -> None:
+        redis_cache_service.claim("slot", {"by": "a"})
+        redis_cache_service.claim("slot", {"by": "b"})
+        assert redis_cache_service.get("slot") == {"by": "a"}
+
+    def test_exactly_one_of_many_callers_wins(self, redis_cache_service: RedisCacheService) -> None:
+        results = [redis_cache_service.claim("slot", {"by": index}) for index in range(5)]
+        assert results.count(True) == 1
+
+    def test_ttl_is_applied_to_the_claim(self, redis_cache_service: RedisCacheService) -> None:
+        redis_cache_service.claim("slot", 1, ttl=60)
+        assert 0 < redis_cache_service._client.ttl(redis_cache_service._full_key("slot", "default")) <= 60
+
+    def test_namespace_isolates_claims(self, redis_cache_service: RedisCacheService) -> None:
+        assert redis_cache_service.claim("slot", 1, namespace="ns-a") is True
+        assert redis_cache_service.claim("slot", 1, namespace="ns-b") is True
+
+    def test_an_unreachable_cache_fails_open(self, redis_cache_service: RedisCacheService) -> None:
+        with patch.object(redis_cache_service._client, "set", side_effect=ConnectionError("redis gone")):
+            assert redis_cache_service.claim("slot", 1) is True

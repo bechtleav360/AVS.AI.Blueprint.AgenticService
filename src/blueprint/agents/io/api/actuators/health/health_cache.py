@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from .....models.api import ComponentHealth, ReadinessResponse
+from .....component.namespace import ROOT_LABEL
+from .....models.api import ComponentHealth, NamespaceReadiness, ReadinessResponse
+from .health_base import HealthCheckEntry
+from .namespace_supervisor import NamespaceSupervisor
+from .readiness_policy import ReadinessPolicy
 
 if TYPE_CHECKING:
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -37,30 +42,53 @@ class HealthCheckCache:
         self,
         check_interval_seconds: int = 30,
         initial_status: str = "UP",
+        *,
+        policy: ReadinessPolicy = ReadinessPolicy.ALL,
+        supervisor: NamespaceSupervisor | None = None,
     ) -> None:
         """Initialize the health check cache.
 
         Args:
             check_interval_seconds: How often to refresh health checks (default: 30s)
             initial_status: Initial status while first check runs (default: "UP")
+            policy: How a degraded agent affects the pod's readiness (C3). The default
+                reproduces what a single-agent application has always done.
+            supervisor: Told each agent's verdict after every poll, so it can emit the C7
+                signal and stop a degraded agent consuming (C4). Optional so that a test of the
+                caching behaviour needs no metrics pipeline and no registry.
         """
         self.check_interval_seconds = check_interval_seconds
         self._scheduler: AsyncIOScheduler | None = None
+        self._policy = policy
+        self._supervisor = supervisor
+        # A group's payload says which policy decides and how each agent stands; a standalone
+        # agent's has neither, as before agents existed. Decided by whether any namespace besides
+        # the root is supervised.
+        self._grouped = supervisor is not None and any(supervisor.status)
         self._cached_response: ReadinessResponse = ReadinessResponse(
             status=initial_status,
             components={},
+            policy=policy.value if self._grouped else None,
+            namespaces={} if self._grouped else None,
         )
         self._last_update: datetime = datetime.now()
         self._lock = asyncio.Lock()
-        self._health_check_provider: dict[str, Any] | None = None
+        self._entries: tuple[HealthCheckEntry, ...] = ()
 
-    def set_health_check_provider(self, provider: dict[str, Any]) -> None:
-        """Set the health check provider dependencies.
+    def set_health_entries(self, entries: Sequence[HealthCheckEntry]) -> None:
+        """Set the checks to poll, replacing whatever was set before.
+
+        Entries rather than a ``name -> checker`` mapping because each one carries the agent it
+        belongs to as data (see :class:`HealthCheckEntry`). The payload is still keyed by
+        ``entry.key``, so nothing about the response shape changes; what is new is that this
+        object knows *whose* check each result is, which is what a per-agent readiness policy
+        needs (phase 9).
 
         Args:
-            provider: Dictionary of component_name -> HealthCheckProvider
+            entries: The checks to poll. The whole set, not an addition: ``ActuatorApi``
+                accumulates and re-pushes, so this object holds one authoritative list.
         """
-        self._health_check_provider = provider
+        self._entries = tuple(entries)
 
     async def start(self) -> None:
         """Start the background health check scheduler."""
@@ -106,43 +134,58 @@ class HealthCheckCache:
         async with self._lock:
             return self._cached_response
 
+    async def refresh(self) -> None:
+        """Re-run the checks now instead of at the next interval.
+
+        For a change the checks cannot see -- an agent latched down or released -- so that the
+        readiness probe and the payload reflect it immediately rather than up to one interval later.
+        """
+        await self._run_health_checks()
+
     async def _run_health_checks(self) -> None:
-        """Run all health checks and update cache."""
-        if not self._health_check_provider:
-            logger.debug("No health check providers configured")
-            return
+        """Run all health checks and update cache.
+
+        **Runs with no checks registered too.** It used to return early, and that skipped more than
+        the checks: the verdict was never recomputed and the supervisor never observed, so an agent
+        latched down at startup stayed ``UP`` in the payload, and a released latch never resumed
+        consumption, because resumption is driven from here.
+        """
+        if not self._entries:
+            logger.debug("No health check providers configured; aggregating supervisor state only")
 
         try:
             async with self._lock:
                 components: dict[str, ComponentHealth] = {}
 
                 # Run all health checks concurrently
-                tasks = {name: provider.health_check() for name, provider in self._health_check_provider.items()}
+                results: list[ComponentHealth | BaseException] = await asyncio.gather(
+                    *(entry.checker.health_check() for entry in self._entries), return_exceptions=True
+                )
 
-                results: list[ComponentHealth | BaseException] = await asyncio.gather(*tasks.values(), return_exceptions=True)
-
-                for name, result in zip(tasks.keys(), results, strict=True):
+                for entry, result in zip(self._entries, results, strict=True):
                     if isinstance(result, BaseException):
-                        logger.warning(
-                            "Health check failed for %s: %s",
-                            name,
-                            result,
-                        )
-                        components[name] = ComponentHealth(
+                        # The agent is named separately from the entry key, because that is the
+                        # question asked of a group: whose check is failing, not only which one.
+                        if entry.namespace:
+                            logger.warning("Health check '%s' of agent '%s' failed: %s", entry.name, entry.namespace, result)
+                        else:
+                            logger.warning("Health check failed for %s: %s", entry.key, result)
+                        components[entry.key] = ComponentHealth(
                             status="unhealthy",
                             message=f"Check failed: {result}",
                         )
                     else:
-                        components[name] = result
+                        components[entry.key] = result
 
-                # Determine overall status
-                all_healthy = all(component.status == "healthy" for component in components.values())
-                overall_status = "UP" if all_healthy else "DOWN"
+                namespace_status, namespaces = self._aggregate_by_agent(components)
+                overall_status = "UP" if self._policy.is_ready(namespace_status, self._critical_namespaces()) else "DOWN"
 
                 # Update cache
                 self._cached_response = ReadinessResponse(
                     status=overall_status,
                     components=components,
+                    policy=self._policy.value if self._grouped else None,
+                    namespaces=namespaces if self._grouped else None,
                 )
                 self._last_update = datetime.now()
 
@@ -152,8 +195,67 @@ class HealthCheckCache:
                     self._last_update.isoformat(),
                 )
 
+            # Outside the lock. The supervisor pauses and resumes transports, which awaits a
+            # drain that can take seconds; holding the readiness lock across it would make
+            # every probe during a pause wait for it, and a probe that times out is read as a
+            # failure of the pod rather than of the one agent that is actually degraded.
+            if self._supervisor is not None:
+                await self._supervisor.observe(namespace_status)
+
         except Exception as exc:  # pragma: no cover
             logger.error("Unexpected error during health check refresh: %s", exc, exc_info=True)
+
+    def _critical_namespaces(self) -> frozenset[str]:
+        """The agents that gate readiness under the ``critical`` policy, or none known."""
+        return self._supervisor.critical_namespaces if self._supervisor is not None else frozenset()
+
+    def _aggregate_by_agent(self, components: dict[str, ComponentHealth]) -> tuple[dict[str, bool], dict[str, NamespaceReadiness]]:
+        """Reduce the individual check results to one verdict per agent.
+
+        The agent comes from the entry, not from the key. ``HealthCheckEntry`` carries it as
+        data for exactly this reason: recovering it by splitting ``orders.cache:v2.sessions``
+        on a separator would attribute that check to an agent called ``orders`` only by luck,
+        and to the wrong agent as soon as a name contained the separator -- a C7 violation
+        dressed as a string bug.
+
+        Every supervised namespace appears in the result even when it registered no check at
+        all. An agent with nothing to check is up, and leaving it out would make ``any`` and
+        ``critical`` read a shorter list than the group actually has.
+
+        Args:
+            components: This poll's results, keyed by entry key.
+
+        Returns:
+            Whether each namespace passed, and the per-agent section of the readiness payload.
+        """
+        supervised = set(self._supervisor.status) if self._supervisor is not None else set()
+        forced = self._supervisor.forced_down if self._supervisor is not None else {}
+        failing: dict[str, list[str]] = {namespace: [] for namespace in supervised | set(forced)}
+
+        for entry in self._entries:
+            result = components.get(entry.key)
+            failing.setdefault(entry.namespace, [])
+            if result is not None and result.status != "healthy":
+                failing[entry.namespace].append(entry.key)
+
+        # A latched agent is down whatever its checks say. That is the point of the latch: a
+        # component that failed to start may answer its health check perfectly while the agent is
+        # unusable, so the checks alone would report it UP -- to the policy and in the payload.
+        critical = self._critical_namespaces()
+        namespace_status = {namespace: not keys and namespace not in forced for namespace, keys in failing.items()}
+        namespaces = {
+            (namespace or ROOT_LABEL): NamespaceReadiness(
+                status="UP" if namespace_status[namespace] else "DOWN",
+                # The root is shared infrastructure, so it gates readiness under every policy
+                # -- see ReadinessPolicy. Reporting it as critical is what makes the payload
+                # explain the verdict rather than contradict it.
+                critical=not namespace or namespace in critical,
+                failing=keys,
+                reason=forced.get(namespace),
+            )
+            for namespace, keys in failing.items()
+        }
+        return namespace_status, namespaces
 
     def get_cache_age_seconds(self) -> float:
         """Get the age of the cached health status in seconds.

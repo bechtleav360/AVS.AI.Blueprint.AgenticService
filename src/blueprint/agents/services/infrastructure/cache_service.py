@@ -94,6 +94,26 @@ class CacheService(ServiceBase):
         """
 
     @abstractmethod
+    def claim(self, key: str | list[str] | dict[str, Any], value: Any, namespace: str = "default", ttl: int | None = None) -> bool:
+        """Store a value only if the key is absent, and report whether this caller stored it.
+
+        The set-if-absent primitive that ``exists`` followed by ``set`` cannot provide: two
+        callers racing on the same key both pass an ``exists`` check before either ``set``
+        lands, and both then believe they hold the key. Anything that uses the cache to
+        decide *which one of several processes does a piece of work* needs this instead --
+        the scheduler tick claim, and event deduplication.
+
+        Args:
+            key: Cache key (string, list of strings, or dict). Will be hashed internally.
+            value: Value to store if the claim succeeds
+            namespace: Namespace for the key (default: "default")
+            ttl: Time-to-live in seconds (None = the cache-wide default)
+
+        Returns:
+            True if this caller stored the value, False if the key was already held.
+        """
+
+    @abstractmethod
     def hash(self, value: str | list[str] | dict[str, Any]) -> str:
         """Generate a hash of a value for use as a cache key.
 
@@ -163,6 +183,7 @@ class DiskCacheService(_CacheKeyMixin, CacheService):
         eviction_policy: str = "least-recently-used",
         enable_locking: bool = True,
         default_ttl: int | None = None,
+        component_name: str | None = None,
     ):
         """Initialize DiskCacheService.
 
@@ -175,10 +196,26 @@ class DiskCacheService(_CacheKeyMixin, CacheService):
                 called without an explicit ``ttl``. ``None`` means no expiration.
                 Mirrors ``RedisCacheService`` so the choice of backend does not
                 silently change TTL behaviour.
+            component_name: Registry name to use instead of the derived ``disk_cache_service``.
+                Needed because a process may hold several named caches (spec sec. 8) and two
+                instances of this class would otherwise collide on the one derived name. The
+                default keeps an existing single-cache application's registry key unchanged.
         """
-        super().__init__()
+        super().__init__(name=component_name)
         self.cache_dir = Path(cache_dir)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            # The common production failure, and the least self-explanatory: a container image
+            # whose working directory is root-owned, or a pod with `readOnlyRootFilesystem: true`
+            # and nothing mounted here. Both surface as an errno from deep inside a constructor,
+            # so the cause and the fix are named here instead.
+            raise RuntimeError(
+                f"Cache directory '{self.cache_dir}' could not be created ({error.strerror}). A container cannot "
+                "create it at runtime unless the path is writable by the user the process runs as: create it in the "
+                "image and chown it, mount a volume there if the root filesystem is read-only, point "
+                "'cache.cache_dir' somewhere writable, or use the redis cache backend, which needs no filesystem."
+            ) from error
 
         self._size_limit = size_limit
         self._eviction_policy = eviction_policy
@@ -312,6 +349,58 @@ class DiskCacheService(_CacheKeyMixin, CacheService):
                     logger.debug("Cache set: %s (no ttl)", namespaced_key)
         except Exception as e:
             logger.warning("Error setting cache: %s", e)
+
+    def claim(self, key: str | list[str] | dict[str, Any], value: Any, namespace: str = "default", ttl: int | None = None) -> bool:
+        """Store a value only if the key is absent (atomic), and report whether we stored it.
+
+        ``diskcache_rs.Cache.add`` is the set-if-absent operation, and it is atomic across
+        processes sharing the directory because the cache is opened with file locking. Its
+        own ``expire`` argument is **not** honoured by that backend -- an entry added with
+        ``expire=1`` is still readable minutes later -- so the TTL is kept in the parallel
+        metadata entry this service already maintains, exactly as ``set`` does.
+
+        That split is what the stale branch below is for: ``add`` refuses a key whose logical
+        TTL has passed, because physically it is still there. Taking such a key over is a
+        read followed by a write, so two callers can both take over one expired claim. This
+        is the one non-atomic path, and it is only reached by a caller that reuses a key
+        beyond its TTL rather than deriving a fresh one.
+        """
+        try:
+            with self._acquire_lock():
+                namespaced_key = self._make_key(key, namespace)
+                ttl_key = self._make_ttl_key(namespaced_key)
+                effective_ttl = ttl if ttl is not None else self._default_ttl
+
+                if not self._cache.add(namespaced_key, value):
+                    if not self._logically_expired(ttl_key):
+                        return False
+                    self._cache.set(namespaced_key, value)
+
+                if effective_ttl is not None:
+                    self._cache.set(ttl_key, str(time.time() + effective_ttl))
+                elif ttl_key in self._cache:
+                    del self._cache[ttl_key]
+                logger.debug("Cache claimed: %s (ttl=%s)", namespaced_key, effective_ttl)
+                return True
+        except Exception as e:
+            # Fails open, as every other operation on this service does: a cache that cannot
+            # be reached must not stop the caller from doing its work.
+            logger.warning("Error claiming cache key: %s", e)
+            return True
+
+    def _logically_expired(self, ttl_key: str) -> bool:
+        """Report whether the TTL metadata for an entry says it has expired.
+
+        A missing or unparseable timestamp means "no expiry recorded", so the entry is
+        treated as live -- the same reading ``exists`` and ``get`` take.
+        """
+        ttl_timestamp = self._cache.get(ttl_key)
+        if ttl_timestamp is None:
+            return False
+        try:
+            return time.time() > float(ttl_timestamp)
+        except (ValueError, TypeError):
+            return False
 
     def delete(self, key: str | list[str] | dict[str, Any], namespace: str = "default") -> bool:
         """Delete a value from cache."""

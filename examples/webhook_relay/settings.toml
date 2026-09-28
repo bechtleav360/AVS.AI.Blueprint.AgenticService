@@ -1,5 +1,5 @@
 [default]
-app_name = "Webhook Relay"
+app_name = "webhook-relay"
 app_port = 8000
 app_environment = "development"
 log_level = "INFO"

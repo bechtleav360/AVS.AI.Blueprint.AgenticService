@@ -1,9 +1,9 @@
-"""Unit tests for AgentOutput and AnalysisRequest validators."""
+"""Unit tests for AgentOutput and Evidence validators."""
 
 import pytest
 from pydantic import ValidationError
 
-from blueprint.agents.models.result import AgentOutput, AnalysisRequest, Evidence
+from blueprint.agents.models.result import AgentOutput, Evidence
 
 
 def _evidence(confidence: float, label: str = "e") -> Evidence:
@@ -65,26 +65,3 @@ class TestSortEvidenceByConfidence:
         output = self._output(items)
         confidences = [e.confidence for e in output.evidence]
         assert confidences == sorted(confidences, reverse=True)
-
-
-# ---------------------------------------------------------------------------
-# AnalysisRequest.check_resource_or_id_provided
-# ---------------------------------------------------------------------------
-
-
-class TestAnalysisRequestValidator:
-    def test_only_resource_id_is_valid(self) -> None:
-        req = AnalysisRequest(resource_id="res-1")
-        assert req.resource_id == "res-1"
-
-    def test_only_resource_dict_is_valid(self) -> None:
-        req = AnalysisRequest(resource={"id": "res-1"})
-        assert req.resource == {"id": "res-1"}
-
-    def test_neither_field_raises(self) -> None:
-        with pytest.raises(ValidationError, match="Either 'resource_id' or 'resource'"):
-            AnalysisRequest()
-
-    def test_both_fields_raises(self) -> None:
-        with pytest.raises(ValidationError, match="not both"):
-            AnalysisRequest(resource_id="r", resource={"id": "r"})

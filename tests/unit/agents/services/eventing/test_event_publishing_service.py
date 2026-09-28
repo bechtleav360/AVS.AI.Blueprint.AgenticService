@@ -1,9 +1,13 @@
 """Unit tests for EventPublishingService."""
 
-from unittest.mock import MagicMock
+from collections.abc import Callable
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from blueprint.agents.clients.io.io_client_base import IOClientBase
+from blueprint.agents.component.component import Component
+from blueprint.agents.component.registry import Registry
 from blueprint.agents.models.config import EventPublishingConfig, TopicConfig
 from blueprint.agents.models.events import GenericCloudEvent
 from blueprint.agents.services.eventing.event_publishing_service import EventPublishingService
@@ -14,16 +18,19 @@ from blueprint.agents.services.eventing.event_publishing_service import EventPub
 
 
 class TestLifecycle:
-    async def test_on_startup_resolves_client_from_registry(self, mock_registry: MagicMock, mock_config: MagicMock) -> None:
+    async def test_on_startup_resolves_client_from_registry(
+        self, real_registry: Registry, mock_config: MagicMock, register_client: Callable[[str], MagicMock]
+    ) -> None:
         mock_config.get_event_publishing_config.return_value = EventPublishingConfig()
+        client = register_client("")
         svc = EventPublishingService()
         await svc.on_startup()
-        mock_registry.get_component.assert_called()
-        assert svc._client is not None
+        assert svc._client is client
 
-    async def test_on_startup_loads_pub_config(self, mock_registry: MagicMock, mock_config: MagicMock) -> None:
+    async def test_on_startup_loads_pub_config(self, mock_registry: MagicMock, mock_config: MagicMock, mock_io_client: MagicMock) -> None:
         expected = EventPublishingConfig(topic_mapping={"x.event": TopicConfig(topic="t")})
         mock_config.get_event_publishing_config.return_value = expected
+        mock_registry.get_io_clients.return_value = [mock_io_client]
         svc = EventPublishingService()
         await svc.on_startup()
         assert svc._pub_config is expected
@@ -211,3 +218,160 @@ class TestPublishStatusEvent:
         )
         await event_publishing_service.publish_status_event({"key": "val"}, "started")
         mock_io_client.publish.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# P6 -- one publishing service per namespace, on its own client (spec sec. 6)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def real_registry() -> Registry:
+    """A real Registry, because what is under test is the resolution it performs.
+
+    `EventPublishingService` no longer resolves its client by hand: `self.registry` is its
+    namespace's view, and the view is what prefers this agent's transport over a root one. A
+    MagicMock registry would only assert that a stub returned what it was told to.
+    """
+    registry = Registry(Component)
+    Component.shared_registry = registry
+    return registry
+
+
+@pytest.fixture
+def register_client(real_registry: Registry) -> Callable[[str], MagicMock]:
+    """Register an IO client belonging to a namespace, named as Component would name it."""
+
+    def _register(namespace: str, name: str = "nats_client") -> MagicMock:
+        client = MagicMock(spec=IOClientBase)
+        client.namespace = namespace
+        client.publish = AsyncMock()
+        real_registry.add_component(f"{namespace}_{name}" if namespace else name, client)
+        return client
+
+    return _register
+
+
+class TestNamespaceOwnership:
+    def test_default_is_the_root_namespace(self, mock_registry: MagicMock, mock_config: MagicMock) -> None:
+        assert EventPublishingService().namespace == ""
+
+    def test_root_service_keeps_the_unqualified_registry_name(self, mock_registry: MagicMock, mock_config: MagicMock) -> None:
+        assert EventPublishingService().name == "event_publishing_service"
+
+    def test_namespaced_service_registers_under_a_qualified_name(self, mock_registry: MagicMock, mock_config: MagicMock) -> None:
+        assert EventPublishingService(namespace="orders").name == "orders_event_publishing_service"
+
+    async def test_publishes_on_its_own_namespaces_client(
+        self, real_registry: Registry, mock_config: MagicMock, register_client: Callable[..., MagicMock]
+    ) -> None:
+        """Outbound traffic on another namespace's connection would be unattributable."""
+        register_client("")
+        own = register_client("orders")
+        mock_config.get_event_publishing_config.return_value = EventPublishingConfig()
+
+        svc = EventPublishingService(namespace="orders")
+        await svc.on_startup()
+
+        assert svc._client is own
+
+    async def test_falls_back_to_the_root_client(
+        self, real_registry: Registry, mock_config: MagicMock, register_client: Callable[..., MagicMock]
+    ) -> None:
+        """A namespaced agent in a process with one shared transport keeps working."""
+        root = register_client("")
+        register_client("invoice")
+        mock_config.get_event_publishing_config.return_value = EventPublishingConfig()
+
+        svc = EventPublishingService(namespace="orders")
+        await svc.on_startup()
+
+        assert svc._client is root
+
+    async def test_never_borrows_another_namespaces_client(
+        self, real_registry: Registry, mock_config: MagicMock, register_client: Callable[..., MagicMock]
+    ) -> None:
+        register_client("invoice")
+        mock_config.get_event_publishing_config.return_value = EventPublishingConfig()
+
+        svc = EventPublishingService(namespace="orders")
+        with pytest.raises(ValueError, match="No IOClientBase is registered"):
+            await svc.on_startup()
+
+    async def test_two_clients_in_one_namespace_raise(
+        self, real_registry: Registry, mock_config: MagicMock, register_client: Callable[..., MagicMock]
+    ) -> None:
+        register_client("orders", "nats_client")
+        register_client("orders", "dapr_client")
+        mock_config.get_event_publishing_config.return_value = EventPublishingConfig()
+
+        svc = EventPublishingService(namespace="orders")
+        with pytest.raises(ValueError, match="ambiguous"):
+            await svc.on_startup()
+
+    async def test_no_client_at_all_raises(self, real_registry: Registry, mock_config: MagicMock) -> None:
+        mock_config.get_event_publishing_config.return_value = EventPublishingConfig()
+        svc = EventPublishingService()
+        with pytest.raises(ValueError, match="No components of type"):
+            await svc.on_startup()
+
+
+# ---------------------------------------------------------------------------
+# #1 -- a failed publish of a handler result is not swallowed, and its id is stable
+# ---------------------------------------------------------------------------
+
+
+class TestAFailedHandlerPublish:
+    async def test_the_failure_reaches_the_caller(
+        self, event_publishing_service: EventPublishingService, mock_io_client: MagicMock, cloud_event: GenericCloudEvent
+    ) -> None:
+        """Swallowed, the delivery was acked and the handler's output was lost."""
+        mock_io_client.publish.side_effect = ConnectionError("broker gone")
+        with pytest.raises(ConnectionError, match="broker gone") as caught:
+            await event_publishing_service.publish_handler_event(
+                event_type="test.event", data={}, metadata={}, source_event=cloud_event, index=1
+            )
+        assert any("handler result 1 ('test.event'" in note for note in caught.value.__notes__)
+
+    async def test_a_deliberate_skip_is_still_not_an_error(
+        self, event_publishing_service: EventPublishingService, cloud_event: GenericCloudEvent
+    ) -> None:
+        await event_publishing_service.publish_handler_event(event_type="unmapped.event", data={}, metadata={}, source_event=cloud_event)
+
+
+class TestTheResultIdIsDerived:
+    """A redelivery republishes under the same id, so a consumer can deduplicate it."""
+
+    @staticmethod
+    async def _published_id(service: EventPublishingService, client: MagicMock, source: GenericCloudEvent, index: int = 0) -> str:
+        client.publish.reset_mock()
+        await service.publish_handler_event(event_type="test.event", data={}, metadata={}, source_event=source, index=index)
+        return client.publish.await_args.args[1].id
+
+    async def test_the_same_delivery_gets_the_same_id(
+        self, event_publishing_service: EventPublishingService, mock_io_client: MagicMock, cloud_event: GenericCloudEvent
+    ) -> None:
+        first = await self._published_id(event_publishing_service, mock_io_client, cloud_event)
+        again = await self._published_id(event_publishing_service, mock_io_client, cloud_event)
+        assert first == again
+
+    async def test_two_results_of_one_dispatch_differ(
+        self, event_publishing_service: EventPublishingService, mock_io_client: MagicMock, cloud_event: GenericCloudEvent
+    ) -> None:
+        first = await self._published_id(event_publishing_service, mock_io_client, cloud_event, index=0)
+        second = await self._published_id(event_publishing_service, mock_io_client, cloud_event, index=1)
+        assert first != second
+
+    async def test_another_source_event_differs(
+        self, event_publishing_service: EventPublishingService, mock_io_client: MagicMock, cloud_event: GenericCloudEvent
+    ) -> None:
+        other = GenericCloudEvent(id="evt-002", type="test.event", source="test-source")
+        assert await self._published_id(event_publishing_service, mock_io_client, cloud_event) != await self._published_id(
+            event_publishing_service, mock_io_client, other
+        )
+
+    def test_two_agents_answering_one_event_do_not_collide(self, cloud_event: GenericCloudEvent) -> None:
+        """Their results can share a source (a root-level app_name), so the agent is in the id."""
+        orders, billing = MagicMock(namespace="orders"), MagicMock(namespace="billing")
+        derive = EventPublishingService._result_event_id
+        assert derive(orders, cloud_event, "test.event", 0) != derive(billing, cloud_event, "test.event", 0)

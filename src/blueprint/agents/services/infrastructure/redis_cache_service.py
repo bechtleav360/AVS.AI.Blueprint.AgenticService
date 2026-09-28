@@ -36,8 +36,12 @@ class RedisCacheService(_CacheKeyMixin, CacheService):
         key_prefix: str = "",
         default_ttl: int | None = None,
         fallback_to_local: bool = False,
+        component_name: str | None = None,
     ) -> None:
-        super().__init__()
+        # component_name: registry name to use instead of the derived 'redis_cache_service'.
+        # A process may hold several named caches (spec sec. 8), and two instances of this
+        # class would otherwise collide on the one derived name. None keeps the existing key.
+        super().__init__(name=component_name)
         self._redis_url = redis_url
         # Cached credential-free variant for logs, /readiness payloads, and stats.
         self._safe_redis_url = _sanitize_redis_url(redis_url)
@@ -146,6 +150,26 @@ class RedisCacheService(_CacheKeyMixin, CacheService):
                 logger.debug("Cache set: %s (no ttl)", full_key)
         except Exception as e:
             logger.warning("Error setting Redis cache: %s", e)
+
+    def claim(self, key: str | list[str] | dict[str, Any], value: Any, namespace: str = "default", ttl: int | None = None) -> bool:
+        """Store a value only if the key is absent, and report whether we stored it.
+
+        ``SET key value NX EX ttl`` is a single server-side operation, so unlike the disk
+        backend there is no stale-takeover branch: expiry is the server's job and an expired
+        key simply is not there. Redis returns ``None`` rather than ``False`` when ``NX``
+        refuses, hence the truthiness check.
+        """
+        try:
+            full_key = self._full_key(key, namespace)
+            effective_ttl = ttl if ttl is not None else self._default_ttl
+            stored = self._client.set(full_key, json.dumps(value), nx=True, ex=effective_ttl)
+            logger.debug("Cache claim on %s: %s", full_key, bool(stored))
+            return bool(stored)
+        except Exception as e:
+            # Fails open, matching every other operation here: an unreachable cache must not
+            # stop the caller from doing its work.
+            logger.warning("Error claiming Redis cache key: %s", e)
+            return True
 
     def delete(self, key: str | list[str] | dict[str, Any], namespace: str = "default") -> bool:
         try:

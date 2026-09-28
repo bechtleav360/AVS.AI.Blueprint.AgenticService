@@ -1,0 +1,45 @@
+# The services the tests in this directory need, and nothing else.
+#
+#   docker compose -f tests/integration/docker-compose.yml up -d
+#   pytest tests/ -m integration
+#   docker compose -f tests/integration/docker-compose.yml down
+#
+# Ports are published on localhost because the tests run on the host, not in a container.
+# Nothing here is a deployment example -- see docs/guides/deployment.md for that.
+#
+# **No volumes, deliberately.** JetStream state lives inside the container and is gone with it,
+# so `down` followed by `up -d` is a clean broker. A stream or a durable left over from an
+# earlier run is exactly the kind of state that makes a green test meaningless: a durable
+# remembers its filter subject and its delivery count, so a test that asserts a redelivery can
+# pass against last week's consumer. The fixtures tear down what they create as well, per test;
+# this is the coarser guarantee underneath that.
+
+services:
+  nats:
+    image: nats:2.10-alpine
+    container_name: blueprint-test-nats
+    # --jetstream is what the framework needs for durables, dead letters and max_deliver;
+    # without it an agent with nats_use_jetstream = true fails to start (there is no fallback
+    # to Core NATS). --http_port exposes /healthz and /connz, which is also where the
+    # connection names the client sets (namespace.group.pod) can be read back.
+    command: ["--jetstream", "--store_dir=/tmp/nats", "--http_port=8222"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  redis:
+    image: redis:7-alpine
+    container_name: blueprint-test-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5

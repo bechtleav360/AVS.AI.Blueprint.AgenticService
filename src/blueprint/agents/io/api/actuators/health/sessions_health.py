@@ -56,7 +56,7 @@ class SessionsServiceHealthChecker(HealthCheckerBase):
         except Exception as e:
             logger.error("Sessions service REST API health check failed: %s", e)
             return ComponentHealth(
-                status="DOWN",
+                status="unhealthy",
                 message=f"REST API unreachable: {str(e)}",
                 details={"rest_api": "disconnected", "error": str(e)},
             )
@@ -70,14 +70,14 @@ class SessionsServiceHealthChecker(HealthCheckerBase):
             if time_since_heartbeat < 60:
                 details["sse_connection"] = "active"
                 return ComponentHealth(
-                    status="UP",
+                    status="healthy",
                     message="Sessions service healthy",
                     details=details,
                 )
             else:
                 details["sse_connection"] = "stale"
                 return ComponentHealth(
-                    status="DOWN",
+                    status="unhealthy",
                     message=f"SSE connection stale (last heartbeat {int(time_since_heartbeat)}s ago)",
                     details=details,
                 )
@@ -86,7 +86,7 @@ class SessionsServiceHealthChecker(HealthCheckerBase):
             details["sse_connection"] = "unknown"
             details["last_heartbeat_seconds_ago"] = None
             return ComponentHealth(
-                status="UP",
+                status="healthy",
                 message="Sessions service REST API healthy, SSE status unknown",
                 details=details,
             )

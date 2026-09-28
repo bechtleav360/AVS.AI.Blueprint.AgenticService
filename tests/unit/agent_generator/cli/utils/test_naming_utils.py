@@ -210,7 +210,7 @@ class TestAddComponentRegistrationToMain:
         service_idx = None
         build_idx = None
         for i, line in enumerate(lines):
-            if ".with_service(OrderService())" in line:
+            if ".with_service(OrderService)" in line:
                 service_idx = i
             if ".build()" in line:
                 build_idx = i
@@ -225,8 +225,8 @@ class TestAddComponentRegistrationToMain:
 
         result = add_component_registration_to_main(main_content, "OrderHandler", "handler")
 
-        assert ".with_handler(OrderHandler())" in result
-        assert result.index(".with_handler(OrderHandler())") < result.rindex(".build()")
+        assert ".with_handler(OrderHandler)" in result
+        assert result.index(".with_handler(OrderHandler)") < result.rindex(".build()")
 
     def test_add_agent_registration_no_instantiation(self) -> None:
         """Should add agent registration without () for agents."""
@@ -243,7 +243,7 @@ class TestAddComponentRegistrationToMain:
 
         result = add_component_registration_to_main(main_content, "OrderApi", "api")
 
-        assert ".with_rest_api(OrderApi())" in result
+        assert ".with_rest_api(OrderApi)" in result
 
     def test_add_scheduler_registration(self) -> None:
         """Should add scheduler registration before .build()."""
@@ -251,7 +251,7 @@ class TestAddComponentRegistrationToMain:
 
         result = add_component_registration_to_main(main_content, "CleanupScheduler", "scheduler")
 
-        assert ".with_scheduler(CleanupScheduler())" in result
+        assert ".with_scheduler(CleanupScheduler)" in result
 
     def test_build_in_comment_does_not_break_insertion(self) -> None:
         """Should use last .build() call and ignore earlier ones in comments."""
@@ -301,7 +301,7 @@ class TestAddComponentRegistrationToMain:
         lines = result.split("\n")
         # Last non-empty line should be the registration
         last_line = lines[-1] if lines[-1].strip() else lines[-2]
-        assert ".with_service(OrderService())" in last_line
+        assert ".with_service(OrderService)" in last_line
 
     def test_multiple_registrations_maintain_order(self) -> None:
         """Should add multiple registrations in the correct order."""
