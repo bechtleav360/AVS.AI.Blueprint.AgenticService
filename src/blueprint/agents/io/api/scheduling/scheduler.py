@@ -23,7 +23,8 @@ value is safe to inherit silently, and which one applies depends on the deployme
 than on the code -- see :meth:`SchedulerBase._resolve_mode`.
 
 A REST endpoint for manual triggering is registered under ``/{name}/trigger`` in
-both modes.
+both modes: ``/api/{name}/trigger`` standalone, ``/api/<agent>/scheduler/{name}/trigger``
+in a group (spec sec. 11.2).
 
 Example::
 
@@ -227,6 +228,8 @@ class SchedulerBase(RestApiBase):
         topic: Overrides the derived :attr:`tick_topic`. For an agent whose ticks are
             already published on a subject someone else owns.
     """
+
+    group_segment = "scheduler"
 
     def __init__(self, crontab: str, *, topic: str | None = None) -> None:
         super().__init__()

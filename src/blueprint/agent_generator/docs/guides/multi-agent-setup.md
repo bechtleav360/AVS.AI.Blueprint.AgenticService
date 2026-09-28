@@ -229,7 +229,9 @@ rather than asserted in prose:
 | NATS queue group | `nats_queue_group`, else `app_name` |
 | JetStream durable | `<topic>-durable` |
 | REST routes | `/api/orders/{id}` |
-| OpenAPI tag | `Orders` |
+| NATS publish endpoint | `/events/{topic}` |
+| Scheduler trigger | `/api/<name>/trigger` |
+| OpenAPI tag | `Orders` -- as declared; an untagged route stays under "default" |
 | Telemetry `service.name` | `otel_service_name` |
 | Disk cache directory | `cache.cache_dir` |
 | Redis key prefix | `cache.key_prefix` |
@@ -248,7 +250,9 @@ from its own name. That is one consumer migration, and then it is over:
 | NATS queue group | `order` |
 | JetStream durable | `order-<topic>-durable` |
 | REST routes | `/api/order/orders/{id}` |
-| OpenAPI tag | `order.Orders` |
+| NATS publish endpoint | `/api/order/nats/events/{topic}` |
+| Scheduler trigger | `/api/order/scheduler/<name>/trigger` |
+| OpenAPI tag | `order` -- on every operation of the agent, whatever it declared |
 | Telemetry `service.name` | `order` |
 | Disk cache directory | `<cache_dir>/order.default` |
 | Redis key prefix | `<key_prefix>:order.default` |
@@ -264,6 +268,30 @@ What does **not** move even in a group: the process-level endpoints. `/health/li
 wherever the agents are. `/cache/*` does move -- it becomes `/api/<agent>/cache/*`, one endpoint set
 per agent that declared a cache, because a cache belongs to the agent that declared it and to no
 other.
+
+### An agent's Swagger group and its reserved paths
+
+In a group, Swagger UI shows **one group per agent**, named after it, and every operation the agent
+serves is in it -- its own routes, its NATS publish endpoint, its cache endpoints and its scheduler
+triggers. Tags your routes declare are replaced, and an untagged route is tagged too, so nothing an
+agent serves ever lands under "default". Swagger UI has only one tag level, so the second level is
+the path:
+
+```
+/api/order/nats/...        the agent's NATS publish endpoint
+/api/order/cache/...       the agent's cache management
+/api/order/scheduler/...   the agent's scheduler triggers
+/api/order/<your paths>    everything else the agent declares
+```
+
+`nats`, `cache` and `scheduler` are **reserved**: a grouped agent whose own route starts with one of
+them fails the image at startup, naming the class, the route and the segment. To put your routes
+under a segment of their own, set `path_prefix` on the API class (see
+[REST APIs](../components/rest-apis.md#path-prefix)); it applies standalone too, so the code is the
+same either way. The process-wide endpoints (`/`, `/health/*`, `/info`, `/status/*`, Dapr's
+`/dapr/subscribe` and `/events/{topic}`) keep their own tags.
+
+A standalone agent keeps its declared tags and all of its paths -- none of this applies to it.
 
 ### The cache is cold after the move
 

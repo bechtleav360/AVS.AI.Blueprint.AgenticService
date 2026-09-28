@@ -252,8 +252,9 @@ def qualified_entry_name(namespace: str, name: str) -> str:
     """Return the name ``name`` is *displayed* under inside ``namespace``.
 
     For the names that identify something in a payload or a document rather than in the
-    registry: a readiness entry, an OpenAPI tag. The root keeps the bare name, so a
-    single-agent application's readiness payload and Swagger groups do not change.
+    registry, such as a readiness entry. The root keeps the bare name, so a single-agent
+    application's readiness payload does not change. (OpenAPI tags used to be rendered this
+    way too; a grouped agent's are now its bare name, spec sec. 11.2.)
 
     ``.`` rather than the ``_`` of :func:`qualified_component_name`, and the two are not
     interchangeable. A registry name is an identifier that other code *looks up*, and ``_`` is

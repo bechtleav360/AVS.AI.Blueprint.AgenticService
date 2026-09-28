@@ -167,7 +167,8 @@ class CleanupScheduler(SchedulerBase):
 ```
 
 - **Override `on_startup` only if you also call `super().on_startup()`.** The base class is
-  what starts the timer, wires the tick handler and registers `POST /api/<name>/trigger`.
+  what starts the timer, wires the tick handler and registers `POST /api/<name>/trigger`
+  (`/api/<agent>/scheduler/<name>/trigger` in a group).
 - **`scheduler_mode` decides what calls `tick()`, and it is required.** It has no default:
   registering a scheduler without setting it fails at startup, because neither value is safe to
   inherit silently. `"event"` starts no timer in the process -- the tick arrives as an ordinary

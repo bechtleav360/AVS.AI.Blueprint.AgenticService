@@ -8005,9 +8005,158 @@ Checked against both demo agents in a group layout: 5 hits in `inventory_api`, 1
 `order_event_pipeline`, the same six the documented `grep` finds. Tests:
 `TestAbsoluteSrcImports` (6 cases) in `tests/unit/agent_generator/cli/commands/test_validate_group.py`.
 
+### A grouped agent's HTTP surface: plan and spec amendment (step 0)
+
+Found setting up a group in a consuming repository: the image's Swagger UI filed most operations
+under "default" and scattered the rest as `<agent>.nats`, `<agent>.cache` among them. Two causes
+in `AppBuilder._mount`: it rewrites only routes that already carry a tag (`and route.tags`), so a
+developer's untagged route keeps `[]` and lands in "default"; and nothing orders the rewritten
+tags, so Swagger UI lists them in first-seen order across agents.
+
+New plan `docs/plans/2026-09-28-grouped-http-surface.md` (steps 0-4) and a new spec sec. 11.2,
+plus a sec. 10 row. What they decide:
+
+- **One Swagger group per agent**: every operation of a grouped agent carries exactly the tag
+  `<ns>`, replacing declared tags; none is untagged.
+- **The second level is the path**: `nats`, `cache` and `scheduler` are reserved segments under
+  `/api/<ns>/`. NATS publish moves to `/api/<ns>/nats/events/{topic}` and the scheduler trigger
+  to `/api/<ns>/scheduler/<name>/trigger`; cache already had its segment.
+- **Standalone is untouched**: every rule applies to namespaced components only, so a
+  standalone agent keeps its declared tags, "default" included, and its paths.
+- **A developer prefix is optional**, applies in both modes, and a grouped agent's route may
+  not start with a reserved segment -- refused at `build()`.
+
+Rejected, with reasons in the plan: ReDoc's `x-tagGroups` (invisible in Swagger UI, and ReDoc
+hides every ungrouped tag once it is present) and `<ns> / <tag>` sub-tags (Swagger UI has one
+tag level). The grouped path changes are breaking for grouped 0.9.0 deployments -- grouping
+shipped in 0.9.0 -- and are release-noted under *Breaking* (step 4). This entry first said
+nothing released was affected, which was wrong.
+
+### Reserved path segments for a grouped agent's framework endpoints (step 1)
+
+Step 1 of `docs/plans/2026-09-28-grouped-http-surface.md`. `RestApiBase` gains a class attribute
+`group_segment` (default `""`), and `route_prefix` folds it in for a namespaced component only:
+`/api/<ns>/<segment>` when it is set, `/api/<ns>` otherwise, `""` at the root whatever it says.
+`NatsEventing.group_segment = "nats"` and `SchedulerBase.group_segment = "scheduler"`, so in a
+group the NATS publish endpoint moves from `/api/<ns>/events/{topic}` to
+`/api/<ns>/nats/events/{topic}` and a scheduler's trigger from `/api/<ns>/<name>/trigger` to
+`/api/<ns>/scheduler/<name>/trigger`. Cache endpoints already had `cache/` in their declared
+paths and are unchanged.
+
+In `route_prefix` rather than in `_mount` because `DaprEventing.subscribe` also reads it to tell
+the sidecar where to post; one property keeps the two agreeing. `DaprEventing` declares no segment
+and is always root, so the subscription document is unchanged. Standalone paths do not move:
+`/events/{topic}` and `/api/<name>/trigger` stay where they were, and the frozen compatibility
+suite passes unedited.
+
+Tests in `tests/unit/agents/app_builder/test_route_namespacing.py`: segment follows the prefix,
+a root component ignores it, the framework's segment values, grouped NATS and scheduler paths,
+standalone NATS and scheduler paths unchanged; the two-agent NATS test now expects the `nats/`
+paths.
+
+### One Swagger group per grouped agent (step 2)
+
+Step 2 of `docs/plans/2026-09-28-grouped-http-surface.md`, and the fix for what the consuming
+repository saw. In `AppBuilder._mount` the rewrite of a namespaced component's routes was
+
+```python
+if isinstance(route, APIRoute) and route.tags:
+    route.tags = [qualified_entry_name(component.namespace, str(tag)) for tag in route.tags]
+```
+
+and is now
+
+```python
+if isinstance(route, APIRoute):
+    route.tags = [component.namespace]
+```
+
+Dropping `and route.tags` is what empties "default": an untagged route of a grouped agent used to
+keep `[]`. Replacing instead of qualifying is what makes one group per agent: `orders.Items`,
+`orders.nats`, `orders.cache` and `orders.Scheduler` were separate Swagger groups, interleaved with
+other agents' in first-seen order, and a route with two tags sat in two of them. The second level
+is now the path (step 1). Root components are not touched, so a standalone agent keeps its
+declared tags and its untagged routes still fall under "default".
+
+`qualified_entry_name` is no longer imported by `app_builder.py`; it still renders readiness
+entries (`health_base.py`), whose `orders.cache` keys are a payload contract and do not change.
+Docstrings of `_mount`, `with_rest_api` and `qualified_entry_name`, and the comment in
+`_build_rest_endpoints`, updated to match.
+
+Tests: `TestTags` in `tests/unit/agents/app_builder/test_route_namespacing.py` rewritten around a
+new `ItemApi` with a tagged, an untagged and a two-tag route -- each gets exactly `[<ns>]` in a
+group; the NATS endpoint joins its agent's group; no `/api/<ns>/...` operation carries anything but
+`[<ns>]` across two agents; standalone keeps `["Items"]`, `[]` and `["Items", "Reports"]`. The old
+tests asserted `orders.orders`, which is the behaviour removed.
+
+### A developer path prefix, and reserved segments refused in a group (step 3)
+
+Step 3 of `docs/plans/2026-09-28-grouped-http-surface.md`.
+
+**`RestApiBase.path_prefix`** (class attribute, default `""`). Passed through a module-private
+`_normalise_path_prefix` (surrounding slashes and whitespace ignored, `""` or `/segment` out --
+the form FastAPI asserts) into `APIRouter(prefix=...)` in `RestApiBase.__init__`. Being the
+router's prefix, it is part of every route's path -- decorated or added to `self.router` directly
+-- and so applies in both modes: `path_prefix = "reports"` serves `/api/reports/daily` standalone
+and `/api/orders/reports/daily` in a group. Independent of `group_segment`, which belongs to the
+mount and applies in a group only. Optional, so no existing API moves.
+
+**`AppBuilder._refuse_reserved_segments`**, called from `_mount` for namespaced components only,
+before the tag rewrite. For every route with a path it takes the path relative to `/api/<ns>`
+(the component's `route_prefix` minus the agent prefix, plus the route path) and looks its first
+segment up in the new module constant `_RESERVED_SEGMENTS` = `{"nats": NatsEventing, "cache":
+CacheManagementApi, "scheduler": SchedulerBase}`. A hit on a component that is not an instance of
+the owner raises `ValueError` naming the class, the agent, the route, the segment and the owner.
+Keyed on the owner's class rather than on "declares a `group_segment`" because the cache API
+reserves `cache` through its route paths and declares no segment, while a developer's scheduler
+subclass is a legitimate owner of `scheduler`. Matched on the whole segment, so `/caches/...` is
+fine. Not checked standalone: a route an existing agent serves at `/api/cache/...` keeps working.
+
+It raises out of `build()` and therefore out of `AgentGroup.assemble`, taking the image down
+rather than one agent: the collision is deterministic and visible in the first local run
+(`asbs dev` runs a group of one), and serving it would answer one of the two routes with the
+other's handler, depending on mount order. `_RESERVED_SEGMENTS` is typed `dict[str, type]` since
+mypy rejects abstract classes as `type[RestApiBase]`.
+
+Tests in `tests/unit/agents/app_builder/test_route_namespacing.py`: `TestPathPrefix` (standalone,
+grouped, slashes, no prefix) and `TestReservedSegments` (a `/cache/...` route and a `nats` prefix
+refused in a group, the same route served standalone, `caches` allowed, a developer's scheduler
+allowed its segment).
+
+### Documentation for the grouped HTTP surface (step 4)
+
+Step 4 of `docs/plans/2026-09-28-grouped-http-surface.md`; documentation only, plus one docstring.
+
+- `guides/multi-agent-setup.md`: both identity tables gain the NATS publish and scheduler trigger
+  rows, and the OpenAPI tag row now reads `order` (grouped, whatever was declared) against
+  `Orders` (standalone, as declared). New section *An agent's Swagger group and its reserved
+  paths*.
+- `guides/multi-agent-migration.md`: a pitfall *Routes under `/nats`, `/cache` or `/scheduler`*
+  with the error text, and a paragraph in *After the move* on the HTTP surface moving.
+- `components/rest-apis.md`: the `tags` parameter row says it is replaced in a group; new section
+  *Path Prefix*.
+- `components/schedulers.md`, `reference/api.md`, `claude_docs/CLAUDE.md`: the grouped trigger
+  path. `reference/api.md` also lists `path_prefix` and `group_segment` as class attributes, the
+  latter marked framework-internal.
+- `blueprint-migration` skill: a reserved-segment pitfall and a *Swagger in a group* section.
+- `AppBuilder.with_scheduler` docstring: the trigger moves under `/api/<agent>/scheduler`.
+- `CHANGELOG.md`: `path_prefix` under *Added*; the grouped path and tag changes under **Breaking**.
+
+**Correction.** The step 0 entry and the plan said the grouped path changes broke nothing released
+because grouping was not on `main`. Grouping shipped in 0.9.0 (`CHANGELOG.md`, 2026-09-14), so a
+grouped 0.9 deployment's clients of `/api/<agent>/events/{topic}` and `/api/<agent>/<name>/trigger`
+do break. Found writing the `CHANGELOG.md` entry, which is why it is under *Breaking* and not
+*Added*; both earlier statements are corrected in place.
+
 ---
 
 ## Open points
+
+- **A grouped scheduler's trigger path repeats the agent.** `register_trigger_route` builds the
+  path from `self.name`, the registry name, which a group qualifies: agent `orders` serves
+  `/api/orders/scheduler/orders_nightly_scheduler/trigger`. Standalone the name is unqualified, so
+  using the base name would change grouped paths only. Found in step 1 of the grouped-HTTP-surface
+  plan (it predates that step); deferred by decision on 2026-09-28.
 
 - **`test_three_replicas_run_one_tick` is flaky in a full run.** Seen once on 2026-09-24 (two of three
   replicas ran one tick), passing alone. Likely `DiskCacheService.claim`'s documented non-atomic

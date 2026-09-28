@@ -80,8 +80,33 @@ Each decorator accepts the following keyword arguments:
 |---|---|---|
 | `path` | `str` | The URL path (positional). Supports path parameters like `{id}`. |
 | `response_model` | `type` | Pydantic model for response serialization and OpenAPI documentation. |
-| `tags` | `list[str]` | OpenAPI grouping tags. |
+| `tags` | `list[str]` | OpenAPI grouping tags. Used as declared standalone; in a group every operation is tagged with the agent's name instead (see [Multi-Agent Setup](../guides/multi-agent-setup.md#an-agents-swagger-group-and-its-reserved-paths)). |
 | `summary` | `str` | Short description for OpenAPI documentation. |
+
+## Path Prefix
+
+Set `path_prefix` on the class to put every route of the API under one segment:
+
+```python
+class ReportApi(RestApiBase):
+    path_prefix = "reports"
+
+    @RestApiBase.get("/daily", tags=["Reports"])
+    async def daily(self) -> list[Report]:
+        ...
+```
+
+| Mode | Path |
+|---|---|
+| Standalone | `/api/reports/daily` |
+| Agent `order` in a group | `/api/order/reports/daily` |
+
+The prefix is the same in both modes, so the class does not change when the agent joins a group.
+It is optional -- the default `""` adds nothing -- and surrounding slashes are ignored (`"reports"`
+and `"/reports/"` are the same). It also applies to routes added to `self.router` directly.
+
+In a group, `nats`, `cache` and `scheduler` are reserved for the framework: a route of a grouped
+agent that starts with one of them, through its path or its prefix, fails startup.
 
 ## Auto-Wiring
 

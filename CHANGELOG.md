@@ -145,6 +145,9 @@
 
 ### Added
 
+- **`RestApiBase.path_prefix`**, an optional class attribute putting every route of an API under
+  one segment -- `/api/reports/...` standalone, `/api/<agent>/reports/...` in a group. Default `""`,
+  so no existing path moves.
 - **The migration docs name absolute `src` imports as a pitfall.** `from src.x import Y` works for
   an agent served on its own and fails in a group, where a non-critical agent is then skipped with
   one ERROR line and its routes are missing from `/docs`. The `blueprint-migration` skill and
@@ -205,6 +208,21 @@
 
 ### Breaking
 
+- **In a group, the NATS publish endpoint and scheduler triggers move, and each agent is one
+  Swagger group.** Grouped agents only; a standalone agent's paths and tags do not change.
+  - `/api/<agent>/events/{topic}` becomes `/api/<agent>/nats/events/{topic}`.
+  - `/api/<agent>/<name>/trigger` becomes `/api/<agent>/scheduler/<name>/trigger`.
+  - Cache endpoints stay at `/api/<agent>/cache/*`.
+  - Every operation of a grouped agent is tagged with exactly the agent's name, replacing declared
+    tags and tagging untagged ones. In 0.9.0 an agent was split into `<agent>.<tag>` groups
+    interleaved with other agents', and its untagged routes sat under "default" beside everyone
+    else's.
+  - `nats`, `cache` and `scheduler` under `/api/<agent>/` are reserved: a grouped agent's own route
+    starting with one now fails startup, naming the class and the route. Rename it or set
+    `path_prefix`.
+
+  Clients and scripts calling a grouped agent's NATS publish endpoint or scheduler trigger need the
+  new paths. Nothing broker-side changes.
 - **Removed unused internals:** the empty module `blueprint.agents.models.event_routing`, and the
   example-domain models `AnalysisRequest` and `AnalysisResponse` in `blueprint.agents.models.result`,
   which nothing in the framework used and the package did not export.

@@ -47,7 +47,12 @@ class NatsEventing(EventHandlingBase):
     which would silently disable one agent's subscription, and could not be observed by its
     author running it alone. Deduplication happens inside one of these components, so it
     cannot reach across namespaces by construction.
+
+    In a group its publish endpoint is ``/api/<agent>/nats/events/{topic}``; standalone it
+    stays ``/events/{topic}`` (spec sec. 11.2).
     """
+
+    group_segment = "nats"
 
     def __init__(self, namespace: str = ROOT_NAMESPACE) -> None:
         """Initialize the NATS endpoint for one agent.
