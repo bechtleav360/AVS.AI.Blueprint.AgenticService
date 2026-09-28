@@ -145,6 +145,12 @@
 
 ### Added
 
+- **The migration docs name absolute `src` imports as a pitfall.** `from src.x import Y` works for
+  an agent served on its own and fails in a group, where a non-critical agent is then skipped with
+  one ERROR line and its routes are missing from `/docs`. The `blueprint-migration` skill and
+  `guides/multi-agent-migration.md` now carry the cause, the log line, the fix (relative imports,
+  which keep working standalone) and a `grep` that finds them. `asbs validate --group` reports
+  them as a warning, with file and line.
 - **Handlers see the subject a NATS message was delivered on**, as `context["nats_subject"]`
   (`NATS_SUBJECT_CONTEXT_KEY`), beside `nats_topic`, which is the subscription and may be a
   wildcard. It comes from the broker, not the event, so a tenant can be derived from the subject the

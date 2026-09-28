@@ -11,6 +11,7 @@ keys set under an agent where nothing consults them. None of those stop a pod fr
 passing its probes, which is exactly what makes them expensive to find later.
 """
 
+import ast
 import os
 import sys
 import tomllib
@@ -24,6 +25,9 @@ from blueprint.agents.layout import check_agent_layout
 
 AGENT_MAP_FILE = "agents.toml"
 AGENT_MAP_ENV = "BLUEPRINT_AGENT_MAP"
+
+# How many absolute `src` imports one warning lists before it summarises the rest.
+_IMPORTS_SHOWN = 5
 
 
 def run(args: Namespace) -> None:
@@ -167,6 +171,8 @@ def _agent_findings(image_root: Path, name: str, entry: Any, claimed: dict[Path,
 
     if not (root / "src").is_dir():
         warnings.append(f"Agent '{name}' has no 'src' directory at {declared_root}. An agent is the same shape alone or in a group.")
+    elif (root / "src").resolve() != (image_root / "src").resolve():
+        warnings.extend(_absolute_src_import_warnings(name, root))
 
     settings = root / "settings.toml"
     if settings.is_file():
@@ -241,6 +247,52 @@ def _process_key_warnings(name: str, settings: Path) -> list[str]:
         f"Agent '{name}' sets process-wide key(s) in its own settings.toml: {', '.join(sorted(found))}. One process "
         "has one of each, so these are dropped before the merge and the image's settings.toml decides. Move them "
         "there, or remove them."
+    ]
+
+
+def _absolute_src_import_warnings(name: str, root: Path) -> list[str]:
+    """Report an agent that imports its own code as the top-level package ``src``.
+
+    Standalone that works, because the agent's directory is the working directory. In a group the
+    agent is imported by its ``module`` path and nothing puts its directory on ``sys.path``, so
+    ``src`` resolves to nothing -- or to the image root's own ``src``, a different package. A
+    non-critical agent is then skipped at startup with one ERROR line and its routes are missing,
+    which is why this is reported here rather than left to the log.
+
+    A warning, not an issue: a critical agent fails loudly by itself, and a non-critical one does
+    not stop the image starting. The caller skips agents whose ``src`` *is* the image root's,
+    where the absolute import resolves to the agent's own code.
+
+    Parsed rather than grepped, so an import named in a docstring or a comment is not reported,
+    and parsed rather than imported, like everything else this command checks.
+    """
+    found: list[str] = []
+    for path in sorted((root / "src").rglob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except (OSError, SyntaxError, UnicodeDecodeError):
+            continue  # not this check's to report: the runtime's import names it precisely
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                names = [node.module]
+            else:
+                continue
+            if any(imported == "src" or imported.startswith("src.") for imported in names):
+                found.append(f"{path.relative_to(root).as_posix()}:{node.lineno}")
+
+    if not found:
+        return []
+    shown = ", ".join(found[:_IMPORTS_SHOWN])
+    more = f" and {len(found) - _IMPORTS_SHOWN} more" if len(found) > _IMPORTS_SHOWN else ""
+    return [
+        f"Agent '{name}' imports its own code as 'src' ({shown}{more}). That works standalone and fails in a group, "
+        "where the agent is imported by its module path and 'src' is not its package: a non-critical agent is then "
+        "skipped at startup and its routes are missing. Make these imports relative -- 'from .x import Y' in "
+        "src/main.py, 'from ..x import Y' one package down -- which keeps working standalone."
     ]
 
 

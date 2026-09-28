@@ -242,6 +242,44 @@ hosted in a group, the same directory gains an `/api/<agent>` prefix.
 
 ---
 
+## Common pitfalls
+
+### Absolute `src` imports
+
+Both import styles work for an agent served on its own:
+
+```python
+from src.services.order_service import OrderService    # absolute
+from ..services.order_service import OrderService      # relative
+```
+
+Only the relative one survives the move. Standalone, the agent's directory is the working directory,
+so `src` is a top-level package. In a group the agent is imported by its `module` path --
+`agents.order.src.main` -- and nothing puts its directory on `sys.path`, so `import src` finds
+nothing, or finds a different `src` if the image root happens to have one.
+
+The failure is quiet for an agent that is not critical: it is **skipped**, the group starts without
+it, and the only trace is one ERROR line --
+
+```
+Agent 'order' could not be loaded and is not critical, so it is skipped: importing
+'agents.order.src.main' raised ModuleNotFoundError: No module named 'src'
+```
+
+-- while the agent's routes are simply absent from `/docs`. A critical agent fails the startup with
+the same reason.
+
+The fix is to make every import of the agent's own code relative -- `from src.x import Y` becomes
+`from .x import Y` in `src/main.py`, and `from ..x import Y` one package further down. Relative
+imports keep working standalone as well, so the change needs no second copy. `asbs validate
+--group` lists them as a warning with file and line; without a map yet, a `grep` finds them:
+
+```bash
+grep -rnE "^\s*(from|import) src(\.|\s|$)" src/
+```
+
+---
+
 ## After the move
 
 Your **broker-side identity changes once**, on the first grouped deploy. What that affects --

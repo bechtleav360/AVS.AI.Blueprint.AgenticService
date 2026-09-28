@@ -7941,6 +7941,70 @@ that a standalone agent's default cache keeps its entries.
 behaviour changes of the transport fixes, `Config` behaviour changes, the scheduler line, and the
 new outputs (metrics, span and resource attributes, new log lines).
 
+### A Dapr sidecar mock for demos and integration work
+
+`tests/integration/dapr_mock.py`, standard library only, run as a script
+(`python tests/integration/dapr_mock.py`, port 3500). Written while preparing a demo of the
+grouping feature: a Dapr agent without a sidecar reports readiness DOWN, and there was nothing
+short of a real `daprd` to make it come up. It answers exactly what the framework calls --
+`GET /v1.0/healthz` (and `/outbound`) with 204, `POST /v1.0/publish/<pubsub>/<topic>` with 204 and
+a log line naming the topic and event id -- and 404s anything else with a warning, so an unmocked
+call is visible rather than silently answered.
+
+Checked by hand against `examples/order_event_pipeline` served standalone: readiness 503 without
+it, 200 five seconds after starting it (the client's `event_client_retry_delay`), and an
+`order.created` event posted to `/events/orders` shows up in the mock's log as a publish to
+`pubsub/orders-validated`.
+
+It does **not** close the Dapr item under *Infrastructure* in
+`docs/plans/2026-09-11-broker-integration-tests.md`: it reads no `/dapr/subscribe` and delivers
+nothing to `/events/{topic}`, which is the half that item is about. No test uses it yet; the
+obvious next step is a fixture that serves it in-process on a free port and sets `dapr_url`.
+
+### The migration docs name absolute `src` imports as a pitfall
+
+Found preparing the same demo: both examples it uses import their own code absolutely
+(`from src.services.order_service import OrderService`), and neither the `blueprint-migration`
+skill nor `guides/multi-agent-migration.md` said that this breaks in a group. Standalone the
+agent's directory is the working directory, so `src` is a top-level package; in a group the agent
+is imported by its `module` path (`agents.<...>.src.main`) and nothing puts its directory on
+`sys.path`. Confirmed by importing `examples/inventory_api` from a group layout:
+`ModuleNotFoundError: No module named 'src'`.
+
+Worse than a crash for a non-critical agent: `AgentGroup._skip_or_raise` skips it, so the group
+starts, logs one ERROR, and the agent's routes are missing from `/docs`.
+
+Documented as a pitfall rather than a migration step, because relative imports are already common
+and a project that uses them has nothing to do. New *Common pitfalls* sections in both the guide
+(before *After the move*) and the skill carry the cause, the log line, the fix and a `grep` that
+finds the imports; the pattern was checked against both examples (6 hits). The scaffolder already
+writes relative imports, so new agents are not affected. `getting-started.md` still shows the
+absolute style and was left as it is -- both styles are legitimate for a standalone agent.
+
+### `asbs validate --group` warns about absolute `src` imports
+
+The mechanical half of the entry above. `_agent_findings` in
+`agent_generator/cli/commands/validate_group.py` now calls `_absolute_src_import_warnings` for
+each agent that has a `src/` of its own; it parses (`ast`, never imports) every `.py` under it and
+reports `import src...` and level-0 `from src... import` with `file:line`, five listed and the rest
+counted, plus the fix.
+
+Three decisions in it:
+
+- **A warning, not an issue.** Issues mean "would stop this image starting"; a non-critical agent
+  with the defect is skipped and the image starts, and a critical one fails loudly on its own.
+- **Skipped when the agent's `src` is the image root's `src`.** There `src` really is the agent's
+  package -- a single agent at the image root, served as a group of one -- and reporting it would
+  be a false statement about a working image, the failure `test_validate_group.py`'s docstring
+  exists to prevent. (The `src/order/main.py` layout in `multi-agent-setup.md` is not reached at
+  all: its agents have no `src/` of their own.)
+- **Parsed, not grepped**, so a docstring or comment naming an import is not reported, and
+  `srcutils` is not `src`.
+
+Checked against both demo agents in a group layout: 5 hits in `inventory_api`, 1 in
+`order_event_pipeline`, the same six the documented `grep` finds. Tests:
+`TestAbsoluteSrcImports` (6 cases) in `tests/unit/agent_generator/cli/commands/test_validate_group.py`.
+
 ---
 
 ## Open points

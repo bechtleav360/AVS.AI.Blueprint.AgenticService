@@ -68,6 +68,17 @@ asbs validate --group      # where the map is: the map and every agent it names
 sections and process-wide keys left in an agent. Pass `--agent-map <path>` if the map is not
 beside the directory being checked.
 
+## Common pitfalls
+
+- **Absolute `src` imports.** `from src.services.x import Y` works standalone, where the agent's
+  directory is the working directory, and breaks in a group, where the agent is imported as
+  `agents.<...>.src.main` and nothing puts its directory on `sys.path`. Both styles are in use, so
+  look before assuming: `asbs validate --group` warns with file and line, or before the map
+  exists, `grep -rnE "^\s*(from|import) src(\.|\s|$)" src/`. Make each hit relative
+  (`from .x` in `src/main.py`, `from ..x` one package down); that still works standalone. Missed,
+  a non-critical agent is **skipped** at startup with one ERROR line naming `ModuleNotFoundError:
+  No module named 'src'`, and its routes are silently missing from `/docs`.
+
 ## Before calling the move invisible
 
 It is not. On the first grouped deploy the agent's broker-side identity changes once (new durables,
