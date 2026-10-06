@@ -204,6 +204,11 @@ job_timeout_seconds = 300
 > offline-minted HS256 JWT whose `sub` equals the agent's `agent_id` and whose `caps` claim is
 > its capability ceiling (see `service-sessions#198`/`#326`). Never commit the token value —
 > inject it via the `SESSIONS_AGENT_TOKEN` environment variable (e.g. `YOUR_AGENT_TOKEN`).
+>
+> The token is read **once at startup** (like `api_key`) and is not hot-reloaded. If the JWT
+> carries an `exp`, mint it long-lived enough to outlast the agent process and restart the agent
+> to roll a renewed token — an expired bearer makes the gated routes return `401`/`403`, and the
+> SSE consumer will reconnect-and-retry with the same stale token until it is restarted.
 
 No `SessionsBus`, `SessionsApiClient`, or `SessionKeyProvider` references in service `main.py` — `AppBuilder.build()` wires them automatically.
 
