@@ -49,7 +49,9 @@ class TestOnStartup:
         with pytest.raises(ValueError, match="api_key is required"):
             await api_client.on_startup()
 
-    async def test_bearer_header_sent_when_token_configured(self, api_client: SessionsApiClient, mock_config: MagicMock, sessions_config: dict) -> None:
+    async def test_bearer_header_sent_when_token_configured(
+        self, api_client: SessionsApiClient, mock_config: MagicMock, sessions_config: dict
+    ) -> None:
         # Token present -> Authorization: Bearer <token> on the persistent client, alongside
         # X-Api-Key (service-sessions#198/#326 gated /agents/register).
         mock_config.get.return_value = {**sessions_config, "agent_token": "agent-jwt"}
@@ -60,7 +62,9 @@ class TestOnStartup:
         assert headers["X-Api-Key"] == "test-api-key"
         assert api_client._agent_token == "agent-jwt"
 
-    async def test_no_bearer_header_when_token_absent(self, api_client: SessionsApiClient, mock_config: MagicMock, sessions_config: dict) -> None:
+    async def test_no_bearer_header_when_token_absent(
+        self, api_client: SessionsApiClient, mock_config: MagicMock, sessions_config: dict
+    ) -> None:
         # Backward-compat: no token -> X-Api-Key only, no Authorization header (unchanged behaviour).
         mock_config.get.return_value = sessions_config
         with patch(_PATCH_TARGET) as mock_cls:
