@@ -191,9 +191,19 @@ agent_id = "my-agent"
 agent_type = "analyser"
 capabilities = ["analyse_documents"]
 api_key = "@format {env[SESSIONS_API_KEY]}"
+# Optional per-agent HS256 bearer token. When set, sent as `Authorization: Bearer <token>`
+# alongside `X-Api-Key` on the gated sessions routes (register, SSE stream, session-key fetch).
+# Leave unset to stay compatible with an ungated sessions service (X-Api-Key only).
+agent_token = "@format {env[SESSIONS_AGENT_TOKEN]}"
 max_concurrent_jobs = 5
 job_timeout_seconds = 300
 ```
+
+> The bearer is only sent when `agent_token` is configured, so agents keep working against
+> ungated sessions and can be rolled out **before** the gate is flipped. The token is an
+> offline-minted HS256 JWT whose `sub` equals the agent's `agent_id` and whose `caps` claim is
+> its capability ceiling (see `service-sessions#198`/`#326`). Never commit the token value —
+> inject it via the `SESSIONS_AGENT_TOKEN` environment variable (e.g. `YOUR_AGENT_TOKEN`).
 
 No `SessionsBus`, `SessionsApiClient`, or `SessionKeyProvider` references in service `main.py` — `AppBuilder.build()` wires them automatically.
 

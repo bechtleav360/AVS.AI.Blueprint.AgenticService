@@ -270,6 +270,10 @@ agent_id = "my-agent"
 agent_type = "analyser"
 capabilities = ["analyse_documents"]
 api_key = "@format {env[SESSIONS_API_KEY]}"
+# Optional per-agent HS256 bearer. Sent as `Authorization: Bearer <token>` alongside
+# `X-Api-Key` on the gated routes only when set; unset keeps pre-gate behaviour (X-Api-Key
+# only). See service-sessions#198/#326. Inject via SESSIONS_AGENT_TOKEN, never commit it.
+agent_token = "@format {env[SESSIONS_AGENT_TOKEN]}"
 max_concurrent_jobs = 5
 job_timeout_seconds = 300
 ```

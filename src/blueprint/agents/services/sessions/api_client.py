@@ -28,12 +28,17 @@ class SessionsApiClient(ServiceBase):
         [sessions_service]
         base_url = "http://localhost:8000"
         api_key = "@format {env[SESSIONS_API_KEY]}"
+        # Optional per-agent HS256 bearer (service-sessions#198/#326). When set, sent as
+        # `Authorization: Bearer <token>` alongside X-Api-Key on the gated routes. When
+        # unset, behaviour is identical to before the gate (X-Api-Key only).
+        agent_token = "@format {env[SESSIONS_AGENT_TOKEN]}"
     """
 
     def __init__(self) -> None:
         super().__init__()
         self._base_url: str | None = None
         self._api_key: str | None = None
+        self._agent_token: str | None = None
         self._client: httpx.AsyncClient | None = None
 
     async def on_startup(self) -> None:
@@ -44,19 +49,33 @@ class SessionsApiClient(ServiceBase):
 
         self._base_url = config.get("base_url")
         self._api_key = config.get("api_key")
+        # Optional per-agent HS256 bearer (service-sessions#198/#326). Backward-compatible:
+        # unset -> None -> no Authorization header -> identical to pre-gate behaviour.
+        self._agent_token = config.get("agent_token") or None
 
         if not self._base_url:
             raise ValueError("sessions_service.base_url is required")
         if not self._api_key:
             raise ValueError("sessions_service.api_key is required")
 
+        # Default headers applied to every request on this persistent client. X-Api-Key is
+        # always present; the bearer is added only when a token is configured so agents keep
+        # working against ungated sessions (and can be rolled out before the gate is flipped).
+        headers = {"X-Api-Key": self._api_key}
+        if self._agent_token:
+            headers["Authorization"] = f"Bearer {self._agent_token}"
+
         # Create persistent HTTP client
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(30.0, connect=5.0),
-            headers={"X-Api-Key": self._api_key},
+            headers=headers,
         )
 
-        logger.info("SessionsApiClient initialized with base_url=%s", self._base_url)
+        logger.info(
+            "SessionsApiClient initialized with base_url=%s (bearer=%s)",
+            self._base_url,
+            "yes" if self._agent_token else "no",
+        )
 
     async def on_shutdown(self) -> None:
         """Close the HTTP client."""
