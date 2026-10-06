@@ -43,6 +43,16 @@ class TestOnStartup:
         await key_provider.on_startup()
         assert key_provider._env_var == "MY_SESSION_KEY"
 
+    async def test_reads_agent_token_from_config(self, key_provider: SessionKeyProvider, mock_config: MagicMock) -> None:
+        mock_config.get.return_value = {"agent_token": "agent-jwt"}
+        await key_provider.on_startup()
+        assert key_provider._agent_token == "agent-jwt"
+
+    async def test_agent_token_defaults_empty_when_absent(self, key_provider: SessionKeyProvider, mock_config: MagicMock) -> None:
+        mock_config.get.return_value = {"session_key_source": "env"}
+        await key_provider.on_startup()
+        assert key_provider._agent_token == ""
+
     async def test_raises_when_sessions_service_config_missing(self, key_provider: SessionKeyProvider, mock_config: MagicMock) -> None:
         mock_config.get.return_value = None
         with pytest.raises(ValueError, match="sessions_service configuration not found"):
@@ -230,11 +240,14 @@ class TestGetSessionKeyRemote:
 _JOB_REMOTE_URL = "http://sessions.local:8001"
 
 
-def _make_job_provider(remote_url: str = _JOB_REMOTE_URL, api_key: str = "test-key", agent_id: str = "agent-1") -> SessionKeyProvider:
+def _make_job_provider(
+    remote_url: str = _JOB_REMOTE_URL, api_key: str = "test-key", agent_id: str = "agent-1", agent_token: str = ""
+) -> SessionKeyProvider:
     provider = SessionKeyProvider()
     provider._source = "job"
     provider._remote_url = remote_url
     provider._api_key = api_key
+    provider._agent_token = agent_token
     provider._agent_id = agent_id
     provider._cache = TTLCache(maxsize=100, ttl=60)
     return provider
@@ -267,6 +280,33 @@ class TestGetSessionKeyJob:
         assert "agent_id" not in request.url.params
         assert request.headers["X-Agent-Id"] == "agent-42"
         assert request.headers["X-Api-Key"] == "sekrit"
+
+    @respx.mock
+    async def test_sends_bearer_when_agent_token_configured(self) -> None:
+        # Token present -> Authorization: Bearer <token> alongside X-Api-Key / X-Agent-Id on the
+        # gated /internal/jobs/{job_id}/session-key route (service-sessions#198/#326).
+        job_id = uuid4()
+        route = respx.get(f"{_JOB_REMOTE_URL}/internal/jobs/{job_id}/session-key").mock(
+            return_value=httpx.Response(200, json={"session_key": "job-secret"})
+        )
+        provider = _make_job_provider(agent_token="agent-jwt")
+        await provider.get_session_key(uuid4(), job_id=job_id)
+        request = route.calls.last.request
+        assert request.headers["Authorization"] == "Bearer agent-jwt"
+        assert request.headers["X-Api-Key"] == "test-key"
+        assert request.headers["X-Agent-Id"] == "agent-1"
+
+    @respx.mock
+    async def test_no_bearer_when_agent_token_absent(self) -> None:
+        # Backward-compat: no token -> no Authorization header (X-Api-Key only, unchanged).
+        job_id = uuid4()
+        route = respx.get(f"{_JOB_REMOTE_URL}/internal/jobs/{job_id}/session-key").mock(
+            return_value=httpx.Response(200, json={"session_key": "job-secret"})
+        )
+        provider = _make_job_provider()  # agent_token defaults to ""
+        await provider.get_session_key(uuid4(), job_id=job_id)
+        request = route.calls.last.request
+        assert "Authorization" not in request.headers
 
     @respx.mock
     async def test_caches_key_under_session_id_after_first_fetch(self) -> None:

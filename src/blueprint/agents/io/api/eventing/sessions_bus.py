@@ -81,6 +81,7 @@ class SessionsBus(Component, CloudEventProcessorMixin):
         self._agent_type: str | None = None
         self._capabilities: list[str] = []
         self._api_key: str | None = None
+        self._agent_token: str | None = None
         self._max_concurrent_jobs: int = 10
         self._job_timeout: int = 300
         self._reconnect_delay: int = 5
@@ -101,6 +102,9 @@ class SessionsBus(Component, CloudEventProcessorMixin):
         self._agent_type = sessions_config.get("agent_type")
         self._capabilities = sessions_config.get("capabilities", [])
         self._api_key = sessions_config.get("api_key")
+        # Optional per-agent HS256 bearer (service-sessions#198/#326). Unset -> None -> no
+        # Authorization header on the SSE connect -> identical to pre-gate behaviour.
+        self._agent_token = sessions_config.get("agent_token") or None
         self._max_concurrent_jobs = sessions_config.get("max_concurrent_jobs", 10)
         self._job_timeout = sessions_config.get("job_timeout_seconds", 300)
         self._reconnect_delay = sessions_config.get("sse_reconnect_delay_seconds", 5)
@@ -237,7 +241,11 @@ class SessionsBus(Component, CloudEventProcessorMixin):
         if self._last_event_id is not None:
             params["last_event_id"] = self._last_event_id
 
+        # X-Api-Key is always sent; the per-agent bearer is added only when configured so the
+        # stream still opens against ungated sessions (service-sessions#198/#326).
         headers = {"X-Api-Key": self._api_key}
+        if self._agent_token:
+            headers["Authorization"] = f"Bearer {self._agent_token}"
 
         async with httpx.AsyncClient(timeout=None) as client:
             async with aconnect_sse(client, "GET", url, params=params, headers=headers) as event_source:
