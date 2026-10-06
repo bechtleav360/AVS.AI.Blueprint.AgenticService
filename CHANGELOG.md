@@ -1,4 +1,9 @@
 # Changelog
+## [0.8.2] - 2026-10-06
+
+### Added
+- **The sessions client can now send a per-agent `Authorization: Bearer` token alongside `X-Api-Key` on the three agent-facing routes** (#104). `service-sessions` (#198, PR #326) added an `AgentIdentityGate` that requires an HS256 bearer token — whose `sub` must equal the declared `agent_id` and whose `caps` claim is the capability ceiling — on `POST /agents/register`, `GET /jobs/stream/sse` and `GET /internal/jobs/{job_id}/session-key`; without it those routes answer `401`/`403` (or `503` when the server has no `jwt_secret` configured). A new optional config key `sessions_service.agent_token` (env `SESSIONS_AGENT_TOKEN`), plumbed exactly like `api_key`, supplies the token; it is attached as `Authorization: Bearer <token>` at all three call sites (`SessionsApiClient`, `SessionsBus`, `SessionKeyProvider`). **Backward-compatible and opt-in:** when `agent_token` is unset, no `Authorization` header is sent and behaviour is identical to 0.8.1 (`X-Api-Key` only), so an upgraded agent keeps working against an un-gated sessions and can be rolled out *before* the server gate is enabled. The hand-transcribed session-key contract test pins both the present and absent cases. Deploying a gated sessions image requires this token to be minted and configured first — see the VerA rollout runbook (bechtleav360/avs.ai.project.vera#254). Refs bechtleav360/avs.ai.idac.service-sessions#198, bechtleav360/avs.ai.idac.service-sessions#326.
+
 ## [0.8.1] - 2026-09-17
 
 ### Fixed
