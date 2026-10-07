@@ -270,6 +270,11 @@ agent_id = "my-agent"
 agent_type = "analyser"
 capabilities = ["analyse_documents"]
 api_key = "@format {env[SESSIONS_API_KEY]}"
+# Optional per-agent HS256 bearer. Sent as `Authorization: Bearer <token>` alongside
+# `X-Api-Key` on the gated routes only when set. See service-sessions#198/#326. Inject via
+# SESSIONS_AGENT_TOKEN, never commit it. To opt out, OMIT this line (or export an empty
+# SESSIONS_AGENT_TOKEN=) — keeping it with the env var undefined fails Dynaconf config load.
+agent_token = "@format {env[SESSIONS_AGENT_TOKEN]}"
 max_concurrent_jobs = 5
 job_timeout_seconds = 300
 ```

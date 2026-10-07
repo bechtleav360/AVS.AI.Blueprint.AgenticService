@@ -54,6 +54,7 @@ class SessionKeyProvider(ServiceBase):
         self._cache_ttl: int = 3600
         self._remote_url: str = ""
         self._api_key: str = ""
+        self._agent_token: str = ""
         self._agent_id: str = ""
 
     async def on_startup(self) -> None:
@@ -67,6 +68,11 @@ class SessionKeyProvider(ServiceBase):
         self._cache_ttl = config.get("session_key_cache_ttl_seconds", 3600)
         self._remote_url = config.get("session_key_remote_url", "")
         self._api_key = config.get("api_key", "")
+        # Optional per-agent HS256 bearer (service-sessions#198/#326). Same config key the other
+        # sessions clients read (sessions_service.agent_token). Unset -> "" -> no Authorization
+        # header on the key fetch -> identical to pre-gate behaviour. Stripped so a file-mounted
+        # secret's trailing newline can't leak into the `Bearer <token>` header.
+        self._agent_token = (config.get("agent_token") or "").strip()
         # Same config key SessionsBus reads for its own agent_id (sessions_service.agent_id) —
         # read independently rather than pulled from SessionsBus at runtime, since this service
         # starts before SessionsBus (a routerless lifecycle component) in the app lifespan.
@@ -211,6 +217,11 @@ class SessionKeyProvider(ServiceBase):
         before calling ``raise_for_status()``.
         """
         headers = {"X-Api-Key": self._api_key}
+        if self._agent_token:
+            # Per-agent HS256 bearer sent alongside X-Api-Key when configured; omitted entirely
+            # when unset, so the fetch stays identical to pre-gate behaviour against ungated
+            # sessions (service-sessions#198/#326).
+            headers["Authorization"] = f"Bearer {self._agent_token}"
         if agent_id:
             # Header, not a query param: service-sessions' get_job_session_key deliberately
             # reads X-Agent-Id, not the query string, to keep it out of access logs
