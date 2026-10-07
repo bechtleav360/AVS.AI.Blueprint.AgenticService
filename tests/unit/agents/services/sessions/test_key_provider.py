@@ -53,6 +53,17 @@ class TestOnStartup:
         await key_provider.on_startup()
         assert key_provider._agent_token == ""
 
+    async def test_agent_token_stripped_on_read(self, key_provider: SessionKeyProvider, mock_config: MagicMock) -> None:
+        # A file-mounted secret often carries a trailing newline; it must not survive into the token.
+        mock_config.get.return_value = {"agent_token": "  agent-jwt\n"}
+        await key_provider.on_startup()
+        assert key_provider._agent_token == "agent-jwt"
+
+    async def test_whitespace_only_agent_token_treated_as_absent(self, key_provider: SessionKeyProvider, mock_config: MagicMock) -> None:
+        mock_config.get.return_value = {"agent_token": "   \n"}
+        await key_provider.on_startup()
+        assert key_provider._agent_token == ""
+
     async def test_raises_when_sessions_service_config_missing(self, key_provider: SessionKeyProvider, mock_config: MagicMock) -> None:
         mock_config.get.return_value = None
         with pytest.raises(ValueError, match="sessions_service configuration not found"):
