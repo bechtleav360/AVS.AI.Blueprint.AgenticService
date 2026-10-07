@@ -70,8 +70,9 @@ class SessionKeyProvider(ServiceBase):
         self._api_key = config.get("api_key", "")
         # Optional per-agent HS256 bearer (service-sessions#198/#326). Same config key the other
         # sessions clients read (sessions_service.agent_token). Unset -> "" -> no Authorization
-        # header on the key fetch -> identical to pre-gate behaviour.
-        self._agent_token = config.get("agent_token", "")
+        # header on the key fetch -> identical to pre-gate behaviour. Stripped so a file-mounted
+        # secret's trailing newline can't leak into the `Bearer <token>` header.
+        self._agent_token = (config.get("agent_token") or "").strip()
         # Same config key SessionsBus reads for its own agent_id (sessions_service.agent_id) —
         # read independently rather than pulled from SessionsBus at runtime, since this service
         # starts before SessionsBus (a routerless lifecycle component) in the app lifespan.

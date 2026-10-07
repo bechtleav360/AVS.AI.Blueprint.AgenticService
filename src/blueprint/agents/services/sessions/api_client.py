@@ -50,8 +50,9 @@ class SessionsApiClient(ServiceBase):
         self._base_url = config.get("base_url")
         self._api_key = config.get("api_key")
         # Optional per-agent HS256 bearer (service-sessions#198/#326). Backward-compatible:
-        # unset -> None -> no Authorization header -> identical to pre-gate behaviour.
-        self._agent_token = config.get("agent_token") or None
+        # unset -> None -> no Authorization header -> identical to pre-gate behaviour. Stripped so
+        # a file-mounted secret's trailing newline can't leak into the `Bearer <token>` header.
+        self._agent_token = (config.get("agent_token") or "").strip() or None
 
         if not self._base_url:
             raise ValueError("sessions_service.base_url is required")

@@ -103,8 +103,9 @@ class SessionsBus(Component, CloudEventProcessorMixin):
         self._capabilities = sessions_config.get("capabilities", [])
         self._api_key = sessions_config.get("api_key")
         # Optional per-agent HS256 bearer (service-sessions#198/#326). Unset -> None -> no
-        # Authorization header on the SSE connect -> identical to pre-gate behaviour.
-        self._agent_token = sessions_config.get("agent_token") or None
+        # Authorization header on the SSE connect -> identical to pre-gate behaviour. Stripped so
+        # a file-mounted secret's trailing newline can't leak into the `Bearer <token>` header.
+        self._agent_token = (sessions_config.get("agent_token") or "").strip() or None
         self._max_concurrent_jobs = sessions_config.get("max_concurrent_jobs", 10)
         self._job_timeout = sessions_config.get("job_timeout_seconds", 300)
         self._reconnect_delay = sessions_config.get("sse_reconnect_delay_seconds", 5)
