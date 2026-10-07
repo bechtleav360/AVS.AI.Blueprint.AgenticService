@@ -191,9 +191,30 @@ agent_id = "my-agent"
 agent_type = "analyser"
 capabilities = ["analyse_documents"]
 api_key = "@format {env[SESSIONS_API_KEY]}"
+# Optional per-agent HS256 bearer token. When set, sent as `Authorization: Bearer <token>`
+# alongside `X-Api-Key` on the gated sessions routes (register, SSE stream, session-key fetch).
+# To opt out, OMIT this line entirely (ungated sessions, X-Api-Key only). Do NOT keep the line
+# with SESSIONS_AGENT_TOKEN undefined — Dynaconf fails config load on an unresolved `@format`.
+agent_token = "@format {env[SESSIONS_AGENT_TOKEN]}"
 max_concurrent_jobs = 5
 job_timeout_seconds = 300
 ```
+
+> The bearer is only sent when `agent_token` is configured, so agents keep working against
+> ungated sessions and can be rolled out **before** the gate is flipped. The token is an
+> offline-minted HS256 JWT whose `sub` equals the agent's `agent_id` and whose `caps` claim is
+> its capability ceiling (see `service-sessions#198`/`#326`). Never commit the token value —
+> inject it via the `SESSIONS_AGENT_TOKEN` environment variable (e.g. `YOUR_AGENT_TOKEN`).
+>
+> **Opting out cleanly:** because the value above is a Dynaconf `@format` interpolation, keeping
+> the `agent_token` line while `SESSIONS_AGENT_TOKEN` is undefined raises `DynaconfFormatError`
+> at config load — the agent won't start. To run against ungated sessions, either omit the line
+> entirely or export an empty `SESSIONS_AGENT_TOKEN=` (both yield X-Api-Key-only behaviour).
+>
+> The token is read **once at startup** (like `api_key`) and is not hot-reloaded. If the JWT
+> carries an `exp`, mint it long-lived enough to outlast the agent process and restart the agent
+> to roll a renewed token — an expired bearer makes the gated routes return `401`/`403`, and the
+> SSE consumer will reconnect-and-retry with the same stale token until it is restarted.
 
 No `SessionsBus`, `SessionsApiClient`, or `SessionKeyProvider` references in service `main.py` — `AppBuilder.build()` wires them automatically.
 
