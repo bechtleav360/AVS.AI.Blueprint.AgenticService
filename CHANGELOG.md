@@ -3,6 +3,14 @@
 
 ### Fixed
 
+- **Successful health probes are left out of the access log, as documented.** `HealthCheckFilter`
+  looked for `" 200 "` in uvicorn's access line, but uvicorn ends that line with the status code,
+  so the filter never matched and every `/health/live` and `/health/ready` probe was logged. It now
+  parses the line, drops 2xx responses on those two paths (with or without a query string), and
+  keeps everything else -- a failed or redirected probe is still logged. Visible wherever
+  `uvicorn.access` logs at INFO: the grouped image's `python -m blueprint.agents.entrypoint`, which
+  calls `uvicorn.run(app, log_level=...)` after the app is built and so resets that logger's level,
+  and any deployment with `suppress_noisy_loggers = false`.
 - **A standalone agent's `Config` reads `hostname`, `pod_name` and `blueprint_group` again.** Since
   the 0.9 alphas, `get()` raised for these keys everywhere. The refusal exists so that an agent in a
   group cannot depend on where it runs; it now applies only to an agent's view in a group.

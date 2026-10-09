@@ -4,28 +4,44 @@ from __future__ import annotations
 
 import contextvars
 import logging
+import re
 import sys
+
+HEALTH_PROBE_PATHS = ("/health/live", "/health/ready")
+"""Paths whose successful requests are left out of the access log.
+
+Matched as suffixes of the request path, so a probe served under a route prefix is caught too.
+"""
+
+_ACCESS_LINE = re.compile(r'"[A-Z]+ (?P<path>[^ ?"]*)\S* HTTP/[^"]*" (?P<status>\d{3})')
+"""The request line and status of a uvicorn access record.
+
+uvicorn logs ``'%s - "%s %s HTTP/%s" %d'``, which renders as
+``10.0.0.1:5000 - "GET /health/ready?probe=1 HTTP/1.1" 200``. ``path`` excludes the query string.
+"""
 
 
 class HealthCheckFilter(logging.Filter):
     """Filter to suppress successful health check requests from logs."""
 
     def filter(self, record: logging.LogRecord) -> bool:
-        """Filter out successful health check requests.
+        """Drop a successful (2xx) health probe from uvicorn's access log; keep everything else.
 
-        Only logs health checks if they fail (status >= 400).
+        The record is parsed in uvicorn's own line format. The previous version searched the line
+        for ``" 200 "``, but uvicorn ends the line with the status code -- there is no space after
+        it -- so the filter never matched and every Kubernetes and Docker probe was logged.
+
+        A line that does not parse is kept: a changed format then costs log volume, not a lost
+        failure.
         """
-        message = record.getMessage()
+        if record.name != "uvicorn.access":
+            return True
 
-        # Check if this is a uvicorn access log for health endpoints
-        if hasattr(record, "name") and record.name == "uvicorn.access":
-            # Filter out successful health check requests (status 200)
-            if "/health/live" in message or "/health/ready" in message:
-                # Only log if it's an error (status >= 400)
-                if " 200 " in message or " 204 " in message:
-                    return False
+        match = _ACCESS_LINE.search(record.getMessage())
+        if match is None or not match["path"].endswith(HEALTH_PROBE_PATHS):
+            return True
 
-        return True
+        return not 200 <= int(match["status"]) < 300
 
 
 class CorrelationContext:
