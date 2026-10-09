@@ -8148,6 +8148,28 @@ grouped 0.9 deployment's clients of `/api/<agent>/events/{topic}` and `/api/<age
 do break. Found writing the `CHANGELOG.md` entry, which is why it is under *Breaking* and not
 *Added*; both earlier statements are corrected in place.
 
+### Successful health probes are not access-logged
+
+Reported after `v0.9.0a13`: a grouped deployment logged every Kubernetes probe. Not a regression of
+this feature -- the filter never worked -- but the group entrypoint is where it shows.
+
+- `HealthCheckFilter.filter` (`config/custom_logging.py`) searched uvicorn's access line for
+  `" 200 "` or `" 204 "`. uvicorn logs `'%s - "%s %s HTTP/%s" %d'`, so the status code ends the
+  line and the delimited search never matched. The filter now parses the line with `_ACCESS_LINE`,
+  matches the path (query string excluded) against `HEALTH_PROBE_PATHS` as a suffix, and drops 2xx
+  only. A line it cannot parse is kept.
+- Why it shows in a group and not standalone: `suppress_noisy_loggers` (default `true`) sets
+  `uvicorn.access` to WARNING. Standalone, `uvicorn src.main:create_app --factory` configures
+  uvicorn's logging first and builds the app second, so that level stands and no access line is
+  written at all. The group entrypoint builds the app first and then calls `run_app` ->
+  `uvicorn.run(app, log_level=...)`, which sets `uvicorn.access` back to the uvicorn level -- and
+  from there only the filter stood between the probes and the log.
+- `test_health_check_filter.py` built records in an invented format (`GET /health/live HTTP/1.1
+  200 0`) that the old check happened to match. The records are now built from uvicorn's format
+  string and arguments, and a test pins how they render. Checked against a real uvicorn server in
+  the entrypoint's order: before, `/health/live` 200 was logged; after, only the 503 probe and the
+  ordinary route are.
+
 ---
 
 ## Open points
