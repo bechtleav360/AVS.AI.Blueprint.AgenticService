@@ -294,9 +294,21 @@ unset, each is the server's default:
   client's: when it expires the message is redelivered to another replica while the first one is
   still working, so a model call that occasionally takes four minutes needs an `ack_wait` above
   four minutes, not the NATS default of thirty seconds.
-- **`nats_max_ack_pending` should stay close to the replica count.** A push subscription processes
-  its callbacks one at a time, so anything larger parks messages in the client's queue -- where
-  their `ack_wait` is already counting down, unhandled.
+- **`nats_max_ack_pending` should stay close to replicas x `nats_max_concurrent_runs`.** A pod
+  starts at most `nats_max_concurrent_runs` runs; anything the broker pushes beyond that waits in
+  the client's queue -- where its `ack_wait` is already counting down, unhandled and without a
+  heartbeat.
+
+**How many deliveries run at once.** Each delivery runs as its own task, up to
+`nats_max_concurrent_runs` per agent and process (default `1`: one at a time). The subscription
+waits for a free slot before it takes the next message, so a full agent stops taking work rather
+than starting more. Order within a subject is not kept beyond one run at a time.
+
+**Long runs are kept alive.** While a JetStream run is in progress, its delivery is reported
+`in_progress` every third of the consumer's `ack_wait` -- the value the broker has, not
+`nats_ack_wait`, since an existing consumer keeps its own. A run longer than `ack_wait` is
+therefore not redelivered while it still runs. A message still waiting for a slot gets no
+heartbeat.
 
 An existing consumer is never rewritten. Its filter subject and deliver group are broker-side
 state that the stream's redelivery bookkeeping hangs off, so changing them is a migration: the

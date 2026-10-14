@@ -50,6 +50,14 @@ class JetStreamUnavailableError(RuntimeError):
     """
 
 
+SERVER_DEFAULT_ACK_WAIT = 30.0
+"""Seconds: the ``ack_wait`` NATS gives a consumer created without one.
+
+Only a fallback for a bound consumer whose config reports no ``ack_wait``; the heartbeat interval
+is otherwise derived from the consumer's own value (handler-time-bounds spec sec. 4.2).
+"""
+
+
 FatalHandler = Callable[[str, BaseException], Awaitable[None]]
 """Called once when a client finds, after startup, that its agent cannot run at all: namespace, error."""
 
@@ -177,6 +185,24 @@ class NATSClient(IOClientBase):
     message is dead-lettered; unlimited disables dead-lettering on exhaustion.
     ``nats_dead_letter_subject`` (str, default ``"<queue group>.dead-letter"``): where a
     message goes when the framework gives up on it; ``""`` disables it and loses the payload.
+    ``nats_max_concurrent_runs`` (int, default 1): deliveries this agent handles at once, across
+    all of its subscriptions. ``1`` is the behaviour before the key existed: one run at a time.
+
+    Concurrent runs
+    ~~~~~~~~~~~~~~~
+    nats-py gives each subscription one task, and that task awaits its callback before it takes
+    the next message. A callback that ran the handler itself therefore handled one delivery per
+    subscription at a time, however much of the handler was spent waiting on I/O. The callback now
+    only waits for a free run slot and starts the run as a task of its own, so up to
+    ``nats_max_concurrent_runs`` runs of this agent are in progress at once. Waiting for the slot
+    *inside* the callback is the back-pressure: with every slot taken, the subscription's task
+    stops taking messages and they wait in the client's buffer (bounded by ``max_ack_pending``)
+    rather than starting. Order within a subscription is not kept beyond one run at a time.
+
+    While a JetStream run is in progress its delivery is reported ``in_progress`` every third of
+    the bound consumer's ``ack_wait``, so a run longer than ``ack_wait`` is not redelivered while it
+    still runs (handler-time-bounds spec sec. 4.1). Messages still waiting in the buffer get no
+    heartbeat; their ``ack_wait`` keeps running.
     """
 
     def __init__(self, namespace: str = ROOT_NAMESPACE) -> None:
@@ -204,6 +230,10 @@ class NATSClient(IOClientBase):
         self._inflight: int = 0
         self._idle: asyncio.Event = asyncio.Event()
         self._idle.set()
+        self._max_concurrent_runs: int = 1
+        self._run_slots: asyncio.Semaphore = asyncio.Semaphore(1)
+        self._runs: set[asyncio.Task[None]] = set()
+        self._ack_waits: dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # Public state
@@ -267,6 +297,8 @@ class NATSClient(IOClientBase):
         """
         self._topic_callbacks = topic_callbacks
         self._queue_group = self._resolve_queue_group()
+        self._max_concurrent_runs = self._resolve_max_concurrent_runs()
+        self._run_slots = asyncio.Semaphore(self._max_concurrent_runs)
         if self.config.get("nats_use_jetstream", False):
             self._durables = self._resolve_durables(list(topic_callbacks))
             self._tuning = self._resolve_consumer_tuning(list(topic_callbacks))
@@ -588,6 +620,15 @@ class NATSClient(IOClientBase):
         if self.config.get(key, None) is None:
             return None
         return self._read_float(key, 0.0)
+
+    def _resolve_max_concurrent_runs(self) -> int:
+        """Return ``nats_max_concurrent_runs``: at least 1, and 1 when it is not configured."""
+        value = self._read_optional_int("nats_max_concurrent_runs")
+        if value is None:
+            return 1
+        if value < 1:
+            raise ValueError(f"'nats_max_concurrent_runs' must be at least 1, got {value}. It is how many deliveries run at once.")
+        return value
 
     def _read_optional_int(self, key: str) -> int | None:
         """Read ``key`` as an integer, or ``None`` when it is not configured."""
@@ -1331,31 +1372,14 @@ class NATSClient(IOClientBase):
         client = await self.client
 
         async def message_handler(msg: Any) -> None:
+            # Runs on the subscription's one nats-py task. It waits for a run slot -- the
+            # back-pressure -- and returns as soon as the run is started, so the task can take the
+            # next message while this one is still running.
+            await self._run_slots.acquire()
             self._enter_handler()
-            try:
-                cloud_event = self._decode_message(msg, topic)
-                if cloud_event is None:
-                    # A payload that will not parse now will not parse on redelivery either.
-                    await self._settle(msg, DeliveryDisposition.TERM, topic, None)
-                    return
-
-                try:
-                    await callback(cloud_event, msg.subject)
-                except Exception as ex:
-                    disposition = disposition_for(ex)
-                    logger.error(
-                        "Handler failed for event %s on topic '%s', will %s: %s",
-                        cloud_event.id,
-                        topic,
-                        disposition.value,
-                        ex,
-                        exc_info=True,
-                    )
-                    await self._settle(msg, disposition, topic, cloud_event.id)
-                else:
-                    await self._settle(msg, DeliveryDisposition.ACK, topic, cloud_event.id)
-            finally:
-                self._exit_handler()
+            run = asyncio.create_task(self._run_delivery(msg, topic, callback), name=f"nats-run-{self.namespace or ROOT_LABEL}")
+            self._runs.add(run)
+            run.add_done_callback(self._run_finished)
 
         try:
             if self._use_jetstream and client.jetstream():
@@ -1368,6 +1392,8 @@ class NATSClient(IOClientBase):
                 # is per agent. Binding to a consumer we create ourselves also puts ack_wait,
                 # max_ack_pending and max_deliver where the broker can enforce them.
                 consumer_config = await self._ensure_consumer(topic, durable_name)
+                # The broker's value, not nats_ack_wait: an existing consumer keeps its own.
+                self._ack_waits[topic] = consumer_config.ack_wait or SERVER_DEFAULT_ACK_WAIT
                 sub = await client.jetstream().subscribe_bind(
                     stream=stream_name,
                     config=consumer_config,
@@ -1396,6 +1422,91 @@ class NATSClient(IOClientBase):
         except Exception as e:
             logger.error("Failed to subscribe to topic '%s': %s", topic, str(e))
             raise
+
+    # ------------------------------------------------------------------
+    # Internal -- one run
+    # ------------------------------------------------------------------
+
+    async def _run_delivery(self, msg: Any, topic: str, callback: DeliveryCallback) -> None:
+        """Decode, dispatch and settle one delivery; runs as its own task, beside its heartbeat.
+
+        The heartbeat is stopped before the delivery is settled, whatever ended the run. A
+        cancelled run (shutdown past its deadline) is not settled: the broker redelivers it.
+        """
+        cloud_event = self._decode_message(msg, topic)
+        if cloud_event is None:
+            # A payload that will not parse now will not parse on redelivery either.
+            await self._settle(msg, DeliveryDisposition.TERM, topic, None)
+            return
+
+        heartbeat = self._start_heartbeat(msg, topic)
+        disposition = DeliveryDisposition.ACK
+        try:
+            await callback(cloud_event, msg.subject)
+        except Exception as ex:
+            disposition = disposition_for(ex)
+            logger.error(
+                "Handler failed for event %s on topic '%s', will %s: %s",
+                cloud_event.id,
+                topic,
+                disposition.value,
+                ex,
+                exc_info=True,
+            )
+        finally:
+            if heartbeat is not None:
+                heartbeat.cancel()
+                # A heartbeat never fails the run (handler-time-bounds spec sec. 4.1).
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await heartbeat
+        await self._settle(msg, disposition, topic, cloud_event.id)
+
+    def _run_finished(self, run: asyncio.Task[None]) -> None:
+        """Free the run's slot and count it out of the in-flight handlers shutdown waits for."""
+        self._runs.discard(run)
+        self._run_slots.release()
+        self._exit_handler()
+        if not run.cancelled() and run.exception() is not None:
+            # _run_delivery settles every handler failure itself; this is a fault in the run's own code.
+            logger.error(
+                "A NATS delivery run of agent '%s' failed outside its handler: %s",
+                self.namespace or ROOT_LABEL,
+                run.exception(),
+                exc_info=run.exception(),
+            )
+
+    def _start_heartbeat(self, msg: Any, topic: str) -> asyncio.Task[None] | None:
+        """Start reporting ``in_progress`` for a JetStream delivery; ``None`` on Core NATS."""
+        ack_wait = self._ack_waits.get(topic)
+        if not self._use_jetstream or ack_wait is None:
+            return None
+        heartbeat = asyncio.create_task(self._keep_alive(msg, ack_wait / 3), name=f"nats-heartbeat-{self.namespace or ROOT_LABEL}")
+        heartbeat.add_done_callback(self._heartbeat_finished)
+        return heartbeat
+
+    def _heartbeat_finished(self, heartbeat: asyncio.Task[None]) -> None:
+        """Log a heartbeat that died of anything but its cancellation; the run goes on without it."""
+        if not heartbeat.cancelled() and heartbeat.exception() is not None:
+            logger.error(
+                "The heartbeat of a NATS delivery of agent '%s' failed; the delivery may be redelivered while it runs: %s",
+                self.namespace or ROOT_LABEL,
+                heartbeat.exception(),
+                exc_info=heartbeat.exception(),
+            )
+
+    @staticmethod
+    async def _keep_alive(msg: Any, interval: float) -> None:
+        """Report ``in_progress`` every ``interval`` seconds until cancelled; the first after one interval.
+
+        A failed report (connection lost) is logged and retried at the next interval. It never
+        fails the run: the settlement would fail the same way, and that already ends in a redelivery.
+        """
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await msg.in_progress()
+            except Exception as exc:
+                logger.debug("Heartbeat for the message on %s failed: %s", msg.subject, exc)
 
     # ------------------------------------------------------------------
     # Internal — acknowledgement

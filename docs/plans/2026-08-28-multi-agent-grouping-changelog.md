@@ -8170,6 +8170,49 @@ this feature -- the filter never worked -- but the group entrypoint is where it 
   the entrypoint's order: before, `/health/live` 200 was logged; after, only the 503 probe and the
   ordinary route are.
 
+### Deliveries run concurrently, and long runs send heartbeats
+
+Found while measuring an agent group against a real broker (2026-10-14): every agent handled
+one NATS event per subscription and process at a time. nats-py gives a subscription one task, which
+awaits the callback before taking the next message (`nats/aio/subscription.py`, `_wait_for_msgs`),
+and `message_handler` ran the whole handler chain inside that callback. An agent spending minutes
+per run waiting on a model therefore queued every further event behind it, on an idle event loop.
+The behaviour dates from the first NATS commit (`c347f30`); P1/P3 contained it with
+`max_ack_pending` 16, which `604bebb` made opt-in again.
+
+- `_subscribe_one.message_handler` now only acquires a slot of `_run_slots` (an
+  `asyncio.Semaphore` of `nats_max_concurrent_runs`, created in `subscribe()`), counts the delivery
+  in with `_enter_handler()`, and starts `_run_delivery` as a task kept in `_runs`. Waiting for the
+  slot inside the callback is the back-pressure: with every slot taken the subscription's task stops
+  taking messages.
+- `_run_delivery` is the former callback body -- decode, dispatch, settle with the sec. 7.2 table --
+  plus a heartbeat around the dispatch, stopped before settling. A cancelled run is not settled.
+- `_run_finished` (done-callback) frees the slot and calls `_exit_handler()`, so `close()` and
+  `pause_consumption()` still wait for running deliveries through `_await_inflight`, although the
+  callback has already returned. It logs a run that failed outside its handler.
+- `_start_heartbeat` / `_keep_alive` / `_heartbeat_finished`: JetStream only, `in_progress()` every
+  `ack_wait / 3` of the bound consumer's config (stored per topic in `_ack_waits` from
+  `_ensure_consumer`'s result; `SERVER_DEFAULT_ACK_WAIT` if the config has none) -- Part A sec. 4.1
+  and 4.2 of `docs/specs/2026-09-24-handler-time-bounds.md`, without its `nats_heartbeat_enabled`
+  switch and hard limit. A failed heartbeat is logged at DEBUG and never fails the run.
+- `nats_max_concurrent_runs` (`_resolve_max_concurrent_runs`): int >= 1, default 1, which keeps one
+  run at a time per agent. Per agent across all of its subscriptions, not per subscription.
+
+Tests: `_until_settled` in `test_nats_client.py` awaits the started run, because the callback
+returns before the delivery is settled; the 26 tests that assert a settlement use it. Docs:
+`reference/configuration-keys.md` (the key, `nats_max_ack_pending` sized against it, the example),
+`concepts/event-processing.md`, `guides/deployment.md`; `CHANGELOG.md` Fixed and Added.
+
+Measured against `nats:2.10-alpine` with a group built by `AgentGroup.assemble`, 2 s handlers:
+5 events of one subject 10.1 s -> 4.0 s at 4 runs; 6 events of two tenants' subjects on one
+subscription 12.1 s -> 4.0 s; one 7 s run under `nats_ack_wait = 3` ran three times before (redelivered
+while running, then queued behind itself) and once after.
+
+Not changed: spec sec. 5.2 still lists 300 s / 16 as the defaults of `nats_ack_wait` /
+`nats_max_ack_pending`, which `604bebb` made server defaults; and handler-time-bounds sec. 4.5
+assumes running handlers are bounded by `nats_max_ack_pending`, while they were bounded by one per
+subscription and now by `nats_max_concurrent_runs`. Both are for the spec owner.
+
 ---
 
 ## Open points

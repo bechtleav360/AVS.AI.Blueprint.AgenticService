@@ -348,6 +348,10 @@ Unset, each is the server's default: the framework sets no consumer setting on i
   at once.
 - **`nats_max_deliver`** bounds retries. Unset it is unlimited, so a message that keeps failing is
   retried forever and never dead-lettered.
+- **`nats_max_concurrent_runs`** (default 1) is how many deliveries one pod runs at once per agent.
+  An agent that waits on models most of the time can run many at once on one event loop; set
+  `nats_max_ack_pending` to about replicas x this value, so pods do not hoard messages they cannot
+  start yet.
 
 ### 3. Deduplication, if your handlers need it
 
@@ -420,8 +424,10 @@ spec:
 
 CPU is a poor signal for an event-driven agent that spends its time waiting on an LLM. Consumer lag
 or in-flight count is the metric you actually want to scale on, and reaching it needs a metrics
-adapter. Check `nats_max_ack_pending` before adding replicas: it limits the in-flight messages of all
-pods together, so more pods under the same limit do not process more at once.
+adapter. Check `nats_max_ack_pending` and `nats_max_concurrent_runs` before adding replicas: the
+first limits the in-flight messages of all pods together, so more pods under the same limit do not
+process more at once; the second is often the cheaper lever, since a pod waiting on models has
+event-loop time to spare.
 
 ---
 

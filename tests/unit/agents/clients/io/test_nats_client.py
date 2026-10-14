@@ -24,6 +24,20 @@ from blueprint.agents.models.errors import CriticalHandlerError, InvalidEventErr
 from blueprint.agents.models.events import CloudEvent
 
 
+def _until_settled(nats_client: NATSClient, handler):
+    """The broker callback, awaited until the run it started has settled.
+
+    The callback only starts the run as a task of its own (concurrent runs); these tests assert
+    on what the run did, so they wait for it.
+    """
+
+    async def deliver(msg) -> None:
+        await handler(msg)
+        await asyncio.gather(*list(nats_client._runs), return_exceptions=True)
+
+    return deliver
+
+
 class TestNATSClientInit:
     def test_nats_client_initialises_as_none(self, nats_client: NATSClient) -> None:
         assert nats_client._nats_client is None
@@ -358,7 +372,7 @@ class TestNATSClientMessageBoundary:
         nats_client._nats_client = mock_nats_core
         nats_client._client = mock_nats_core
         await nats_client._subscribe_one("orders.created", callback)
-        return mock_nats_core.subscribe.await_args.kwargs["cb"]
+        return _until_settled(nats_client, mock_nats_core.subscribe.await_args.kwargs["cb"])
 
     async def test_undecodable_payload_is_not_dispatched(
         self, nats_client: NATSClient, mock_nats_core: MagicMock, caplog: pytest.LogCaptureFixture
@@ -387,7 +401,7 @@ class TestNATSClientMessageBoundary:
         nats_client._nats_client = mock_nats_core
         nats_client._client = mock_nats_core
         await nats_client._subscribe_one("t.*.risk.>", _callback)
-        handler = mock_nats_core.subscribe.await_args.kwargs["cb"]
+        handler = _until_settled(nats_client, mock_nats_core.subscribe.await_args.kwargs["cb"])
         await handler(MagicMock(subject="t.T1.risk.created", data=json.dumps(dict(cloud_event)).encode()))
 
         assert received == ["t.T1.risk.created"]
@@ -457,7 +471,7 @@ class TestNATSClientAcknowledgement:
         nats_client._client = mock_nc
         nats_client._use_jetstream = True
         await nats_client._subscribe_one("orders.created", callback)
-        return mock_nc.jetstream().subscribe_bind.await_args.kwargs["cb"]
+        return _until_settled(nats_client, mock_nc.jetstream().subscribe_bind.await_args.kwargs["cb"])
 
     @staticmethod
     def _msg(cloud_event: CloudEvent) -> MagicMock:
@@ -538,7 +552,7 @@ class TestNATSClientAcknowledgement:
         nats_client._nats_client = mock_nats_core
         nats_client._client = mock_nats_core
         await nats_client._subscribe_one("orders.created", AsyncMock())
-        handler = mock_nats_core.subscribe.await_args.kwargs["cb"]
+        handler = _until_settled(nats_client, mock_nats_core.subscribe.await_args.kwargs["cb"])
         msg = self._msg(cloud_event)
         await handler(msg)
         msg.ack.assert_not_awaited()
@@ -628,7 +642,7 @@ class TestNATSClientShutdownDrain:
         nats_client._nats_client = mock_nats_core
         nats_client._client = mock_nats_core
         await nats_client._subscribe_one("orders.created", _callback)
-        message_handler = mock_nats_core.subscribe.await_args.kwargs["cb"]
+        message_handler = _until_settled(nats_client, mock_nats_core.subscribe.await_args.kwargs["cb"])
 
         msg = MagicMock(data=json.dumps(dict(cloud_event)).encode())
         await message_handler(msg)
@@ -645,7 +659,7 @@ class TestNATSClientShutdownDrain:
         nats_client._nats_client = mock_nats_core
         nats_client._client = mock_nats_core
         await nats_client._subscribe_one("orders.created", _callback)
-        message_handler = mock_nats_core.subscribe.await_args.kwargs["cb"]
+        message_handler = _until_settled(nats_client, mock_nats_core.subscribe.await_args.kwargs["cb"])
 
         await message_handler(MagicMock(data=json.dumps(dict(cloud_event)).encode()))
 
@@ -1302,7 +1316,7 @@ class TestNATSClientDeadLettering:
         await _prepare_js_client(nats_client, mock_config, mock_nats_jetstream, ["orders.created"], **overrides)
         await nats_client._subscribe_one("orders.created", callback)
         mock_nc, _ = mock_nats_jetstream
-        return mock_nc.jetstream().subscribe_bind.await_args.kwargs["cb"]
+        return _until_settled(nats_client, mock_nc.jetstream().subscribe_bind.await_args.kwargs["cb"])
 
     async def test_terminal_failure_is_dead_lettered_then_termed(
         self, nats_client: NATSClient, mock_config: MagicMock, mock_nats_jetstream: tuple, cloud_event: CloudEvent
