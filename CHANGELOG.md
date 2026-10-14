@@ -6,8 +6,9 @@
 - **NATS deliveries are no longer handled strictly one at a time.** nats-py gives each subscription
   one task that awaits its callback, and the callback ran the whole handler -- so an agent handled
   one event per subscription and process at a time, however much of the run was spent waiting on a
-  model. Each delivery now runs as its own task, up to the new `nats_max_concurrent_runs` per agent
-  (default `1`, the previous behaviour). Measured against a real broker with 2 s handlers: 5 events
+  model. Each delivery now runs as its own task, up to the new `nats_max_concurrent_runs` per agent,
+  shared by its subscriptions; unset, each subscription still runs one delivery at a time, the
+  previous behaviour. Measured against a real broker with 2 s handlers: 5 events
   took 10 s before and 4 s with the key at 4.
 - **A long JetStream run is no longer redelivered while it still runs.** The delivery is reported
   `in_progress` every third of the bound consumer's `ack_wait` until it is settled. Measured: one
@@ -163,9 +164,10 @@
 
 ### Added
 
-- **`nats_max_concurrent_runs`** (int, default `1`): how many deliveries an agent handles at once per
-  process, across all of its subscriptions. With every slot taken the subscription stops taking
+- **`nats_max_concurrent_runs`** (int, unset by default): how many deliveries an agent handles at once
+  per process, shared by all of its subscriptions; unset keeps one run per subscription. With every slot taken the subscription stops taking
   messages; keep `nats_max_ack_pending` near replicas x this value.
+- **`nats_heartbeat_enabled`** (bool, default `true`): switches the delivery heartbeat off for an agent.
 - **`RestApiBase.path_prefix`**, an optional class attribute putting every route of an API under
   one segment -- `/api/reports/...` standalone, `/api/<agent>/reports/...` in a group. Default `""`,
   so no existing path moves.

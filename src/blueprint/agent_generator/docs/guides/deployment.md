@@ -348,7 +348,8 @@ Unset, each is the server's default: the framework sets no consumer setting on i
   at once.
 - **`nats_max_deliver`** bounds retries. Unset it is unlimited, so a message that keeps failing is
   retried forever and never dead-lettered.
-- **`nats_max_concurrent_runs`** (default 1) is how many deliveries one pod runs at once per agent.
+- **`nats_max_concurrent_runs`** (unset: one per subscription) is how many deliveries one pod runs at
+  once per agent.
   An agent that waits on models most of the time can run many at once on one event loop; set
   `nats_max_ack_pending` to about replicas x this value, so pods do not hoard messages they cannot
   start yet.

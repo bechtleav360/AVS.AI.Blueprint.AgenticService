@@ -2,12 +2,13 @@
 
 import asyncio
 import contextlib
+import functools
 import importlib.util
 import json
 import logging
 import re
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
 from typing import Any
@@ -110,6 +111,72 @@ class ConsumerTuning:
     dead_letter_subject: str
 
 
+@dataclass(eq=False)
+class _Link:
+    """One broker connection and what it was opened with.
+
+    Held apart from :class:`_Binding` so that what a connection *is* (URL, credentials, the
+    ``nats.Client``) and what is consumed *over* it (subscriptions, runs) can vary
+    independently: today every binding has a link of its own, and a link shared by several
+    bindings stays possible without reshaping either (named-connections plan, D1).
+    """
+
+    name: str = ""
+    """``""`` for the agent's default connection, configured through ``nats_url`` and friends."""
+    url: str = ""
+    connect_options: dict[str, Any] = field(default_factory=dict)
+    connection_name: str = ""
+    nats_client: NatsClient | None = None
+    js: JetStreamContext | None = None
+    jetstream_mismatch: JetStreamUnavailableError | None = None
+
+
+@dataclass(eq=False)
+class _Binding:
+    """What one agent consumes over one link, and the runs it has in flight there.
+
+    Every delivery is decoded, run, heartbeated and settled against the binding it arrived
+    on, so nothing of one binding's runs -- slots, in-flight count, acknowledgement -- is
+    shared with another's.
+    """
+
+    link: _Link
+    topic_callbacks: dict[str, DeliveryCallback] = field(default_factory=dict)
+    durables: dict[str, str] = field(default_factory=dict)
+    tuning: ConsumerTuning | None = None
+    subscriptions: list[Any] = field(default_factory=list)
+    subscriptions_ready: bool = False
+    run_slots: asyncio.Semaphore | None = None
+    """Shared by every subscription of the binding when ``nats_max_concurrent_runs`` is set."""
+    subscription_slots: dict[str, asyncio.Semaphore] = field(default_factory=dict)
+    """One slot per subscription when it is not set -- one run at a time per subscription."""
+    runs: set[asyncio.Task[None]] = field(default_factory=set)
+    ack_waits: dict[str, float] = field(default_factory=dict)
+    """Per topic, the bound consumer's own ``ack_wait`` -- what the heartbeat interval derives from."""
+    inflight: int = 0
+    idle: asyncio.Event = field(default_factory=asyncio.Event)
+
+    def __post_init__(self) -> None:
+        self.idle.set()
+
+    def slots_for(self, topic: str) -> asyncio.Semaphore:
+        """The slots a delivery on ``topic`` waits for: the binding's shared ones, else its subscription's own."""
+        if self.run_slots is not None:
+            return self.run_slots
+        return self.subscription_slots.setdefault(topic, asyncio.Semaphore(1))
+
+    def enter_run(self) -> None:
+        """Count one delivery in; shutdown and pause wait until the count is back to zero."""
+        self.inflight += 1
+        self.idle.clear()
+
+    def exit_run(self) -> None:
+        """Count one delivery out."""
+        self.inflight = max(0, self.inflight - 1)
+        if self.inflight == 0:
+            self.idle.set()
+
+
 class NATSClient(IOClientBase):
     """NATS client for subscribing to and publishing CloudEvents.
 
@@ -185,8 +252,11 @@ class NATSClient(IOClientBase):
     message is dead-lettered; unlimited disables dead-lettering on exhaustion.
     ``nats_dead_letter_subject`` (str, default ``"<queue group>.dead-letter"``): where a
     message goes when the framework gives up on it; ``""`` disables it and loses the payload.
-    ``nats_max_concurrent_runs`` (int, default 1): deliveries this agent handles at once, across
-    all of its subscriptions. ``1`` is the behaviour before the key existed: one run at a time.
+    ``nats_max_concurrent_runs`` (int, unset by default): deliveries this agent handles at once,
+    shared by all of its subscriptions. Unset is the behaviour before the key existed: one run at a
+    time *per subscription*, so an agent with two subscriptions runs two at once.
+    ``nats_heartbeat_enabled`` (bool, default true): whether running JetStream deliveries report
+    ``in_progress``; off, a run longer than the consumer's ``ack_wait`` is redelivered while it runs.
 
     Concurrent runs
     ~~~~~~~~~~~~~~~
@@ -194,7 +264,8 @@ class NATSClient(IOClientBase):
     the next message. A callback that ran the handler itself therefore handled one delivery per
     subscription at a time, however much of the handler was spent waiting on I/O. The callback now
     only waits for a free run slot and starts the run as a task of its own, so up to
-    ``nats_max_concurrent_runs`` runs of this agent are in progress at once. Waiting for the slot
+    ``nats_max_concurrent_runs`` runs of this agent are in progress at once. Unset, each
+    subscription keeps one slot of its own, exactly the old behaviour. Waiting for the slot
     *inside* the callback is the back-pressure: with every slot taken, the subscription's task
     stops taking messages and they wait in the client's buffer (bounded by ``max_ack_pending``)
     rather than starting. Order within a subscription is not kept beyond one run at a time.
@@ -202,38 +273,137 @@ class NATSClient(IOClientBase):
     While a JetStream run is in progress its delivery is reported ``in_progress`` every third of
     the bound consumer's ``ack_wait``, so a run longer than ``ack_wait`` is not redelivered while it
     still runs (handler-time-bounds spec sec. 4.1). Messages still waiting in the buffer get no
-    heartbeat; their ``ack_wait`` keeps running.
+    heartbeat; their ``ack_wait`` keeps running. ``nats_heartbeat_enabled = false`` switches it off.
+
+    Links and bindings
+    ~~~~~~~~~~~~~~~~~~
+    The broker connection is a :class:`_Link`; what this agent consumes over it, with its run
+    slots and in-flight runs, is a :class:`_Binding`. Today the client has exactly one of each,
+    the *default* ones configured by ``nats_url`` and friends, and the delivery path takes the
+    binding a message arrived on as a parameter (named-connections plan, step 1).
     """
 
     def __init__(self, namespace: str = ROOT_NAMESPACE) -> None:
         super().__init__(namespace=namespace)
-        self._connection_name: str = ""
-        self._nats_url: str = ""
-        self._connect_options: dict[str, Any] = {}
-        self._jetstream_mismatch: JetStreamUnavailableError | None = None
+        self._link = _Link()
+        self._binding = _Binding(link=self._link)
         self._started = False
         self._fatal_handler: FatalHandler | None = None
         self._fatal_reported = False
-        self._nats_client: NatsClient | None = None
-        self._js: JetStreamContext | None = None
         self._use_jetstream: bool = False
         self._publish_via_jetstream: bool = False
         self._publish_subjects: set[str] = set()
-        self._subscriptions: list[Any] = []
-        self._topic_callbacks: dict[str, DeliveryCallback] = {}
         self._queue_group: str = ""
-        self._tuning: ConsumerTuning | None = None
-        self._durables: dict[str, str] = {}
-        self._subscriptions_ready: bool = False
         self._subscriptions_managed: bool = False
         self._retry_task: asyncio.Task[None] | None = None
-        self._inflight: int = 0
-        self._idle: asyncio.Event = asyncio.Event()
-        self._idle.set()
-        self._max_concurrent_runs: int = 1
-        self._run_slots: asyncio.Semaphore = asyncio.Semaphore(1)
-        self._runs: set[asyncio.Task[None]] = set()
-        self._ack_waits: dict[str, float] = {}
+        self._max_concurrent_runs: int | None = None
+        self._heartbeat_enabled: bool = True
+
+    # ------------------------------------------------------------------
+    # The default link and binding, under the names the client used before it had them
+    # ------------------------------------------------------------------
+    # Transitional: unit tests reach these by name. They go once the tests address links and
+    # bindings directly (named-connections plan, step 3).
+
+    @property
+    def _connection_name(self) -> str:
+        return self._link.connection_name
+
+    @_connection_name.setter
+    def _connection_name(self, value: str) -> None:
+        self._link.connection_name = value
+
+    @property
+    def _nats_url(self) -> str:
+        return self._link.url
+
+    @_nats_url.setter
+    def _nats_url(self, value: str) -> None:
+        self._link.url = value
+
+    @property
+    def _connect_options(self) -> dict[str, Any]:
+        return self._link.connect_options
+
+    @_connect_options.setter
+    def _connect_options(self, value: dict[str, Any]) -> None:
+        self._link.connect_options = value
+
+    @property
+    def _jetstream_mismatch(self) -> JetStreamUnavailableError | None:
+        return self._link.jetstream_mismatch
+
+    @_jetstream_mismatch.setter
+    def _jetstream_mismatch(self, value: JetStreamUnavailableError | None) -> None:
+        self._link.jetstream_mismatch = value
+
+    @property
+    def _nats_client(self) -> NatsClient | None:
+        return self._link.nats_client
+
+    @_nats_client.setter
+    def _nats_client(self, value: NatsClient | None) -> None:
+        self._link.nats_client = value
+
+    @property
+    def _js(self) -> JetStreamContext | None:
+        return self._link.js
+
+    @_js.setter
+    def _js(self, value: JetStreamContext | None) -> None:
+        self._link.js = value
+
+    @property
+    def _subscriptions(self) -> list[Any]:
+        return self._binding.subscriptions
+
+    @_subscriptions.setter
+    def _subscriptions(self, value: list[Any]) -> None:
+        self._binding.subscriptions = value
+
+    @property
+    def _topic_callbacks(self) -> dict[str, DeliveryCallback]:
+        return self._binding.topic_callbacks
+
+    @_topic_callbacks.setter
+    def _topic_callbacks(self, value: dict[str, DeliveryCallback]) -> None:
+        self._binding.topic_callbacks = value
+
+    @property
+    def _tuning(self) -> ConsumerTuning | None:
+        return self._binding.tuning
+
+    @_tuning.setter
+    def _tuning(self, value: ConsumerTuning | None) -> None:
+        self._binding.tuning = value
+
+    @property
+    def _durables(self) -> dict[str, str]:
+        return self._binding.durables
+
+    @_durables.setter
+    def _durables(self, value: dict[str, str]) -> None:
+        self._binding.durables = value
+
+    @property
+    def _subscriptions_ready(self) -> bool:
+        return self._binding.subscriptions_ready
+
+    @_subscriptions_ready.setter
+    def _subscriptions_ready(self, value: bool) -> None:
+        self._binding.subscriptions_ready = value
+
+    @property
+    def _inflight(self) -> int:
+        return self._binding.inflight
+
+    @property
+    def _runs(self) -> set[asyncio.Task[None]]:
+        return self._binding.runs
+
+    @property
+    def _ack_waits(self) -> dict[str, float]:
+        return self._binding.ack_waits
 
     # ------------------------------------------------------------------
     # Public state
@@ -298,7 +468,9 @@ class NATSClient(IOClientBase):
         self._topic_callbacks = topic_callbacks
         self._queue_group = self._resolve_queue_group()
         self._max_concurrent_runs = self._resolve_max_concurrent_runs()
-        self._run_slots = asyncio.Semaphore(self._max_concurrent_runs)
+        # Unset keeps one run per subscription (subscription_slots); set, the subscriptions share K.
+        self._binding.run_slots = asyncio.Semaphore(self._max_concurrent_runs) if self._max_concurrent_runs else None
+        self._heartbeat_enabled = self._resolve_heartbeat_enabled()
         if self.config.get("nats_use_jetstream", False):
             self._durables = self._resolve_durables(list(topic_callbacks))
             self._tuning = self._resolve_consumer_tuning(list(topic_callbacks))
@@ -621,13 +793,25 @@ class NATSClient(IOClientBase):
             return None
         return self._read_float(key, 0.0)
 
-    def _resolve_max_concurrent_runs(self) -> int:
-        """Return ``nats_max_concurrent_runs``: at least 1, and 1 when it is not configured."""
+    def _resolve_max_concurrent_runs(self) -> int | None:
+        """Return ``nats_max_concurrent_runs``: at least 1, or ``None`` when it is not configured."""
         value = self._read_optional_int("nats_max_concurrent_runs")
         if value is None:
-            return 1
+            return None
         if value < 1:
             raise ValueError(f"'nats_max_concurrent_runs' must be at least 1, got {value}. It is how many deliveries run at once.")
+        return value
+
+    def _resolve_heartbeat_enabled(self) -> bool:
+        """Return ``nats_heartbeat_enabled``: whether running JetStream deliveries report ``in_progress``.
+
+        Raises:
+            ValueError: if the value is not a boolean -- a string such as ``"false"`` would
+                otherwise read as true and keep the heartbeat the operator meant to switch off.
+        """
+        value = self.config.get("nats_heartbeat_enabled", True)
+        if not isinstance(value, bool):
+            raise ValueError(f"'nats_heartbeat_enabled' must be true or false, got {value!r}.")
         return value
 
     def _read_optional_int(self, key: str) -> int | None:
@@ -1008,13 +1192,14 @@ class NATSClient(IOClientBase):
     # Internal -- shutdown
     # ------------------------------------------------------------------
 
-    async def _drain_subscriptions(self, deadline: float) -> None:
+    async def _drain_subscriptions(self, deadline: float, binding: _Binding | None = None) -> None:
         """Stop new deliveries while letting already-queued messages reach their handler.
 
         Falls back to an immediate unsubscribe if a drain fails or outlives the deadline,
         so one stuck subscription cannot hold up shutdown.
         """
-        for sub in self._subscriptions:
+        binding = binding or self._binding
+        for sub in binding.subscriptions:
             remaining = max(0.0, deadline - asyncio.get_running_loop().time())
             try:
                 await asyncio.wait_for(sub.drain(), timeout=remaining)
@@ -1024,7 +1209,7 @@ class NATSClient(IOClientBase):
             except Exception as e:
                 logger.warning("Failed to drain a NATS subscription (%s); unsubscribing instead", e)
                 await self._force_unsubscribe(sub)
-        self._subscriptions.clear()
+        binding.subscriptions.clear()
 
     @staticmethod
     def _decode_message(msg: Any, topic: str) -> CloudEvent[Any] | None:
@@ -1047,29 +1232,27 @@ class NATSClient(IOClientBase):
         with contextlib.suppress(Exception):
             await sub.unsubscribe()
 
-    async def _await_inflight(self, deadline: float) -> None:
+    async def _await_inflight(self, deadline: float, binding: _Binding | None = None) -> None:
         """Give handlers that are still running a bounded chance to finish."""
-        if self._inflight == 0:
+        binding = binding or self._binding
+        if binding.inflight == 0:
             return
 
         remaining = max(0.0, deadline - asyncio.get_running_loop().time())
-        logger.debug("Waiting up to %.1fs for %d in-flight NATS handler(s)", remaining, self._inflight)
+        logger.debug("Waiting up to %.1fs for %d in-flight NATS handler(s)", remaining, binding.inflight)
         try:
-            await asyncio.wait_for(self._idle.wait(), timeout=remaining)
+            await asyncio.wait_for(binding.idle.wait(), timeout=remaining)
         except TimeoutError:
             logger.error(
                 "Shutdown deadline reached with %d NATS handler(s) still running; their messages will be redelivered",
-                self._inflight,
+                binding.inflight,
             )
 
     def _enter_handler(self) -> None:
-        self._inflight += 1
-        self._idle.clear()
+        self._binding.enter_run()
 
     def _exit_handler(self) -> None:
-        self._inflight = max(0, self._inflight - 1)
-        if self._inflight == 0:
-            self._idle.set()
+        self._binding.exit_run()
 
     # ------------------------------------------------------------------
     # Publish
@@ -1368,18 +1551,20 @@ class NATSClient(IOClientBase):
     # Internal — per-topic subscription
     # ------------------------------------------------------------------
 
-    async def _subscribe_one(self, topic: str, callback: DeliveryCallback) -> None:
+    async def _subscribe_one(self, topic: str, callback: DeliveryCallback, binding: _Binding | None = None) -> None:
+        binding = binding or self._binding
         client = await self.client
 
         async def message_handler(msg: Any) -> None:
-            # Runs on the subscription's one nats-py task. It waits for a run slot -- the
-            # back-pressure -- and returns as soon as the run is started, so the task can take the
-            # next message while this one is still running.
-            await self._run_slots.acquire()
-            self._enter_handler()
-            run = asyncio.create_task(self._run_delivery(msg, topic, callback), name=f"nats-run-{self.namespace or ROOT_LABEL}")
-            self._runs.add(run)
-            run.add_done_callback(self._run_finished)
+            # Runs on the subscription's one nats-py task. It waits for a run slot of the binding the
+            # message arrived on -- the back-pressure -- and returns as soon as the run is started, so
+            # the task can take the next message while this one is still running.
+            slots = binding.slots_for(topic)
+            await slots.acquire()
+            binding.enter_run()
+            run = asyncio.create_task(self._run_delivery(msg, topic, callback, binding), name=f"nats-run-{self.namespace or ROOT_LABEL}")
+            binding.runs.add(run)
+            run.add_done_callback(functools.partial(self._run_finished, binding, slots))
 
         try:
             if self._use_jetstream and client.jetstream():
@@ -1393,7 +1578,7 @@ class NATSClient(IOClientBase):
                 # max_ack_pending and max_deliver where the broker can enforce them.
                 consumer_config = await self._ensure_consumer(topic, durable_name)
                 # The broker's value, not nats_ack_wait: an existing consumer keeps its own.
-                self._ack_waits[topic] = consumer_config.ack_wait or SERVER_DEFAULT_ACK_WAIT
+                binding.ack_waits[topic] = consumer_config.ack_wait or SERVER_DEFAULT_ACK_WAIT
                 sub = await client.jetstream().subscribe_bind(
                     stream=stream_name,
                     config=consumer_config,
@@ -1417,7 +1602,7 @@ class NATSClient(IOClientBase):
                 else:
                     logger.info("Subscribed to Core NATS topic '%s'", topic)
 
-            self._subscriptions.append(sub)
+            binding.subscriptions.append(sub)
 
         except Exception as e:
             logger.error("Failed to subscribe to topic '%s': %s", topic, str(e))
@@ -1427,19 +1612,20 @@ class NATSClient(IOClientBase):
     # Internal -- one run
     # ------------------------------------------------------------------
 
-    async def _run_delivery(self, msg: Any, topic: str, callback: DeliveryCallback) -> None:
+    async def _run_delivery(self, msg: Any, topic: str, callback: DeliveryCallback, binding: _Binding) -> None:
         """Decode, dispatch and settle one delivery; runs as its own task, beside its heartbeat.
 
         The heartbeat is stopped before the delivery is settled, whatever ended the run. A
         cancelled run (shutdown past its deadline) is not settled: the broker redelivers it.
+        Everything is settled against ``binding``, the one the message arrived on.
         """
         cloud_event = self._decode_message(msg, topic)
         if cloud_event is None:
             # A payload that will not parse now will not parse on redelivery either.
-            await self._settle(msg, DeliveryDisposition.TERM, topic, None)
+            await self._settle(msg, DeliveryDisposition.TERM, topic, None, binding)
             return
 
-        heartbeat = self._start_heartbeat(msg, topic)
+        heartbeat = self._start_heartbeat(msg, topic, binding)
         disposition = DeliveryDisposition.ACK
         try:
             await callback(cloud_event, msg.subject)
@@ -1459,13 +1645,13 @@ class NATSClient(IOClientBase):
                 # A heartbeat never fails the run (handler-time-bounds spec sec. 4.1).
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await heartbeat
-        await self._settle(msg, disposition, topic, cloud_event.id)
+        await self._settle(msg, disposition, topic, cloud_event.id, binding)
 
-    def _run_finished(self, run: asyncio.Task[None]) -> None:
-        """Free the run's slot and count it out of the in-flight handlers shutdown waits for."""
-        self._runs.discard(run)
-        self._run_slots.release()
-        self._exit_handler()
+    def _run_finished(self, binding: _Binding, slots: asyncio.Semaphore, run: asyncio.Task[None]) -> None:
+        """Free the run's slot and count it out of the in-flight runs shutdown waits for."""
+        binding.runs.discard(run)
+        slots.release()
+        binding.exit_run()
         if not run.cancelled() and run.exception() is not None:
             # _run_delivery settles every handler failure itself; this is a fault in the run's own code.
             logger.error(
@@ -1475,10 +1661,10 @@ class NATSClient(IOClientBase):
                 exc_info=run.exception(),
             )
 
-    def _start_heartbeat(self, msg: Any, topic: str) -> asyncio.Task[None] | None:
-        """Start reporting ``in_progress`` for a JetStream delivery; ``None`` on Core NATS."""
-        ack_wait = self._ack_waits.get(topic)
-        if not self._use_jetstream or ack_wait is None:
+    def _start_heartbeat(self, msg: Any, topic: str, binding: _Binding) -> asyncio.Task[None] | None:
+        """Start reporting ``in_progress`` for a JetStream delivery; ``None`` on Core NATS or when switched off."""
+        ack_wait = binding.ack_waits.get(topic)
+        if not self._heartbeat_enabled or not self._use_jetstream or ack_wait is None:
             return None
         heartbeat = asyncio.create_task(self._keep_alive(msg, ack_wait / 3), name=f"nats-heartbeat-{self.namespace or ROOT_LABEL}")
         heartbeat.add_done_callback(self._heartbeat_finished)
@@ -1512,7 +1698,9 @@ class NATSClient(IOClientBase):
     # Internal — acknowledgement
     # ------------------------------------------------------------------
 
-    async def _settle(self, msg: Any, disposition: DeliveryDisposition, topic: str, event_id: str | None) -> None:
+    async def _settle(
+        self, msg: Any, disposition: DeliveryDisposition, topic: str, event_id: str | None, binding: _Binding | None = None
+    ) -> None:
         """Tell the broker what became of a delivery (spec sec. 7.2).
 
         Only JetStream deliveries can be settled. Core NATS is fire-and-forget and
@@ -1536,13 +1724,14 @@ class NATSClient(IOClientBase):
         if not self._use_jetstream:
             return
 
+        binding = binding or self._binding
         try:
             if disposition is DeliveryDisposition.ACK:
                 await msg.ack()
-            elif disposition is DeliveryDisposition.NAK and not self._deliveries_exhausted(msg):
+            elif disposition is DeliveryDisposition.NAK and not self._deliveries_exhausted(msg, binding):
                 await msg.nak()
             else:
-                await self._dead_letter(msg, disposition, topic, event_id)
+                await self._dead_letter(msg, disposition, topic, event_id, binding)
                 await msg.term()
         except Exception as exc:
             logger.error(
@@ -1553,7 +1742,7 @@ class NATSClient(IOClientBase):
                 exc,
             )
 
-    def _deliveries_exhausted(self, msg: Any) -> bool:
+    def _deliveries_exhausted(self, msg: Any, binding: _Binding | None = None) -> bool:
         """Whether the broker has no redelivery left for this message.
 
         ``max_deliver`` counts attempts, so the last one the broker makes is attempt
@@ -1562,7 +1751,8 @@ class NATSClient(IOClientBase):
         as not exhausted, so an unreadable header can only cost a retry, never a payload.
         """
         # Not configured means the server's default, which is unlimited.
-        max_deliver = self._tuning.max_deliver if self._tuning else None
+        tuning = (binding or self._binding).tuning
+        max_deliver = tuning.max_deliver if tuning else None
         if max_deliver is None or max_deliver < 0:
             return False
         delivered = self._delivery_count(msg)
@@ -1576,7 +1766,9 @@ class NATSClient(IOClientBase):
         except Exception:
             return None
 
-    async def _dead_letter(self, msg: Any, disposition: DeliveryDisposition, topic: str, event_id: str | None) -> None:
+    async def _dead_letter(
+        self, msg: Any, disposition: DeliveryDisposition, topic: str, event_id: str | None, binding: _Binding | None = None
+    ) -> None:
         """Republish a message the framework has given up on, before the delivery is termed.
 
         Both terminal outcomes arrive here: a payload rejected as unprocessable, and one
@@ -1586,7 +1778,8 @@ class NATSClient(IOClientBase):
         CloudEvent. What went wrong travels in headers instead, where it cannot corrupt a
         body a dead-letter consumer will try to read.
         """
-        subject = self._tuning.dead_letter_subject if self._tuning else ""
+        binding = binding or self._binding
+        subject = binding.tuning.dead_letter_subject if binding.tuning else ""
         delivered = self._delivery_count(msg)
         reason = "deliveries-exhausted" if disposition is DeliveryDisposition.NAK else "terminal-failure"
 
@@ -1611,7 +1804,8 @@ class NATSClient(IOClientBase):
             headers["Blueprint-Event-Id"] = event_id
 
         try:
-            await self._nats_client.jetstream().publish(subject, msg.data, headers=headers)  # type: ignore[union-attr]
+            # On the binding's own link: a dead letter never leaves the connection it arrived on.
+            await binding.link.nats_client.jetstream().publish(subject, msg.data, headers=headers)  # type: ignore[union-attr]
         except Exception as exc:
             self._count_dead_letter(reason, kept=False)
             logger.error(

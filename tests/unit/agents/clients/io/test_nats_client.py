@@ -2311,3 +2311,155 @@ class TestStandaloneLogLines:
         with caplog.at_level("INFO", logger="blueprint.agents.clients.io.nats_client"):
             await connected_nats_client._subscribe_one("orders.created", AsyncMock())
         assert caplog.messages == ["Subscribed to Core NATS topic 'orders.created'"]
+
+
+def _delivery(cloud_event: CloudEvent) -> MagicMock:
+    """A JetStream delivery whose settlement and heartbeat calls are recorded in one order."""
+    msg = MagicMock(data=json.dumps(dict(cloud_event)).encode(), reply="$JS.ACK.x", subject="orders.created")
+    for name in ("ack", "nak", "term", "in_progress"):
+        setattr(msg, name, AsyncMock())
+    msg.metadata.num_delivered = 1
+    return msg
+
+
+async def _js_delivery_handler(nats_client: NATSClient, mock_config: MagicMock, mock_nats_jetstream: tuple, callback, **overrides: object):
+    """The raw broker callback of one JetStream subscription, with the given config overrides."""
+    await _prepare_js_client(nats_client, mock_config, mock_nats_jetstream, ["orders.created"], **overrides)
+    await nats_client._subscribe_one("orders.created", callback)
+    mock_nc, _ = mock_nats_jetstream
+    return mock_nc.jetstream().subscribe_bind.await_args.kwargs["cb"]
+
+
+class TestConcurrentRuns:
+    """Deliveries run as tasks of their own, up to nats_max_concurrent_runs per binding."""
+
+    @staticmethod
+    async def _started_while_blocked(
+        handler, nats_client: NATSClient, cloud_event: CloudEvent, deliveries: int, gate: asyncio.Event, started: list
+    ):
+        callers = [asyncio.create_task(handler(_delivery(cloud_event))) for _ in range(deliveries)]
+        for _ in range(20):
+            await asyncio.sleep(0)
+        running = len(started)
+        gate.set()
+        await asyncio.gather(*callers)
+        await asyncio.gather(*list(nats_client._runs), return_exceptions=True)
+        return running
+
+    @staticmethod
+    def _blocking_callback(gate: asyncio.Event, started: list):
+        async def callback(event: CloudEvent, subject: str) -> None:
+            started.append(event.id)
+            await gate.wait()
+
+        return callback
+
+    async def test_runs_up_to_the_configured_number_at_once(
+        self, nats_client: NATSClient, mock_config: MagicMock, mock_nats_jetstream: tuple, cloud_event: CloudEvent
+    ) -> None:
+        gate, started = asyncio.Event(), []
+        handler = await _js_delivery_handler(
+            nats_client, mock_config, mock_nats_jetstream, self._blocking_callback(gate, started), nats_max_concurrent_runs=2
+        )
+        running = await self._started_while_blocked(handler, nats_client, cloud_event, 3, gate, started)
+        assert running == 2
+        assert len(started) == 3, "the third delivery runs once a slot is free"
+
+    async def test_one_at_a_time_when_not_configured(
+        self, nats_client: NATSClient, mock_config: MagicMock, mock_nats_jetstream: tuple, cloud_event: CloudEvent
+    ) -> None:
+        gate, started = asyncio.Event(), []
+        handler = await _js_delivery_handler(nats_client, mock_config, mock_nats_jetstream, self._blocking_callback(gate, started))
+        assert await self._started_while_blocked(handler, nats_client, cloud_event, 3, gate, started) == 1
+
+    async def test_the_slot_is_freed_and_the_run_counted_out(
+        self, nats_client: NATSClient, mock_config: MagicMock, mock_nats_jetstream: tuple, cloud_event: CloudEvent
+    ) -> None:
+        handler = await _js_delivery_handler(nats_client, mock_config, mock_nats_jetstream, AsyncMock(side_effect=RuntimeError("boom")))
+        await _until_settled(nats_client, handler)(_delivery(cloud_event))
+        assert nats_client.inflight_handlers == 0
+        assert nats_client._binding.slots_for("orders.created").locked() is False
+
+    async def test_unset_keeps_one_run_per_subscription(
+        self, nats_client: NATSClient, mock_config: MagicMock, mock_nats_jetstream: tuple, cloud_event: CloudEvent
+    ) -> None:
+        """Before the key existed each subscription ran one delivery at a time, independently of the others."""
+        assert await self._two_topics_at_once(nats_client, mock_config, mock_nats_jetstream, cloud_event) == 2
+
+    async def test_set_the_subscriptions_share_the_runs(
+        self, nats_client: NATSClient, mock_config: MagicMock, mock_nats_jetstream: tuple, cloud_event: CloudEvent
+    ) -> None:
+        assert await self._two_topics_at_once(nats_client, mock_config, mock_nats_jetstream, cloud_event, nats_max_concurrent_runs=1) == 1
+
+    async def _two_topics_at_once(self, nats_client, mock_config, mock_nats_jetstream, cloud_event, **overrides) -> int:
+        gate, started = asyncio.Event(), []
+        callback = self._blocking_callback(gate, started)
+        await _prepare_js_client(nats_client, mock_config, mock_nats_jetstream, ["orders.created", "orders.cancelled"], **overrides)
+        mock_nc, _ = mock_nats_jetstream
+        handlers = []
+        for topic in ("orders.created", "orders.cancelled"):
+            await nats_client._subscribe_one(topic, callback)
+            handlers.append(mock_nc.jetstream().subscribe_bind.await_args.kwargs["cb"])
+        callers = [asyncio.create_task(handler(_delivery(cloud_event))) for handler in handlers]
+        for _ in range(20):
+            await asyncio.sleep(0)
+        running = len(started)
+        gate.set()
+        await asyncio.gather(*callers)
+        await asyncio.gather(*list(nats_client._runs), return_exceptions=True)
+        return running
+
+    @pytest.mark.parametrize("value", [0, -1])
+    async def test_fewer_than_one_run_is_refused(
+        self, nats_client: NATSClient, mock_config: MagicMock, mock_nats_jetstream: tuple, value: int
+    ) -> None:
+        with pytest.raises(ValueError, match="nats_max_concurrent_runs"):
+            await _prepare_js_client(nats_client, mock_config, mock_nats_jetstream, ["orders.created"], nats_max_concurrent_runs=value)
+
+
+class TestHeartbeat:
+    """A running JetStream delivery reports in_progress every third of the consumer's ack_wait."""
+
+    async def test_a_long_run_reports_progress_and_stops_before_settling(
+        self, nats_client: NATSClient, mock_config: MagicMock, mock_nats_jetstream: tuple, cloud_event: CloudEvent
+    ) -> None:
+        async def slow(event: CloudEvent, subject: str) -> None:
+            await asyncio.sleep(0.1)
+
+        handler = await _js_delivery_handler(nats_client, mock_config, mock_nats_jetstream, slow, nats_ack_wait=0.03)
+        msg = _delivery(cloud_event)
+        order = MagicMock()
+        order.attach_mock(msg.in_progress, "in_progress")
+        order.attach_mock(msg.ack, "ack")
+        await _until_settled(nats_client, handler)(msg)
+
+        calls = [name for name, _, _ in order.mock_calls]
+        assert calls.count("in_progress") >= 2
+        assert calls[-1] == "ack", "no heartbeat after the delivery is settled"
+
+    async def test_a_short_run_sends_none(
+        self, nats_client: NATSClient, mock_config: MagicMock, mock_nats_jetstream: tuple, cloud_event: CloudEvent
+    ) -> None:
+        handler = await _js_delivery_handler(nats_client, mock_config, mock_nats_jetstream, AsyncMock(), nats_ack_wait=30.0)
+        msg = _delivery(cloud_event)
+        await _until_settled(nats_client, handler)(msg)
+        msg.in_progress.assert_not_awaited()
+
+    async def test_it_can_be_switched_off(
+        self, nats_client: NATSClient, mock_config: MagicMock, mock_nats_jetstream: tuple, cloud_event: CloudEvent
+    ) -> None:
+        async def slow(event: CloudEvent, subject: str) -> None:
+            await asyncio.sleep(0.1)
+
+        handler = await _js_delivery_handler(
+            nats_client, mock_config, mock_nats_jetstream, slow, nats_ack_wait=0.03, nats_heartbeat_enabled=False
+        )
+        msg = _delivery(cloud_event)
+        await _until_settled(nats_client, handler)(msg)
+        msg.in_progress.assert_not_awaited()
+        msg.ack.assert_awaited_once()
+
+    async def test_a_string_is_not_a_switch(self, nats_client: NATSClient, mock_config: MagicMock, mock_nats_jetstream: tuple) -> None:
+        """'false' as a string would read as true and keep the heartbeat the operator meant to switch off."""
+        with pytest.raises(ValueError, match="nats_heartbeat_enabled"):
+            await _prepare_js_client(nats_client, mock_config, mock_nats_jetstream, ["orders.created"], nats_heartbeat_enabled="false")

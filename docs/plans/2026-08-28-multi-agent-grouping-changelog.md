@@ -8213,6 +8213,45 @@ Not changed: spec sec. 5.2 still lists 300 s / 16 as the defaults of `nats_ack_w
 assumes running handlers are bounded by `nats_max_ack_pending`, while they were bounded by one per
 subscription and now by `nats_max_concurrent_runs`. Both are for the spec owner.
 
+### Links and bindings inside `NATSClient`; one run per subscription restored (named connections, step 1)
+
+Step 1 of `docs/plans/2026-10-14-named-connections.md`: the client's per-connection state moves into
+two objects, so later steps can give an agent several connections without reshaping the delivery
+path. No behaviour change, with one deliberate addition and one correction.
+
+- `_Link` (module-private dataclass): the broker connection -- URL, connect options, connection
+  name, `nats.Client`, JetStream context, JetStream mismatch. `_Binding`: what one agent consumes
+  over one link -- topic callbacks, durables, consumer tuning, subscriptions, readiness flag, run
+  slots, running tasks, per-topic `ack_wait`, in-flight count and idle event, with `enter_run()` /
+  `exit_run()` / `slots_for(topic)`. The client holds one of each, `_link` and `_binding`.
+- The delivery path takes the binding the message arrived on: `_subscribe_one(..., binding=None)`
+  captures it in `message_handler`; `_run_delivery`, `_start_heartbeat`, `_run_finished`, `_settle`,
+  `_deliveries_exhausted`, `_dead_letter`, `_drain_subscriptions` and `_await_inflight` act on it
+  (default: the client's own). A dead letter is published on the binding's own link.
+- Transitional: the client's former private names (`_nats_client`, `_subscriptions`, `_tuning`,
+  ...) are properties over the default link and binding, because 237 unit-test lines reach them by
+  name. They go when the tests address links and bindings directly (plan step 3).
+- **Addition:** `nats_heartbeat_enabled` (bool, default `true`, `_resolve_heartbeat_enabled`);
+  `_start_heartbeat` returns `None` when it is off. A non-boolean is refused: `"false"` as a string
+  would read as true.
+- **Correction of the previous entry:** `19c4c48` gave an agent one semaphore across all of its
+  subscriptions, default 1 -- so an agent with two subscriptions, which ran one delivery per
+  subscription at once before, ran one in total. Measured: two topics, 3 events each, 6.0 s before,
+  12.1 s after `19c4c48`, 6.0 s now. Unset, `nats_max_concurrent_runs` now keeps one slot per
+  subscription (`_Binding.subscription_slots`); set, the subscriptions share K (`run_slots`).
+
+Tests: `TestConcurrentRuns` (K at once, one at a time unset, one per subscription unset, shared when
+set, slot freed after a failure, values below 1 refused) and `TestHeartbeat` (progress reported and
+stopped before the ack, none for a short run, switched off, a string refused) -- the concurrency and
+heartbeat of `19c4c48` had no unit test of their own. Docs: the key rows, event processing,
+deployment guide; `CHANGELOG.md`.
+
+Acceptance against `nats:2.10-alpine` in WSL, same probe as `19c4c48`: one topic 5 events 10.1 s,
+two tenants on one subscription 12.1 s, two topics 6.0 s / 2 at once, two agents 6.0 s / 2 at once,
+`nats_max_concurrent_runs = 4` 4.0 s / 4 at once, a 7 s run under a 3 s `ack_wait` once. Integration
+suite: 41 passed, 2 failed -- `test_the_broker_counts_it_as_a_redelivery` and
+`test_two_processes_share_cache`, both failing identically without these changes (control run).
+
 ---
 
 ## Open points

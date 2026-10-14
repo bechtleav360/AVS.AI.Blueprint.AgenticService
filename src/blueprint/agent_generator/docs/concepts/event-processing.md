@@ -300,7 +300,8 @@ unset, each is the server's default:
   heartbeat.
 
 **How many deliveries run at once.** Each delivery runs as its own task, up to
-`nats_max_concurrent_runs` per agent and process (default `1`: one at a time). The subscription
+`nats_max_concurrent_runs` per agent and process, shared by its subscriptions (unset: one at a time
+per subscription, as before the key existed). The subscription
 waits for a free slot before it takes the next message, so a full agent stops taking work rather
 than starting more. Order within a subject is not kept beyond one run at a time.
 
@@ -308,7 +309,7 @@ than starting more. Order within a subject is not kept beyond one run at a time.
 `in_progress` every third of the consumer's `ack_wait` -- the value the broker has, not
 `nats_ack_wait`, since an existing consumer keeps its own. A run longer than `ack_wait` is
 therefore not redelivered while it still runs. A message still waiting for a slot gets no
-heartbeat.
+heartbeat. `nats_heartbeat_enabled = false` switches the heartbeat off for an agent.
 
 An existing consumer is never rewritten. Its filter subject and deliver group are broker-side
 state that the stream's redelivery bookkeeping hangs off, so changing them is a migration: the

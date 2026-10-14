@@ -194,7 +194,9 @@ All taken on 2026-10-14; each entry starts with the decision, followed by the an
   - Both keys take an absolute number or a percentage of the current number of (agent, connection)
     pairs in the process (`"33%"`), recomputed when connections are added or removed. The owner's
     sizing: K up to about a third of the pairs.
-  - Defaults keep today's behaviour: K = 1 (so no further runs at all), pool unset (unlimited).
+  - Defaults keep today's behaviour: K unset = one run at a time *per subscription* (what every
+    agent did before; corrected in step 1 -- `19c4c48` had made it one per agent), pool unset
+    (unlimited). With K set, the subscriptions of a pair share its K runs.
   - Order of acquisition is fixed (the pair's slot, then the pool), so there is no deadlock; waiters
     are served first come, first served, so no pair starves.
   - Consequence to measure: guaranteed first runs are uncapped, so in the worst case every pair
