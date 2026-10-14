@@ -2463,3 +2463,52 @@ class TestHeartbeat:
         """'false' as a string would read as true and keep the heartbeat the operator meant to switch off."""
         with pytest.raises(ValueError, match="nats_heartbeat_enabled"):
             await _prepare_js_client(nats_client, mock_config, mock_nats_jetstream, ["orders.created"], nats_heartbeat_enabled="false")
+
+
+class TestAClosedConnectionComesBack:
+    """Review finding #10: after its reconnect attempts the client closed for good and never resubscribed."""
+
+    async def test_reconnect_attempts_are_unlimited_by_default(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        base = mock_config.get.side_effect
+        mock_config.get.side_effect = lambda key, default=None: default if key == "nats_max_reconnect_attempts" else base(key, default)
+        with patch("blueprint.agents.clients.io.nats_client.nats.connect", new_callable=AsyncMock) as mock_connect:
+            await nats_client.connect()
+        assert mock_connect.await_args.kwargs["max_reconnect_attempts"] == -1
+        assert mock_connect.await_args.kwargs["closed_cb"] == nats_client._on_closed
+
+    async def test_a_closed_connection_restarts_the_retry_loop(self, nats_client: NATSClient) -> None:
+        nats_client._subscriptions_managed = True
+        nats_client._subscriptions_ready = True
+        with patch.object(nats_client, "_start_retry_task") as start:
+            await nats_client._on_closed()
+        start.assert_called_once()
+        assert nats_client.subscriptions_ready is False
+
+    async def test_a_paused_agent_is_reconnected_too(self, nats_client: NATSClient) -> None:
+        """Resume needs a healthy, connected client; the loop connects and subscribes nothing while paused."""
+        nats_client._subscriptions_managed = True
+        nats_client._consumption_paused = True
+        with patch.object(nats_client, "_start_retry_task") as start:
+            await nats_client._on_closed()
+            await nats_client.connect()
+        assert start.call_count == 2
+
+    @pytest.mark.parametrize("state", ["closing", "unmanaged"])
+    async def test_not_restarted_when_it_should_not_consume(self, nats_client: NATSClient, state: str) -> None:
+        nats_client._subscriptions_managed = state != "unmanaged"
+        nats_client._closing = state == "closing"
+        nats_client._consumption_paused = state == "paused"
+        with patch.object(nats_client, "_start_retry_task") as start:
+            await nats_client._on_closed()
+        start.assert_not_called()
+
+    async def test_the_health_check_never_opens_a_connection_that_subscribes_to_nothing(self, nats_client: NATSClient) -> None:
+        """Once subscriptions are managed, connect() from outside only makes sure the retry loop runs."""
+        nats_client._subscriptions_managed = True
+        with (
+            patch("blueprint.agents.clients.io.nats_client.nats.connect", new_callable=AsyncMock) as mock_connect,
+            patch.object(nats_client, "_start_retry_task") as start,
+        ):
+            await nats_client.connect()
+        mock_connect.assert_not_awaited()
+        start.assert_called_once()

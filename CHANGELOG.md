@@ -3,6 +3,10 @@
 
 ### Fixed
 
+- **A NATS connection that gave up reconnecting comes back, with its subscriptions.**
+  `nats_max_reconnect_attempts` now defaults to unlimited (was 5, about 10 s of outage), and a
+  connection that closes anyway restarts the client's retry loop, which connects and resubscribes;
+  a health check no longer opens a bare connection that subscribes to nothing.
 - **NATS deliveries are no longer handled strictly one at a time.** nats-py gives each subscription
   one task that awaits its callback, and the callback ran the whole handler -- so an agent handled
   one event per subscription and process at a time, however much of the run was spent waiting on a

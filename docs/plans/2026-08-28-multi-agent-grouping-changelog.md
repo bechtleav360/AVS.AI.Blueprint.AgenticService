@@ -8422,6 +8422,22 @@ deploy/agents.toml`): valid, no finding in any agent; control -- a copy of `busi
 injected `except asyncio.CancelledError: return None` -- reported with file and line, validation
 passing with the warning.
 
+### A closed NATS connection comes back with its subscriptions (named connections, step 4a; review finding #10)
+
+- `connect()`: `nats_max_reconnect_attempts` defaults to `-1`; `closed_cb=_on_closed`. Once
+  subscriptions are managed, a `connect()` from outside the retry loop (the health checker polls it)
+  only starts the loop, which connects and subscribes -- or, while the agent is paused, connects and
+  subscribes nothing until `resume_consumption`. `_on_closed` restarts the loop unless we closed it
+  ourselves (`_closing`, set in `close()`).
+- Tests: `TestAClosedConnectionComesBack` (7).
+- Measured in WSL, JetStream, broker stopped for 45/60/75 s, control on the code before: both recover;
+  the code before only because the health checker reconnected bare and pause/resume (C4) resubscribed.
+  A first version of this change refused that bare connect also while paused and so never recovered
+  (caught by the control run, fixed). Time from broker start to the first event handled is bounded by
+  the next health poll in both versions (C4 resumes only on a healthy poll): 3.0-14.2 s before,
+  14.2-29.3 s after, by phase of the 30 s poll. **Open:** resume on reconnect without waiting for the
+  next poll would cut up to one `health_check_interval_seconds` from every recovery.
+
 ---
 
 ## Open points

@@ -303,6 +303,7 @@ class NATSClient(IOClientBase):
         self._link = _Link()
         self._binding = _Binding(link=self._link)
         self._started = False
+        self._closing = False
         self._fatal_handler: FatalHandler | None = None
         self._fatal_reported = False
         self._use_jetstream: bool = False
@@ -1225,8 +1226,18 @@ class NATSClient(IOClientBase):
         return self._nats_client is not None and not self._nats_client.is_closed and self._nats_client.is_connected
 
     async def connect(self) -> None:
-        """Connect to the NATS server, registering disconnect/reconnect callbacks."""
+        """Connect to the NATS server, registering disconnect/reconnect callbacks.
+
+        Once ``subscribe()`` has registered the agent's subscriptions, the retry loop owns the
+        connection: a call from anywhere else -- the health checker polls this -- only makes sure
+        the loop runs. The loop connects and subscribes; while the agent is paused it connects and
+        subscribes nothing, and ``resume_consumption`` subscribes once the agent is healthy again --
+        which needs the connection, so a paused agent is connected too.
+        """
         if self._nats_client is not None and not self._nats_client.is_closed:
+            return
+        if self._subscriptions_managed and not self._closing and asyncio.current_task() is not self._retry_task:
+            self._start_retry_task()
             return
 
         if not self._nats_url:
@@ -1238,11 +1249,14 @@ class NATSClient(IOClientBase):
             self._nats_client = await nats.connect(
                 self._nats_url,
                 name=self._connection_name or None,
-                max_reconnect_attempts=self.config.get("nats_max_reconnect_attempts", 5),
+                # Unlimited by default: with 5 attempts 2 s apart, an outage of about 10 s closed the
+                # connection for good (review finding #10). _on_closed restarts it either way.
+                max_reconnect_attempts=self.config.get("nats_max_reconnect_attempts", -1),
                 reconnect_time_wait=self.config.get("nats_reconnect_time_wait", 2),
                 connect_timeout=10,
                 disconnected_cb=self._on_disconnected,
                 reconnected_cb=self._on_reconnected,
+                closed_cb=self._on_closed,
                 **self._connect_options,
             )
             self._client = self._nats_client
@@ -1395,6 +1409,7 @@ class NATSClient(IOClientBase):
         sequence, so shutdown stays inside a pod's termination grace period.
         """
         self._subscriptions_ready = False
+        self._closing = True
 
         if self._retry_task and not self._retry_task.done():
             self._retry_task.cancel()
@@ -2330,6 +2345,23 @@ class NATSClient(IOClientBase):
     async def _on_disconnected(self) -> None:
         self._subscriptions_ready = False
         logger.warning("NATSClient disconnected")
+
+    async def _on_closed(self) -> None:
+        """The client gave up reconnecting: connect again and resubscribe, in the retry loop.
+
+        Only with a finite ``nats_max_reconnect_attempts``, or a closed connection we did not close
+        ourselves. Our own ``close()`` is not reconnected.
+        """
+        if self._closing or not self._subscriptions_managed:
+            return
+        self._subscriptions_ready = False
+        self._subscriptions.clear()
+        logger.error(
+            "Agent '%s': the NATS connection closed after its reconnect attempts; connecting again and resubscribing",
+            self.namespace or ROOT_LABEL,
+        )
+        # Paused or not: the loop connects either way and subscribes only an agent that is not paused.
+        self._start_retry_task()
 
     async def _on_reconnected(self) -> None:
         logger.info("NATSClient reconnected")
