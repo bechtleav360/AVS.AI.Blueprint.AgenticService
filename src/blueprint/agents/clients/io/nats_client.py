@@ -30,6 +30,7 @@ from ...models.errors import DeliveryDisposition, disposition_for
 from ...models.events import CloudEvent
 from ..client_base import DeliveryCallback
 from .io_client_base import IOClientBase, subject_is_covered_by, validate_publish_subject, validate_subject_segment
+from .nats_connections import JetStreamBinding
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,13 @@ In a container ``localhost`` is almost always wrong -- a broker in the same pod 
 it can say so -- and a client pointed at it retries forever while the pod looks healthy. So outside
 ``app_environment = "development"`` an unset ``nats_url`` fails startup instead of reaching for this.
 """
+
+
+class JetStreamBindingError(RuntimeError):
+    """A binding-mode binding cannot be bound as the deployment describes it (e.g. its stream is missing).
+
+    Raised into the connection's retry loop, which retries it: provisioning may create the stream later.
+    """
 
 
 class JetStreamUnavailableError(RuntimeError):
@@ -141,6 +149,9 @@ class _Binding:
     """
 
     link: _Link
+    jetstream: JetStreamBinding | None = None
+    """Set: *binding mode* -- bind to the deployment's consumer with its wire values verbatim,
+    never provision (plan N3, N4). Unset: the agent's own consumers, derived as before."""
     topic_callbacks: dict[str, DeliveryCallback] = field(default_factory=dict)
     durables: dict[str, str] = field(default_factory=dict)
     tuning: ConsumerTuning | None = None
@@ -1368,17 +1379,25 @@ class NATSClient(IOClientBase):
             return
         await self._subscribe_all()
 
-    async def _subscribe_all(self) -> None:
-        """Provision the stream once, then subscribe every topic.
+    async def _subscribe_all(self, binding: _Binding | None = None) -> None:
+        """Provision the stream once, then subscribe every topic -- or, in binding mode, bind.
 
         Shared by first connect and by reconnect, so a stream that was recreated while the
         client was away -- or a failover to a cluster peer that never had it -- is restored
-        before any consumer tries to bind to it.
+        before any consumer tries to bind to it. A binding-mode binding provisions nothing.
         """
+        binding = binding or self._binding
+        if binding.jetstream is not None:
+            await self._bind(binding)
+            return
         if self._use_jetstream:
             await self._provision_stream()
-        for topic, callback in self._topic_callbacks.items():
-            await self._subscribe_one(topic, callback)
+        for topic, callback in binding.topic_callbacks.items():
+            await self._subscribe_one(topic, callback, binding)
+
+    def _settles(self, binding: _Binding) -> bool:
+        """Whether deliveries on ``binding`` are JetStream deliveries that can be settled."""
+        return binding.jetstream is not None or self._use_jetstream
 
     # ------------------------------------------------------------------
     # Internal -- JetStream stream and consumer
@@ -1554,17 +1573,7 @@ class NATSClient(IOClientBase):
     async def _subscribe_one(self, topic: str, callback: DeliveryCallback, binding: _Binding | None = None) -> None:
         binding = binding or self._binding
         client = await self.client
-
-        async def message_handler(msg: Any) -> None:
-            # Runs on the subscription's one nats-py task. It waits for a run slot of the binding the
-            # message arrived on -- the back-pressure -- and returns as soon as the run is started, so
-            # the task can take the next message while this one is still running.
-            slots = binding.slots_for(topic)
-            await slots.acquire()
-            binding.enter_run()
-            run = asyncio.create_task(self._run_delivery(msg, topic, callback, binding), name=f"nats-run-{self.namespace or ROOT_LABEL}")
-            binding.runs.add(run)
-            run.add_done_callback(functools.partial(self._run_finished, binding, slots))
+        message_handler = self._message_handler(binding, topic, topic, callback)
 
         try:
             if self._use_jetstream and client.jetstream():
@@ -1609,6 +1618,124 @@ class NATSClient(IOClientBase):
             raise
 
     # ------------------------------------------------------------------
+    # Internal -- binding mode (named-connections plan, step 2)
+    # ------------------------------------------------------------------
+
+    async def _bind(self, binding: _Binding) -> None:
+        """Consume through the deployment's consumer, exactly as its binding describes it.
+
+        One consumer carries every subject the binding serves, delivered to its deliver subject
+        in its deliver group. The subscription is a plain one on that subject: the messages are
+        JetStream deliveries all the same (their reply subject is the ``$JS.ACK`` one), so they
+        are settled and heartbeated as usual, and no JetStream API request is needed to receive
+        them. With ``manage_consumer`` unset the client sends none at all -- the account may
+        only be allowed to receive and acknowledge.
+
+        Raises:
+            JetStreamBindingError: the binding manages its consumer and its stream does not
+                exist. The stream belongs to whoever provisions the deployment; it is never
+                created here.
+        """
+        spec = binding.jetstream
+        if spec is None:
+            raise RuntimeError("_bind needs a binding-mode binding")
+        client = binding.link.nats_client
+        if client is None:
+            raise RuntimeError("binding mode needs a connected link")
+        if spec.manage_consumer:
+            await self._ensure_bound_consumer(client, spec)
+        for topic in spec.subjects:
+            binding.ack_waits[topic] = spec.ack_wait
+        handler = self._message_handler(binding, spec.deliver_subject, None)
+        sub = await client.subscribe(spec.deliver_subject, queue=spec.deliver_group, cb=handler)
+        binding.subscriptions.append(sub)
+        logger.info(
+            "Agent '%s' bound to consumer '%s' on stream '%s' (deliver subject '%s', group '%s', subjects %s)",
+            self.namespace or ROOT_LABEL,
+            spec.durable,
+            spec.stream,
+            spec.deliver_subject,
+            spec.deliver_group,
+            ", ".join(spec.filter_subjects),
+        )
+
+    async def _ensure_bound_consumer(self, client: NatsClient, spec: JetStreamBinding) -> None:
+        """Create or update a binding's consumer; recreate it when the broker refuses the update.
+
+        Unlike the agent's own consumers, which are never rewritten, a managed binding's consumer
+        follows its binding: the deployment that owns the values changed them. A consumer whose
+        immutable fields differ cannot be updated in place, so it is deleted and created again --
+        and its unacknowledged messages are lost with it, which is why that is a WARNING.
+        """
+        jsm = client.jsm()
+        try:
+            await jsm.stream_info(spec.stream)
+        except NotFoundError:
+            raise JetStreamBindingError(
+                f"Agent '{self.namespace or ROOT_LABEL}': stream '{spec.stream}' of consumer '{spec.durable}' does not "
+                "exist. It is provisioned by the deployment, never by the framework."
+            ) from None
+        config = spec.consumer_config()
+        try:
+            await jsm.add_consumer(spec.stream, config=config)
+        except APIError as exc:
+            logger.warning(
+                "Agent '%s': consumer '%s' on stream '%s' cannot be updated (%s); recreating it -- its unacknowledged "
+                "messages are lost with it",
+                self.namespace or ROOT_LABEL,
+                spec.durable,
+                spec.stream,
+                exc.description or exc,
+            )
+            with contextlib.suppress(NotFoundError):
+                await jsm.delete_consumer(spec.stream, spec.durable)
+            await jsm.add_consumer(spec.stream, config=config)
+
+    def _message_handler(
+        self, binding: _Binding, slot_key: str, topic: str | None, callback: DeliveryCallback | None = None
+    ) -> Callable[[Any], Awaitable[None]]:
+        """The callback a subscription on ``binding`` delivers to.
+
+        It runs on the subscription's one nats-py task: it waits for a run slot -- the
+        back-pressure -- and returns as soon as the run is started, so the task can take the next
+        message while this one is still running. ``topic`` is the declared subject of a
+        per-topic subscription; ``None`` means one subscription for the whole binding, where the
+        topic is found per message from its subject.
+        """
+
+        async def message_handler(msg: Any) -> None:
+            resolved = topic if topic is not None else self._bound_topic(binding, msg)
+            if resolved is None:
+                await self._settle(msg, DeliveryDisposition.TERM, msg.subject, None, binding)
+                return
+            slots = binding.slots_for(slot_key)
+            await slots.acquire()
+            binding.enter_run()
+            dispatch = callback if callback is not None else binding.topic_callbacks[resolved]
+            run = asyncio.create_task(self._run_delivery(msg, resolved, dispatch, binding), name=f"nats-run-{self.namespace or ROOT_LABEL}")
+            binding.runs.add(run)
+            run.add_done_callback(functools.partial(self._run_finished, binding, slots))
+
+        return message_handler
+
+    def _bound_topic(self, binding: _Binding, msg: Any) -> str | None:
+        """The declared subject a binding-mode delivery belongs to, or ``None`` (logged) if none covers it."""
+        spec = binding.jetstream
+        if spec is None:
+            return None
+        topic = spec.topic_for(spec.local_subject(msg.subject))
+        if topic is not None and topic in binding.topic_callbacks:
+            return topic
+        logger.error(
+            "Agent '%s': delivery on '%s' from consumer '%s' matches none of its subjects %s; terminating it",
+            self.namespace or ROOT_LABEL,
+            msg.subject,
+            spec.durable,
+            ", ".join(spec.subjects),
+        )
+        return None
+
+    # ------------------------------------------------------------------
     # Internal -- one run
     # ------------------------------------------------------------------
 
@@ -1628,7 +1755,8 @@ class NATSClient(IOClientBase):
         heartbeat = self._start_heartbeat(msg, topic, binding)
         disposition = DeliveryDisposition.ACK
         try:
-            await callback(cloud_event, msg.subject)
+            subject = binding.jetstream.local_subject(msg.subject) if binding.jetstream is not None else msg.subject
+            await callback(cloud_event, subject)
         except Exception as ex:
             disposition = disposition_for(ex)
             logger.error(
@@ -1664,7 +1792,7 @@ class NATSClient(IOClientBase):
     def _start_heartbeat(self, msg: Any, topic: str, binding: _Binding) -> asyncio.Task[None] | None:
         """Start reporting ``in_progress`` for a JetStream delivery; ``None`` on Core NATS or when switched off."""
         ack_wait = binding.ack_waits.get(topic)
-        if not self._heartbeat_enabled or not self._use_jetstream or ack_wait is None:
+        if not self._heartbeat_enabled or not self._settles(binding) or ack_wait is None:
             return None
         heartbeat = asyncio.create_task(self._keep_alive(msg, ack_wait / 3), name=f"nats-heartbeat-{self.namespace or ROOT_LABEL}")
         heartbeat.add_done_callback(self._heartbeat_finished)
@@ -1721,10 +1849,10 @@ class NATSClient(IOClientBase):
         keeps the payload, on the dead-letter subject, and releases the consumer's pending
         slot immediately instead of one more ``ack_wait`` later.
         """
-        if not self._use_jetstream:
+        binding = binding or self._binding
+        if not self._settles(binding):
             return
 
-        binding = binding or self._binding
         try:
             if disposition is DeliveryDisposition.ACK:
                 await msg.ack()
@@ -1751,8 +1879,11 @@ class NATSClient(IOClientBase):
         as not exhausted, so an unreadable header can only cost a retry, never a payload.
         """
         # Not configured means the server's default, which is unlimited.
-        tuning = (binding or self._binding).tuning
-        max_deliver = tuning.max_deliver if tuning else None
+        binding = binding or self._binding
+        if binding.jetstream is not None:
+            max_deliver = binding.jetstream.max_deliver
+        else:
+            max_deliver = binding.tuning.max_deliver if binding.tuning else None
         if max_deliver is None or max_deliver < 0:
             return False
         delivered = self._delivery_count(msg)
@@ -1779,7 +1910,10 @@ class NATSClient(IOClientBase):
         body a dead-letter consumer will try to read.
         """
         binding = binding or self._binding
-        subject = binding.tuning.dead_letter_subject if binding.tuning else ""
+        if binding.jetstream is not None:
+            subject = binding.jetstream.dead_letter_subject or ""
+        else:
+            subject = binding.tuning.dead_letter_subject if binding.tuning else ""
         delivered = self._delivery_count(msg)
         reason = "deliveries-exhausted" if disposition is DeliveryDisposition.NAK else "terminal-failure"
 

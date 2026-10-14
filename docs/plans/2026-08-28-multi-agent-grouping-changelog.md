@@ -8252,6 +8252,51 @@ two tenants on one subscription 12.1 s, two topics 6.0 s / 2 at once, two agents
 suite: 41 passed, 2 failed -- `test_the_broker_counts_it_as_a_redelivery` and
 `test_two_processes_share_cache`, both failing identically without these changes (control run).
 
+### Binding mode: consuming through a consumer the deployment defines (named connections, step 2)
+
+Step 2 of `docs/plans/2026-10-14-named-connections.md`. Not reachable from configuration yet -- the
+connection source that creates such bindings is step 3.
+
+- New module `clients/io/nats_connections.py`, `JetStreamBinding` (frozen dataclass): the declared
+  subjects a connection serves, `subject_prefix`, stream, durable, deliver subject, deliver group,
+  the contract values `ack_wait` and `max_deliver`, optional `max_ack_pending`, `deliver_policy`,
+  `manage_consumer`, optional `dead_letter_subject`. `filter_subjects` = prefix + declared subject;
+  `consumer_config()` builds the consumer from those values verbatim; `local_subject()` strips the
+  prefix; `topic_for()` finds the declared subject covering a delivery.
+- `_Binding.jetstream`: set, `_subscribe_all` calls `_bind` instead of provisioning a stream and
+  subscribing per topic. `_bind` makes **one plain subscription** on the deliver subject in the
+  deliver group -- as the first consumer's own pool does -- so receiving needs no JetStream
+  API request; with `manage_consumer` unset it sends none at all. With it set,
+  `_ensure_bound_consumer` checks the stream exists (missing: `JetStreamBindingError`, never created)
+  and creates or updates the consumer, deleting and recreating it when the broker refuses the
+  update (WARNING: its unacknowledged messages are lost) -- the deployment's behaviour today, and
+  unlike the agent's own consumers, which are never rewritten.
+- `_message_handler(binding, slot_key, topic, callback)` replaces the closure in `_subscribe_one`
+  and serves both modes; in binding mode the topic is found per delivery (`_bound_topic`), and a
+  delivery no declared subject covers is termed without running. `_run_delivery` hands the handler
+  the subject without the prefix (plan D10). `_settles(binding)` makes a binding-mode delivery
+  settle and heartbeat whatever `nats_use_jetstream` says; the heartbeat interval comes from the
+  binding's `ack_wait`, exhaustion from its `max_deliver`, the dead-letter subject from the binding
+  (none: term + log, plan D6), published on the binding's own link.
+
+Tests: `test_nats_binding_mode.py`, 15 cases (the binding's values, no JetStream request when
+unmanaged, create / recreate / missing stream when managed, prefix stripped, uncovered delivery
+termed, heartbeat interval, nak below and dead letter or term at exhaustion).
+
+Acceptance against `nats:2.10-alpine` in WSL with a **restricted account** -- the agent user may
+subscribe to its deliver subject and publish `$JS.ACK.>`, nothing else: an operator-made consumer
+was bound, three `t.<tenant>.risk.created` events reached the handler as `risk.created`, one
+`issue.created` was filtered out, all acked (ack pending 0, redelivered 0), the consumer's config
+unchanged, **0 permission violations** in the broker log. Control: a managed binding with the same
+user fails on `$JS.API.STREAM.INFO` with a publish violation, so the check is real. A consumer
+created by the binding (`manage_consumer`) and one created by the first consumer's own pool for the
+same tenant document are **identical** as the broker reports them. Unit suite 3391 passed;
+integration 41 passed, the same 2 failing as without the change.
+
+Open for step 3: reconnect handling exists for the default link only (`_on_reconnected`); a named
+link needs its own. A plain subscription is restored by nats-py on reconnect; whether the push
+consumer delivers again without a JetStream request is to be shown against a broker restart.
+
 ---
 
 ## Open points
