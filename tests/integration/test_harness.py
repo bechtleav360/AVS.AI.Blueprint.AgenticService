@@ -208,6 +208,8 @@ class TestAnApplicationOnTheRealBroker:
                 timeout=10,
                 description=f"the handler subscribed to '{recorder.topic}' to be called",
             )
-            assert client.inflight_handlers == 0
+            # A run is its own task and is counted out after it has settled, which is after the
+            # handler returned -- so wait for it rather than expect it at the handler's last line.
+            await wait_until(lambda: client.inflight_handlers == 0, timeout=5, description="the run to be counted out")
 
         assert [received.id for received in recorder.received] == [event.id]
