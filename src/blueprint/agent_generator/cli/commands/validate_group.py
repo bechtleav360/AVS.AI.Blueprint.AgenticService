@@ -23,6 +23,8 @@ from blueprint.agents.component.namespace import validate_namespace
 from blueprint.agents.config import PROCESS_SCOPE_KEYS
 from blueprint.agents.layout import check_agent_layout
 
+from ..utils.cancellation_check import swallowed_cancellation_warning, swallowed_cancellations
+
 AGENT_MAP_FILE = "agents.toml"
 AGENT_MAP_ENV = "BLUEPRINT_AGENT_MAP"
 
@@ -173,6 +175,10 @@ def _agent_findings(image_root: Path, name: str, entry: Any, claimed: dict[Path,
         warnings.append(f"Agent '{name}' has no 'src' directory at {declared_root}. An agent is the same shape alone or in a group.")
     elif (root / "src").resolve() != (image_root / "src").resolve():
         warnings.extend(_absolute_src_import_warnings(name, root))
+    if (root / "src").is_dir():
+        swallowed = swallowed_cancellations(root / "src")
+        if swallowed:
+            warnings.append(swallowed_cancellation_warning(name, swallowed))
 
     settings = root / "settings.toml"
     if settings.is_file():

@@ -12,6 +12,7 @@ from blueprint.agents.component.namespace import validate_namespace
 from blueprint.agents.config import PROCESS_SCOPE_KEYS
 
 from . import validate_group
+from ..utils.cancellation_check import swallowed_cancellation_warning, swallowed_cancellations
 from blueprint.agents.io.api.scheduling.scheduler import SCHEDULER_MODE_EVENT, SCHEDULER_MODE_IN_PROCESS, SCHEDULER_MODES
 
 logger = logging.getLogger(__name__)
@@ -144,6 +145,12 @@ def run(args: Namespace) -> None:
     notice = _idempotency_notice(project_dir)
     if notice:
         notices.append(notice)
+
+    # A swallowed cancellation defeats nats_handler_timeout: the run goes on and is nak'd anyway.
+    if src_dir.is_dir():
+        swallowed = swallowed_cancellations(src_dir)
+        if swallowed:
+            warnings.append(swallowed_cancellation_warning(project_dir.name, swallowed))
 
     # Group readiness: what this project must state before it can be hosted beside another
     # agent, and what would otherwise stay silent.

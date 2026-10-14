@@ -28,6 +28,12 @@ pod restart, a rolling deploy. Either make the method safe to repeat, or set **b
 whose id and source it has already dispatched, within that window. It is off by default on purpose -
 only you know whether replaying your side effects is acceptable.
 
+**Never swallow `asyncio.CancelledError`** in a handler or anything it calls. A run that exceeds
+`nats_handler_timeout` is cancelled; code that catches the cancellation (`except BaseException`, a
+bare `except:`, `except asyncio.CancelledError` without `raise`) keeps working past the limit and is
+nak'd and redelivered anyway, so its work may run twice. Catch `Exception` instead, or re-raise.
+`asbs validate` warns with file and line.
+
 ## Shape
 
 ```python

@@ -44,6 +44,13 @@ Delivery:
 
 - A notice when handlers exist and `idempotency_enabled` is not declared either way. Delivery is
   at-least-once, so the decision is the author's to make and the framework will not make it
+- A warning, with file and line, for code under `src/` that catches `asyncio.CancelledError` without
+  re-raising it: a bare `except:`, `except BaseException`, `except asyncio.CancelledError` (alone or
+  in a tuple) whose body raises nothing, or `contextlib.suppress(...)` naming one of them. When a run
+  exceeds `nats_handler_timeout` it is cancelled; code that swallows that keeps working past the
+  limit, holding its slot, and when it returns the delivery is nak'd and redelivered anyway -- what
+  it finished may run twice. `except Exception` does not catch a cancellation and is fine. Checked
+  for every agent with `--group` too.
 
 ## Example
 

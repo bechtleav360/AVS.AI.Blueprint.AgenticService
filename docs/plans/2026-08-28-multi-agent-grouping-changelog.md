@@ -8402,6 +8402,26 @@ three events ran in between, agent2@A 4 of 4 and tenant B 6 of 6 finished. Contr
 the hung run held agent1@A for the whole window -- its other three events never ran (ack pending
 4) -- while every other pair finished. 0 permission violations in both runs.
 
+### `asbs validate` warns about a swallowed cancellation
+
+Decided with the owner after step 3c: a handler that catches the cancellation and returns normally
+is nak'd (the limit was exceeded), and the validator says so before it happens.
+
+- New `agent_generator/cli/utils/cancellation_check.py`: `swallowed_cancellations(src_dir)` parses
+  every module under `src/` and reports `path:line` for an `except` that catches a cancellation --
+  bare, `BaseException`, `CancelledError` (by name or attribute, alone or in a tuple) -- whose body
+  contains no `raise` outside nested functions, and for `contextlib.suppress(...)` naming one of
+  them. `swallowed_cancellation_warning(agent, found)` words the consequence.
+- `validate.run` adds the warning for the project's `src/`; `validate_group._agent_findings` for every
+  agent root. A warning, not an issue: the agent still runs.
+
+Docs: `guides/cli/validate.md`, the `blueprint-events` skill (rule: never swallow
+`asyncio.CancelledError`; `asbs validate` warns), `CHANGELOG.md`. Tests:
+`test_validate_cancellation.py`, 15. Checked against the first consumer (`--group --agent-map
+deploy/agents.toml`): valid, no finding in any agent; control -- a copy of `business_case` with an
+injected `except asyncio.CancelledError: return None` -- reported with file and line, validation
+passing with the warning.
+
 ---
 
 ## Open points

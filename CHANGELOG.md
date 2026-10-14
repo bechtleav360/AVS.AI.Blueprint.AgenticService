@@ -164,6 +164,9 @@
 
 ### Added
 
+- **`asbs validate` warns about a swallowed `asyncio.CancelledError`** in an agent's `src/` (and for
+  every agent with `--group`), with file and line: such code keeps a run going past
+  `nats_handler_timeout`, and the delivery is nak'd and redelivered anyway.
 - **Named NATS connections (`nats_connection_source`).** A deployment can give its agents further NATS connections -- one account and one existing JetStream consumer each -- through a connection source named by a process-scope key. The framework binds to the deployment's consumers verbatim and never provisions on them, checks each delivery with the source's validation hook before it runs, runs it in an empty context inside the source's scope, and settles, heartbeats and dead-letters it on its own connection. Agents keep declaring their subjects as before and see them without the connection's prefix; `nats_connection` names the connection in the handler context. Unset, nothing changes.
 - **`nats_max_concurrent_runs`** (number or `"N%"`, unset by default): how many deliveries an (agent,
   connection) pair runs at once per process; unset keeps one run per subscription. The pair's first run
