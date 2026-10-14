@@ -32,6 +32,7 @@ from ...models.events import CloudEvent
 from ..client_base import DeliveryCallback
 from .io_client_base import IOClientBase, subject_is_covered_by, validate_publish_subject, validate_subject_segment
 from .nats_connections import ConnectionSource, JetStreamBinding, mark_connection
+from .nats_run_pool import PairRuns, Release, RunLimit, RunPool
 
 logger = logging.getLogger(__name__)
 
@@ -158,8 +159,9 @@ class _Binding:
     tuning: ConsumerTuning | None = None
     subscriptions: list[Any] = field(default_factory=list)
     subscriptions_ready: bool = False
-    run_slots: asyncio.Semaphore | None = None
-    """Shared by every subscription of the binding when ``nats_max_concurrent_runs`` is set."""
+    limit: RunLimit | None = None
+    """``nats_max_concurrent_runs`` when it is set: the pair's guaranteed run plus pool runs up to K."""
+    pair: PairRuns = field(default_factory=PairRuns)
     subscription_slots: dict[str, asyncio.Semaphore] = field(default_factory=dict)
     """One slot per subscription when it is not set -- one run at a time per subscription."""
     runs: set[asyncio.Task[None]] = field(default_factory=set)
@@ -172,9 +174,7 @@ class _Binding:
         self.idle.set()
 
     def slots_for(self, topic: str) -> asyncio.Semaphore:
-        """The slots a delivery on ``topic`` waits for: the binding's shared ones, else its subscription's own."""
-        if self.run_slots is not None:
-            return self.run_slots
+        """With ``nats_max_concurrent_runs`` unset: the one slot of the subscription on ``topic``, as before it existed."""
         return self.subscription_slots.setdefault(topic, asyncio.Semaphore(1))
 
     def enter_run(self) -> None:
@@ -308,7 +308,9 @@ class NATSClient(IOClientBase):
         self._queue_group: str = ""
         self._subscriptions_managed: bool = False
         self._retry_task: asyncio.Task[None] | None = None
-        self._max_concurrent_runs: int | None = None
+        self._max_concurrent_runs: RunLimit | None = None
+        self._pool = RunPool()
+        self._pairs_registered = 0
         self._heartbeat_enabled: bool = True
         self._source: ConnectionSource | None = None
         self._named: list[_Binding] = []
@@ -487,8 +489,9 @@ class NATSClient(IOClientBase):
         """
         self._queue_group = self._resolve_queue_group()
         self._max_concurrent_runs = self._resolve_max_concurrent_runs()
-        # Unset keeps one run per subscription (subscription_slots); set, the subscriptions share K.
-        self._binding.run_slots = asyncio.Semaphore(self._max_concurrent_runs) if self._max_concurrent_runs else None
+        # Unset keeps one run per subscription (subscription_slots); set, the pair's guaranteed run
+        # plus pool runs up to K (plan D7).
+        self._binding.limit = self._max_concurrent_runs
         self._heartbeat_enabled = self._resolve_heartbeat_enabled()
         # What a named connection serves leaves the default connection (plan D10).
         default_topics = self._plan_named_bindings(topic_callbacks)
@@ -498,6 +501,7 @@ class NATSClient(IOClientBase):
             self._tuning = self._resolve_consumer_tuning(list(default_topics))
         self._subscriptions_managed = True
         self._subscriptions_ready = False
+        self._register_pairs((1 if default_topics else 0) + len(self._named))
         if self._consumption_paused:
             logger.info(
                 "Agent '%s' is degraded, so its %d subscription(s) are registered but not started",
@@ -507,6 +511,18 @@ class NATSClient(IOClientBase):
             return
         self._start_retry_task()
         self._start_named_links()
+
+    def set_run_pool(self, pool: RunPool) -> None:
+        """Install the process's pool of runs beyond each pair's guaranteed one, before ``subscribe()`` (plan D7)."""
+        self._pool = pool
+
+    def _register_pairs(self, wanted: int) -> None:
+        """Hold ``wanted`` of this agent's (agent, connection) pairs in the pool; percentages are taken of the total."""
+        for _ in range(wanted - self._pairs_registered):
+            self._pool.add_pair()
+        for _ in range(self._pairs_registered - wanted):
+            self._pool.remove_pair()
+        self._pairs_registered = wanted
 
     def set_connection_source(self, source: ConnectionSource | None) -> None:
         """Install the process's connection source, before ``subscribe()``; ``None`` keeps one connection (N6)."""
@@ -542,7 +558,7 @@ class NATSClient(IOClientBase):
                 jetstream=jetstream,
                 topic_callbacks={subject: topic_callbacks[subject] for subject in jetstream.subjects},
             )
-            binding.run_slots = asyncio.Semaphore(self._max_concurrent_runs) if self._max_concurrent_runs else None
+            binding.limit = self._max_concurrent_runs
             self._named.append(binding)
             served.update(jetstream.subjects)
         if self._named:
@@ -970,14 +986,13 @@ class NATSClient(IOClientBase):
             return None
         return self._read_float(key, 0.0)
 
-    def _resolve_max_concurrent_runs(self) -> int | None:
-        """Return ``nats_max_concurrent_runs``: at least 1, or ``None`` when it is not configured."""
-        value = self._read_optional_int("nats_max_concurrent_runs")
-        if value is None:
-            return None
-        if value < 1:
-            raise ValueError(f"'nats_max_concurrent_runs' must be at least 1, got {value}. It is how many deliveries run at once.")
-        return value
+    def _resolve_max_concurrent_runs(self) -> RunLimit | None:
+        """Return ``nats_max_concurrent_runs`` -- a number of at least 1 or ``"N%"`` of the process's pairs -- or ``None``.
+
+        Raises:
+            ValueError: anything else, or a number below 1. It is how many deliveries a pair runs at once.
+        """
+        return RunLimit.parse("nats_max_concurrent_runs", self.config.get("nats_max_concurrent_runs", None), minimum=1)
 
     def _resolve_heartbeat_enabled(self) -> bool:
         """Return ``nats_heartbeat_enabled``: whether running JetStream deliveries report ``in_progress``.
@@ -1368,6 +1383,7 @@ class NATSClient(IOClientBase):
                     await task
         self._named_tasks.clear()
 
+        self._register_pairs(0)
         # One budget for every connection: stop all deliveries, then wait for every run, then close.
         timeout = float(self.config.get("event_client_drain_timeout", 30.0))
         deadline = asyncio.get_running_loop().time() + timeout
@@ -1903,8 +1919,7 @@ class NATSClient(IOClientBase):
             if resolved is None:
                 await self._settle(msg, DeliveryDisposition.TERM, msg.subject, None, binding)
                 return
-            slots = binding.slots_for(slot_key)
-            await slots.acquire()
+            release = await self._acquire_run(binding, slot_key)
             binding.enter_run()
             dispatch = callback if callback is not None else binding.topic_callbacks[resolved]
             # A run from a named connection starts in an empty context: nothing of the subscription
@@ -1917,9 +1932,21 @@ class NATSClient(IOClientBase):
                 context=context,
             )
             binding.runs.add(run)
-            run.add_done_callback(functools.partial(self._run_finished, binding, slots))
+            run.add_done_callback(functools.partial(self._run_finished, binding, release))
 
         return message_handler
+
+    async def _acquire_run(self, binding: _Binding, slot_key: str) -> Release:
+        """Wait until ``binding`` may start a run; return what frees it.
+
+        Unset ``nats_max_concurrent_runs``: the subscription's one slot, as before the key existed.
+        Set: the pair's guaranteed run, or a pool run within K (plan D7).
+        """
+        if binding.limit is None:
+            slots = binding.slots_for(slot_key)
+            await slots.acquire()
+            return slots.release
+        return await self._pool.acquire(binding.pair, binding.limit)
 
     def _bound_topic(self, binding: _Binding, msg: Any) -> str | None:
         """The declared subject a binding-mode delivery belongs to, or ``None`` (logged) if none covers it."""
@@ -2038,10 +2065,10 @@ class NATSClient(IOClientBase):
             with scope:
                 yield
 
-    def _run_finished(self, binding: _Binding, slots: asyncio.Semaphore, run: asyncio.Task[None]) -> None:
+    def _run_finished(self, binding: _Binding, release: Release, run: asyncio.Task[None]) -> None:
         """Free the run's slot and count it out of the in-flight runs shutdown waits for."""
         binding.runs.discard(run)
-        slots.release()
+        release()
         binding.exit_run()
         if not run.cancelled() and run.exception() is not None:
             # _run_delivery settles every handler failure itself; this is a fault in the run's own code.

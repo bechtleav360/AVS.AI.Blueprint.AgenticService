@@ -42,6 +42,7 @@ from .clients.io.dapr_client import DaprClient
 from .clients.io.io_client_base import TOPIC_TRANSPORTS
 from .clients.io.nats_client import NATSClient
 from .clients.io.nats_connections import CONNECTION_SOURCE_KEY, ConnectionSource, load_connection_source
+from .clients.io.nats_run_pool import RunLimit, RunPool
 from .services.service_base import ServiceBase
 from .services.eventing.event_processing_service import EventProcessingService
 from .services.eventing.event_publishing_service import EventPublishingService
@@ -1008,8 +1009,10 @@ class AppBuilder:
         connection_source = (
             load_connection_source(resolved_config.get(CONNECTION_SOURCE_KEY), resolved_config) if event_bus_type == "nats" else None
         )
+        # One pool of runs beyond each pair's guaranteed one, shared by the whole process (plan D7).
+        run_pool = RunPool(RunLimit.parse("nats_extra_runs_per_process", resolved_config.get("nats_extra_runs_per_process"), minimum=0))
         for namespace in self.hosted_namespaces:
-            self._wire_transport(registry, namespace, event_bus_type, connection_source)
+            self._wire_transport(registry, namespace, event_bus_type, connection_source, run_pool)
         self._wire_dapr_endpoint(registry, event_bus_type)
 
         # 4. Create internal services (auto-register)
@@ -1077,7 +1080,12 @@ class AppBuilder:
         return app
 
     def _wire_transport(
-        self, registry: Registry, namespace: str, event_bus_type: str, connection_source: ConnectionSource | None = None
+        self,
+        registry: Registry,
+        namespace: str,
+        event_bus_type: str,
+        connection_source: ConnectionSource | None = None,
+        run_pool: RunPool | None = None,
     ) -> None:
         """Give ``namespace`` a transport client, and an endpoint if it consumes.
 
@@ -1099,6 +1107,7 @@ class AppBuilder:
             namespace: The agent to wire.
             event_bus_type: The resolved ``event_bus`` value, shared by the whole process.
             connection_source: The process's ``nats_connection_source``, if one is configured.
+            run_pool: The process's pool of runs beyond each pair's guaranteed one.
 
         Raises:
             ValueError: if this agent opted into publishing and there is no topic transport
@@ -1130,6 +1139,8 @@ class AppBuilder:
             client = NATSClient(namespace=namespace)  # auto-registers
             client.set_fatal_handler(self._on_transport_fatal)
             client.set_connection_source(connection_source)
+            if run_pool is not None:
+                client.set_run_pool(run_pool)
             if consumes:
                 self._eventing_components.append(NatsEventing(namespace=namespace))
         elif event_bus_type == "sessions":

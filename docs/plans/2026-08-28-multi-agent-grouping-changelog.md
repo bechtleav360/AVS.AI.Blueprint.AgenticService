@@ -8342,6 +8342,35 @@ with `nats_max_concurrent_runs = 2`, 12 at once overall; every consumer acked, n
 event in tenant A's stream claiming tenant B ran nowhere and was termed; after a broker restart all
 named connections were back and delivering without a JetStream request; 0 permission violations.
 
+### Run limits: a guaranteed run per pair, a process pool for the rest (named connections, step 3b)
+
+Step 3b of `docs/plans/2026-10-14-named-connections.md` (decision D7).
+
+- New module `clients/io/nats_run_pool.py`. `RunLimit.parse` reads a number or `"N%"` (refusing
+  anything else, naming the key); `resolve(pairs)` turns a percentage into runs of the process's
+  current (agent, connection) pairs, never below its minimum. `PairRuns` holds whether a pair's
+  guaranteed run is busy and how many it runs. `RunPool.acquire(pair, limit)` grants the guaranteed
+  run whenever it is free and a further run only while the pair is below K and the pool below its
+  size; waiters are woken in arrival order, a cancelled waiter returns what it was granted, and
+  `add_pair` / `remove_pair` re-resolve percentages.
+- `AppBuilder.build` creates one `RunPool` per process from `nats_extra_runs_per_process` (added to
+  `PROCESS_SCOPE_KEYS`) and hands it to every client (`NATSClient.set_run_pool`).
+- `NATSClient`: `nats_max_concurrent_runs` now accepts a percentage (`_resolve_max_concurrent_runs`
+  returns a `RunLimit`); `_Binding.limit` / `_Binding.pair` replace the shared semaphore; the
+  delivery path waits in `_acquire_run` -- unset K: the subscription's one slot as before; set: the
+  pool -- and the run's done-callback calls the returned release. `_register_pairs` counts each
+  client's pairs into the pool at `subscribe()` and out at `close()`.
+
+Tests: `test_nats_run_pool.py`, 21 (parsing, percentages, guaranteed run with an exhausted pool, K and
+pool together, arrival order, cancellation, a percentage following the pairs, and through the client
+an idle connection running while a busy one has exhausted the pool).
+
+Acceptance in WSL, the 3a set-up (three agents on two restricted connections, six pairs) with
+`nats_max_concurrent_runs = 3`, `nats_extra_runs_per_process = 2`, a burst on every pair at once, 1 s
+runs: all 40 runs, the first run of every pair started within 0.16 s, at most 2 per pair and **8 at
+once overall -- six guaranteed plus the pool of two**, no run whose tenants disagreed, 0 permission
+violations.
+
 ---
 
 ## Open points
