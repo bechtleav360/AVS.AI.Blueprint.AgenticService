@@ -263,9 +263,27 @@ One step, one reviewable commit. Each step names its acceptance.
    per-connection slots and per-process cap (D7), handler timeout (D9).
    *Acceptance:* isolation test below; mismatch -> term; limits respected (measured overlap).
 4. **Connection source, dynamic.** Add, change, remove at runtime; drain on remove; never delete a
-   foreign consumer.
+   foreign consumer. Built on the rules of `docs/specs/2026-09-23-dynamic-subscriptions.md`, for whole
+   connections only (no selectors, no REST API), with building blocks that spec can reuse later:
+   - a change and a reconnect never interleave (one lock per agent, spec 7.2);
+   - a changed connection: open and bind the new link first, then drain and close the old (spec 7.4);
+   - a removed connection: drain, give running runs a grace period, then **revoke** what is left --
+     no ack, no nak, heartbeat stopped, not cancelled, `publish` refused (spec 7.5); the link closes
+     only after that, so no acknowledgement of a finished run is lost;
+   - a consumer the operator made is never deleted, and neither is a managed one on removal (a tenant
+     that drops out of the directory briefly must not lose messages; the first consumer's pool behaves so today);
+   - permission violations arrive through `error_cb`, not as the call's error: a JetStream request
+     that times out while one arrived is permanent, not retried as a slow broker (spec 7.9);
+   - a shutdown during a change cancels it, nothing is half applied (spec 7.10); readiness does not
+     change during a change (D7); nothing depends on group composition (D0).
+   **Also in this step (owner's review finding #10, decided 2026-10-14):** `nats_max_reconnect_attempts`
+   defaults to `-1` (unlimited) instead of 5 -- after about 10 s of outage the default connection
+   closed for good while readiness reported healthy -- and a client that did close reconnects **and
+   resubscribes** instead of only reconnecting in the health check. Core NATS's 128 MB client buffer
+   (also #10) is not part of this feature; a configurable limit is left for later.
 5. **Readiness and telemetry per connection** (D5): connection state in the readiness payload,
-   metrics labelled with the connection name.
+   metrics labelled with the connection name. Take review finding #6 (the readiness probe waits on a
+   lock held during slow health checks) into account here.
 6. **Everything that describes the framework agrees with it -- no contradiction left anywhere.**
    Not only the new feature: every statement about NATS delivery, consumers, concurrency, heartbeat,
    run limits and connections is checked against the code after steps 1-5, and corrected or
