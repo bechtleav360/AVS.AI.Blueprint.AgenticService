@@ -164,6 +164,7 @@
 
 ### Added
 
+- **Named NATS connections (`nats_connection_source`).** A deployment can give its agents further NATS connections -- one account and one existing JetStream consumer each -- through a connection source named by a process-scope key. The framework binds to the deployment's consumers verbatim and never provisions on them, checks each delivery with the source's validation hook before it runs, runs it in an empty context inside the source's scope, and settles, heartbeats and dead-letters it on its own connection. Agents keep declaring their subjects as before and see them without the connection's prefix; `nats_connection` names the connection in the handler context. Unset, nothing changes.
 - **`nats_max_concurrent_runs`** (int, unset by default): how many deliveries an agent handles at once
   per process, shared by all of its subscriptions; unset keeps one run per subscription. With every slot taken the subscription stops taking
   messages; keep `nats_max_ack_pending` near replicas x this value.

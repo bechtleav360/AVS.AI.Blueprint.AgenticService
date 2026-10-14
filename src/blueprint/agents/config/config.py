@@ -78,6 +78,7 @@ PROCESS_SCOPE_KEYS = frozenset(
         "readiness_policy",
         "dot_placeholder",
         "nats_stream_name",
+        "nats_connection_source",
     }
 )
 """Keys that describe the *process*, and that an agent's own settings file therefore cannot set.

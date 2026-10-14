@@ -771,3 +771,47 @@ class TestBuildPublishOnly:
         all_build_mocks.nats_eventing.assert_called_once()
         all_build_mocks.eps.assert_called_once()
         all_build_mocks.epubs.assert_called_once()
+
+
+class TestConnectionSourceWiring:
+    """Named-connections plan D2: one source per process, handed to every agent's NATS client."""
+
+    @staticmethod
+    def _config(build_config: MagicMock, source_path: str | None) -> None:
+        values = {"event_bus": "nats", "nats_connection_source": source_path}
+        build_config.get.side_effect = lambda key, default="": values.get(key, default) if values.get(key) is not None else default
+
+    def test_the_source_reaches_the_client(
+        self, builder_for_build: AppBuilder, mock_registry: MagicMock, all_build_mocks: types.SimpleNamespace, build_config: MagicMock
+    ) -> None:
+        from tests.unit.agents.clients.io.test_nats_connection_source import FakeSource
+
+        wire_empty_registry(mock_registry)
+        mock_registry.get_event_handler.return_value = [MagicMock()]
+        self._config(build_config, "tests.unit.agents.clients.io.test_nats_connection_source:make_source")
+
+        builder_for_build.build()
+
+        (source,) = all_build_mocks.nats_client.return_value.set_connection_source.call_args.args
+        assert isinstance(source, FakeSource)
+
+    def test_without_the_key_the_client_gets_none(
+        self, builder_for_build: AppBuilder, mock_registry: MagicMock, all_build_mocks: types.SimpleNamespace, build_config: MagicMock
+    ) -> None:
+        wire_empty_registry(mock_registry)
+        mock_registry.get_event_handler.return_value = [MagicMock()]
+        self._config(build_config, None)
+
+        builder_for_build.build()
+
+        all_build_mocks.nats_client.return_value.set_connection_source.assert_called_once_with(None)
+
+    def test_a_wrong_path_fails_the_build(
+        self, builder_for_build: AppBuilder, mock_registry: MagicMock, all_build_mocks: types.SimpleNamespace, build_config: MagicMock
+    ) -> None:
+        wire_empty_registry(mock_registry)
+        mock_registry.get_event_handler.return_value = [MagicMock()]
+        self._config(build_config, "no.such.module:factory")
+
+        with pytest.raises(ValueError, match="nats_connection_source"):
+            builder_for_build.build()

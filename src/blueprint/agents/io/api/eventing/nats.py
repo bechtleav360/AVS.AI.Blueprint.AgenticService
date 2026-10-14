@@ -5,6 +5,7 @@ from typing import Any
 
 from ....clients.client_base import DeliveryCallback
 from ....clients.io.nats_client import NATSClient
+from ....clients.io.nats_connections import NATS_CONNECTION_CONTEXT_KEY, current_connection
 from ....component.namespace import ROOT_NAMESPACE
 from ....models.events import CloudEvent
 from ..rest_api_base import RestApiBase
@@ -119,6 +120,10 @@ class NatsEventing(EventHandlingBase):
 
         async def _process_event(event: CloudEvent[Any], subject: str) -> None:
             context = {"nats_topic": topic, NATS_SUBJECT_CONTEXT_KEY: subject}
+            connection = current_connection()
+            if connection is not None:
+                # Only a run from a named connection has one; the default connection adds no key (N6).
+                context[NATS_CONNECTION_CONTEXT_KEY] = connection
             processing_result = await self._process_cloud_event(event, context, topic)
             logger.debug(
                 "Processed CloudEvent %s on topic %s with status %s",

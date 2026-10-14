@@ -2,12 +2,13 @@
 
 import asyncio
 import contextlib
+import contextvars
 import functools
 import importlib.util
 import json
 import logging
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
@@ -30,7 +31,7 @@ from ...models.errors import DeliveryDisposition, disposition_for
 from ...models.events import CloudEvent
 from ..client_base import DeliveryCallback
 from .io_client_base import IOClientBase, subject_is_covered_by, validate_publish_subject, validate_subject_segment
-from .nats_connections import JetStreamBinding
+from .nats_connections import ConnectionSource, JetStreamBinding, mark_connection
 
 logger = logging.getLogger(__name__)
 
@@ -309,6 +310,9 @@ class NATSClient(IOClientBase):
         self._retry_task: asyncio.Task[None] | None = None
         self._max_concurrent_runs: int | None = None
         self._heartbeat_enabled: bool = True
+        self._source: ConnectionSource | None = None
+        self._named: list[_Binding] = []
+        self._named_tasks: dict[str, asyncio.Task[None]] = {}
 
     # ------------------------------------------------------------------
     # The default link and binding, under the names the client used before it had them
@@ -447,8 +451,13 @@ class NATSClient(IOClientBase):
 
     @property
     def inflight_handlers(self) -> int:
-        """Number of message handlers currently executing."""
-        return self._inflight
+        """Number of message handlers currently executing, on every connection of this agent."""
+        return self._inflight + sum(binding.inflight for binding in self._named)
+
+    @property
+    def named_connections(self) -> tuple[str, ...]:
+        """Names of the connections the source gave this agent a binding on, in the source's order."""
+        return tuple(binding.link.name for binding in self._named)
 
     @property
     def consumer_tuning(self) -> ConsumerTuning | None:
@@ -476,15 +485,17 @@ class NATSClient(IOClientBase):
         after subscribing. The loop is started by :meth:`resume_consumption` instead, if the
         agent is ever released.
         """
-        self._topic_callbacks = topic_callbacks
         self._queue_group = self._resolve_queue_group()
         self._max_concurrent_runs = self._resolve_max_concurrent_runs()
         # Unset keeps one run per subscription (subscription_slots); set, the subscriptions share K.
         self._binding.run_slots = asyncio.Semaphore(self._max_concurrent_runs) if self._max_concurrent_runs else None
         self._heartbeat_enabled = self._resolve_heartbeat_enabled()
+        # What a named connection serves leaves the default connection (plan D10).
+        default_topics = self._plan_named_bindings(topic_callbacks)
+        self._topic_callbacks = default_topics
         if self.config.get("nats_use_jetstream", False):
-            self._durables = self._resolve_durables(list(topic_callbacks))
-            self._tuning = self._resolve_consumer_tuning(list(topic_callbacks))
+            self._durables = self._resolve_durables(list(default_topics))
+            self._tuning = self._resolve_consumer_tuning(list(default_topics))
         self._subscriptions_managed = True
         self._subscriptions_ready = False
         if self._consumption_paused:
@@ -495,6 +506,161 @@ class NATSClient(IOClientBase):
             )
             return
         self._start_retry_task()
+        self._start_named_links()
+
+    def set_connection_source(self, source: ConnectionSource | None) -> None:
+        """Install the process's connection source, before ``subscribe()``; ``None`` keeps one connection (N6)."""
+        self._source = source
+
+    def _plan_named_bindings(self, topic_callbacks: dict[str, DeliveryCallback]) -> dict[str, DeliveryCallback]:
+        """Ask the source which connections serve which of this agent's subjects; return what stays on the default one.
+
+        Each binding gets a link of its own (plan D1) and its own run slots. A subject several
+        connections serve is consumed on each of them, from each connection's own consumer.
+
+        Raises:
+            ValueError: a binding claims a subject this agent did not declare, or the agent both
+                has named connections and maps handler results to topics (plan D4).
+        """
+        self._named = []
+        if self._source is None:
+            return dict(topic_callbacks)
+        declared = tuple(topic_callbacks)
+        served: set[str] = set()
+        for spec in self._source.connections().values():
+            jetstream = self._source.binding(self._queue_group, declared, spec)
+            if jetstream is None:
+                continue
+            unknown = [subject for subject in jetstream.subjects if subject not in topic_callbacks]
+            if unknown:
+                raise ValueError(
+                    f"Agent '{self.namespace or ROOT_LABEL}': the binding for connection '{spec.name}' claims "
+                    f"{', '.join(unknown)}, which the agent does not declare. A binding serves declared subjects only."
+                )
+            binding = _Binding(
+                link=_Link(name=spec.name, url=spec.url, connect_options=spec.connect_options()),
+                jetstream=jetstream,
+                topic_callbacks={subject: topic_callbacks[subject] for subject in jetstream.subjects},
+            )
+            binding.run_slots = asyncio.Semaphore(self._max_concurrent_runs) if self._max_concurrent_runs else None
+            self._named.append(binding)
+            served.update(jetstream.subjects)
+        if self._named:
+            self._refuse_result_publishing()
+        logger.info(
+            "Agent '%s' consumes on %d named connection(s) %s; %d subject(s) stay on its default connection",
+            self.namespace or ROOT_LABEL,
+            len(self._named),
+            ", ".join(binding.link.name for binding in self._named) or "-",
+            len(declared) - len(served),
+        )
+        return {topic: callback for topic, callback in topic_callbacks.items() if topic not in served}
+
+    def _refuse_result_publishing(self) -> None:
+        """Fail startup when an agent with named connections maps handler results to topics (plan D4).
+
+        A result would go out on the default connection, so what a run on one connection
+        produced would reach subjects outside that connection's account.
+        """
+        mapping = self.config.get("event_publishing.topic_mapping", {}) or {}
+        if mapping:
+            raise ValueError(
+                f"Agent '{self.namespace or ROOT_LABEL}' consumes on named connections and maps handler results to "
+                "topics ('event_publishing.topic_mapping'). A result would leave the connection its event arrived on, "
+                "through the default connection, so this is refused. Remove the mapping."
+            )
+
+    def _start_named_links(self) -> None:
+        """Connect and bind every named connection in a loop of its own; one failing never holds up another."""
+        for binding in self._named:
+            running = self._named_tasks.get(binding.link.name)
+            if running is not None and not running.done():
+                continue
+            task = asyncio.ensure_future(self._run_named_link(binding))
+            task.add_done_callback(functools.partial(self._on_named_link_done, binding))
+            self._named_tasks[binding.link.name] = task
+
+    async def _run_named_link(self, binding: _Binding) -> None:
+        """Connect ``binding``'s link and bind, retrying until it works.
+
+        Never gives up: a named connection's stream or account may appear later (provisioning), and
+        unlike the default connection its absence does not make the agent unready (plan D5).
+        """
+        delay = float(self.config.get("event_client_retry_delay", 5.0))
+        attempt = 0
+        while True:
+            try:
+                await self._open_named_link(binding.link)
+                if self._consumption_paused:
+                    return
+                binding.subscriptions.clear()
+                await self._bind(binding)
+                binding.subscriptions_ready = True
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                attempt += 1
+                binding.subscriptions_ready = False
+                logger.warning(
+                    "Agent '%s': named connection '%s' attempt %d failed, retrying in %.1fs: %s",
+                    self.namespace or ROOT_LABEL,
+                    binding.link.name,
+                    attempt,
+                    delay,
+                    exc,
+                )
+                await asyncio.sleep(delay)
+
+    def _on_named_link_done(self, binding: _Binding, task: asyncio.Task[None]) -> None:
+        """Report a named-connection loop that died of anything but its cancellation, naming agent and connection."""
+        if not task.cancelled() and task.exception() is not None:
+            logger.error(
+                "Agent '%s': the loop of named connection '%s' failed: %s",
+                self.namespace or ROOT_LABEL,
+                binding.link.name,
+                task.exception(),
+                exc_info=task.exception(),
+            )
+
+    async def _open_named_link(self, link: _Link) -> None:
+        """Open a named link, reconnecting forever once open, as the deployment's own pool did."""
+        if link.nats_client is not None and not link.nats_client.is_closed:
+            return
+        base = self._resolve_connection_name()
+        link.connection_name = ".".join(part for part in (base, link.name) if part)
+        agent = self.namespace or ROOT_LABEL
+
+        async def on_disconnected() -> None:
+            for binding in self._named:
+                if binding.link is link:
+                    binding.subscriptions_ready = False
+            logger.warning("Agent '%s': named connection '%s' lost its broker", agent, link.name)
+
+        async def on_reconnected() -> None:
+            # A plain subscription is restored by nats-py itself, and a push consumer delivers to
+            # it again as soon as there is interest: nothing to re-bind, no JetStream request.
+            for binding in self._named:
+                if binding.link is link and not self._consumption_paused:
+                    binding.subscriptions_ready = True
+            logger.info("Agent '%s': named connection '%s' is back", agent, link.name)
+
+        async def on_error(error: Exception) -> None:
+            # Permission violations land here: a subject the deployment did not grant this account.
+            logger.error("Agent '%s': error on named connection '%s': %s", agent, link.name, error)
+
+        link.nats_client = await nats.connect(
+            link.url,
+            name=link.connection_name or None,
+            max_reconnect_attempts=-1,
+            reconnect_time_wait=self.config.get("nats_reconnect_time_wait", 2),
+            connect_timeout=10,
+            disconnected_cb=on_disconnected,
+            reconnected_cb=on_reconnected,
+            error_cb=on_error,
+            **link.connect_options,
+        )
+        logger.info("Agent '%s' connected named connection '%s' as '%s'", agent, link.name, link.connection_name)
 
     def _start_retry_task(self) -> None:
         """Start the background connect-and-subscribe loop, unless one is already running."""
@@ -1133,10 +1299,16 @@ class NATSClient(IOClientBase):
             return
         self._consumption_paused = True
         self._subscriptions_ready = False
+        timeout = float(self.config.get("event_client_drain_timeout", 30.0))
+        deadline = asyncio.get_running_loop().time() + timeout
+        for binding in self._named:
+            binding.subscriptions_ready = False
+            await self._drain_subscriptions(deadline, binding)
         if self._nats_client is not None:
-            timeout = float(self.config.get("event_client_drain_timeout", 30.0))
-            deadline = asyncio.get_running_loop().time() + timeout
             await self._drain_subscriptions(deadline)
+        for binding in self._named:
+            await self._await_inflight(deadline, binding)
+        if self._nats_client is not None:
             await self._await_inflight(deadline)
         logger.error(
             "Agent '%s' stopped consuming: its subscriptions are drained while it is degraded, so its events "
@@ -1156,6 +1328,8 @@ class NATSClient(IOClientBase):
         self._consumption_paused = False
         if not self._subscriptions_managed:
             return
+        # Each named connection re-binds in its own loop, over its still-open link.
+        self._start_named_links()
         if self._nats_client is None:
             # Paused before it ever connected -- subscribe() registered the topics and waited.
             # The retry loop is what connects and subscribes; a loop still running picks up the
@@ -1187,13 +1361,34 @@ class NATSClient(IOClientBase):
             self._retry_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._retry_task
+        for task in list(self._named_tasks.values()):
+            if not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
+        self._named_tasks.clear()
 
+        # One budget for every connection: stop all deliveries, then wait for every run, then close.
+        timeout = float(self.config.get("event_client_drain_timeout", 30.0))
+        deadline = asyncio.get_running_loop().time() + timeout
+        for binding in self._named:
+            binding.subscriptions_ready = False
+            if binding.link.nats_client is not None:
+                await self._drain_subscriptions(deadline, binding)
         if self._nats_client is not None:
-            timeout = float(self.config.get("event_client_drain_timeout", 30.0))
-            deadline = asyncio.get_running_loop().time() + timeout
             await self._drain_subscriptions(deadline)
+        for binding in self._named:
+            await self._await_inflight(deadline, binding)
+        if self._nats_client is not None:
             await self._await_inflight(deadline)
 
+        for binding in self._named:
+            client = binding.link.nats_client
+            if client is not None:
+                with contextlib.suppress(Exception):
+                    await client.close()
+                binding.link.nats_client = None
+        if self._nats_client is not None:
             await self._nats_client.close()
             self._nats_client = None
             self._js = None
@@ -1712,7 +1907,15 @@ class NATSClient(IOClientBase):
             await slots.acquire()
             binding.enter_run()
             dispatch = callback if callback is not None else binding.topic_callbacks[resolved]
-            run = asyncio.create_task(self._run_delivery(msg, resolved, dispatch, binding), name=f"nats-run-{self.namespace or ROOT_LABEL}")
+            # A run from a named connection starts in an empty context: nothing of the subscription
+            # task or of another run reaches it (plan N1). The default connection keeps the copied
+            # context it always had (N6).
+            context = contextvars.Context() if binding.link.name else None
+            run = asyncio.create_task(
+                self._run_delivery(msg, resolved, dispatch, binding),
+                name=f"nats-run-{self.namespace or ROOT_LABEL}{'-' + binding.link.name if binding.link.name else ''}",
+                context=context,
+            )
             binding.runs.add(run)
             run.add_done_callback(functools.partial(self._run_finished, binding, slots))
 
@@ -1752,11 +1955,18 @@ class NATSClient(IOClientBase):
             await self._settle(msg, DeliveryDisposition.TERM, topic, None, binding)
             return
 
+        connection = binding.link.name
+        if connection and self._source is not None:
+            mark_connection(connection)
+            if not await self._accepted(msg, topic, cloud_event, binding):
+                return
+
         heartbeat = self._start_heartbeat(msg, topic, binding)
         disposition = DeliveryDisposition.ACK
         try:
             subject = binding.jetstream.local_subject(msg.subject) if binding.jetstream is not None else msg.subject
-            await callback(cloud_event, subject)
+            async with self._run_scope(connection):
+                await callback(cloud_event, subject)
         except Exception as ex:
             disposition = disposition_for(ex)
             logger.error(
@@ -1774,6 +1984,59 @@ class NATSClient(IOClientBase):
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await heartbeat
         await self._settle(msg, disposition, topic, cloud_event.id, binding)
+
+    async def _accepted(self, msg: Any, topic: str, cloud_event: CloudEvent[Any], binding: _Binding) -> bool:
+        """Ask the source whether a named-connection delivery may run (plan N2); settle it if not.
+
+        A reason terminates the delivery -- never processed, never retried. A hook that raises
+        is a fault of the deployment's code, not of the event: the delivery is left for
+        redelivery (nak) rather than lost.
+        """
+        source = self._source
+        if source is None:
+            return True
+        connection = binding.link.name
+        try:
+            reason = source.validate(connection, msg.subject, cloud_event)
+        except Exception as exc:
+            logger.error(
+                "Agent '%s': validating event %s on '%s' from connection '%s' raised; left for redelivery: %s",
+                self.namespace or ROOT_LABEL,
+                cloud_event.id,
+                msg.subject,
+                connection,
+                exc,
+                exc_info=True,
+            )
+            await self._settle(msg, DeliveryDisposition.NAK, topic, cloud_event.id, binding)
+            return False
+        if reason is None:
+            return True
+        logger.error(
+            "Agent '%s': rejecting event %s (type %s) on '%s' from connection '%s': %s",
+            self.namespace or ROOT_LABEL,
+            cloud_event.id,
+            cloud_event.type,
+            msg.subject,
+            connection,
+            reason,
+        )
+        await self._settle(msg, DeliveryDisposition.TERM, topic, cloud_event.id, binding)
+        return False
+
+    @contextlib.asynccontextmanager
+    async def _run_scope(self, connection: str) -> AsyncIterator[None]:
+        """Enter the source's scope for ``connection`` around a run (plan D3); nothing for the default connection."""
+        if not connection or self._source is None:
+            yield
+            return
+        scope = self._source.run_scope(connection)
+        if isinstance(scope, contextlib.AbstractAsyncContextManager):
+            async with scope:
+                yield
+        else:
+            with scope:
+                yield
 
     def _run_finished(self, binding: _Binding, slots: asyncio.Semaphore, run: asyncio.Task[None]) -> None:
         """Free the run's slot and count it out of the in-flight runs shutdown waits for."""

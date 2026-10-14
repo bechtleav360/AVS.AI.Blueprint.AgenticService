@@ -8297,6 +8297,51 @@ Open for step 3: reconnect handling exists for the default link only (`_on_recon
 link needs its own. A plain subscription is restored by nats-py on reconnect; whether the push
 consumer delivers again without a JetStream request is to be shown against a broker restart.
 
+### Named connections from a connection source (named connections, step 3a)
+
+Step 3a of `docs/plans/2026-10-14-named-connections.md` (decisions D1-D4, D8, D10).
+
+- `clients/io/nats_connections.py` gains the deployment-facing API: `ConnectionSpec` (name, URL,
+  credentials -- secrets kept out of `repr` -- and `connect_options()`), the `ConnectionSource`
+  protocol (`connections()`, `binding(agent, subjects, connection)`, `validate(connection, subject,
+  event)`, `run_scope(connection)`), `load_connection_source()` for the process-scope key
+  `nats_connection_source` (added to `PROCESS_SCOPE_KEYS`), and `current_connection()` /
+  `mark_connection()` over a ContextVar that is only ever set inside a run's own task.
+- `AppBuilder.build` loads the source once per process (NATS only) and `_wire_transport` hands it to
+  every agent's client (`NATSClient.set_connection_source`) -- no global state; a wrong path fails
+  the build.
+- `NATSClient.subscribe` asks the source per connection (`_plan_named_bindings`): each binding gets a
+  `_Link` of its own (D1) and its own run slots; the subjects it serves leave the default binding
+  (D10); a binding claiming an undeclared subject, or named connections together with
+  `event_publishing.topic_mapping` (D4, `_refuse_result_publishing`), fail startup.
+- Each named binding connects and binds in a loop of its own (`_start_named_links`,
+  `_run_named_link`, `_open_named_link`): retried forever, reconnecting forever once open, one
+  failing never holding up another or the default connection. On reconnect nothing is re-bound: the
+  plain subscription is restored by nats-py and the push consumer delivers to it again.
+- Pause drains every binding, resume restarts the named loops (re-binding over the open link),
+  `close` drains all, waits for every run within the one `event_client_drain_timeout`, then closes
+  every link. `inflight_handlers` counts every connection; `named_connections` lists them.
+- A run from a named connection starts in an empty `contextvars.Context` (N1; the default
+  connection keeps its copied context, N6), marks its connection, is checked by `_accepted`
+  (validation hook: a reason terms it, an exception naks it) and runs inside `_run_scope` (the
+  source's sync or async context manager). `NatsEventing` adds `nats_connection` to the handler
+  context only when a run has one.
+
+Tests: `test_nats_connection_source.py` (22: loading the source, the spec, planning the bindings,
+D4, scope and connection inside the run, an ambient ContextVar not inherited, two connections never
+sharing a run context, rejection, a raising validator, the default connection unchanged, the
+context key, shutdown of every link) and `TestConnectionSourceWiring` in `test_app_builder.py` (3).
+
+Acceptance in WSL against `nats:2.10-alpine` with three accounts -- a process account allowed
+nothing, and per tenant an admin (provisioning, operator) and an agent user allowed only its deliver
+subjects and `$JS.ACK.>` -- and a real group of three agents on two named connections, the source
+binding them as the first consumer does and validating as W17.2 does: 32 of 32 runs, none whose
+connection, scope tenant (also after awaiting) and event tenant disagreed; handlers saw
+`risk.created` / `issue.created` and their declared topics; at most 2 runs per (agent, connection)
+with `nats_max_concurrent_runs = 2`, 12 at once overall; every consumer acked, none redelivered; an
+event in tenant A's stream claiming tenant B ran nowhere and was termed; after a broker restart all
+named connections were back and delivering without a JetStream request; 0 permission violations.
+
 ---
 
 ## Open points

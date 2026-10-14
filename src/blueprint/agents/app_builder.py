@@ -41,6 +41,7 @@ from .io.api.utilities.cache import CacheManagementApi
 from .clients.io.dapr_client import DaprClient
 from .clients.io.io_client_base import TOPIC_TRANSPORTS
 from .clients.io.nats_client import NATSClient
+from .clients.io.nats_connections import CONNECTION_SOURCE_KEY, ConnectionSource, load_connection_source
 from .services.service_base import ServiceBase
 from .services.eventing.event_processing_service import EventProcessingService
 from .services.eventing.event_publishing_service import EventPublishingService
@@ -1003,8 +1004,12 @@ class AppBuilder:
         # is out of scope for this plan -- but which agents get a client, and which of them
         # get an endpoint, is decided per agent below.
         event_bus_type = str(resolved_config.get("event_bus", "") or "").strip().lower()
+        # One connection source per process, shared by every agent's client (named-connections plan, D2).
+        connection_source = (
+            load_connection_source(resolved_config.get(CONNECTION_SOURCE_KEY), resolved_config) if event_bus_type == "nats" else None
+        )
         for namespace in self.hosted_namespaces:
-            self._wire_transport(registry, namespace, event_bus_type)
+            self._wire_transport(registry, namespace, event_bus_type, connection_source)
         self._wire_dapr_endpoint(registry, event_bus_type)
 
         # 4. Create internal services (auto-register)
@@ -1071,7 +1076,9 @@ class AppBuilder:
         self._build_rest_endpoints(app, registry)
         return app
 
-    def _wire_transport(self, registry: Registry, namespace: str, event_bus_type: str) -> None:
+    def _wire_transport(
+        self, registry: Registry, namespace: str, event_bus_type: str, connection_source: ConnectionSource | None = None
+    ) -> None:
         """Give ``namespace`` a transport client, and an endpoint if it consumes.
 
         Publishing and consuming are decided separately, per agent. An agent that only emits
@@ -1091,6 +1098,7 @@ class AppBuilder:
             registry: The application's registry, queried per namespace.
             namespace: The agent to wire.
             event_bus_type: The resolved ``event_bus`` value, shared by the whole process.
+            connection_source: The process's ``nats_connection_source``, if one is configured.
 
         Raises:
             ValueError: if this agent opted into publishing and there is no topic transport
@@ -1119,7 +1127,9 @@ class AppBuilder:
             # The client is per agent; the endpoint is not. See _wire_dapr_endpoint.
             DaprClient(namespace=namespace)  # auto-registers
         elif event_bus_type == "nats":
-            NATSClient(namespace=namespace).set_fatal_handler(self._on_transport_fatal)  # auto-registers
+            client = NATSClient(namespace=namespace)  # auto-registers
+            client.set_fatal_handler(self._on_transport_fatal)
+            client.set_connection_source(connection_source)
             if consumes:
                 self._eventing_components.append(NatsEventing(namespace=namespace))
         elif event_bus_type == "sessions":
