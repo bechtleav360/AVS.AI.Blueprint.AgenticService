@@ -171,6 +171,9 @@
   number or percentage of the process's pairs, unset unlimited). With every slot taken the subscription stops taking
   messages; keep `nats_max_ack_pending` near replicas x this value.
 - **`nats_heartbeat_enabled`** (bool, default `true`): switches the delivery heartbeat off for an agent.
+- **`nats_handler_timeout`** (seconds, unset by default): the longest one run may take. At the limit the
+  run is cancelled and nak'd for immediate redelivery; a `TimeoutError` of the handler's own is an
+  ordinary failure. Unset, a run is never cut.
 - **`RestApiBase.path_prefix`**, an optional class attribute putting every route of an API under
   one segment -- `/api/reports/...` standalone, `/api/<agent>/reports/...` in a group. Default `""`,
   so no existing path moves.

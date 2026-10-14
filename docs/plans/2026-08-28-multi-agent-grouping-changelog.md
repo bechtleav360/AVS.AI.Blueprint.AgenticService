@@ -8371,6 +8371,37 @@ runs: all 40 runs, the first run of every pair started within 0.16 s, at most 2 
 once overall -- six guaranteed plus the pool of two**, no run whose tenants disagreed, 0 permission
 violations.
 
+### A run can be bounded: `nats_handler_timeout` (named connections, step 3c)
+
+Step 3c of `docs/plans/2026-10-14-named-connections.md` (decision D9; part A's hard limit of
+`docs/specs/2026-09-24-handler-time-bounds.md`, without its shutdown part).
+
+- `_resolve_handler_timeout` reads `nats_handler_timeout` in `subscribe()`: unset -> `None` (no
+  limit), a number or numeric text > 0 -> seconds; zero, negative, other text and booleans are
+  refused naming the key.
+- `_run_delivery` runs the handler chain (and the source's run scope) inside
+  `asyncio.timeout(self._handler_timeout)` -- in the run's own task, so its ContextVars stay
+  visible. A `TimeoutError` with `limit.expired()` -> `NAK` and an ERROR naming agent, event, topic
+  and the connection if named; any other exception, a handler's own `TimeoutError` included, keeps
+  `disposition_for`. A handler that swallows the cancellation and returns -> `limit.expired()` on a
+  normal exit -> `NAK` and an ERROR saying it held its slot until it returned. The slot is released
+  by the run's done-callback, so only when the task has really ended. The heartbeat is still stopped
+  in the `finally` before the delivery is settled. A nak on the last allowed delivery becomes the
+  usual dead letter / term.
+
+Tests: `test_nats_handler_timeout.py`, 11 (cut and nak'd without the handler continuing, heartbeat
+stopped before the nak, the handler's own `TimeoutError` an ordinary failure, unset never cut, a
+swallowed cancellation holding the slot and nak'd, invalid values refused, numeric text read, the
+limit on a named connection naming it).
+
+Acceptance in WSL, the multi-account set-up (two agents on two restricted connections), one event
+on agent1@A whose handler hangs forever, three further events on agent1@A, events on every other
+pair, `nats_handler_timeout = 2`: the hung event ran on agent1@A five times (starts at 0.0, 2.7, 4.7,
+6.7, 8.7 s -- `max_deliver` 5) and was then given up (consumer: ack pending 0), agent1@A's other
+three events ran in between, agent2@A 4 of 4 and tenant B 6 of 6 finished. Control without the key:
+the hung run held agent1@A for the whole window -- its other three events never ran (ack pending
+4) -- while every other pair finished. 0 permission violations in both runs.
+
 ---
 
 ## Open points

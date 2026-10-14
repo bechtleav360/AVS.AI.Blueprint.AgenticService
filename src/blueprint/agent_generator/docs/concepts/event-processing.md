@@ -311,6 +311,12 @@ than starting more. Order within a subject is not kept beyond one run at a time.
 therefore not redelivered while it still runs. A message still waiting for a slot gets no
 heartbeat. `nats_heartbeat_enabled = false` switches the heartbeat off for an agent.
 
+**A run can be bounded.** The heartbeat proves the process is alive, not that the run makes progress:
+a hung model request would hold its slot -- and, with one run per subscription, every later event of
+that subscription -- forever. `nats_handler_timeout` cancels a run at the limit and naks its delivery
+for immediate redelivery, up to `nats_max_deliver` attempts. Whether the limit was hit is read from
+the run's own timer: a `TimeoutError` raised by the handler is an ordinary failure.
+
 An existing consumer is never rewritten. Its filter subject and deliver group are broker-side
 state that the stream's redelivery bookkeeping hangs off, so changing them is a migration: the
 client logs which settings differ and keeps consuming with the ones the broker already has. Apply

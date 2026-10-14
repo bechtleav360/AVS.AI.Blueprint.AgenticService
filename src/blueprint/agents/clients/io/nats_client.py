@@ -269,6 +269,9 @@ class NATSClient(IOClientBase):
     time *per subscription*, so an agent with two subscriptions runs two at once.
     ``nats_heartbeat_enabled`` (bool, default true): whether running JetStream deliveries report
     ``in_progress``; off, a run longer than the consumer's ``ack_wait`` is redelivered while it runs.
+    ``nats_handler_timeout`` (float seconds, unset by default): the longest one run may take, on
+    every connection. At the limit the run is cancelled and nak'd for immediate redelivery; unset,
+    a run is never cut.
 
     Concurrent runs
     ~~~~~~~~~~~~~~~
@@ -312,6 +315,7 @@ class NATSClient(IOClientBase):
         self._pool = RunPool()
         self._pairs_registered = 0
         self._heartbeat_enabled: bool = True
+        self._handler_timeout: float | None = None
         self._source: ConnectionSource | None = None
         self._named: list[_Binding] = []
         self._named_tasks: dict[str, asyncio.Task[None]] = {}
@@ -493,6 +497,7 @@ class NATSClient(IOClientBase):
         # plus pool runs up to K (plan D7).
         self._binding.limit = self._max_concurrent_runs
         self._heartbeat_enabled = self._resolve_heartbeat_enabled()
+        self._handler_timeout = self._resolve_handler_timeout()
         # What a named connection serves leaves the default connection (plan D10).
         default_topics = self._plan_named_bindings(topic_callbacks)
         self._topic_callbacks = default_topics
@@ -1004,6 +1009,25 @@ class NATSClient(IOClientBase):
         value = self.config.get("nats_heartbeat_enabled", True)
         if not isinstance(value, bool):
             raise ValueError(f"'nats_heartbeat_enabled' must be true or false, got {value!r}.")
+        return value
+
+    def _resolve_handler_timeout(self) -> float | None:
+        """Return ``nats_handler_timeout``: seconds one run may take, or ``None`` for no limit (plan D9).
+
+        Raises:
+            ValueError: anything but a number greater than 0. A boolean is refused rather than read as 1.
+        """
+        raw = self.config.get("nats_handler_timeout", None)
+        if raw is None or raw == "":
+            return None
+        if isinstance(raw, bool):
+            raise ValueError(f"'nats_handler_timeout' must be a number of seconds, got {raw!r}.")
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            raise ValueError(f"'nats_handler_timeout' must be a number of seconds, got {raw!r}.") from None
+        if value <= 0:
+            raise ValueError(f"'nats_handler_timeout' must be greater than 0, got {value}. Unset it for no limit.")
         return value
 
     def _read_optional_int(self, key: str) -> int | None:
@@ -1975,6 +1999,12 @@ class NATSClient(IOClientBase):
         The heartbeat is stopped before the delivery is settled, whatever ended the run. A
         cancelled run (shutdown past its deadline) is not settled: the broker redelivers it.
         Everything is settled against ``binding``, the one the message arrived on.
+
+        With ``nats_handler_timeout`` set, a run that reaches the limit is cancelled and nak'd for
+        immediate redelivery (plan D9). Whether the limit was hit is read from the run's own timer,
+        not from the exception: a ``TimeoutError`` the handler raises itself is an ordinary failure.
+        A handler that swallows the cancellation runs on and holds its slot until it returns; that
+        is logged, and its delivery is nak'd all the same.
         """
         cloud_event = self._decode_message(msg, topic)
         if cloud_event is None:
@@ -1990,20 +2020,48 @@ class NATSClient(IOClientBase):
 
         heartbeat = self._start_heartbeat(msg, topic, binding)
         disposition = DeliveryDisposition.ACK
+        # The run stays in this task (asyncio.timeout, not a new task): the run scope and the
+        # connection marker are ContextVars of this task. None means no limit.
+        limit = asyncio.timeout(self._handler_timeout)
         try:
             subject = binding.jetstream.local_subject(msg.subject) if binding.jetstream is not None else msg.subject
-            async with self._run_scope(connection):
-                await callback(cloud_event, subject)
+            async with limit:
+                async with self._run_scope(connection):
+                    await callback(cloud_event, subject)
         except Exception as ex:
-            disposition = disposition_for(ex)
-            logger.error(
-                "Handler failed for event %s on topic '%s', will %s: %s",
-                cloud_event.id,
-                topic,
-                disposition.value,
-                ex,
-                exc_info=True,
-            )
+            if isinstance(ex, TimeoutError) and limit.expired():
+                disposition = DeliveryDisposition.NAK
+                logger.error(
+                    "Agent '%s': event %s on topic '%s'%s exceeded nats_handler_timeout (%.1fs); cancelled and nak'd for redelivery",
+                    self.namespace or ROOT_LABEL,
+                    cloud_event.id,
+                    topic,
+                    f" from connection '{connection}'" if connection else "",
+                    self._handler_timeout,
+                )
+            else:
+                disposition = disposition_for(ex)
+                logger.error(
+                    "Handler failed for event %s on topic '%s', will %s: %s",
+                    cloud_event.id,
+                    topic,
+                    disposition.value,
+                    ex,
+                    exc_info=True,
+                )
+        else:
+            if limit.expired():
+                # The handler caught the cancellation and returned on its own, after the limit.
+                disposition = DeliveryDisposition.NAK
+                logger.error(
+                    "Agent '%s': the handler for event %s on topic '%s'%s swallowed the cancellation at "
+                    "nats_handler_timeout (%.1fs) and held its run slot until it returned; nak'd for redelivery",
+                    self.namespace or ROOT_LABEL,
+                    cloud_event.id,
+                    topic,
+                    f" from connection '{connection}'" if connection else "",
+                    self._handler_timeout,
+                )
         finally:
             if heartbeat is not None:
                 heartbeat.cancel()
