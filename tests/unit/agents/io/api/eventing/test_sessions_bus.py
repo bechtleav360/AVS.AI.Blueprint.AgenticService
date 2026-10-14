@@ -116,6 +116,26 @@ class TestOnStartup:
         assert sessions_bus._sse_task is not None
         sessions_bus._sse_task.cancel()
 
+    async def test_reads_agent_token_from_config(self, sessions_bus: SessionsBus, mock_config: MagicMock, mock_registry: MagicMock) -> None:
+        mock_config.get.return_value = {**_make_sessions_config(), "agent_token": "agent-jwt"}
+        mock_registry.get_service.return_value = MagicMock()
+
+        with patch.object(sessions_bus, "_consume_sse_stream", new=AsyncMock()):
+            await sessions_bus.on_startup()
+
+        assert sessions_bus._agent_token == "agent-jwt"
+        sessions_bus._sse_task.cancel()
+
+    async def test_agent_token_none_when_absent(self, sessions_bus: SessionsBus, mock_config: MagicMock, mock_registry: MagicMock) -> None:
+        mock_config.get.return_value = _make_sessions_config()  # no agent_token
+        mock_registry.get_service.return_value = MagicMock()
+
+        with patch.object(sessions_bus, "_consume_sse_stream", new=AsyncMock()):
+            await sessions_bus.on_startup()
+
+        assert sessions_bus._agent_token is None
+        sessions_bus._sse_task.cancel()
+
 
 # ---------------------------------------------------------------------------
 # on_shutdown
@@ -732,6 +752,42 @@ class TestConnectLifecycle:
             await bus._connect_and_consume()
 
         assert bus._api_client.register_agent.await_count == 2
+
+    async def test_sse_connect_sends_bearer_when_token_configured(self, started_sessions_bus: SessionsBus) -> None:
+        # Token present -> Authorization: Bearer <token> on the SSE connect, alongside X-Api-Key
+        # (service-sessions#198/#326 gated GET /jobs/stream/sse).
+        bus = _connectable_bus(started_sessions_bus)
+        bus._agent_token = "agent-jwt"
+        bus._api_client.register_agent = AsyncMock(return_value=True)
+        bus._api_client.list_pending_jobs = AsyncMock(return_value=[])
+
+        event_source = MagicMock()
+        event_source.aiter_sse = lambda: _EmptyAsyncIter()
+
+        with patch("blueprint.agents.io.api.eventing.sessions_bus.aconnect_sse", return_value=_mock_sse_context(event_source)) as mock_sse:
+            await bus._connect_and_consume()
+            await _drain_inflight(bus)
+
+        headers = mock_sse.call_args[1]["headers"]
+        assert headers["Authorization"] == "Bearer agent-jwt"
+        assert headers["X-Api-Key"] == "secret"
+
+    async def test_sse_connect_omits_bearer_when_token_absent(self, started_sessions_bus: SessionsBus) -> None:
+        # Backward-compat: no token -> X-Api-Key only, no Authorization header (unchanged).
+        bus = _connectable_bus(started_sessions_bus)  # _agent_token stays None
+        bus._api_client.register_agent = AsyncMock(return_value=True)
+        bus._api_client.list_pending_jobs = AsyncMock(return_value=[])
+
+        event_source = MagicMock()
+        event_source.aiter_sse = lambda: _EmptyAsyncIter()
+
+        with patch("blueprint.agents.io.api.eventing.sessions_bus.aconnect_sse", return_value=_mock_sse_context(event_source)) as mock_sse:
+            await bus._connect_and_consume()
+            await _drain_inflight(bus)
+
+        headers = mock_sse.call_args[1]["headers"]
+        assert "Authorization" not in headers
+        assert headers == {"X-Api-Key": "secret"}
 
     async def test_legacy_server_still_opens_stream(self, started_sessions_bus: SessionsBus) -> None:
         # A legacy (< v0.4.0) server returns 404 -> register_agent returns False; the stream still opens.
