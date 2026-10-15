@@ -1,5 +1,6 @@
 """Validate command - check project structure and configuration."""
 
+import importlib.util
 import logging
 import re
 import sys
@@ -8,6 +9,8 @@ from argparse import Namespace
 from pathlib import Path
 from typing import Any
 
+from blueprint.agents.clients.io.nats_client import CONNECTIONS_READINESS_MODES
+from blueprint.agents.clients.io.nats_run_pool import RunLimit
 from blueprint.agents.component.namespace import validate_namespace
 from blueprint.agents.config import PROCESS_SCOPE_KEYS
 
@@ -151,6 +154,9 @@ def run(args: Namespace) -> None:
         swallowed = swallowed_cancellations(src_dir)
         if swallowed:
             warnings.append(swallowed_cancellation_warning(project_dir.name, swallowed))
+
+    # The NATS delivery keys: each of these fails startup when it is wrong, so say so here first.
+    issues.extend(_nats_findings(project_dir))
 
     # Group readiness: what this project must state before it can be hosted beside another
     # agent, and what would otherwise stay silent.
@@ -471,6 +477,65 @@ def _module_file(project_dir: Path, module_path: str) -> Path | None:
     for candidate in (project_dir / relative.with_suffix(".py"), project_dir / relative / "__init__.py"):
         if candidate.is_file():
             return candidate
+    return None
+
+
+def _nats_findings(project_dir: Path) -> list[str]:
+    """Check the NATS delivery keys that would otherwise fail only at startup.
+
+    The same parsers the client uses (``RunLimit.parse``, the readiness modes), so this command and
+    startup cannot disagree. ``nats_connection_source`` is checked for its form and for its module
+    being found -- without calling the factory: what the source returns (a binding without a
+    stream, for example) depends on the deployment's own data and is only known at startup.
+    """
+    settings = _load_settings(project_dir / SETTINGS_FILE)
+    if settings is None:
+        return []
+    issues: list[str] = []
+    for key, minimum in (("nats_max_concurrent_runs", 1), ("nats_extra_runs_per_process", 0)):
+        try:
+            RunLimit.parse(key, _value_of(settings, key), minimum=minimum)
+        except ValueError as exc:
+            issues.append(str(exc))
+    timeout = _value_of(settings, "nats_handler_timeout")
+    if timeout is not None and timeout != "":
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
+            issues.append(f"'nats_handler_timeout' must be a number of seconds above 0, got {timeout!r}. Unset it for no limit.")
+    readiness = _value_of(settings, "nats_connections_readiness")
+    if readiness is not None and str(readiness).strip().lower() not in CONNECTIONS_READINESS_MODES:
+        issues.append(f"'nats_connections_readiness' must be one of {', '.join(CONNECTIONS_READINESS_MODES)}, got {readiness!r}.")
+    unclaimed = _value_of(settings, "nats_unclaimed_subjects")
+    if unclaimed is not None and str(unclaimed).strip().lower() not in ("fail", "default_connection"):
+        issues.append(f"'nats_unclaimed_subjects' must be 'fail' or 'default_connection', got {unclaimed!r}.")
+    source = _value_of(settings, "nats_connection_source")
+    if source:
+        issue = _connection_source_issue(project_dir, str(source))
+        if issue:
+            issues.append(issue)
+    return issues
+
+
+def _connection_source_issue(project_dir: Path, path: str) -> str | None:
+    """Report a ``nats_connection_source`` that cannot be right, or ``None``.
+
+    Finding the module imports its parent packages, as the import at startup would; the module
+    itself is not executed and the factory not called.
+    """
+    module_path, _, attribute = path.strip().partition(":")
+    if not module_path or not attribute:
+        return f"'nats_connection_source' is {path!r}; write it as 'package.module:attribute', naming the factory."
+    added = str(project_dir) not in sys.path
+    if added:
+        sys.path.insert(0, str(project_dir))
+    try:
+        found = importlib.util.find_spec(module_path) is not None
+    except (ImportError, ValueError) as exc:
+        return f"'nats_connection_source': '{module_path}' cannot be found: {exc}"
+    finally:
+        if added:
+            sys.path.remove(str(project_dir))
+    if not found:
+        return f"'nats_connection_source': no module '{module_path}' on the project's path; startup would fail."
     return None
 
 
