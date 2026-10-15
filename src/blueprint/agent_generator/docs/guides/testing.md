@@ -196,9 +196,9 @@ class TestProductCatalogApi:
     def app(self, mock_registry):
         """Create a FastAPI app with the API routes registered."""
         app = FastAPI()
-        api = ProductCatalogApi()
+        api = ProductCatalogApi()      # wires its decorated routes on construction
         api.registry = mock_registry
-        api.register_routes(app.router)
+        app.include_router(api.router)
         return app
 
     @pytest.fixture

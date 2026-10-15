@@ -103,12 +103,12 @@ Fluent builder for constructing an `AgentRuntime` instance with a model, prompts
 ### Constructor
 
 ```python
-AgentBuilder(config, runtime_name="default", meter=None, package_root=None)
+AgentBuilder(config=None, runtime_name="default", meter=None, package_root=None)
 ```
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `config` | `Config` | -- | Application configuration instance. |
+| `config` | `Config \| None` | `None` | Optional. A declaration in `main.py` passes none; the host's `AppBuilder.build()` supplies it. |
 | `runtime_name` | `str` | `"default"` | Name of the runtime configuration section to use. |
 | `meter` | `Meter \| None` | `None` | OpenTelemetry meter for recording metrics. |
 | `package_root` | `Path \| None` | `None` | Root path for locating prompt files. |
@@ -124,7 +124,7 @@ AgentBuilder(config, runtime_name="default", meter=None, package_root=None)
 | `with_result_type(result_type: type[BaseModel])` | `AgentBuilder` | Set the structured result type (Pydantic model). |
 | `with_deps_type(deps_type)` | `AgentBuilder` | Set the dependency-injection type for the agent. |
 | `with_metrics(enabled=True)` | `AgentBuilder` | Enable or disable automatic metrics recording. |
-| `build(**kwargs)` | `AgentRuntime` | Build and return the configured `AgentRuntime`. |
+| `build(config=None, **kwargs)` | `AgentRuntime` | Build and return the `AgentRuntime`. In an application `AppBuilder.build()` calls it; call it yourself only in a script or a test. |
 
 ### Static Methods
 
@@ -136,14 +136,16 @@ AgentBuilder(config, runtime_name="default", meter=None, package_root=None)
 ### Usage
 
 ```python
-agent = (
-    AgentBuilder(config, runtime_name="default")
+my_agent = (                     # declared in main.py, not built
+    AgentBuilder(runtime_name="my_agent")
     .with_model_from_config()
-    .with_system_prompt()
+    .with_system_prompt("my_agent_system")
     .with_tools([my_tool])
     .with_metrics()
-    .build()
 )
+# AppBuilder()...with_agent(my_agent, name="my_agent")
+
+runtime = my_agent.build(config)  # only outside an application: a script or a test
 ```
 
 ---
