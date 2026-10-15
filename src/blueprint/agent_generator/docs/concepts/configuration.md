@@ -171,12 +171,13 @@ print(cache_config.default_ttl)      # 3600
 Configuration is validated automatically when `AppBuilder.build()` is called. If required settings are missing or have invalid types, a `ConfigError` is raised with a descriptive message.
 
 ```python
-from blueprint.agents import AppBuilder, Config
+from blueprint.agents import AgentBuilder, AppBuilder, Config
 
-config = Config(settings_files=["settings.toml"])
+summarizer = AgentBuilder(runtime_name="summarizer").with_model_from_config()
+agent = AppBuilder().with_agent(summarizer, name="summarizer")
 
 try:
-    app = AppBuilder(config).with_agent("summarizer", SummarizerAgent).build()
+    app = agent.build(Config(settings_files=["settings.toml"]))
 except ConfigError as e:
     # e.g., "Missing required config: default.runtimes.summarizer.model_provider"
     print(f"Configuration error: {e}")

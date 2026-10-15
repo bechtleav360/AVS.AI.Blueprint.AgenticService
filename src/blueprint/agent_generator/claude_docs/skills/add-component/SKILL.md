@@ -53,12 +53,12 @@ After scaffolding, implement the component logic:
 3. **Implement the component** following these patterns:
 
 ### EventHandler
-- `can_handle_event()`: Filter by `event.type` or event data
-- `handle_event()`: Process event, return `HandlerResult` or `None`
-- Resolve service dependencies in `on_startup()` via `self.registry.get_service()`
+- `can_handle_event()`: route on the envelope only (`event.type`, `source`, `subject`, context keys) -- no I/O
+- `handle_event()`: `extract_payload` -> exactly **one** service call -> `HandlerResult`, `HandlerResult.skipped(reason)` (responsible, nothing to do) or `None` (let the next handler try)
+- Resolve the service in `on_startup()` via `self.registry.get_service()`; never call the LLM from a handler
 
 ### Service
-- Add domain methods with clear input/output types
+- Add domain methods with clear input/output types; one entry-point method per event the handler forwards (including the relevance check)
 - Resolve agent/cache dependencies in `on_startup()`
 
 ### RestApi
@@ -67,19 +67,19 @@ After scaffolding, implement the component logic:
 - Resolve services in `on_startup()`
 
 ### AgentRuntime
-- Configure via `AgentBuilder` in `main.py` (not in a separate file)
+- Declare via `AgentBuilder(runtime_name=...)` in `main.py` -- unbuilt, no `Config`; register with `.with_agent(builder, name=...)`
 - Set system prompt, tools, result type, and model config
 - Create `.prompt` file in `src/prompts/` if needed
 
 ### Scheduler
-- Implement `tick()` with the recurring logic
-- Resolve dependencies in `on_startup()`
+- Implement `tick()` with the recurring logic (delegate to a service)
+- Resolve dependencies in `on_startup()` and then call `await super().on_startup()` -- without it the scheduler never runs
 
 ## Step 4: Wire into main.py
 
 Add the component to the `AppBuilder` chain in `src/main.py`:
 - Import the new component
-- Add the appropriate `.with_*()` call in dependency order
+- Add the appropriate `.with_*()` call in dependency order, passing the **class** (never an instance); `main.py` stays a declaration without `Config` or `build()`
 - For agents: add `AgentBuilder` setup before the `AppBuilder` chain
 
 ## Step 5: Update Configuration

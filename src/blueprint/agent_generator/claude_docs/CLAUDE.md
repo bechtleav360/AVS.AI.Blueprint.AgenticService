@@ -31,38 +31,58 @@ from blueprint.agents.models import GenericCloudEvent, HandlerResult, CloudEvent
 4. **No global state** — no module-level component instances, no singletons.
 5. **All components must implement `on_startup()` and `on_shutdown()`** — even if empty.
 6. **Services contain ALL business logic** — handlers and APIs are thin delegation layers.
+7. **A handler translates, it never decides.** `can_handle_event` routes on the envelope only
+   (`event.type`, `event.source`, `event.subject`, the context keys) -- no I/O, no service call.
+   `handle_event` is three steps: `self.extract_payload(event, Dto)` -> **one** service call ->
+   translate the answer into a `HandlerResult`, `HandlerResult.skipped(reason)` or `None`.
+   Calling two services in a row is already business logic: give the service one method for it.
+8. **Relevance is the service's decision.** Whether *this* event needs work (a field changed, a
+   status reached) is checked by the service; a handler that was routed the event but has nothing
+   to do returns `HandlerResult.skipped(reason)`.
+9. **Handlers never call the LLM.** No `agent.run()`, no `registry.get_agent()`, no runtime taken
+   from `context` in a handler -- the service resolves its agent in `on_startup()` and runs it.
+10. **No run state on `self`.** Components are shared by every concurrent run; per-event values
+    live in locals and parameters. `self` holds only what `on_startup()` resolved.
 
 ## Wiring (main.py)
 
+`src/main.py` is a **declaration**, exactly as `asbs setup` writes it: no `Config`, no `build()`,
+components registered as **classes**. The host builds it -- `create_app()` when the agent runs on
+its own, `python -m blueprint.agents.entrypoint` when it is one agent of a group.
+
 ```python
 from pathlib import Path
-from blueprint.agents import AppBuilder, Config, AgentBuilder
 
-config = Config(
-    settings_files=["settings.toml", ".secrets.toml"],
-    root_path=Path(__file__).parent.parent,
+from blueprint.agents import AgentBuilder, AppBuilder, Config
+
+from .api.order_api import OrderApi
+from .handlers.order_handler import OrderHandler
+from .services.order_service import OrderService
+
+order_agent = (
+    AgentBuilder(runtime_name="order_agent")
+    .with_model_from_config()
+    .with_system_prompt("order_agent_system")
 )
 
-my_agent = (
-    AgentBuilder(config, runtime_name="my_agent")
-    .with_model_from_config("my_agent")
-    .with_system_prompt("system")
-    .with_tools([...])
-    .with_result_type(MyResultModel)
-    .build(name="my_agent")
+agent = (
+    AppBuilder()
+    .with_service(OrderService)
+    .with_agent(order_agent, name="order_agent")
+    .with_handler(OrderHandler)
+    .with_rest_api(OrderApi)
 )
 
-app = (
-    AppBuilder(config)
-    .with_service(MyService)
-    .with_agent(my_agent)
-    .with_handler(MyHandler)
-    .with_rest_api(MyApi)
-    .with_scheduler(MyScheduler)
-    .with_cache()
-    .build()
-)
+
+def create_app():
+    """Build this agent as an application of its own (standalone only)."""
+    return agent.build(Config(settings_files=["settings.toml", ".secrets.toml"], root_path=str(Path(__file__).parent.parent)))
 ```
+
+- Never build the `AgentBuilder` yourself and never pass an instance to a `with_*` call: a group
+  refuses instances, because a component constructed on that line exists before any namespace does.
+- Keep one registration per line in dependency order (services, agents, handlers, APIs,
+  schedulers) -- `asbs create` rewrites the chain line by line.
 
 ## Component Patterns
 
@@ -80,21 +100,32 @@ class OrderHandler(EventHandlerBase):
         pass
 
     async def can_handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> bool:
-        return event.type == "order.placed"
+        return event.type == "order.placed"  # routing on the envelope only -- no I/O
 
     async def handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> HandlerResult | None:
-        order = self.extract_payload(event, OrderModel)  # Typed extraction with validation
-        result = await self._service.process(order)
-        return HandlerResult(event_type="order.processed", data=result)
+        payload = self.extract_payload(event, OrderPlacedEvent)  # DTO: typed, validated
+        outcome = await self._service.on_order_placed(payload.order_id, event_id=event.id)  # ONE call
+        if outcome is None:
+            return HandlerResult.skipped("order needs no processing")
+        return HandlerResult(event_type="order.processed", data=outcome.model_dump())
 ```
 
-- Return `None` → pass to next handler. Return `HandlerResult` → publish event, stop chain.
-- **Delivery is at-least-once.** The same event can reach `handle_event` more than once (lost ack, pod restart, rolling deploy). Either make the method safe to repeat, or set `idempotency_enabled = true` **and** `idempotency_ttl = <seconds>` in `settings.toml` -- the framework then skips an event whose id and source it has already dispatched, within that window. Off by default on purpose: only you know whether replaying your side effects is acceptable.
+- Results: `HandlerResult` → published (if its `event_type` is mapped), chain stops.
+  `HandlerResult.skipped(reason)` → this handler is responsible but the event needs nothing: chain
+  stops, the delivery is acknowledged, the reason is logged at INFO, nothing is published.
+  `None` → the event is offered to the next handler; if none takes it, the framework logs
+  "No handler processed event".
+- **Delivery is at-least-once.** The same event can reach `handle_event` more than once (lost ack, pod restart, rolling deploy). The *service* must be safe to repeat (check before you act, upsert rather than insert), or set `idempotency_enabled = true` **and** `idempotency_ttl = <seconds>` in `settings.toml` -- the framework then skips an event whose id and source it has already dispatched, within that window. Off by default on purpose: only you know whether replaying your side effects is acceptable.
 - **`self.extract_payload(event, ModelType)`** — validates `event.data` against a Pydantic model and returns a typed instance. Raises `InvalidEventError` if data is missing or invalid (the framework handles this automatically).
+- **The service gets no CloudEvent and no DTO.** Translate the payload into domain values (ids, domain models) in the handler; that is what lets a REST API call the same service method.
+- **`context["runtime"]`** holds the agent runtime the chain bound for this handler. It is there for
+  framework plumbing; a handler never runs it (rule 9) -- the service resolves its own agent.
 
 ### Service
 
-Services contain ALL business logic. Each responsibility gets its own method.
+Services contain ALL business logic, including the decision whether an event needs work at all.
+Each responsibility gets its own method; the method a handler calls is the one entry point for that
+event (a facade that calls the others in order).
 
 ```python
 class OrderService(ServiceBase):
@@ -103,6 +134,18 @@ class OrderService(ServiceBase):
 
     async def on_shutdown(self) -> None:
         pass
+
+    async def on_order_placed(self, order_id: str, event_id: str) -> OrderOutcome | None:
+        """Entry point for an order.placed event. None: the order needs no processing."""
+        order = await self.load(order_id)
+        if not self.is_relevant(order):
+            return None
+        await self.validate(order)
+        return await self.analyze(order)
+
+    def is_relevant(self, order: Order) -> bool:
+        """Pure check, testable without mocks."""
+        ...
 
     async def validate(self, order: OrderModel) -> ValidationResult:
         """Validate order against business rules."""
@@ -183,15 +226,15 @@ class CleanupScheduler(SchedulerBase):
 ### AgentRuntime (via AgentBuilder)
 
 ```python
-agent = (
-    AgentBuilder(config, runtime_name="analyzer")
-    .with_model_from_config("analyzer")
-    .with_system_prompt("system")  # Loads prompts/system.prompt (static, no dynamic inputs)
+analyzer = (
+    AgentBuilder(runtime_name="analyzer")  # declared, not built: the host builds it
+    .with_model_from_config()
+    .with_system_prompt("analyzer_system")  # Loads prompts/analyzer_system.prompt (static)
     .with_tools([analyze_tool])
     .with_result_type(AnalysisResult)
     .with_metrics()
-    .build(name="analyzer")
 )
+# registered in main.py: AppBuilder()...with_agent(analyzer, name="analyzer")
 ```
 
 **Prompt files** in `src/prompts/`:
@@ -302,6 +345,6 @@ src/
 ├── services/        # ServiceBase subclasses
 ├── api/             # RestApiBase subclasses
 ├── schedulers/      # SchedulerBase subclasses
-├── models/          # Pydantic domain models + DTOs
+├── models/          # dto.py: event/REST payloads; domain_models.py: what services work with
 └── prompts/         # .prompt files (system + instruction)
 ```

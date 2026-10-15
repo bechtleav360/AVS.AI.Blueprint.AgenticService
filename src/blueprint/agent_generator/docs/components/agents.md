@@ -14,11 +14,13 @@ Agents wrap LLM interactions with structured inputs, outputs, tools, and prompt 
 
 ## AgentBuilder Fluent API
 
-Build an agent using the chainable builder methods:
+Declare an agent runtime with the chainable builder methods. The declaration is not built where
+it is written: it is registered with `AppBuilder.with_agent(...)` and the host builds it with the
+rest of the agent (see [Registration](#registration)).
 
 ```python
 from pydantic import BaseModel
-from blueprint.agents import AgentBuilder, Config
+from blueprint.agents import AgentBuilder
 from blueprint.agents.agent.tool import Tool
 
 
@@ -34,15 +36,12 @@ def search_documents(query: str) -> list[str]:
     return ["passage 1", "passage 2"]
 
 
-config = Config()
-
-agent = (
-    AgentBuilder(config, runtime_name="summarizer")
+summarizer = (
+    AgentBuilder(runtime_name="summarizer")
     .with_model_from_config()
     .with_system_prompt("summarizer")
     .with_tools([Tool(name="search_documents", function=search_documents)])
     .with_result_type(SummaryOutput)
-    .build()
 )
 ```
 
@@ -110,15 +109,18 @@ Enables or disables metric collection for this agent.
 
 ### build()
 
-Finalizes the agent configuration and returns an `AgentRuntime` instance. The agent is automatically registered with the application registry under its `runtime_name`.
+Finalizes the agent configuration and returns an `AgentRuntime` instance. In an application you
+never call it: `AppBuilder.build()` builds every declared runtime and registers it under the name
+given to `with_agent`. Call it yourself only outside an application -- a script or a test:
 
 ```python
-agent = builder.build()
+runtime = builder.build(config)
 ```
 
 ## Running an Agent
 
-Once built, invoke the agent with a user prompt:
+A service resolves the runtime in `on_startup()` (`self.registry.get_agent("summarizer")`) and
+invokes it with a user prompt -- handlers never do:
 
 ```python
 result = await agent.run("Summarize the Q4 earnings report")
@@ -143,15 +145,15 @@ class SentimentResult(BaseModel):
     reasoning: str
 
 
-agent = (
-    AgentBuilder(config, runtime_name="sentiment_analyzer")
+sentiment_analyzer = (
+    AgentBuilder(runtime_name="sentiment_analyzer")
     .with_model_from_config()
     .with_system_prompt("sentiment")
     .with_result_type(SentimentResult)
-    .build()
 )
 
-result = await agent.run("The product exceeded all expectations.")
+# in a service, after self._agent = self.registry.get_agent("sentiment_analyzer"):
+result = await self._agent.run("The product exceeded all expectations.")
 print(result.output.sentiment)    # "positive"
 print(result.output.confidence)   # 0.95
 ```
@@ -282,27 +284,24 @@ This captures token usage, latency, and success/failure status for observability
 
 ## Registration
 
-Register agents with the application builder:
+Register agents in `src/main.py`, the declaration `asbs setup` writes. Pass the **unbuilt**
+`AgentBuilder` and the name services resolve it by:
 
 ```python
-from blueprint.agents import AppBuilder, Config
-
-config = Config()
+from blueprint.agents import AgentBuilder, AppBuilder
 
 summarizer = (
-    AgentBuilder(config, runtime_name="summarizer")
+    AgentBuilder(runtime_name="summarizer")
     .with_model_from_config()
     .with_system_prompt("summarizer")
     .with_result_type(SummaryOutput)
-    .build()
 )
 
-app = (
-    AppBuilder(config)
-    .with_agent(summarizer)
+agent = (
+    AppBuilder()
     .with_service(DocumentService)
+    .with_agent(summarizer, name="summarizer")
     .with_handler(DocumentHandler)
-    .build()
 )
 ```
 
@@ -314,7 +313,7 @@ A complete example showing a handler that uses an agent through a service.
 
 ```python
 from pydantic import BaseModel
-from blueprint.agents import AgentBuilder, Config
+from blueprint.agents import AgentBuilder
 from blueprint.agents.agent.tool import Tool
 
 
@@ -333,16 +332,13 @@ def lookup_category_definitions() -> list[dict]:
     ]
 
 
-config = Config()
-
 classifier_agent = (
-    AgentBuilder(config, runtime_name="ticket_classifier")
+    AgentBuilder(runtime_name="ticket_classifier")
     .with_model_from_config()
     .with_system_prompt("ticket_classifier")
     .with_tools([Tool(name="lookup_category_definitions", function=lookup_category_definitions)])
     .with_result_type(ClassificationResult)
     .with_metrics(True)
-    .build()
 )
 ```
 
@@ -389,18 +385,28 @@ class TicketService(ServiceBase):
 ```python
 from typing import Any
 from blueprint.agents.handler.event_handler_base import EventHandlerBase
-from blueprint.agents.handler.handler_result import HandlerResult
-from blueprint.agents.events.generic_cloud_event import GenericCloudEvent
+from pydantic import BaseModel
+
+from blueprint.agents.models.events import GenericCloudEvent, HandlerResult
+
+
+class TicketCreated(BaseModel):
+    """DTO: the payload of a ticket.created event."""
+
+    ticket_id: str
+    text: str
 
 
 class TicketClassificationHandler(EventHandlerBase):
 
     def __init__(self) -> None:
         super().__init__(priority=100)
-        self._ticket_service = None
 
     async def on_startup(self) -> None:
         self._ticket_service = self.registry.get_service(TicketService)
+
+    async def on_shutdown(self) -> None:
+        pass
 
     async def can_handle_event(
         self, event: GenericCloudEvent, context: dict[str, Any]
@@ -410,30 +416,24 @@ class TicketClassificationHandler(EventHandlerBase):
     async def handle_event(
         self, event: GenericCloudEvent, context: dict[str, Any]
     ) -> HandlerResult:
-        if self._ticket_service:
-
-            classification = await self._ticket_service.classify_ticket(
-                event.data["text"]
-            )
-            return HandlerResult(
-                data={**event.data, "classification": classification},
-                event_type="com.example.ticket.classified",
-            )
+        payload = self.extract_payload(event, TicketCreated)
+        classification = await self._ticket_service.classify_ticket(payload.text)
+        return HandlerResult(
+            data={"ticket_id": payload.ticket_id, "classification": classification},
+            event_type="com.example.ticket.classified",
+        )
 ```
 
 ### Application Assembly
 
 ```python
-from blueprint.agents import AppBuilder, Config
+from blueprint.agents import AppBuilder
 
-config = Config()
-
-app = (
-    AppBuilder(config)
-    .with_agent(classifier_agent)
+agent = (
+    AppBuilder()
     .with_service(TicketService)
+    .with_agent(classifier_agent, name="ticket_classifier")
     .with_handler(TicketClassificationHandler)
-    .build()
 )
 ```
 

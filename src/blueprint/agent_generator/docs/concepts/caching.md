@@ -16,16 +16,13 @@ this file; see the git history for those.
 `with_cache()` on the builder:
 
 ```python
-from blueprint.agents import AppBuilder, Config
+from blueprint.agents import AppBuilder
 
-config = Config(settings_files=["settings.toml", ".secrets.toml"])
-
-app = (
-    AppBuilder(config)
+agent = (
+    AppBuilder()
     .with_service(MyService)
     .with_handler(MyHandler)
     .with_cache()
-    .build()
 )
 ```
 
@@ -38,7 +35,7 @@ configuration exists.
 Call it again with a name:
 
 ```python
-AppBuilder(config).with_cache().with_cache(name="sessions").build()
+AppBuilder().with_cache().with_cache(name="sessions")
 ```
 
 Each name gets its own store -- its own directory on disk, its own key prefix on Redis -- and a

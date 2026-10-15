@@ -111,6 +111,7 @@ An exception propagating out of the method sets the span status to `ERROR` befor
 | `blueprint.namespace.inflight` | gauge | Dispatches that agent has in progress. Carries `agent`. |
 | `blueprint.events.unhandled` | counter | Events an agent received and found nothing to do with. Carries `agent` and `topic`. |
 | `blueprint.events.duplicate` | counter | Events an agent recognised as already processed. Carries `agent` and `topic`. |
+| `blueprint.events.skipped` | counter | Events whose responsible handler returned `HandlerResult.skipped` -- the agent's own relevance rule, not a too-broad subscription. Carries `agent` and `topic`. |
 | `blueprint.nats.connection.bound` | gauge | `1` while a named NATS connection is bound and delivering, `0` otherwise. Carries `agent` and `connection`. |
 | `blueprint.nats.connection.permission_violations` | counter | Permission violations the broker reported on a named connection. Carries `agent` and `connection`. |
 | `llm.tokens.count` | counter | Tokens consumed, by an agent's model calls. |

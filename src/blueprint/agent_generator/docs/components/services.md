@@ -102,18 +102,16 @@ class NotificationService(ServiceBase):
 Register services with the application builder:
 
 ```python
-from blueprint.agents import AppBuilder, Config
+from blueprint.agents import AppBuilder
 
-config = Config()
-app = (
-    AppBuilder(config)
+agent = (
+    AppBuilder()
     .with_service(OrderService)
     .with_service(NotificationService)
-    .build()
 )
 ```
 
-Note that `with_service` receives the class or an instance.
+Note that `with_service` receives the **class**: a group refuses an instance, because it would be constructed before any namespace exists.
 
 ## Best Practices
 

@@ -133,13 +133,11 @@ async def tick(self) -> None:
 Register scheduler instances with the application builder. Note that `with_scheduler` receives an instance or a class:
 
 ```python
-from blueprint.agents import AppBuilder, Config
+from blueprint.agents import AppBuilder
 
-config = Config()
-app = (
-    AppBuilder(config)
-    .with_scheduler(DataSyncScheduler())
-    .build()
+agent = (
+    AppBuilder()
+    .with_scheduler(DataSyncScheduler)
 )
 ```
 
@@ -241,16 +239,13 @@ class CatalogSyncScheduler(SchedulerBase):
 ### Application Assembly
 
 ```python
-from blueprint.agents import AppBuilder, Config
+from blueprint.agents import AppBuilder
 
-config = Config()
-
-app = (
-    AppBuilder(config)
+agent = (
+    AppBuilder()
     .with_service(ExternalApiClient)
     .with_service(CatalogService)
-    .with_scheduler(CatalogSyncScheduler())
-    .build()
+    .with_scheduler(CatalogSyncScheduler)
 )
 ```
 

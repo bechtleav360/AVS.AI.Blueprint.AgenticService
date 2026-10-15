@@ -11,7 +11,7 @@ from blueprint.agents.models.events import GenericCloudEvent, HandlerResult
 
 ## Purpose
 
-Event handlers are the primary entry point for asynchronous event processing. When a CloudEvent arrives (via Dapr, NATS, or HTTP), the framework iterates through all registered handlers in priority order. Each handler is asked whether it can process the event via `can_handle_event()`; if it can, `handle_event()` is called. Handlers should be thin — delegate all domain logic to services.
+Event handlers are the primary entry point for asynchronous event processing. When a CloudEvent arrives (via Dapr, NATS, or HTTP), the framework iterates through all registered handlers in priority order. Each handler is asked whether it is responsible for the event via `can_handle_event()`; if it is, `handle_event()` is called, and the first result that is not `None` ends the chain. **A handler translates, it never decides:** it routes on the envelope, extracts the payload, makes one service call and turns the answer into a result. All domain logic -- including whether a particular event needs work -- lives in services.
 
 ## Base Class
 
@@ -57,7 +57,7 @@ super().__init__(priority=500)  # Runs late
 
 ### can_handle_event
 
-Determines whether this handler should process the given event. Return `True` to claim the event, `False` to skip it. Even if `False` is returned, the next handler still runs — returning `False` does not stop the chain.
+Routes the event: is this handler the one for this kind of event? Return `True` to claim it, `False` to let the next handler be asked. Decide on the envelope only -- `event.type`, `event.source`, `event.subject` and the context keys -- with no I/O and no service call. Whether *this particular* event needs work is the service's decision, reported through `handle_event` (see `HandlerResult.skipped` below).
 
 ```python
 async def can_handle_event(
@@ -68,15 +68,26 @@ async def can_handle_event(
 
 ### handle_event
 
-Performs the actual processing. Called only when `can_handle_event` returned `True`.
+Called only when `can_handle_event` returned `True`. Three steps, nothing more:
+
+1. `self.extract_payload(event, MyEventDto)` -- the typed, validated payload.
+2. **One** service call with domain values (ids, domain models -- never the CloudEvent or the DTO).
+   Two service calls in a row are business logic already: give the service one entry-point method.
+3. The service's answer as a result.
 
 ```python
 async def handle_event(
     self, event: GenericCloudEvent, context: dict[str, Any]
-) -> Any | HandlerResult | list[HandlerResult] | None:
-    result = await self._order_service.process(event.data)
-    return HandlerResult(data=result, event_type="order.processed")
+) -> HandlerResult | None:
+    payload = self.extract_payload(event, OrderCreatedEvent)
+    outcome = await self._order_service.on_order_created(payload.order_id, event_id=event.id)
+    if outcome is None:
+        return HandlerResult.skipped("order needs no processing")
+    return HandlerResult(event_type="order.processed", data=outcome.model_dump())
 ```
+
+A handler never calls the LLM -- no `agent.run()`, no `registry.get_agent()`, and it does not run the
+runtime the chain puts into `context["runtime"]`. The service resolves its agent in `on_startup()`.
 
 ## Return Value Semantics
 
@@ -84,14 +95,18 @@ The return value of `handle_event` controls what happens next:
 
 | Return Value | Behavior |
 |---|---|
-| `None` | Passes control to the next handler in the chain. |
-| `HandlerResult` | Publishes a new CloudEvent downstream; passes control to the next handler. |
-| `list[HandlerResult]` | Publishes multiple CloudEvents; passes control to the next handler. |
-| Any other value | Stored internally for chaining; no event publication; passes to next handler. |
+| `None` | Passes control to the next handler in the chain. If no handler returns anything else, the framework logs "No handler processed event" and acknowledges. |
+| `HandlerResult` | Publishes a new CloudEvent if its `event_type` is mapped; **the chain stops**. |
+| `list[HandlerResult]` | Publishes multiple CloudEvents; **the chain stops**. |
+| `HandlerResult.skipped(reason)` | This handler is responsible but the event needs nothing: **the chain stops**, nothing is published, the delivery is acknowledged, the reason is logged at INFO and counted as `blueprint.events.skipped`. The run reports `ProcessingStatus.SKIPPED`; a REST caller gets `success = true` with the reason. |
+| Any other value | Returned as the run's result; no event publication; **the chain stops**. |
 
-Note: The handler chain always continues through all handlers that return `True` from `can_handle_event`. Returning a `HandlerResult` does not stop subsequent handlers.
+The first handler that returns anything other than `None` ends the chain (`handler_chain.py`, `_dispatch`). Use `None` only when another handler should be offered the event; a handler that owns the event and finds nothing to do returns `HandlerResult.skipped(reason)`.
 
 ## Sharing Data Between Handlers via context
+
+Prefer one handler per event type with a service entry point; a chain of handlers that hand data
+on through `context` is for cross-cutting steps, not for splitting one piece of domain logic.
 
 The `context` dictionary is shared across all handlers processing the same event. A handler early in the chain (low priority) can write parsed or enriched data into `context`, and a later handler reads it — avoiding redundant work.
 
@@ -137,25 +152,20 @@ delivery:
 
 | Key | Transport | Value |
 |---|---|---|
-| `nats_topic` | NATS | The subscription that matched, possibly a wildcard: `t.*.risk.>` |
-| `nats_subject` | NATS | The subject the message was delivered on: `t.T1.risk.created` |
+| `nats_topic` | NATS | The subscription as the agent declared it, possibly a wildcard: `orders.>` |
+| `nats_subject` | NATS | The subject the message was delivered on, as the agent knows it: `orders.created`. On a named connection the binding's `subject_prefix` is stripped again, so a handler sees the same subject on every connection. |
+| `nats_connection` | NATS | The name of the named connection the delivery came from; absent on the default connection. An opaque name for logs and for passing on -- the framework attaches no meaning to it. |
 | `dapr_topic` | Dapr | The topic the sidecar delivered to |
 
-**Derive anything security-relevant from `nats_subject`, not from the event.** Every field of the
-event -- `tenantid` and any other extension included -- is whatever the publisher wrote. The subject
-is what the broker routed, and under subject-scoped publish permissions it is what the broker checked
-the publisher was allowed to use. Nothing in the payload can overwrite a context key.
+**Derive anything security-relevant from the delivery, not from the event.** Every field of the
+event is whatever the publisher wrote. The connection and the subject are what the broker routed --
+under subject-scoped publish permissions, what the broker checked the publisher was allowed to use.
+Nothing in the payload can overwrite a context key. Which deployment-level scope a connection stands
+for is decided by the connection source (its `validate` and `run_scope` hooks), not by handlers.
 
-```python
-from blueprint.agents.io.api.eventing.nats import NATS_SUBJECT_CONTEXT_KEY
-
-async def handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> None:
-    tenant = context[NATS_SUBJECT_CONTEXT_KEY].split(".")[1]   # t.<tenant>.risk.<event>
-```
-
-The key is present only for events NATS delivered: a test, a direct `process_event` call or another
-transport has no subject, so read it with `.get()` where that can happen. Handlers share `context`,
-so a handler earlier in the chain could overwrite it -- do not write to transport keys.
+The keys are present only for events NATS delivered: a test, a direct `process_event` call or another
+transport has none, so read them with `.get()` where that can happen. Handlers share `context`,
+so a handler earlier in the chain could overwrite them -- do not write to transport keys.
 
 ## Published Event Types
 
@@ -209,17 +219,17 @@ class OrderHandler(EventHandlerBase):
 
 ## Registration
 
-Register handlers with `AppBuilder` by passing the **class** or an instance of the class:
+Register handlers with `AppBuilder` by passing the **class** -- an instance is refused in a group,
+because it would be constructed before any namespace exists. In `src/main.py` (a declaration; see
+[agents](agents.md) and the `create_app()` that `asbs setup` writes):
 
 ```python
-from blueprint.agents import AppBuilder, Config
+from blueprint.agents import AppBuilder
 
-config = Config(settings_files=["settings.toml", ".secrets.toml"])
-app = (
-    AppBuilder(config)
+agent = (
+    AppBuilder()
     .with_service(OrderService)
     .with_handler(OrderHandler)
-    .build()
 )
 ```
 
@@ -229,9 +239,19 @@ Services must be registered before the handlers that depend on them.
 
 ```python
 from typing import Any
+
+from pydantic import BaseModel
+
 from blueprint.agents.handler.event_handler_base import EventHandlerBase
 from blueprint.agents.models.events import GenericCloudEvent, HandlerResult
 from blueprint.agents.services.service_base import ServiceBase
+
+
+class OrderConfirmedEvent(BaseModel):
+    """DTO: the payload of an order.confirmed event."""
+
+    order_id: str
+    items: list[dict]
 
 
 class InvoiceService(ServiceBase):
@@ -243,7 +263,10 @@ class InvoiceService(ServiceBase):
     async def on_shutdown(self) -> None:
         pass
 
-    async def generate_invoice(self, order_id: str, items: list[dict]) -> dict:
+    async def generate_invoice(self, order_id: str, items: list[dict]) -> dict | None:
+        """None: nothing to invoice."""
+        if not items:
+            return None
         return {"invoice_id": "INV-001", "order_id": order_id, "total": 99.99}
 
 
@@ -271,22 +294,16 @@ class InvoiceHandler(EventHandlerBase):
     async def handle_event(
         self, event: GenericCloudEvent, context: dict[str, Any]
     ) -> HandlerResult | None:
-        if self._invoice_service is None:
-            return None
-
-        order_data = event.data or {}
-        order_id = order_data.get("order_id", "")
-        items = order_data.get("items", [])
-
-        try:
-            invoice = await self._invoice_service.generate_invoice(order_id, items)
-            return HandlerResult(data=invoice, event_type="invoice.created")
-        except Exception as exc:
-            return HandlerResult(
-                data={"order_id": order_id, "error": str(exc)},
-                event_type="invoice.error",
-            )
+        payload = self.extract_payload(event, OrderConfirmedEvent)  # DTO, validated
+        invoice = await self._invoice_service.generate_invoice(payload.order_id, payload.items)
+        if invoice is None:
+            return HandlerResult.skipped("order has nothing to invoice")
+        return HandlerResult(data=invoice, event_type="invoice.created")
 ```
+
+A failure is not turned into a result here: an exception reaches the transport, which settles the
+delivery (nak and redeliver, or terminate for `InvalidEventError`). If the domain needs an
+`invoice.error` event, the service decides that and returns it as its answer.
 
 ## Testing
 

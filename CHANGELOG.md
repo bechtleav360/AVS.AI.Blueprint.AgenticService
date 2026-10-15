@@ -363,6 +363,22 @@
 
 ### Changed
 
+- **One `main.py` pattern in every document, skill and agent prompt: the template's.** `src/main.py`
+  is a declaration (`agent = AppBuilder()...`, unbuilt `AgentBuilder`, components as classes) with
+  a `create_app()` for running it alone. The docs showed three patterns, including `.with_config()`,
+  `.with_api()` and `AgentBuilder().with_name()`, which do not exist, and a built `AgentRuntime`
+  that a group refuses.
+- **Handlers translate, services decide -- in the scaffold and every document.** The handler
+  template no longer says "this is where the main business logic is implemented":
+  `can_handle_event` routes on the envelope only, `handle_event` extracts the payload, makes one
+  service call and returns the answer (`HandlerResult`, `HandlerResult.skipped(reason)` or `None`);
+  idempotency belongs to the service; handlers never call the LLM. The chain semantics are stated
+  as the code has them: the first result that is not `None` ends the chain (the docs said a
+  `HandlerResult` let later handlers run).
+- **`asbs validate` checks the NATS delivery keys** that otherwise fail only at startup:
+  `nats_max_concurrent_runs`, `nats_extra_runs_per_process`, `nats_handler_timeout`,
+  `nats_connections_readiness`, `nats_unclaimed_subjects`, and the form and module of
+  `nats_connection_source` (the factory is not called).
 - **`docs/guides/cli-reference.md` is an index**, with one page per command under `guides/cli/`
   (`setup`, `create`, `validate`, `dev`, `claude`, plus `naming` and `auto-registration`). It was a
   single 1,023-line page, which meant reading about one flag cost the whole file.

@@ -60,76 +60,79 @@ event: CloudEvent[DocumentPayload] = CloudEvent(
 
 ## Handler Chain-of-Responsibility
 
-Event handlers form an ordered processing chain. When an event arrives, the framework iterates through registered handlers, asks each whether it can handle the event, and delegates processing to those that accept it.
+Event handlers form an ordered chain. When an event arrives, the framework asks the handlers in
+priority order whether they are responsible for it (`can_handle_event`); the first one that is runs
+`handle_event`, and **the first result that is not `None` ends the chain**.
 
 ### Handler Priority
 
-Handlers are sorted by their `priority` attribute (lower values execute earlier). This determines the order in which handlers are consulted for each incoming event.
+Handlers are sorted by their `priority` (lower values are asked earlier), set through the base
+class constructor:
 
 ```python
+from typing import Any
+
 from blueprint.agents.handler.event_handler_base import EventHandlerBase
-from blueprint.agents.models.events import CloudEvent
+from blueprint.agents.models.events import GenericCloudEvent, HandlerResult
 
 
-class ValidationHandler(EventHandlerBase):
-    priority = 1  # Runs first
+class DocumentHandler(EventHandlerBase):
+    def __init__(self) -> None:
+        super().__init__(priority=10)
 
-    def can_handle_event(self, event: CloudEvent) -> bool:
+    async def on_startup(self) -> None:
+        self._service = self.registry.get_service(DocumentService)
+
+    async def on_shutdown(self) -> None:
+        pass
+
+    async def can_handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> bool:
         return event.type == "document.received"
 
-    async def handle_event(self, event: CloudEvent) -> None:
-        if not event.data.get("content"):
-            raise ValueError("Empty document content")
-        # Return None to pass the event to the next handler
-        return None
-
-
-class EnrichmentHandler(EventHandlerBase):
-    priority = 10  # Runs after validation
-
-    def can_handle_event(self, event: CloudEvent) -> bool:
-        return event.type == "document.received"
-
-    async def handle_event(self, event: CloudEvent) -> HandlerResult:
-        enriched = await self.enrich(event.data)
-        return HandlerResult(event_type="document.enriched", data=enriched)
+    async def handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> HandlerResult:
+        payload = self.extract_payload(event, DocumentReceived)
+        enriched = await self._service.enrich(payload.document_id)
+        if enriched is None:
+            return HandlerResult.skipped("document already enriched")
+        return HandlerResult(event_type="document.enriched", data=enriched.model_dump())
 ```
 
 ### Handler Methods
 
-Every handler must implement two methods:
+Every handler implements two methods, both `async` and both given the event and the processing
+`context`:
 
-- **`can_handle_event(event)`** -- Return `True` if this handler should process the given event. Called for every incoming event.
-- **`handle_event(event)`** -- Process the event and return a result that controls downstream behavior.
+- **`can_handle_event(event, context)`** -- routing: return `True` if this handler is responsible for
+  this kind of event. Decide on the envelope only (`type`, `source`, `subject`, context keys) --
+  no I/O, no service call. Called for every incoming event until one handler says yes.
+- **`handle_event(event, context)`** -- translation: extract the payload, make **one** service call,
+  and return the answer as a result. Whether this particular event needs work is the service's
+  decision.
 
 ## Return Values from handle_event
 
-The return value of `handle_event()` determines what happens after processing:
+The return value of `handle_event()` determines what happens next:
 
-### Return None -- Pass to Next Handler
+| Return value | Chain | Published | Delivery |
+|---|---|---|---|
+| `None` | continues with the next handler | nothing | acked when the chain ends; if no handler returned anything, "No handler processed event" is logged |
+| `HandlerResult(event_type=...)` | stops | the event, if `event_type` is in `topic_mapping` | acked after publishing |
+| `list[HandlerResult]` | stops | each result | acked after publishing |
+| `HandlerResult.skipped(reason)` | stops | nothing | acked; reason logged at INFO; counted as `blueprint.events.skipped` |
+| a `dict` | stops | nothing, unless it carries an `event_type` key | acked; the dict is the run's result (e.g. for a REST caller) |
+| an exception | stops | nothing | not acked -- redelivered (see the transport sections) |
 
-Returning `None` or not returning signals that the handler has finished its work (or declined to act) and the event should continue to the next handler in the chain.
+### Return None -- Offer the Event to the Next Handler
 
-```python
-async def handle_event(self, event: CloudEvent) -> None:
-    await self.log_event(event)
-    return None  # Continue chain
-```
+`None` means "not mine after all": the event goes on to the next handler. Use it only when another
+handler should get the event.
 
 ### Return HandlerResult -- Publish a Downstream Event
 
 Returning a `HandlerResult` causes the framework to publish a new event to the configured event bus.
 
 ```python
-from blueprint.agents.models.events import HandlerResult
-
-
-async def handle_event(self, event: CloudEvent) -> HandlerResult:
-    summary = await self.summarize(event.data["content"])
-    return HandlerResult(
-        event_type="document.summarized",
-        data={"summary": summary, "original_id": event.id},
-    )
+return HandlerResult(event_type="document.summarized", data={"summary": summary, "original_id": event.id})
 ```
 
 ### Return a List of HandlerResult -- Publish Multiple Events
@@ -137,15 +140,21 @@ async def handle_event(self, event: CloudEvent) -> HandlerResult:
 Returning a list publishes multiple downstream events, useful for fan-out patterns.
 
 ```python
-async def handle_event(self, event: CloudEvent) -> list[HandlerResult]:
-    chunks = self.split_document(event.data["content"])
-    return [
-        HandlerResult(
-            event_type="chunk.created",
-            data={"chunk": chunk, "index": i},
-        )
-        for i, chunk in enumerate(chunks)
-    ]
+return [HandlerResult(event_type="chunk.created", data={"chunk": chunk, "index": i}) for i, chunk in enumerate(chunks)]
+```
+
+### Return HandlerResult.skipped -- Responsible, Nothing to Do
+
+The handler owns the event, and its service decided that this particular event needs nothing (the
+status did not change, the document is already processed). The chain stops, nothing is published,
+the delivery is acknowledged, and the reason is logged at INFO and counted as
+`blueprint.events.skipped` -- apart from unhandled events, which say something about the
+subscription rather than about the agent's rules. The run's status is `ProcessingStatus.SKIPPED`.
+
+```python
+outcome = await self._service.on_project_updated(payload.project_id, event_id=event.id)
+if outcome is None:
+    return HandlerResult.skipped("project not relevant for this agent")
 ```
 
 ### When publishing a result fails
@@ -166,15 +175,10 @@ Two cases are skipped with a WARNING rather than failed, because they are config
 a failure: an `event_type` with no entry in `topic_mapping`, and a result that would be published
 to the topic its inbound event came from.
 
-### Return Any Other Value -- Internal Chaining
+### Return a dict
 
-Returning any other value passes it along internally within the handler chain without publishing to the event bus. This is useful for in-process data transformation between handlers.
-
-```python
-async def handle_event(self, event: CloudEvent) -> dict:
-    # This result is available to the next handler but is not published
-    return {"validated": True, "timestamp": datetime.utcnow().isoformat()}
-```
+A `dict` ends the chain like a result: with an `event_type` key it is published like a `HandlerResult`, otherwise it is the run's result (a REST
+caller receives it as `data`). It is not handed to another handler.
 
 ## Declaring Published Event Types
 
@@ -421,38 +425,43 @@ job_timeout_seconds = 300
 ## Complete Handler Example
 
 ```python
+from typing import Any
+
+from pydantic import BaseModel
+
 from blueprint.agents.handler.event_handler_base import EventHandlerBase
-from blueprint.agents.models.events import CloudEvent, HandlerResult
+from blueprint.agents.models.events import GenericCloudEvent, HandlerResult
+
+
+class DocumentChanged(BaseModel):
+    """DTO: the payload of document.received / document.updated."""
+
+    document_id: str
 
 
 class IngestionHandler(EventHandlerBase):
-    priority = 5
+    def __init__(self) -> None:
+        super().__init__(priority=5)
 
     async def on_startup(self) -> None:
-        self.storage = self.registry.get_service(StorageService)
-        self.cache = self.registry.cache_service
+        self._ingestion = self.registry.get_service(IngestionService)
 
-    def can_handle_event(self, event: CloudEvent) -> bool:
+    async def on_shutdown(self) -> None:
+        pass
+
+    async def can_handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> bool:
         return event.type in ("document.received", "document.updated")
 
-    async def handle_event(self, event: CloudEvent) -> HandlerResult | list[HandlerResult]:
-        doc_id = event.subject
+    async def handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> HandlerResult:
+        payload = self.extract_payload(event, DocumentChanged)
+        stored = await self._ingestion.ingest(payload.document_id, event_id=event.id)
+        if stored is None:
+            return HandlerResult.skipped("document already ingested")
+        return HandlerResult(event_type="document.stored", data={"doc_id": stored.document_id})
 
-        # Check cache for deduplication
-        cached = await self.cache.get(doc_id, namespace="ingested")
-        if cached and event.type == "document.received":
-            return None  # Already processed, skip
-
-        # Store the document
-        await self.storage.save(doc_id, event.data)
-        await self.cache.set(doc_id, True, namespace="ingested", ttl=3600)
-
-        # Publish downstream
-        return HandlerResult(
-            event_type="document.stored",
-            data={"doc_id": doc_id, "source": event.source},
-        )
-
-    def get_published_event_types(self) -> list[str]:
-        return ["document.stored", "document.ingestion_error"]
+    def get_published_event_types(self) -> tuple[str, str] | None:
+        return ("document.stored", "document.ingestion_error")
 ```
+
+The deduplication ("already ingested"), the storage and the cache all live in `IngestionService`;
+the handler only translates.

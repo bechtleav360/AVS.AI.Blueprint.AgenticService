@@ -14,7 +14,7 @@ Blueprint Agents gives you a component-based toolkit for building intelligent mi
 ## Key Features
 
 - **Component Architecture** -- Five composable base classes (`EventHandlerBase`, `ServiceBase`, `RestApiBase`, `AgentRuntime`, `SchedulerBase`) assembled via a fluent `AppBuilder`
-- **Event-Driven Processing** -- CloudEvents v1.0 with chain-of-responsibility handlers, Dapr and NATS pub/sub support
+- **Event-Driven Processing** -- CloudEvents v1.0 with chain-of-responsibility handlers, Dapr and NATS pub/sub support; on NATS, concurrent runs per agent with JetStream heartbeats and run timeouts, and named connections (several brokers or accounts per agent, supplied by a connection source)
 - **LLM Integration** -- AI agents powered by [Pydantic AI](https://ai.pydantic.dev/) with structured outputs, tool calling, and multi-model support (OpenAI, vLLM)
 - **Built-in Observability** -- OpenTelemetry tracing, metrics, and structured logging out of the box
 - **Multi-Agent Grouping** -- Run one agent per process, or host several in one process, as a *deployment* choice: the agent's code is identical either way
@@ -144,8 +144,8 @@ Two things about that chain are worth knowing up front:
 
 | Component | Base Class | Purpose |
 |-----------|-----------|---------|
-| **Event Handler** | `EventHandlerBase` | Process CloudEvents via chain-of-responsibility with priority ordering |
-| **Service** | `ServiceBase` | Encapsulate business logic with full registry access |
+| **Event Handler** | `EventHandlerBase` | Route CloudEvents (priority chain) and translate each into one service call; returns a result, `HandlerResult.skipped(reason)` or `None` |
+| **Service** | `ServiceBase` | All business logic, including whether an event needs work; runs the agents |
 | **REST API** | `RestApiBase` | Define HTTP endpoints with `@get()`, `@post()`, `@put()`, `@delete()`, `@patch()` decorators |
 | **Agent** | `AgentRuntime` | Run LLM agents with structured outputs, tool calling, and prompt management |
 | **Scheduler** | `SchedulerBase` | Execute cron-based background tasks with auto-registered trigger endpoints |

@@ -341,14 +341,19 @@ changing them triggers a rolling update on their own.
 
 ### 5.2 Runtime keys
 
+Defaults corrected 2026-10-15 to what ships: the NATS limits are unset unless configured, and
+the server's defaults apply (feature changelog, named connections step 6).
+
 | Key | Default | Meaning |
 |---|---|---|
 | `readiness_policy` | `"all"` | See C3. |
 | `executor_workers` | `os.cpu_count() + 4` | Per-namespace thread pool size. Bounded per #36. |
 | `nats_queue_group` | `app_name` | Queue group for the root namespace only. |
-| `nats_ack_wait` | `300.0` | Seconds. **MUST** exceed p99 handler duration. See sec. 7.3. |
-| `nats_max_ack_pending` | `16` | Per-consumer, shared across replicas. `-1` unlimited. A push subscription dispatches its callbacks serially, so a value far above the replica count queues messages client-side while their `ack_wait` runs. |
-| `nats_max_deliver` | `5` | Attempts before the message is dead-lettered. `-1` unlimited, and then nothing is ever dead-lettered. |
+| `nats_ack_wait` | unset -- the server's (NATS: 30 s) | Seconds. **MUST** exceed p99 handler duration unless the heartbeat is on (it is by default: a running delivery reports `in_progress` every third of `ack_wait`). See sec. 7.3. |
+| `nats_max_ack_pending` | unset -- the server's (NATS: 1000) | Per-consumer, shared across replicas. `-1` unlimited. Keep it near replicas x `nats_max_concurrent_runs`: what a pod receives beyond the runs it has started waits in the client's queue while its `ack_wait` runs. |
+| `nats_max_deliver` | unset -- the server's (NATS: unlimited) | Attempts before the message is dead-lettered. `-1` unlimited, and then nothing is ever dead-lettered. |
+| `nats_max_concurrent_runs`, `nats_extra_runs_per_process`, `nats_handler_timeout`, `nats_heartbeat_enabled` | see the configuration reference | Concurrent runs per (agent, connection), the process pool beyond each pair's guaranteed run, a per-run time limit, the `in_progress` heartbeat. Added by `docs/plans/2026-10-14-named-connections.md`. |
+| `nats_connection_source`, `nats_connections_readiness`, `nats_unclaimed_subjects` | see the configuration reference | Named connections. Same plan. |
 | `nats_dead_letter_subject` | `<queue group>.dead-letter` | Where a message the framework gives up on is republished. Derived from the agent's identity, as the queue group is (C1). `""` disables it and loses those payloads. **MUST NOT** be a wildcard or a subject the same namespace consumes. |
 | `idempotency_enabled` | `false` | Opt-in dedup. See sec. 7.4. |
 | `idempotency_ttl` | -- | Dedup window. |
@@ -550,8 +555,12 @@ the server keys pending state on stream sequence. **MUST** be validated against 
 ### 7.3 Long handlers
 
 `ack_wait` **MUST** exceed p99 handler duration, or a slow handler is redelivered to another
-replica while the first is still working. `in_progress()` heartbeats address slow handlers; they
-do **not** address connection loss, since they travel over the same connection.
+replica while the first is still working -- unless the delivery is heartbeated. Since the
+named-connections work (2026-10-14) a running JetStream delivery reports `in_progress()` every
+third of its consumer's `ack_wait` by default (`nats_heartbeat_enabled`), and `nats_handler_timeout`
+bounds a run. Heartbeats address slow handlers; they do **not** address connection loss, since
+they travel over the same connection, and they do not cover messages still waiting in the client's
+queue (bound those with `nats_max_ack_pending`).
 
 ### 7.4 Idempotency
 

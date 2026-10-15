@@ -18,42 +18,55 @@ Each base class follows the same lifecycle contract and participates in the comp
 
 ## AppBuilder Fluent API
 
-Applications are assembled using `AppBuilder`, which exposes a fluent interface for registering components and producing a configured application instance.
+An agent is a **declaration**: `src/main.py` records what the agent is made of, and the host builds
+it -- `create_app()` when it runs on its own, `python -m blueprint.agents.entrypoint` when it is one
+agent of a group (see [multi-agent setup](../guides/multi-agent-setup.md)).
 
 ```python
-from blueprint.agents import AppBuilder, Config
+from pathlib import Path
 
-from my_app.handlers import IngestHandler, EnrichHandler
-from my_app.services import EmbeddingService, StorageService
-from my_app.agents import ResearchAgent
+from blueprint.agents import AgentBuilder, AppBuilder, Config
+
 from my_app.apis import QueryApi
+from my_app.handlers import EnrichHandler, IngestHandler
 from my_app.schedulers import CleanupScheduler
+from my_app.services import EmbeddingService, StorageService
 
-config = Config(settings_files=["settings.toml", ".secrets.toml"])
+research = (
+    AgentBuilder(runtime_name="research")
+    .with_model_from_config()
+    .with_system_prompt("research_system")
+)
 
-app = (
-    AppBuilder(config)
+agent = (
+    AppBuilder()
     .with_service(EmbeddingService)
     .with_service(StorageService)
+    .with_agent(research, name="research")
     .with_handler(IngestHandler)
     .with_handler(EnrichHandler)
-    .with_agent("research", ResearchAgent)
     .with_rest_api(QueryApi)
     .with_scheduler(CleanupScheduler)
     .with_cache()
-    .build()
 )
+
+
+def create_app():
+    return agent.build(Config(settings_files=["settings.toml", ".secrets.toml"], root_path=str(Path(__file__).parent.parent)))
 ```
 
 ### Builder Methods
 
-- `.with_handler(HandlerClass)` -- Register an event handler. Handlers are instantiated in registration order and sorted by priority at runtime.
-- `.with_service(ServiceClass)` -- Register a shared service. Services start before handlers and agents, so they are available for dependency resolution.
-- `.with_agent(name, AgentClass)` -- Register a named AI agent runtime. The name is used for configuration lookup and registry resolution.
+Every `with_*` call records; nothing is constructed until `build()`. Components are passed as
+**classes** -- a group refuses an instance, because it would exist before any namespace does.
+
+- `.with_service(ServiceClass)` -- Register a service. Services start before handlers and agents, so they are available for dependency resolution.
+- `.with_agent(agent_builder, name="...")` -- Register an AI agent runtime from an unbuilt `AgentBuilder`. The name is the registry key services resolve it by.
+- `.with_handler(HandlerClass)` -- Register an event handler. Handlers are sorted by priority at runtime.
 - `.with_rest_api(ApiClass)` -- Register a REST API module. Routes are mounted on the shared FastAPI instance.
-- `.with_scheduler(SchedulerClass)` -- Register a scheduled task. Schedulers start last and are the first to shut down.
-- `.with_cache()` -- Enable the built-in disk cache service. Once enabled, it is accessible through the registry.
-- `.build()` -- Validate configuration, instantiate all components, and return the runnable application.
+- `.with_scheduler(SchedulerClass)` -- Register a scheduled task. Schedulers start after the APIs and stop before them.
+- `.with_cache()` -- Enable the built-in cache service. Once enabled, it is accessible through the registry.
+- `.build(config)` -- Validate configuration, instantiate all components, and return the FastAPI application. Single use.
 
 ## Component Registry
 
@@ -63,19 +76,20 @@ The component registry is a central service locator that all components share. C
 
 ```python
 from blueprint.agents.handler.event_handler_base import EventHandlerBase
-from my_app.services import EmbeddingService
+from blueprint.agents.services.service_base import ServiceBase
 
 
 class IngestHandler(EventHandlerBase):
     async def on_startup(self) -> None:
-        # Resolve a service by its class
-        self.embedding = self.registry.get_service(EmbeddingService)
+        # A handler resolves the one service it delegates to -- nothing else.
+        self._service = self.registry.get_service(EmbeddingService)
 
-        # Resolve an agent by its registered name
-        self.research_agent = self.registry.get_agent("research")
 
-        # Access the cache (if enabled via .with_cache())
-        self.cache = self.registry.cache_service
+class EmbeddingService(ServiceBase):
+    async def on_startup(self) -> None:
+        # Agents and the cache are resolved by services, which hold the business logic.
+        self._research = self.registry.get_agent("research")
+        self._cache = self.registry.cache_service  # if enabled via .with_cache()
 ```
 
 ### Registry Methods
@@ -150,72 +164,113 @@ This ordering guarantees that a handler's `on_startup()` can safely call `self.r
 
 ## Full Wiring Example
 
-The following example shows a complete application with all five component types wired together:
+The following example shows all five component types. The handler only translates; the service
+decides, including whether an event needs work at all.
 
 ```python
-from blueprint.agents import AppBuilder, AgentBuilder, AgentRuntime, Config
+from pathlib import Path
+from typing import Any
+
+from pydantic import BaseModel
+
+from blueprint.agents import AgentBuilder, AppBuilder, Config
 from blueprint.agents.handler.event_handler_base import EventHandlerBase
-from blueprint.agents.services.service_base import ServiceBase
 from blueprint.agents.io.api.rest_api_base import RestApiBase
 from blueprint.agents.io.api.scheduling.scheduler import SchedulerBase
-from blueprint.agents.models.events import CloudEvent, HandlerResult
+from blueprint.agents.models.events import GenericCloudEvent, HandlerResult
+from blueprint.agents.services.service_base import ServiceBase
 
 
-# -- Service --
+class DocumentReceived(BaseModel):
+    """DTO: the payload of a document.received event."""
+
+    content: str
+
+
+# -- Service: all business logic --
 class SummarizationService(ServiceBase):
     async def on_startup(self) -> None:
-        self.agent = self.registry.get_agent("summarizer")
+        self._agent = self.registry.get_agent("summarizer")
 
-    async def summarize(self, text: str) -> str:
-        return await self.agent.run(text)
+    async def on_shutdown(self) -> None:
+        pass
+
+    async def summarize(self, text: str) -> str | None:
+        """None: the document is too short to need a summary."""
+        if len(text) < 200:
+            return None
+        result = await self._agent.run(text)
+        return str(result.output)
 
 
-# -- Handler --
+# -- Handler: extract, one service call, result --
 class DocumentHandler(EventHandlerBase):
-    priority = 10
+    def __init__(self) -> None:
+        super().__init__(priority=10)
 
     async def on_startup(self) -> None:
-        self.svc = self.registry.get_service(SummarizationService)
+        self._service = self.registry.get_service(SummarizationService)
 
-    def can_handle_event(self, event: CloudEvent) -> bool:
+    async def on_shutdown(self) -> None:
+        pass
+
+    async def can_handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> bool:
         return event.type == "document.received"
 
-    async def handle_event(self, event: CloudEvent) -> HandlerResult:
-        summary = await self.svc.summarize(event.data["content"])
+    async def handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> HandlerResult:
+        payload = self.extract_payload(event, DocumentReceived)
+        summary = await self._service.summarize(payload.content)
+        if summary is None:
+            return HandlerResult.skipped("document too short to summarise")
         return HandlerResult(event_type="document.summarized", data={"summary": summary})
-
-    def get_published_event_types(self) -> list[str]:
-        return ["document.summarized", "document.error"]
 
 
 # -- REST API --
 class StatusApi(RestApiBase):
-    def register_routes(self, router) -> None:
-        @router.get("/status")
-        async def get_status():
-            return {"status": "operational"}
+    async def on_startup(self) -> None:
+        pass
+
+    async def on_shutdown(self) -> None:
+        pass
+
+    @RestApiBase.get("/status")
+    async def get_status(self) -> dict[str, str]:
+        return {"status": "operational"}
 
 
 # -- Scheduler --
 class PurgeScheduler(SchedulerBase):
+    def __init__(self) -> None:
+        super().__init__(crontab="0 * * * *")
+
     async def on_startup(self) -> None:
-        self.cache = self.registry.cache_service
+        self._cache = self.registry.cache_service
+        await super().on_startup()  # required: without it the scheduler never runs
 
-    async def execute(self) -> None:
-        await self.cache.clear("temp")
+    async def on_shutdown(self) -> None:
+        await super().on_shutdown()
+
+    async def tick(self) -> None:
+        self._cache.clear("temp")
 
 
-# -- Application assembly --
-config = Config(settings_files=["settings.toml", ".secrets.toml"])
+# -- Declaration (src/main.py) --
+summarizer = AgentBuilder(runtime_name="summarizer").with_model_from_config().with_system_prompt("summarizer_system")
 
-app = (
-    AppBuilder(config)
+agent = (
+    AppBuilder()
     .with_service(SummarizationService)
+    .with_agent(summarizer, name="summarizer")
     .with_handler(DocumentHandler)
-    .with_agent("summarizer", AgentBuilder.from_config(config, "summarizer"))
     .with_rest_api(StatusApi)
     .with_scheduler(PurgeScheduler)
     .with_cache()
-    .build()
 )
+
+
+def create_app():
+    return agent.build(Config(settings_files=["settings.toml", ".secrets.toml"], root_path=str(Path(__file__).parent.parent)))
 ```
+
+A scheduler also needs `scheduler_mode` in `settings.toml` (no default; see
+[schedulers](../components/schedulers.md)).

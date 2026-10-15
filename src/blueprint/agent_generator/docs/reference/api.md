@@ -19,12 +19,12 @@ Fluent builder that assembles a FastAPI application from handlers, services, age
 ### Constructor
 
 ```python
-AppBuilder(config: Config)
+AppBuilder(config: Config | None = None)
 ```
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `config` | `Config` | Application configuration instance. |
+| `config` | `Config \| None` | Optional. A declaration (`src/main.py`) passes none; `build(config)` takes it instead. |
 
 ### Methods
 
@@ -32,27 +32,32 @@ AppBuilder(config: Config)
 |--------|---------|-------------|
 | `with_handler(handler, *, name=None)` | `AppBuilder` | Register an event handler. |
 | `with_service(service, *, name=None)` | `AppBuilder` | Register a service component. |
-| `with_agent(agent, *, name=None)` | `AppBuilder` | Register an agent component. |
+| `with_agent(agent, *, name=None)` | `AppBuilder` | Register an agent runtime: an unbuilt `AgentBuilder` (what `asbs` writes), a class or a factory. |
 | `with_rest_api(api, *, name=None)` | `AppBuilder` | Register a REST API controller. |
 | `with_scheduler(scheduler, *, name=None)` | `AppBuilder` | Register a scheduled task. |
-| `with_cache(enabled=True, enable_locking=True)` | `AppBuilder` | Enable or configure the disk cache. |
+| `with_cache(enabled=True, enable_locking=True, *, name="default")` | `AppBuilder` | Declare a cache; call again with another `name` for several. |
 | `with_health_checker(name, checker)` | `AppBuilder` | Add a named health-check probe. |
-| `build()` | `FastAPI` | Finalize and return the configured FastAPI application. |
+| `build(config=None)` | `FastAPI` | Construct everything declared and return the FastAPI application. Single use. |
 
 ### Usage
 
 ```python
-config = Config()
-app = (
-    AppBuilder(config)
+my_agent = AgentBuilder(runtime_name="my_agent").with_model_from_config().with_system_prompt("my_agent_system")
+
+agent = (                      # src/main.py: a declaration
+    AppBuilder()
     .with_service(MyService)
-    .with_agent(MyAgent)
+    .with_agent(my_agent, name="my_agent")
     .with_handler(MyHandler)
     .with_rest_api(MyApi)
     .with_cache()
-    .build()
 )
+
+app = agent.build(Config(settings_files=["settings.toml", ".secrets.toml"]))  # what create_app() does
 ```
+
+Components are registered as **classes**: a group refuses an instance, because it would be
+constructed before any namespace exists.
 
 ---
 

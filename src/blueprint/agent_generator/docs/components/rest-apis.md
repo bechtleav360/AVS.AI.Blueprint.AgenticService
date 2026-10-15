@@ -169,14 +169,12 @@ async def get_order(self, order_id: str):
 Register API instances with the application builder. `with_rest_api` receives an instance or the class:
 
 ```python
-from blueprint.agents import AppBuilder, Config
+from blueprint.agents import AppBuilder
 
-config = Config()
-app = (
-    AppBuilder(config)
-    .with_rest_api(OrderApi())
-    .with_rest_api(CustomerApi())
-    .build()
+agent = (
+    AppBuilder()
+    .with_rest_api(OrderApi)
+    .with_rest_api(CustomerApi)
 )
 ```
 
@@ -301,14 +299,12 @@ class OrderApi(RestApiBase):
 ### Application Assembly
 
 ```python
-from blueprint.agents import AppBuilder, Config
+from blueprint.agents import AppBuilder
 
-config = Config()
-app = (
-    AppBuilder(config)
+agent = (
+    AppBuilder()
     .with_service(OrderService)
-    .with_rest_api(OrderApi())
-    .build()
+    .with_rest_api(OrderApi)
 )
 ```
 

@@ -14,11 +14,12 @@ Two things shape everything below, and both are recent:
   in both scheduler modes, and event deduplication is available. What you have to decide is listed
   under [Running more than one replica](#running-more-than-one-replica).
 
-> **The delivery behaviour is covered by unit tests against mocked transports and has not been
-> exercised against a real broker.** Queue-group distribution across replicas, redelivery after
-> `nats_ack_wait`, durable survival across reconnect and the shutdown drain are all specified and
-> implemented; none of them has been watched happening on a live NATS server. Treat the first
-> multi-replica deployment as the experiment it is.
+> **The delivery behaviour is tested against a real NATS server** (`tests/integration`, a
+> `nats:2.10` broker with JetStream): acknowledgement exactly once, redelivery after `nats_ack_wait`,
+> concurrent runs, the `in_progress` heartbeat, the run timeout, reconnect with resubscription and
+> named connections on an account-per-connection broker. Distribution across several *pods* has
+> been measured with several clients in one test process, not with real pods; treat the first
+> multi-replica deployment accordingly.
 
 ---
 
@@ -332,17 +333,21 @@ scaling out and regrouping are independent of each other.
 
 | Outcome | Disposition |
 |---|---|
-| Handled, or no handler matched it | **ack** -- an unmatched event is not a failure |
+| Handled, skipped (`HandlerResult.skipped`), or no handler matched it | **ack** -- none of them is a failure |
 | A retryable failure | **nak**, redelivered after `nats_ack_wait` |
+| A run that exceeded `nats_handler_timeout` | cancelled and **nak**'d for immediate redelivery |
 | A poison payload, or a `CriticalHandlerError` | **term**, and dead-lettered |
 | `nats_max_deliver` attempts exhausted | dead-lettered |
 
-Two keys to set deliberately:
+Keys to set deliberately. Unset, each is the server's default: the framework sets no consumer
+setting on its own.
 
-Unset, each is the server's default: the framework sets no consumer setting on its own.
-
-- **`nats_ack_wait`** (server default: 30 s on NATS) must exceed your p99 handler duration. Set it
-  below that and the broker redelivers work that is still in progress, to a second replica.
+- **`nats_ack_wait`** (server default: 30 s on NATS). A running JetStream delivery reports
+  `in_progress` every third of it (`nats_heartbeat_enabled`, on by default), so a long run is not
+  redelivered while it runs. What the heartbeat does not cover is a message that is still waiting in
+  the client's queue -- bound that with `nats_max_ack_pending`. With the heartbeat switched off,
+  `nats_ack_wait` must exceed your p99 handler duration.
+- **`nats_handler_timeout`** bounds a single run; set it above the longest legitimate run.
 - **`nats_max_ack_pending`** is the in-flight limit **across every replica sharing the consumer**,
   not per replica. Set it deliberately: it decides how many messages all replicas together work on
   at once.
@@ -360,7 +365,7 @@ Delivery is at-least-once, permanently: a lost acknowledgement, a pod killed mid
 rolling deploy each produce a redelivery *after* the first attempt has committed its side effects.
 Two honest answers, and the framework will not choose for you:
 
-- make the handlers safe to repeat (upsert rather than insert, key the outbound call on
+- make the services the handlers call safe to repeat (upsert rather than insert, key the outbound call on
   `event.id`), or
 - set `idempotency_enabled = true` and `idempotency_ttl`.
 

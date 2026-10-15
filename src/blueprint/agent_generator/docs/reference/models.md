@@ -48,6 +48,13 @@ Returned from event handlers to publish follow-up events.
 | `subject` | `str \| None` | `None` | Subject for the outbound event. |
 | `data` | `dict \| None` | `None` | Payload data for the outbound event. |
 | `metadata` | `dict \| None` | `None` | Additional metadata attached to the outbound event. |
+| `skip_reason` | `str \| None` | `None` | Set by `HandlerResult.skipped(reason)`; a skipped result carries no `event_type`, `subject` or `data`. |
+
+`HandlerResult.skipped(reason, *, metadata=None)` is the result of a handler that is responsible for
+the event but finds it needs nothing: the chain stops, nothing is published, the delivery is
+acknowledged, the reason is logged at INFO and counted as `blueprint.events.skipped`. The run's
+`ProcessingStatus` is `SKIPPED` (beside `PROCESSED` and `NO_HANDLER_FOUND`). `is_skipped` tells
+the two kinds of result apart.
 
 ---
 

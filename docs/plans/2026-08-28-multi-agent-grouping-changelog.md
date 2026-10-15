@@ -8588,6 +8588,38 @@ deterministic, see Open points).
   on the unchanged code (the only handler returning `None`, the way an agent had to say "nothing to
   do"): acked, but WARNING `No handler processed event 'orders.created'` and counted as unhandled.
 
+### Named connections, step 6: documentation, scaffold and skills agree with the code
+
+- **One `main.py` pattern** everywhere (W1): the installed `CLAUDE.md`, `blueprint-builder.md`,
+  `getting-started.md`, `concepts/architecture.md`, `components/agents.md`, `event-handlers.md`,
+  `rest-apis.md`, `schedulers.md`, `services.md`, `caching.md`, `configuration.md` and
+  `reference/api.md` now show the template's declaration. `reference/api.md` documents
+  `AppBuilder(config=None)` and `build(config=None)`.
+- **Chain semantics** (W2): `event-handlers.md` and `concepts/event-processing.md` said a
+  `HandlerResult` (and any other value) let later handlers run; `_dispatch` returns the first
+  non-`None` result. Both now carry a table per return value, including `skipped`.
+- **`concepts/architecture.md`** (W3) used `with_agent(name, Cls)`, a synchronous
+  `can_handle_event(event)`, `register_routes`, `execute()` and `priority = 10`; rewritten.
+- **Scheduler** (W4): `blueprint-builder.md` showed `on_startup` without `super().on_startup()`.
+- **W5** was already fixed (`519566f` removed the second `CLAUDE.md`).
+- **Handler template** (W7, W8): docstrings and the idempotency comment now put the decision in the
+  service. **Runtime in `context`** (W9): documented as framework plumbing a handler never runs.
+  **Models** (W11): `models/` is `dto.py` + `domain_models.py` (+ `mapper.py`) as the templates
+  already scaffold it.
+- **Handler rules** (2026-10-15) in the installed `CLAUDE.md` (rules 7-10), the builder and architect
+  agents, `blueprint-events` and `add-component`.
+- **`event-handlers.md` context keys:** `nats_topic`/`nats_subject` as the agent declared/knows them,
+  `nats_connection` added; the tenant example is gone (the framework names no tenant).
+- **Spec sec. 5.2** listed `nats_ack_wait = 300`, `nats_max_ack_pending = 16`, `nats_max_deliver = 5`
+  as defaults; the code leaves them unset (server defaults). Corrected, the new keys added; sec. 7.3
+  states the default heartbeat.
+- **`guides/deployment.md`**: the "never exercised against a real broker" banner is replaced by
+  what `tests/integration` covers; dispositions for skipped and timed-out runs; the heartbeat.
+- **`reference/configuration-keys.md`**: `nats_subscriptions`, `nats_publish_mode` and
+  `nats_publish_subjects` were read by the code and documented nowhere.
+- **`asbs validate`** (`_nats_findings`): the NATS keys parsed with the client's own parsers; the
+  source's module found via `importlib.util.find_spec`, the factory never called.
+
 ---
 
 ## Open points

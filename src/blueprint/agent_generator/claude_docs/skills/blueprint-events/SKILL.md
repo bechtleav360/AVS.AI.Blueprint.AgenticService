@@ -19,11 +19,14 @@ asbs docs components/event-handlers --cat      # writing a handler
 
 **Return value is control flow:**
 
-- `return None` - not mine, or nothing to publish. The event passes to the next handler.
 - `return HandlerResult(...)` - publish that event and **stop the chain**.
+- `return HandlerResult.skipped("reason")` - this handler is responsible but the event needs
+  nothing: **stop the chain**, acknowledge, log the reason at INFO, count `blueprint.events.skipped`.
+- `return None` - another handler should get it. The event passes to the next handler; if none
+  takes it, the framework logs "No handler processed event".
 
 **Delivery is at-least-once.** The same event can reach `handle_event` more than once: a lost ack, a
-pod restart, a rolling deploy. Either make the method safe to repeat, or set **both**
+pod restart, a rolling deploy. Either make the service it calls safe to repeat, or set **both**
 `idempotency_enabled = true` and `idempotency_ttl = <seconds>`; the framework then skips an event
 whose id and source it has already dispatched, within that window. It is off by default on purpose -
 only you know whether replaying your side effects is acceptable.
@@ -45,17 +48,25 @@ class OrderHandler(EventHandlerBase):
         self._service = self.registry.get_service(OrderService)
 
     async def can_handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> bool:
-        return event.type == "order.placed"
+        return event.type == "order.placed"    # envelope only: no I/O, no service call
 
     async def handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> HandlerResult | None:
-        order = self.extract_payload(event, OrderModel)
-        result = await self._service.process(order)
-        return HandlerResult(event_type="order.processed", data=result)
+        payload = self.extract_payload(event, OrderPlacedEvent)
+        outcome = await self._service.on_order_placed(payload.order_id, event_id=event.id)   # ONE call
+        if outcome is None:
+            return HandlerResult.skipped("order needs no processing")
+        return HandlerResult(event_type="order.processed", data=outcome.model_dump())
 ```
 
 - **`self.extract_payload(event, Model)`** validates `event.data` and returns a typed instance,
   raising `InvalidEventError` that the framework handles. Do not hand-parse `event.data`.
-- Handlers are a **thin delegation layer**. Business logic belongs in a service.
+- **A handler translates, it never decides.** `extract_payload` -> exactly one service call with
+  domain values (never the CloudEvent or the DTO) -> result. Two service calls in a row are
+  business logic: give the service one entry-point method.
+- **Relevance is the service's decision** ("did the status change?"); the handler reports "no" as
+  `HandlerResult.skipped(reason)`.
+- **No LLM in a handler**: no `agent.run()`, no `registry.get_agent()`, no runtime from `context`.
+- **No run state on `self`**: runs are concurrent; per-event values stay in locals.
 - Dependencies resolve in `on_startup()`, never in `__init__`.
 
 ## Publishing from elsewhere

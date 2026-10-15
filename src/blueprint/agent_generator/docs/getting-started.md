@@ -148,44 +148,51 @@ Each command scaffolds a new file in the appropriate directory with the correct 
 
 ## Understanding main.py
 
-The `main.py` file is where you wire all components together using the `AppBuilder` fluent API. Here is a typical example:
+`src/main.py` is a **declaration**: it records what the agent is made of with the `AppBuilder`
+fluent API, and nothing is constructed until the host calls `build()`. This is what `asbs setup`
+writes:
 
 ```python
-from blueprint.agents import AppBuilder, AgentBuilder, AgentRuntime, Config
-from blueprint.agents.handler.event_handler_base import EventHandlerBase
-from blueprint.agents.services.service_base import ServiceBase
-from blueprint.agents.io.api.rest_api_base import RestApiBase
-from blueprint.agents.io.api.scheduling.scheduler import SchedulerBase
+from pathlib import Path
 
-from src.handlers.my_handler import MyHandler
-from src.services.my_service import MyService
-from src.api.my_api import MyApi
+from blueprint.agents import AgentBuilder, AppBuilder, Config
 
-app = (
-    AppBuilder()
-    .with_config(Config())
-    .with_handler(MyHandler)
-    .with_service(MyService)
-    .with_api(MyApi)
-    .with_agent(
-        AgentBuilder()
-        .with_name("my-agent")
-        .with_prompt_file("src/prompts/system.md")
-        .build()
-    )
-    .build()
+from .api.my_api import MyApi
+from .handlers.my_handler import MyHandler
+from .services.my_service import MyService
+
+my_agent = (
+    AgentBuilder(runtime_name="my_agent")
+    .with_model_from_config()
+    .with_system_prompt("my_agent_system")
 )
+
+agent = (
+    AppBuilder()
+    .with_service(MyService)
+    .with_agent(my_agent, name="my_agent")
+    .with_handler(MyHandler)
+    .with_rest_api(MyApi)
+)
+
+
+def create_app():
+    """Build this agent as an application of its own."""
+    return agent.build(Config(settings_files=["settings.toml", ".secrets.toml"], root_path=str(Path(__file__).parent.parent)))
 ```
 
 ### Key points
 
-- **`AppBuilder`** is the central assembly point. It uses a fluent (method-chaining) API to register each component.
+- **`AppBuilder`** is the central assembly point. Every `with_*` call records a component, passed as
+  a **class**; `build()` constructs them in dependency order and returns the FastAPI app.
+- **`create_app()`** is how the agent runs on its own (`uvicorn src.main:create_app --factory`). In a
+  group, `python -m blueprint.agents.entrypoint` builds the same declaration under the agent's
+  namespace -- nothing in this file changes.
 - **`Config`** loads values from `settings.toml` and `.secrets.toml` via Dynaconf. Environment variables can override any setting.
-- **Handlers** (`EventHandlerBase` subclasses) process incoming events from message queues or other sources.
-- **Services** (`ServiceBase` subclasses) encapsulate reusable business logic and are injected into handlers and APIs.
+- **Handlers** (`EventHandlerBase` subclasses) translate incoming events into one service call each.
+- **Services** (`ServiceBase` subclasses) hold all business logic and are resolved by handlers and APIs.
 - **APIs** (`RestApiBase` subclasses) define REST endpoints that are automatically mounted on the FastAPI server.
-- **Agents** are configured with `AgentBuilder`, which accepts a name, prompt files, and other LLM-specific settings.
-- **`AgentRuntime`** manages the lifecycle of all registered components at runtime.
+- **Agents** are declared with `AgentBuilder` (unbuilt) and registered with `with_agent(builder, name=...)`; services resolve them by that name.
 
 ---
 
