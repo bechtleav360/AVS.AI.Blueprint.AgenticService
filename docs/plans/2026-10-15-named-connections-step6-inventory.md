@@ -54,17 +54,24 @@ changed or why nothing was, and what is still open. Checked against the code on
 - Grep for removed APIs (`with_config(`, `with_api(`, `with_prompt_file`, `register_routes(`,
   `with_agent("name", Cls)`, `AgentBuilder(config` in docs): only plans and changelogs remain.
 
+## Done after the first pass (2026-10-15)
+
+- `webhook_relay` and `order_event_pipeline`: one handler per event type, one service call
+  (`46d5db4`, `d698836`); `document_summarizer` without `assert` (`df8c3f3`).
+- The named-connection example `examples/site_readings` (`639f2fa`), run live against a broker with
+  accounts.
+- Spec sec. 7.2 now matches the WARNING for an event no handler takes (`b81d5b9`, own commit).
+- `nats_delivery_attempt` / `nats_max_deliver` in the handler context (`7e90ab4`).
+
 ## Open
 
-- **A named-connection example** (`order_event_pipeline` or a new one with a source and two
-  connections) is not written.
-- **The examples' handlers do not follow the new handler rules:** `webhook_relay`'s three handlers
-  hold the logic themselves, `order_event_pipeline`'s call two service methods each. Only `main.py`
-  was changed.
-- **Spec sec. 7.2 vs code:** the spec says an unmatched event MUST NOT be logged at WARNING;
-  `HandlerChain._dispatch` logs "No handler processed event" at WARNING. Kept, as decided with D11
-  ("no handler at all keeps the WARNING") -- one of the two should change.
+- **Model file names differ:** the template scaffolds `dto.py` / `domain_models.py` / `mapper.py`;
+  the examples use `schemas.py` (+ `domain.py` where there are handlers). `document_summarizer`,
+  `health_monitor` and `inventory_api` have no handlers and keep one `schemas.py`; their APIs pass
+  request DTOs to the service.
+- **Pre-existing integration failure:** `test_acknowledgement_lifecycle.py::TestARetryableFailureComesBack::test_the_broker_counts_it_as_a_redelivery`
+  fails on the unchanged code too (control run 2026-10-15).
 - **Not checked:** the untracked specs `2026-09-23-dynamic-subscriptions.md`,
   `2026-09-24-handler-time-bounds.md` (sec. 4.5) and `2026-09-25-config-key-registry.md` (not in the
   repository); ADRs (owned outside the repository); `asbs docs` output beyond the files above.
-- The examples were started on the Windows host against a broker in WSL, not inside WSL.
+- The examples were started on the Windows host against brokers in WSL Docker, not inside WSL.
