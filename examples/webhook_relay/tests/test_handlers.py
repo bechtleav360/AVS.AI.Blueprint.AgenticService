@@ -1,18 +1,17 @@
-"""Unit tests for the webhook relay handler chain."""
+"""Unit tests for WebhookHandler: it translates, the service decides."""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from blueprint.agents.models.events import GenericCloudEvent, HandlerResult
 
-from src.handlers.content_filter import ContentFilter
-from src.handlers.metadata_enricher import MetadataEnricher
-from src.handlers.webhook_normalizer import WebhookNormalizer
+from src.handlers.webhook_handler import WebhookHandler
+from src.models.domain import IncomingWebhook, RelayOutcome
 from src.services.webhook_service import WebhookService
 
 # ---------------------------------------------------------------------------
@@ -79,183 +78,53 @@ def _stripe_test_data() -> dict[str, Any]:
 
 
 @pytest.fixture()
-def mock_registry():
-    """Return a mock registry with a fake WebhookService."""
+async def handler_and_service():
+    """A WebhookHandler holding a WebhookService double, as ``on_startup`` would leave it."""
     service = MagicMock(spec=WebhookService)
-    service.is_duplicate.return_value = False
-    service.normalize_payload.side_effect = lambda p: WebhookService._normalize_github(p)
-    service.mark_processed = MagicMock()
-    service.store_recent = MagicMock()
-
-    registry = MagicMock()
-    registry.get_service.return_value = service
-    return registry
+    service.relay = AsyncMock(return_value=RelayOutcome(kind="processed", data={"webhook_id": "evt-test-001"}))
+    handler = WebhookHandler.__new__(WebhookHandler)
+    handler._priority = 10
+    handler._service = service
+    return handler, service
 
 
-# ---------------------------------------------------------------------------
-# WebhookNormalizer
-# ---------------------------------------------------------------------------
+class TestRouting:
+    async def test_declares_and_accepts_webhook_received(self, handler_and_service):
+        handler, _ = handler_and_service
+        assert handler.get_handled_event_types() == ["webhook.received"]
+        assert await handler.can_handle_event(_make_event(_github_push_data()), {}) is True
+
+    async def test_declines_other_types_without_calling_the_service(self, handler_and_service):
+        handler, service = handler_and_service
+        assert await handler.can_handle_event(_make_event({}, event_type="other.event"), {}) is False
+        service.relay.assert_not_awaited()
 
 
-class TestWebhookNormalizer:
-    @pytest.mark.asyncio
-    async def test_can_handle_correct_event_type(self):
-        handler = WebhookNormalizer.__new__(WebhookNormalizer)
-        handler._priority = 5
-        event = _make_event(_github_push_data())
-        assert await handler.can_handle_event(event, {}) is True
+class TestTranslation:
+    async def test_the_payload_reaches_the_service_as_a_domain_value(self, handler_and_service):
+        handler, service = handler_and_service
+        await handler.handle_event(_make_event(_github_push_data()), {})
+        webhook = service.relay.await_args.args[0]
+        assert isinstance(webhook, IncomingWebhook)
+        assert webhook.webhook_id == "evt-test-001"  # no webhook_id in the payload -> the event id
+        assert webhook.source == "github"
 
-    @pytest.mark.asyncio
-    async def test_ignores_other_event_types(self):
-        handler = WebhookNormalizer.__new__(WebhookNormalizer)
-        handler._priority = 5
-        event = _make_event(_github_push_data(), event_type="order.placed")
-        assert await handler.can_handle_event(event, {}) is False
-
-    @pytest.mark.asyncio
-    async def test_normalizes_and_passes(self, mock_registry):
-        handler = WebhookNormalizer.__new__(WebhookNormalizer)
-        handler._priority = 5
-        handler._name = "webhook_normalizer"
-        type(handler).registry = property(lambda self: mock_registry)  # type: ignore
-
-        event = _make_event(_github_push_data())
-        context: dict[str, Any] = {}
-        result = await handler.handle_event(event, context)
-
-        assert result is None
-        assert "normalized_event" in context
-        assert context["normalized_event"]["original_source"] == "github"
-
-    @pytest.mark.asyncio
-    async def test_duplicate_skipped(self, mock_registry):
-        mock_registry.get_service.return_value.is_duplicate.return_value = True
-
-        handler = WebhookNormalizer.__new__(WebhookNormalizer)
-        handler._priority = 5
-        handler._name = "webhook_normalizer"
-        type(handler).registry = property(lambda self: mock_registry)  # type: ignore
-
-        event = _make_event(_github_push_data())
-        context: dict[str, Any] = {}
-        result = await handler.handle_event(event, context)
-
-        assert result is None
-        assert "normalized_event" not in context
-
-
-# ---------------------------------------------------------------------------
-# ContentFilter
-# ---------------------------------------------------------------------------
-
-
-class TestContentFilter:
-    @pytest.mark.asyncio
-    async def test_allows_normal_event(self):
-        handler = ContentFilter.__new__(ContentFilter)
-        handler._priority = 10
-
-        context = {
-            "normalized_event": {
-                "original_source": "github",
-                "event_category": "push",
-                "actor": "octocat",
-            },
-            "webhook_id": "wh-1",
-        }
-        event = _make_event(_github_push_data())
-        result = await handler.handle_event(event, context)
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_filters_github_bot(self):
-        handler = ContentFilter.__new__(ContentFilter)
-        handler._priority = 10
-
-        context = {
-            "normalized_event": {
-                "original_source": "github",
-                "event_category": "push",
-                "actor": "dependabot[bot]",
-            },
-            "webhook_id": "wh-2",
-        }
-        event = _make_event(_github_bot_data())
-        result = await handler.handle_event(event, context)
-
-        assert isinstance(result, HandlerResult)
-        assert result.event_type == "webhook.filtered"
-        assert "bot" in result.data["reason"].lower()  # type: ignore
-
-    @pytest.mark.asyncio
-    async def test_filters_stripe_test(self):
-        handler = ContentFilter.__new__(ContentFilter)
-        handler._priority = 10
-
-        context = {
-            "normalized_event": {
-                "original_source": "stripe",
-                "event_category": "test_charge",
-                "actor": None,
-            },
-            "webhook_id": "wh-3",
-        }
-        event = _make_event(_stripe_test_data())
-        result = await handler.handle_event(event, context)
-
-        assert isinstance(result, HandlerResult)
-        assert result.event_type == "webhook.filtered"
-        assert "test" in result.data["reason"].lower()  # type: ignore
-
-
-# ---------------------------------------------------------------------------
-# MetadataEnricher
-# ---------------------------------------------------------------------------
-
-
-class TestMetadataEnricher:
-    @pytest.mark.asyncio
-    async def test_enriches_and_publishes(self, mock_registry):
-        handler = MetadataEnricher.__new__(MetadataEnricher)
-        handler._priority = 15
-        handler._name = "metadata_enricher"
-        type(handler).registry = property(lambda self: mock_registry)  # type: ignore
-
-        context = {
-            "normalized_event": {
-                "original_source": "github",
-                "event_category": "push",
-                "event_action": "completed",
-                "actor": "octocat",
-            },
-            "webhook_id": "wh-4",
-        }
-        event = _make_event(_github_push_data())
-        result = await handler.handle_event(event, context)
-
+    async def test_processed_is_published_as_webhook_processed(self, handler_and_service):
+        handler, _ = handler_and_service
+        result = await handler.handle_event(_make_event(_stripe_payment_data()), {})
         assert isinstance(result, HandlerResult)
         assert result.event_type == "webhook.processed"
-        assert result.data["priority_score"] == 50  # "push" keyword # type: ignore
-        assert "processed_at" in result.data  # type: ignore
-        mock_registry.get_service.return_value.mark_processed.assert_called_once_with("wh-4")
 
-    @pytest.mark.asyncio
-    async def test_payment_gets_high_priority(self, mock_registry):
-        handler = MetadataEnricher.__new__(MetadataEnricher)
-        handler._priority = 15
-        handler._name = "metadata_enricher"
-        type(handler).registry = property(lambda self: mock_registry)  # type: ignore
+    async def test_filtered_is_published_as_webhook_filtered(self, handler_and_service):
+        handler, service = handler_and_service
+        service.relay.return_value = RelayOutcome(kind="filtered", reason="bot", data={"reason": "bot"})
+        result = await handler.handle_event(_make_event(_github_bot_data()), {})
+        assert result.event_type == "webhook.filtered"
+        assert result.data == {"reason": "bot"}
 
-        context = {
-            "normalized_event": {
-                "original_source": "stripe",
-                "event_category": "payment_intent",
-                "event_action": "succeeded",
-            },
-            "webhook_id": "wh-5",
-        }
-        event = _make_event(_stripe_payment_data())
-        result = await handler.handle_event(event, context)
-
-        assert isinstance(result, HandlerResult)
-        assert result.data["priority_score"] == 80  # "payment" keyword # type: ignore
+    async def test_a_duplicate_is_skipped_with_the_services_reason(self, handler_and_service):
+        handler, service = handler_and_service
+        service.relay.return_value = RelayOutcome(kind="duplicate", reason="webhook evt-test-001 already relayed")
+        result = await handler.handle_event(_make_event(_stripe_test_data()), {})
+        assert result.is_skipped
+        assert result.skip_reason == "webhook evt-test-001 already relayed"

@@ -5,7 +5,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 
-from src.models.schemas import NormalizedEvent, WebhookPayload
+from src.models.domain import IncomingWebhook, NormalizedEvent
 from src.services.webhook_service import WebhookService
 
 # ---------------------------------------------------------------------------
@@ -35,7 +35,8 @@ def _make_service(*, with_cache: bool = False) -> WebhookService:
 
 class TestNormalizePayload:
     def test_github_push(self):
-        payload = WebhookPayload(
+        payload = IncomingWebhook(
+            webhook_id="wh-test",
             source="github",
             event_type="push",
             payload={
@@ -56,7 +57,8 @@ class TestNormalizePayload:
         assert result.resource_type == "repository"
 
     def test_stripe_payment_intent(self):
-        payload = WebhookPayload(
+        payload = IncomingWebhook(
+            webhook_id="wh-test",
             source="stripe",
             event_type="payment_intent.succeeded",
             payload={
@@ -75,7 +77,8 @@ class TestNormalizePayload:
         assert result.resource_type == "payment_intent"
 
     def test_generic_passthrough(self):
-        payload = WebhookPayload(
+        payload = IncomingWebhook(
+            webhook_id="wh-test",
             source="generic",
             event_type="alert.fired",
             payload={
@@ -97,7 +100,8 @@ class TestNormalizePayload:
         assert result.metadata["severity"] == "critical"
 
     def test_github_missing_optional_fields(self):
-        payload = WebhookPayload(
+        payload = IncomingWebhook(
+            webhook_id="wh-test",
             source="github",
             event_type="ping",
             payload={},
@@ -163,3 +167,52 @@ class TestRecentTracking:
     def test_get_recent_empty_without_cache(self):
         svc = _make_service(with_cache=False)
         assert svc.get_recent() == []
+
+
+# ---------------------------------------------------------------------------
+# relay: the one entry point, and the decisions the handlers used to make
+# ---------------------------------------------------------------------------
+
+
+def _webhook(source: str, event_type: str, payload: dict) -> IncomingWebhook:
+    return IncomingWebhook(webhook_id="wh-r1", source=source, event_type=event_type, payload=payload)
+
+
+class TestRelay:
+    async def test_a_duplicate_needs_nothing(self):
+        svc = _make_service(with_cache=True)
+        svc._cache.exists.return_value = True  # type: ignore
+        outcome = await svc.relay(_webhook("github", "push", {}))
+        assert outcome.kind == "duplicate"
+        assert "wh-r1" in outcome.reason
+        svc._cache.set.assert_not_called()  # type: ignore
+
+    async def test_a_github_bot_is_filtered_and_not_recorded(self):
+        svc = _make_service(with_cache=True)
+        outcome = await svc.relay(_webhook("github", "push", {"sender": {"login": "dependabot[bot]"}}))
+        assert outcome.kind == "filtered"
+        assert outcome.data == {"reason": "Filtered GitHub bot event from dependabot[bot]", "webhook_id": "wh-r1"}
+        svc._cache.set.assert_not_called()  # type: ignore
+
+    async def test_a_stripe_test_event_is_filtered(self):
+        svc = _make_service()
+        outcome = await svc.relay(_webhook("stripe", "test_charge.created", {"type": "test_charge.created"}))
+        assert outcome.kind == "filtered"
+        assert "test_charge" in outcome.reason
+
+    async def test_a_normal_event_is_enriched_recorded_and_returned(self):
+        svc = _make_service(with_cache=True)
+        outcome = await svc.relay(_webhook("stripe", "payment_intent.succeeded", {"type": "payment_intent.succeeded", "id": "pi_1"}))
+        assert outcome.kind == "processed"
+        assert outcome.data["priority_score"] == 80
+        assert outcome.data["webhook_id"] == "wh-r1"
+        assert "processed_at" in outcome.data
+        assert svc._cache.set.call_count == 2  # type: ignore  # dedup marker + recent list
+
+
+class TestScoring:
+    def test_unknown_category_gets_the_default(self):
+        assert WebhookService.score_priority("something.else") == 10
+
+    def test_security_outranks_push(self):
+        assert WebhookService.score_priority("security_advisory") > WebhookService.score_priority("push")

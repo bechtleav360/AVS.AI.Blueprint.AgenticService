@@ -13,19 +13,15 @@ from pathlib import Path
 from blueprint.agents import AppBuilder, Config
 
 from .api.routes import WebhookApi
-from .handlers.content_filter import ContentFilter
-from .handlers.metadata_enricher import MetadataEnricher
-from .handlers.webhook_normalizer import WebhookNormalizer
+from .handlers.webhook_handler import WebhookHandler
 from .services.webhook_service import WebhookService
 
 agent = (
     AppBuilder()
-    # Business service
+    # Business service: deduplication, normalisation, filtering, enrichment
     .with_service(WebhookService)
-    # Handler chain -- priority determines execution order (low first)
-    .with_handler(WebhookNormalizer)  # priority 5  -- normalize
-    .with_handler(ContentFilter)  # priority 10 -- filter
-    .with_handler(MetadataEnricher)  # priority 15 -- enrich & publish
+    # One handler for webhook.received: translates, calls WebhookService.relay once
+    .with_handler(WebhookHandler)
     # REST API
     .with_rest_api(WebhookApi)
     # Persistent cache for dedup and recent-event tracking
