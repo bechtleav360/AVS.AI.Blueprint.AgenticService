@@ -12,7 +12,7 @@ from pydantic_ai import Tool
 
 from blueprint.agents import AgentBuilder, AppBuilder, Config
 from src.api.routes import SummarizerApi
-from src.models.schemas import DocumentSummary
+from src.models.domain_models import DocumentSummary
 from src.services.summarizer_service import SummarizerService
 from src.tools.text_tools import extract_metadata, word_count
 

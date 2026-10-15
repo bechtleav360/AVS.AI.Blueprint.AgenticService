@@ -1,13 +1,13 @@
-"""Pydantic models for the document summarizer service."""
+"""Domain models: what SummarizerService works with. No request DTO reaches the service."""
 
 from pydantic import BaseModel, Field
 
 
-class DocumentRequest(BaseModel):
-    """Request payload for document summarization."""
+class Document(BaseModel):
+    """A document to summarize."""
 
-    content: str = Field(..., description="The document text to summarize")
-    title: str | None = Field(default=None, description="Optional document title")
+    content: str
+    title: str | None = None
 
 
 class DocumentSummary(BaseModel):
@@ -27,8 +27,8 @@ class DocumentSummary(BaseModel):
     )
 
 
-class SummarizeResponse(BaseModel):
-    """Response wrapper for a document summarization request."""
+class SummaryRecord(BaseModel):
+    """A summary and the content-derived id it is stored under."""
 
-    document_id: str = Field(..., description="Unique identifier derived from content hash")
-    summary: DocumentSummary = Field(..., description="The structured document summary")
+    document_id: str
+    summary: DocumentSummary

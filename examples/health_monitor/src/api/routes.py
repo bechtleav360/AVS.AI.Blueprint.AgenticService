@@ -8,7 +8,7 @@ from fastapi import HTTPException
 
 from blueprint.agents.io.api.rest_api_base import RestApiBase
 
-from src.models.schemas import EndpointStatus, UptimeReport
+from src.models.domain_models import EndpointStatus, UptimeReport
 from src.services.monitor_service import MonitorService
 
 logger = logging.getLogger(__name__)

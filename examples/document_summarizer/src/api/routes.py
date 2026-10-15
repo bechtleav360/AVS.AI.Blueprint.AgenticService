@@ -6,7 +6,8 @@ from fastapi import HTTPException
 
 from blueprint.agents.io.api.rest_api_base import RestApiBase
 
-from src.models.schemas import DocumentRequest, SummarizeResponse
+from src.models.domain_models import Document
+from src.models.dto import DocumentRequest, SummarizeResponse
 from src.services.summarizer_service import SummarizerService
 
 logger = logging.getLogger(__name__)
@@ -35,7 +36,8 @@ class SummarizerApi(RestApiBase):
     )
     async def summarize_document(self, request: DocumentRequest) -> SummarizeResponse:
         """Accept a document and return a structured summary."""
-        return await self._service.summarize(request)
+        record = await self._service.summarize(Document(content=request.content, title=request.title))
+        return SummarizeResponse(document_id=record.document_id, summary=record.summary)
 
     @RestApiBase.get(
         "/summaries/{document_id}",
@@ -45,7 +47,7 @@ class SummarizerApi(RestApiBase):
     )
     async def get_summary(self, document_id: str) -> SummarizeResponse:
         """Return a previously generated summary by its document ID."""
-        result = await self._service.get_summary(document_id)
-        if result is None:
+        record = await self._service.get_summary(document_id)
+        if record is None:
             raise HTTPException(status_code=404, detail=f"Summary not found for document_id={document_id}")
-        return result
+        return SummarizeResponse(document_id=record.document_id, summary=record.summary)
