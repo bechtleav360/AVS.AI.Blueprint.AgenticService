@@ -15,13 +15,9 @@ logger = logging.getLogger(__name__)
 class SummarizerApi(RestApiBase):
     """Exposes document summarization endpoints."""
 
-    def __init__(self) -> None:
-        super().__init__()
-        self._service: SummarizerService | None = None
-
     async def on_startup(self) -> None:
         """Resolve the summarizer service from the registry."""
-        self._service = self.registry.get_service(SummarizerService)  # type: ignore[assignment]
+        self._service: SummarizerService = self.registry.get_service(SummarizerService)  # type: ignore[assignment]
         logger.info("SummarizerApi started")
 
     async def on_shutdown(self) -> None:
@@ -39,7 +35,6 @@ class SummarizerApi(RestApiBase):
     )
     async def summarize_document(self, request: DocumentRequest) -> SummarizeResponse:
         """Accept a document and return a structured summary."""
-        assert self._service is not None, "Service not initialised"
         return await self._service.summarize(request)
 
     @RestApiBase.get(
@@ -50,7 +45,6 @@ class SummarizerApi(RestApiBase):
     )
     async def get_summary(self, document_id: str) -> SummarizeResponse:
         """Return a previously generated summary by its document ID."""
-        assert self._service is not None, "Service not initialised"
         result = await self._service.get_summary(document_id)
         if result is None:
             raise HTTPException(status_code=404, detail=f"Summary not found for document_id={document_id}")

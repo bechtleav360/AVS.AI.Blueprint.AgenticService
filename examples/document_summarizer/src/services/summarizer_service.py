@@ -64,7 +64,8 @@ class SummarizerService(ServiceBase):
             user_prompt = f"Title: {request.title}\n\n{request.content}"
 
         # Run the agent
-        assert self._agent is not None, "Agent not initialised — was on_startup called?"
+        if self._agent is None:
+            raise RuntimeError("SummarizerService used before on_startup resolved its agent")
         result = await self._agent.run(user_prompt)
         summary: DocumentSummary = result.data  # type: ignore[assignment]
 
