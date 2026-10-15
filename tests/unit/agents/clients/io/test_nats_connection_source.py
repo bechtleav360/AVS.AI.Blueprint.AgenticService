@@ -43,10 +43,14 @@ def _binding(prefix: str, *subjects: str) -> JetStreamBinding:
 class FakeSource:
     """A deployment's source: two connections, and a scope that sets a ContextVar per connection."""
 
-    def __init__(self, bindings: dict[str, JetStreamBinding | None], reject: Any = None) -> None:
+    def __init__(self, bindings: dict[str, JetStreamBinding | None], reject: Any = None, claimed: tuple[str, ...] | None = None) -> None:
         self.bindings = bindings
         self.reject = reject
+        self.claimed = claimed  # None: every declared subject, as in the first consumer of named connections
         self.asked: list[tuple[str, tuple[str, ...], str]] = []
+
+    def claims(self, agent: str, subjects: tuple[str, ...]) -> tuple[str, ...]:
+        return subjects if self.claimed is None else self.claimed
 
     def connections(self) -> dict[str, ConnectionSpec]:
         return {name: ConnectionSpec(name=name, url="nats://localhost:4222") for name in self.bindings}
@@ -148,17 +152,48 @@ class TestConnectionSpec:
 
 
 class TestPlanningTheBindings:
-    async def test_served_subjects_leave_the_default_connection(self, nats_client: NATSClient) -> None:
+    async def test_claimed_subjects_never_go_to_the_default_connection(self, nats_client: NATSClient) -> None:
         source = FakeSource({"A": _binding("A", "risk.>", "issue.>"), "B": _binding("B", "risk.>"), "C": None})
-        await _subscribed(nats_client, source, ("risk.>", "issue.>", "scheduler.tick"))
+        await _subscribed(nats_client, source, ("risk.>", "issue.>", "audit.>"))
 
         assert nats_client.named_connections == ("A", "B")
-        assert list(nats_client._topic_callbacks) == ["scheduler.tick"]
-        assert source.asked == [("test-agent", ("risk.>", "issue.>", "scheduler.tick"), name) for name in ("A", "B", "C")]
+        assert list(nats_client._topic_callbacks) == [], "audit.> is claimed: served by no connection yet, but never by the default one"
+        assert source.asked == [("test-agent", ("risk.>", "issue.>", "audit.>"), name) for name in ("A", "B", "C")]
 
-    async def test_a_binding_may_not_claim_an_undeclared_subject(self, nats_client: NATSClient) -> None:
-        with pytest.raises(ValueError, match="does not declare"):
-            await _subscribed(nats_client, FakeSource({"A": _binding("A", "invented.>")}), ("risk.>",))
+    async def test_no_connection_yet_is_no_error_and_subscribes_nothing(self, nats_client: NATSClient) -> None:
+        """A fresh environment without tenants: nothing to consume yet, nothing on the default connection."""
+        await _subscribed(nats_client, FakeSource({}), ("risk.>", "issue.>"))
+        assert nats_client.named_connections == ()
+        assert list(nats_client._topic_callbacks) == []
+
+    async def test_an_unclaimed_subject_fails_startup_by_default(self, nats_client: NATSClient) -> None:
+        source = FakeSource({"A": _binding("A", "risk.>")}, claimed=("risk.>",))
+        with pytest.raises(ValueError, match="scheduler.tick.*does not claim.*nats_unclaimed_subjects"):
+            await _subscribed(nats_client, source, ("risk.>", "scheduler.tick"))
+
+    async def test_the_hybrid_mode_must_be_asked_for(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        base = mock_config.get.side_effect
+        mock_config.get.side_effect = lambda key, default=None: (
+            "default_connection" if key == "nats_unclaimed_subjects" else base(key, default)
+        )
+        source = FakeSource({"A": _binding("A", "risk.>")}, claimed=("risk.>",))
+        await _subscribed(nats_client, source, ("risk.>", "scheduler.tick"))
+        assert list(nats_client._topic_callbacks) == ["scheduler.tick"]
+
+    async def test_an_unknown_policy_is_refused(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        base = mock_config.get.side_effect
+        mock_config.get.side_effect = lambda key, default=None: "hybrid" if key == "nats_unclaimed_subjects" else base(key, default)
+        with pytest.raises(ValueError, match="nats_unclaimed_subjects"):
+            await _subscribed(nats_client, FakeSource({}, claimed=("risk.>",)), ("risk.>", "x.>"))
+
+    async def test_a_claim_names_declared_subjects_only(self, nats_client: NATSClient) -> None:
+        with pytest.raises(ValueError, match="claims invented.>, which the agent does not declare"):
+            await _subscribed(nats_client, FakeSource({}, claimed=("risk.>", "invented.>")), ("risk.>",))
+
+    async def test_a_binding_serves_claimed_subjects_only(self, nats_client: NATSClient) -> None:
+        source = FakeSource({"A": _binding("A", "invented.>")}, claimed=("risk.>",))
+        with pytest.raises(ValueError, match="serves invented.>, which the source does not claim"):
+            await _subscribed(nats_client, source, ("risk.>",))
 
     async def test_without_a_source_nothing_changes(self, nats_client: NATSClient) -> None:
         with patch.object(nats_client, "_start_retry_task"), patch.object(nats_client, "_start_named_links"):

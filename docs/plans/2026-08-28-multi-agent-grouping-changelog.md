@@ -8490,6 +8490,28 @@ disagreed; 0 permission violations. **Control for (2):** the old link closed abr
 with the link, redelivered after `ack_wait` as duplicates. That is what binding first and draining
 then prevents.
 
+### Claimed subjects never reach the default connection (named connections, step 4c)
+
+Decided with the owner after 4b: the hybrid of named and default connection is allowed only
+explicitly, and an undeclared mapping fails startup.
+
+- `ConnectionSource.claims(agent, subjects)` (required): the subjects that belong to named
+  connections, from the deployment's scheme, independent of the connections that exist now.
+- `NATSClient._plan_named_bindings`: `_claimed_subjects` (a claim must name declared subjects);
+  unclaimed subjects fail startup unless `_resolve_unclaimed_policy` reads `nats_unclaimed_subjects =
+  "default_connection"`; a binding may serve claimed subjects only; the default binding gets the
+  unclaimed subjects only. `_reconcile` skips a connection whose binding serves an unclaimed subject.
+- Before this, a start without any connection put every subject on the default connection for good,
+  and a tenant added later was served in addition.
+
+Tests: 8 new cases in `test_nats_connection_source.py`; the fakes implement `claims`. Live, three
+accounts with a process account allowed nothing: before 4c a fresh start subscribed `risk.>` /
+`issue.>` on the default connection -- 3 permission violations -- and kept them after tenant A
+arrived; with 4c nothing on the default connection, 0 violations, tenant A's 3 events handled; an
+unclaimed `scheduler.tick` fails startup with the message; with `"default_connection"` it is
+subscribed there (1 violation, because that test's process account may subscribe nothing -- the
+deployment must allow it).
+
 ---
 
 ## Open points

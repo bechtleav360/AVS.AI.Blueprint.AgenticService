@@ -105,6 +105,18 @@ class ConnectionSource(Protocol):
     a source still qualifies. The agent's default connection keeps the subjects it had at startup.
     """
 
+    def claims(self, agent: str, subjects: tuple[str, ...]) -> tuple[str, ...]:
+        """Which of ``agent``'s declared subjects belong to named connections -- whatever connections exist now.
+
+        Answered from the deployment's subject scheme, not from the current connections: with no
+        connection yet (a fresh environment, no tenant yet) a claimed subject is still claimed, so it
+        is consumed nowhere until a connection serves it, and never on the agent's default connection.
+        A subject not claimed goes to the default connection only where ``nats_unclaimed_subjects =
+        "default_connection"`` allows it; by default (``"fail"``) it fails the agent's startup.
+        Must be a subset of ``subjects``. A binding may serve claimed subjects only.
+        """
+        ...
+
     def connections(self) -> Mapping[str, ConnectionSpec]:
         """The connections to open, by name. Read at startup, and again after each ``notify()``."""
         ...

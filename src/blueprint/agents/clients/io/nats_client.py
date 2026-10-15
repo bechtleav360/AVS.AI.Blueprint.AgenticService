@@ -343,6 +343,7 @@ class NATSClient(IOClientBase):
         self._named: list[_Binding] = []
         self._named_tasks: dict[_Binding, asyncio.Task[None]] = {}
         self._declared: dict[str, DeliveryCallback] = {}
+        self._claimed: frozenset[str] = frozenset()
         self._default_pairs = 0
         self._change_grace = 30.0
         self._change_lock = asyncio.Lock()
@@ -582,16 +583,26 @@ class NATSClient(IOClientBase):
         if self._source is None:
             return dict(topic_callbacks)
         declared = tuple(topic_callbacks)
+        self._claimed = self._claimed_subjects(declared)
+        unclaimed = [subject for subject in declared if subject not in self._claimed]
+        if unclaimed and self._resolve_unclaimed_policy() == "fail":
+            raise ValueError(
+                f"Agent '{self.namespace or ROOT_LABEL}' declares {', '.join(unclaimed)}, which the connection source does "
+                "not claim, so no named connection will ever serve it. Declare only subjects the deployment's "
+                "connections carry, or set 'nats_unclaimed_subjects = \"default_connection\"' to consume these on the "
+                "agent's own connection."
+            )
         served: set[str] = set()
         for spec in self._source.connections().values():
             jetstream = self._source.binding(self._queue_group, declared, spec)
             if jetstream is None:
                 continue
-            unknown = [subject for subject in jetstream.subjects if subject not in topic_callbacks]
+            unknown = [subject for subject in jetstream.subjects if subject not in self._claimed]
             if unknown:
                 raise ValueError(
-                    f"Agent '{self.namespace or ROOT_LABEL}': the binding for connection '{spec.name}' claims "
-                    f"{', '.join(unknown)}, which the agent does not declare. A binding serves declared subjects only."
+                    f"Agent '{self.namespace or ROOT_LABEL}': the binding for connection '{spec.name}' serves "
+                    f"{', '.join(unknown)}, which the source does not claim for this agent. A binding serves claimed "
+                    "subjects only."
                 )
             binding = self._new_named_binding(spec, jetstream)
             self._named.append(binding)
@@ -599,13 +610,37 @@ class NATSClient(IOClientBase):
         if self._named:
             self._refuse_result_publishing()
         logger.info(
-            "Agent '%s' consumes on %d named connection(s) %s; %d subject(s) stay on its default connection",
+            "Agent '%s' consumes on %d named connection(s) %s; %d claimed subject(s) served by none yet; %d unclaimed "
+            "subject(s) on its default connection",
             self.namespace or ROOT_LABEL,
             len(self._named),
             ", ".join(binding.link.name for binding in self._named) or "-",
-            len(declared) - len(served),
+            len(self._claimed - served),
+            len(unclaimed),
         )
-        return {topic: callback for topic, callback in topic_callbacks.items() if topic not in served}
+        # Claimed subjects never go to the default connection, served now or not (plan D10).
+        return {topic: callback for topic, callback in topic_callbacks.items() if topic not in self._claimed}
+
+    def _claimed_subjects(self, declared: tuple[str, ...]) -> frozenset[str]:
+        """The source's claim on this agent's subjects; refused unless it names declared subjects only."""
+        if self._source is None:
+            return frozenset()
+        claimed = frozenset(self._source.claims(self._queue_group, declared))
+        foreign = sorted(claimed - set(declared))
+        if foreign:
+            raise ValueError(
+                f"Agent '{self.namespace or ROOT_LABEL}': the connection source claims {', '.join(foreign)}, which the "
+                "agent does not declare. A claim names declared subjects only."
+            )
+        return claimed
+
+    def _resolve_unclaimed_policy(self) -> str:
+        """``nats_unclaimed_subjects``: ``"fail"`` (default) or ``"default_connection"`` (the explicit hybrid mode)."""
+        raw = self.config.get("nats_unclaimed_subjects", None)
+        policy = str(raw or "fail").strip().lower()
+        if policy not in ("fail", "default_connection"):
+            raise ValueError(f"'nats_unclaimed_subjects' must be 'fail' or 'default_connection', got {raw!r}.")
+        return policy
 
     def _refuse_result_publishing(self) -> None:
         """Fail startup when an agent with named connections maps handler results to topics (plan D4).
@@ -826,10 +861,10 @@ class NATSClient(IOClientBase):
             jetstream = source.binding(self._queue_group, declared, spec)
             if jetstream is None:
                 continue
-            unknown = [subject for subject in jetstream.subjects if subject not in self._declared]
+            unknown = [subject for subject in jetstream.subjects if subject not in self._claimed]
             if unknown:
                 logger.error(
-                    "Agent '%s': connection '%s' skipped -- its binding claims %s, which the agent does not declare",
+                    "Agent '%s': connection '%s' skipped -- its binding serves %s, which the source does not claim",
                     agent,
                     spec.name,
                     ", ".join(unknown),

@@ -52,6 +52,9 @@ class WatchedSource:
         for notify in self.notifiers:
             notify()
 
+    def claims(self, agent: str, subjects: tuple[str, ...]) -> tuple[str, ...]:
+        return subjects  # every declared subject is a tenant subject, as in the first consumer of named connections
+
     def connections(self) -> dict[str, ConnectionSpec]:
         self.reads += 1
         return {
@@ -149,6 +152,9 @@ def fake_broker(nats_client: NATSClient, broker: Broker, configured: Any) -> Any
 class TestTheSourceStaysOptional:
     def test_a_source_without_watch_is_still_a_connection_source(self) -> None:
         class Static:
+            def claims(self, agent: str, subjects: tuple) -> tuple:
+                return subjects
+
             def connections(self) -> dict:
                 return {}
 
