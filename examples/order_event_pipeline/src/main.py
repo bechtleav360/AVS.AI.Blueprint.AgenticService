@@ -11,18 +11,10 @@ from pathlib import Path
 from blueprint.agents import AppBuilder, Config
 
 from .api.routes import OrderApi
-from .handlers.order_enrichment_handler import OrderEnrichmentHandler
-from .handlers.order_validation_handler import OrderValidationHandler
+from .handlers.order_handler import OrderHandler
 from .services.order_service import OrderService
 
-agent = (
-    AppBuilder()
-    .with_service(OrderService)
-    .with_handler(OrderValidationHandler)
-    .with_handler(OrderEnrichmentHandler)
-    .with_rest_api(OrderApi)
-    .with_cache()
-)
+agent = AppBuilder().with_service(OrderService).with_handler(OrderHandler).with_rest_api(OrderApi).with_cache()
 
 
 def create_app():

@@ -2,7 +2,9 @@
 
 import pytest
 
-from src.models.schemas import OrderItem, OrderPayload
+from unittest.mock import MagicMock
+
+from src.models.domain import Order, OrderLine
 from src.services.order_service import OrderService
 
 
@@ -18,16 +20,16 @@ def service():
     return svc
 
 
-def _make_payload(**overrides) -> OrderPayload:
+def _make_payload(**overrides) -> Order:
     defaults = {
         "order_id": "order-001",
         "customer_id": "cust-001",
-        "items": [OrderItem(product_id="p1", name="Widget", quantity=1, unit_price=10.0)],
+        "items": [OrderLine(product_id="p1", name="Widget", quantity=1, unit_price=10.0)],
         "shipping_address": "123 Test St",
         "total_amount": 10.0,
     }
     defaults.update(overrides)
-    return OrderPayload(**defaults)
+    return Order(**defaults)
 
 
 class TestValidateOrder:
@@ -80,13 +82,13 @@ class TestEnrichOrder:
         assert "shipping_estimate" in result
 
     def test_small_order_fast_shipping(self, service: OrderService):
-        items = [OrderItem(product_id="p1", name="Widget", quantity=2, unit_price=5.0)]
+        items = [OrderLine(product_id="p1", name="Widget", quantity=2, unit_price=5.0)]
         payload = _make_payload(items=items, total_amount=10.0)
         result = service.enrich_order(payload)
         assert result["shipping_estimate"] == "3-5 business days"
 
     def test_large_order_slow_shipping(self, service: OrderService):
-        items = [OrderItem(product_id="p1", name="Widget", quantity=10, unit_price=5.0)]
+        items = [OrderLine(product_id="p1", name="Widget", quantity=10, unit_price=5.0)]
         payload = _make_payload(items=items, total_amount=50.0)
         result = service.enrich_order(payload)
         assert result["shipping_estimate"] == "5-7 business days"
@@ -95,3 +97,21 @@ class TestEnrichOrder:
         payload = _make_payload()
         result = service.enrich_order(payload)
         assert "processed_at" in result
+
+
+class TestProcessOrder:
+    """The facade the handler calls: validate, then enrich, and cache the status either way."""
+
+    async def test_a_valid_order_is_validated_enriched_and_cached(self, service: OrderService):
+        service._cache = MagicMock()
+        outcome = await service.process_order(_make_payload())
+        assert outcome.status == "validated"
+        assert outcome.data["tax_amount"] == 1.0
+        assert service._cache.set.call_args.args[1]["status"] == "validated"
+
+    async def test_an_invalid_order_is_rejected_with_its_errors_and_cached(self, service: OrderService):
+        service._cache = MagicMock()
+        outcome = await service.process_order(_make_payload(items=[], total_amount=0))
+        assert outcome.status == "rejected"
+        assert {e["field"] for e in outcome.data["errors"]} == {"items", "total_amount"}
+        assert service._cache.set.call_args.args[1]["status"] == "rejected"

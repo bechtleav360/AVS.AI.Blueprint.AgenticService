@@ -1,4 +1,4 @@
-"""Pydantic models for order event processing."""
+"""DTOs: the payload of an ``order.created`` event."""
 
 from pydantic import BaseModel
 
@@ -20,19 +20,3 @@ class OrderPayload(BaseModel):
     items: list[OrderItem]
     shipping_address: str
     total_amount: float
-
-
-class OrderResult(BaseModel):
-    """Result of order processing."""
-
-    order_id: str
-    status: str  # "validated" | "rejected"
-    reason: str | None = None
-    enriched_data: dict | None = None
-
-
-class ValidationError(BaseModel):
-    """A single validation error (not an exception)."""
-
-    field: str
-    message: str
