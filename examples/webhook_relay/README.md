@@ -69,14 +69,14 @@ nats_url = "nats://localhost:4222"
 
    ```bash
    pip install -e .
-   uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
+   uvicorn src.main:create_app --factory --host 0.0.0.0 --port 8000 --reload
    ```
 
 ### Without NATS (handlers still execute, publishing is a no-op)
 
 ```bash
 pip install -e .
-uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn src.main:create_app --factory --host 0.0.0.0 --port 8000 --reload
 ```
 
 The handler chain processes events locally. Published events will log a warning

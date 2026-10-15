@@ -52,7 +52,7 @@ order_event_pipeline/
 ### With Dapr
 
 ```bash
-dapr run --app-id order-pipeline --app-port 8000 -- uvicorn src.main:app --host 0.0.0.0 --port 8000
+dapr run --app-id order-pipeline --app-port 8000 -- uvicorn src.main:create_app --factory --host 0.0.0.0 --port 8000
 ```
 
 ### Without Dapr (development mode)
@@ -60,7 +60,7 @@ dapr run --app-id order-pipeline --app-port 8000 -- uvicorn src.main:app --host 
 Set `event_bus = ""` in `settings.toml` to disable Dapr integration, then run:
 
 ```bash
-uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn src.main:create_app --factory --host 0.0.0.0 --port 8000 --reload
 ```
 
 The handler chain still processes events submitted via the REST API, but no
