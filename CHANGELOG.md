@@ -172,6 +172,9 @@
 
 ### Added
 
+- **`examples/site_readings`: named connections end to end.** One agent, two sites, each its own
+  NATS account, supplied by a `ConnectionSource` (claims, a per-connection subject prefix, `validate`,
+  `run_scope`), with the example broker, a provisioning script and offline tests.
 - **A JetStream run knows which attempt it is.** The handler context carries `nats_delivery_attempt`
   (1-based) and `nats_max_deliver` (`None` when unlimited) on the default and on named connections,
   so a service can close open work on the last attempt instead of leaving it open. Core NATS
@@ -379,6 +382,11 @@
   idempotency belongs to the service; handlers never call the LLM. The chain semantics are stated
   as the code has them: the first result that is not `None` ends the chain (the docs said a
   `HandlerResult` let later handlers run).
+- **The examples follow the handler and service rules.** One handler per event type making one
+  service call (`webhook_relay`, `order_event_pipeline`), APIs that translate request DTOs into
+  domain models (`document_summarizer`, `inventory_api`), a scheduler with one service call
+  (`health_monitor`), no `assert` in production code, and the template's model file names
+  (`dto.py`, `domain_models.py`).
 - **`asbs validate` checks the NATS delivery keys** that otherwise fail only at startup:
   `nats_max_concurrent_runs`, `nats_extra_runs_per_process`, `nats_handler_timeout`,
   `nats_connections_readiness`, `nats_unclaimed_subjects`, and the form and module of
