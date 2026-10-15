@@ -1,0 +1,31 @@
+[default]
+app_name = "site_readings"
+app_port = 8000
+app_environment = "development"
+log_level = "INFO"
+
+event_bus = "nats"
+# The agent's own (default) connection: the process account. Every subject this agent declares is
+# claimed by the source, so it subscribes nothing here.
+nats_url = "nats://localhost:4224"
+nats_user = "proc"
+# nats_password comes from the environment: DYNACONF_NATS_PASSWORD (same value as EXAMPLE_NATS_PASSWORD)
+
+# Named connections: one per site, supplied by src/connections.py.
+nats_connection_source = "src.connections:create_source"
+nats_connections_readiness = "all"   # ready only while every site's connection is bound
+nats_max_concurrent_runs = 4         # per (agent, site) pair
+
+# Read by the source, not by the framework.
+example_broker_url = "nats://localhost:4224"
+
+[default.example_sites.site_a]
+user = "agent-site-a"
+alert_threshold = 50.0
+
+[default.example_sites.site_b]
+user = "agent-site-b"
+alert_threshold = 80.0
+
+[default.cache]
+cache_dir = ".cache/site_readings"
