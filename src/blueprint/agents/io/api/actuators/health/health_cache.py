@@ -72,6 +72,9 @@ class HealthCheckCache:
             namespaces={} if self._grouped else None,
         )
         self._last_update: datetime = datetime.now()
+        # Serialises polls (the schedule and refresh()). Readers never take it: the cached response
+        # is replaced in one assignment, so a read sees the old one or the new one, never a mix,
+        # and the readiness probe never waits for a slow check (review finding #6).
         self._lock = asyncio.Lock()
         self._entries: tuple[HealthCheckEntry, ...] = ()
 
@@ -126,13 +129,16 @@ class HealthCheckCache:
         logger.info("Health check cache stopped")
 
     async def get_health_status(self) -> ReadinessResponse:
-        """Get the cached health status.
+        """Get the cached health status, at once -- also while a poll is running.
+
+        It used to wait for the poll lock, which a poll holds while it awaits every check: a NATS
+        client connecting against a broker that is down took up to its 10 s connect timeout, and
+        every readiness probe in that window waited with it (review finding #6).
 
         Returns:
             ReadinessResponse with cached health status
         """
-        async with self._lock:
-            return self._cached_response
+        return self._cached_response
 
     async def refresh(self) -> None:
         """Re-run the checks now instead of at the next interval.
@@ -177,7 +183,7 @@ class HealthCheckCache:
                     else:
                         components[entry.key] = result
 
-                namespace_status, namespaces = self._aggregate_by_agent(components)
+                namespace_status, consumption_status, namespaces = self._aggregate_by_agent(components)
                 overall_status = "UP" if self._policy.is_ready(namespace_status, self._critical_namespaces()) else "DOWN"
 
                 # Update cache
@@ -200,7 +206,9 @@ class HealthCheckCache:
             # every probe during a pause wait for it, and a probe that times out is read as a
             # failure of the pod rather than of the one agent that is actually degraded.
             if self._supervisor is not None:
-                await self._supervisor.observe(namespace_status)
+                # The consumption verdict, not the readiness one: a readiness-only check (a named
+                # NATS connection) must never pause the agent on its other connections (D5).
+                await self._supervisor.observe(consumption_status)
 
         except Exception as exc:  # pragma: no cover
             logger.error("Unexpected error during health check refresh: %s", exc, exc_info=True)
@@ -209,7 +217,9 @@ class HealthCheckCache:
         """The agents that gate readiness under the ``critical`` policy, or none known."""
         return self._supervisor.critical_namespaces if self._supervisor is not None else frozenset()
 
-    def _aggregate_by_agent(self, components: dict[str, ComponentHealth]) -> tuple[dict[str, bool], dict[str, NamespaceReadiness]]:
+    def _aggregate_by_agent(
+        self, components: dict[str, ComponentHealth]
+    ) -> tuple[dict[str, bool], dict[str, bool], dict[str, NamespaceReadiness]]:
         """Reduce the individual check results to one verdict per agent.
 
         The agent comes from the entry, not from the key. ``HealthCheckEntry`` carries it as
@@ -226,23 +236,30 @@ class HealthCheckCache:
             components: This poll's results, keyed by entry key.
 
         Returns:
-            Whether each namespace passed, and the per-agent section of the readiness payload.
+            Whether each namespace passed every check (readiness), whether it passed the checks
+            that may stop it consuming (what the supervisor acts on), and the per-agent section
+            of the readiness payload.
         """
         supervised = set(self._supervisor.status) if self._supervisor is not None else set()
         forced = self._supervisor.forced_down if self._supervisor is not None else {}
         failing: dict[str, list[str]] = {namespace: [] for namespace in supervised | set(forced)}
+        consumption_failing: dict[str, list[str]] = {namespace: [] for namespace in failing}
 
         for entry in self._entries:
             result = components.get(entry.key)
             failing.setdefault(entry.namespace, [])
+            consumption_failing.setdefault(entry.namespace, [])
             if result is not None and result.status != "healthy":
                 failing[entry.namespace].append(entry.key)
+                if entry.affects_consumption:
+                    consumption_failing[entry.namespace].append(entry.key)
 
         # A latched agent is down whatever its checks say. That is the point of the latch: a
         # component that failed to start may answer its health check perfectly while the agent is
         # unusable, so the checks alone would report it UP -- to the policy and in the payload.
         critical = self._critical_namespaces()
         namespace_status = {namespace: not keys and namespace not in forced for namespace, keys in failing.items()}
+        consumption_status = {namespace: not keys and namespace not in forced for namespace, keys in consumption_failing.items()}
         namespaces = {
             (namespace or ROOT_LABEL): NamespaceReadiness(
                 status="UP" if namespace_status[namespace] else "DOWN",
@@ -255,7 +272,7 @@ class HealthCheckCache:
             )
             for namespace, keys in failing.items()
         }
-        return namespace_status, namespaces
+        return namespace_status, consumption_status, namespaces
 
     def get_cache_age_seconds(self) -> float:
         """Get the age of the cached health status in seconds.

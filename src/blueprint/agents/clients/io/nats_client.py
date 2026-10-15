@@ -8,7 +8,7 @@ import importlib.util
 import json
 import logging
 import re
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
@@ -21,7 +21,7 @@ from nats.js import api as js_api
 from nats.js.client import JetStreamContext
 from nats.errors import NoRespondersError
 from nats.js.errors import APIError, NotFoundError
-from opentelemetry.metrics import Counter
+from opentelemetry.metrics import CallbackOptions, Counter, Observation
 
 from ...component.namespace import ROOT_LABEL, ROOT_NAMESPACE
 from ...deployment import UNGROUPED_LABEL, UNKNOWN_POD_LABEL, deployment_group, pod_identity
@@ -68,6 +68,20 @@ Only a fallback for a bound consumer whose config reports no ``ack_wait``; the h
 is otherwise derived from the consumer's own value (handler-time-bounds spec sec. 4.2).
 """
 
+
+CONNECTIONS_READINESS_KEY = "nats_connections_readiness"
+"""Agent-scoped: whether the agent's named connections count for its readiness -- ``"never"`` (default),
+``"any"`` (one bound is enough) or ``"all"`` (every one bound). Readiness only, in every mode: a named
+connection never pauses the agent (named-connections plan, D5)."""
+
+CONNECTIONS_READINESS_MODES = ("never", "any", "all")
+
+CONNECTION_BOUND_GAUGE = "blueprint.nats.connection.bound"
+"""``1`` while a named connection is bound and delivering, ``0`` otherwise; attributes ``agent`` and
+``connection``. Recorded on the agent's own meter provider (C2)."""
+
+PERMISSION_VIOLATIONS_COUNTER = "blueprint.nats.connection.permission_violations"
+"""Permission violations a named connection's broker reported; attributes ``agent`` and ``connection``."""
 
 PERMISSION_RETRY_SECONDS = 60.0
 """How often a named connection retries after the broker refused it a permission: a missing grant does
@@ -128,6 +142,37 @@ class ConsumerTuning:
     max_ack_pending: int | None
     max_deliver: int | None
     dead_letter_subject: str
+
+
+@dataclass(frozen=True)
+class NamedConnectionState:
+    """How one named connection of an agent stands, for readiness and diagnostics. Never carries a secret.
+
+    ``state`` is ``"bound"`` (delivering), ``"connecting"`` (first attempt in progress),
+    ``"reconnecting"`` (the broker was lost; the client reconnects by itself), ``"retrying"`` (an
+    attempt failed; ``last_error`` says why) or ``"paused"`` (the agent is degraded and consumes
+    nowhere, C4).
+    """
+
+    name: str
+    state: str
+    last_error: str = ""
+    permission_denied: bool = False
+    """The broker reported a permission violation since the connection's last attempt."""
+
+    @property
+    def bound(self) -> bool:
+        """Whether the connection is bound and delivering."""
+        return self.state == "bound"
+
+    def describe(self) -> str:
+        """One line for the readiness payload: name, state, and why when it is not bound."""
+        details = []
+        if self.permission_denied:
+            details.append("permission violation")
+        if self.last_error and not self.bound:
+            details.append(self.last_error)
+        return f"{self.name}={self.state}" + (f" ({'; '.join(details)})" if details else "")
 
 
 @dataclass(eq=False)
@@ -191,6 +236,10 @@ class _Binding:
     revoked: bool = False
     """Retired with runs still in flight after the grace period: those runs are never settled (spec 7.5)."""
     heartbeats: set[asyncio.Task[None]] = field(default_factory=set)
+    last_error: str = ""
+    """Why the last connect-and-bind attempt failed, redacted; ``""`` once it is bound."""
+    permission_denied: bool = False
+    """The last failed attempt was refused a permission by the broker."""
 
     def __post_init__(self) -> None:
         self.idle.set()
@@ -348,6 +397,9 @@ class NATSClient(IOClientBase):
         self._change_grace = 30.0
         self._change_lock = asyncio.Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._connections_readiness: str | None = None
+        self._connection_gauge_registered = False
+        self._health_refresh: Callable[[], Awaitable[None]] | None = None
         self._reconcile_task: asyncio.Task[None] | None = None
         self._reconcile_dirty = False
         self._retirements: set[asyncio.Task[None]] = set()
@@ -498,6 +550,123 @@ class NATSClient(IOClientBase):
         return tuple(binding.link.name for binding in self._named)
 
     @property
+    def connections_readiness(self) -> str:
+        """``nats_connections_readiness`` for this agent: ``"never"``, ``"any"`` or ``"all"``.
+
+        Raises:
+            ValueError: the key holds anything else. ``subscribe()`` resolves it first, so a wrong
+                value fails the agent's startup rather than a health poll.
+        """
+        if self._connections_readiness is None:
+            self._connections_readiness = self._resolve_connections_readiness()
+        return self._connections_readiness
+
+    def named_connection_states(self) -> tuple[NamedConnectionState, ...]:
+        """How each current named connection stands, in the source's order; one being replaced is left out."""
+        return tuple(self._state_of(binding) for binding in self._named if not binding.superseded)
+
+    def _state_of(self, binding: _Binding) -> NamedConnectionState:
+        """``binding``'s state, from what its link and its connect loop last recorded."""
+        client = binding.link.nats_client
+        if binding.subscriptions_ready:
+            state = "bound"
+        elif self._consumption_paused:
+            state = "paused"
+        elif client is not None and client.is_reconnecting:
+            state = "reconnecting"
+        elif binding.last_error:
+            state = "retrying"
+        else:
+            state = "connecting"
+        denied = binding.permission_denied or bool(binding.link.permission_errors)
+        return NamedConnectionState(binding.link.name, state, binding.last_error, denied)
+
+    def _resolve_connections_readiness(self) -> str:
+        """Read ``nats_connections_readiness``; refuse anything but the three modes, naming the key."""
+        raw = self.config.get(CONNECTIONS_READINESS_KEY, None)
+        mode = str(raw or "never").strip().lower()
+        if mode not in CONNECTIONS_READINESS_MODES:
+            raise ValueError(
+                f"'{CONNECTIONS_READINESS_KEY}' must be one of {', '.join(CONNECTIONS_READINESS_MODES)}, got {raw!r} "
+                f"(agent '{self.namespace or ROOT_LABEL}')."
+            )
+        return mode
+
+    def set_health_refresh(self, refresh: Callable[[], Awaitable[None]] | None) -> None:
+        """Install what re-evaluates readiness at once, for a change a health poll would otherwise see late.
+
+        Called after the default connection comes back while the agent is paused -- the pause its own
+        disconnect caused ends on that re-evaluation rather than up to ``health_check_interval_seconds``
+        later -- and, unless ``nats_connections_readiness`` is ``"never"``, whenever a named connection
+        becomes bound or unbound.
+        """
+        self._health_refresh = refresh
+
+    def _request_health_refresh(self, reason: str) -> None:
+        """Run the installed refresh in a task of its own; a callback of nats-py must not wait for a poll."""
+        if self._health_refresh is None or self._closing:
+            return
+        logger.debug("Agent '%s': readiness re-evaluated now: %s", self.namespace or ROOT_LABEL, reason)
+        task = asyncio.ensure_future(self._health_refresh())
+        task.add_done_callback(self._on_health_refresh_done)
+
+    def _on_health_refresh_done(self, task: "asyncio.Future[None]") -> None:
+        """Report a refresh that failed, naming the agent."""
+        if not task.cancelled() and task.exception() is not None:
+            logger.error(
+                "Agent '%s': re-evaluating readiness failed: %s",
+                self.namespace or ROOT_LABEL,
+                task.exception(),
+                exc_info=task.exception(),
+            )
+
+    def _named_bound_changed(self, binding: _Binding) -> None:
+        """A named connection became bound or unbound: re-evaluate readiness if the mode reads it."""
+        if self._source is not None and self.connections_readiness != "never":
+            self._request_health_refresh(f"named connection '{binding.link.name}' changed state")
+
+    def _register_connection_gauge(self) -> None:
+        """Create :data:`CONNECTION_BOUND_GAUGE` once, on the agent's meter, after telemetry is configured."""
+        if self._connection_gauge_registered:
+            return
+        self._connection_gauge_registered = True
+        agent = self.namespace or ROOT_LABEL
+
+        def observe(_options: CallbackOptions) -> Iterable[Observation]:
+            # Runs on the metrics reader's thread: reads the bindings, nothing more.
+            return [
+                Observation(1 if state.bound else 0, {"agent": agent, "connection": state.name}) for state in self.named_connection_states()
+            ]
+
+        agent_meter(self.namespace, __name__).create_observable_gauge(
+            CONNECTION_BOUND_GAUGE,
+            callbacks=[observe],
+            description="1 while this named connection is bound and delivering, 0 otherwise",
+            unit="1",
+        )
+
+    @cached_property
+    def _permission_violations(self) -> Counter:
+        """Counter of :data:`PERMISSION_VIOLATIONS_COUNTER`, created on first use (see ``_dead_lettered``)."""
+        return agent_meter(self.namespace, __name__).create_counter(
+            name=PERMISSION_VIOLATIONS_COUNTER,
+            description="Permission violations the broker reported on this agent's named connections",
+            unit="{violation}",
+        )
+
+    @staticmethod
+    def _describe_error(link: _Link, exc: BaseException) -> str:
+        """``exc`` as one short line for the readiness payload: the URL redacted, no credential of the link in it."""
+        text = f"{type(exc).__name__}: {exc}"
+        if link.url:
+            text = text.replace(link.url, redact_url(link.url))
+        for key in ("password", "token", "nkeys_seed_str"):
+            secret = link.connect_options.get(key)
+            if isinstance(secret, str) and secret:
+                text = text.replace(secret, "***")
+        return text[:200]
+
+    @property
     def consumer_tuning(self) -> ConsumerTuning | None:
         """JetStream consumer settings resolved by ``subscribe()``; ``None`` on Core NATS."""
         return self._tuning
@@ -531,6 +700,7 @@ class NATSClient(IOClientBase):
         self._heartbeat_enabled = self._resolve_heartbeat_enabled()
         self._handler_timeout = self._resolve_handler_timeout()
         self._change_grace = self._resolve_change_grace()
+        self._connections_readiness = self._resolve_connections_readiness()
         self._declared = dict(topic_callbacks)
         # What a named connection serves leaves the default connection (plan D10).
         default_topics = self._plan_named_bindings(topic_callbacks)
@@ -542,6 +712,8 @@ class NATSClient(IOClientBase):
         self._subscriptions_ready = False
         self._default_pairs = 1 if default_topics else 0
         self._register_pairs(self._default_pairs + len(self._named))
+        if self._source is not None:
+            self._register_connection_gauge()
         self._watch_source()
         if self._consumption_paused:
             logger.info(
@@ -687,6 +859,9 @@ class NATSClient(IOClientBase):
                 binding.subscriptions.clear()
                 await self._bind(binding)
                 binding.subscriptions_ready = True
+                binding.last_error = ""
+                binding.permission_denied = False
+                self._named_bound_changed(binding)
                 if binding.replaces is not None:
                     # New before old (spec 7.4): only now that this one delivers is the old one retired.
                     old, binding.replaces = binding.replaces, None
@@ -698,6 +873,8 @@ class NATSClient(IOClientBase):
                 attempt += 1
                 binding.subscriptions_ready = False
                 denied = list(binding.link.permission_errors)
+                binding.last_error = self._describe_error(binding.link, exc)
+                binding.permission_denied = bool(denied)
                 if denied:
                     # The broker reports a missing grant through error_cb and lets the request time
                     # out: that is permanent, not a slow broker (spec 7.9).
@@ -746,6 +923,7 @@ class NATSClient(IOClientBase):
             for binding in self._named:
                 if binding.link is link:
                     binding.subscriptions_ready = False
+                    self._named_bound_changed(binding)
             logger.warning("Agent '%s': named connection '%s' lost its broker", agent, link.name)
 
         async def on_reconnected() -> None:
@@ -754,12 +932,20 @@ class NATSClient(IOClientBase):
             for binding in self._named:
                 if binding.link is link and not self._consumption_paused:
                     binding.subscriptions_ready = True
+                    self._named_bound_changed(binding)
             logger.info("Agent '%s': named connection '%s' is back", agent, link.name)
 
         async def on_error(error: Exception) -> None:
             # Permission violations land here: a subject the deployment did not grant this account.
             if "permissions violation" in str(error).lower():
                 link.permission_errors.append(str(error))
+                self._permission_violations.add(1, {"agent": agent, "connection": link.name})
+            # A refused login lands here too, and only here: with max_reconnect_attempts=-1,
+            # nats.connect() retries it by itself and never returns, so the connect loop sees no
+            # exception. Recorded so the state reads "retrying" with the reason, not "connecting".
+            for binding in self._named:
+                if binding.link is link and not binding.subscriptions_ready:
+                    binding.last_error = self._describe_error(link, error)
             logger.error("Agent '%s': error on named connection '%s': %s", agent, link.name, error)
 
         link.nats_client = await nats.connect(
@@ -2697,6 +2883,9 @@ class NATSClient(IOClientBase):
             # restoring the connection would silently resubscribe a degraded agent, and C4
             # would hold only until the next network blip.
             logger.info("Agent '%s' stays paused after the reconnect; it is still degraded", self.namespace or ROOT_LABEL)
+            # The pause may have been this connection's own loss: re-evaluate now, so the agent
+            # resumes on this reconnect instead of up to one health interval later.
+            self._request_health_refresh("the default connection is back while the agent is paused")
             return
         if self._use_jetstream and self._topic_callbacks:
             # JetStream durable consumers do not survive reconnects; re-subscribe manually.

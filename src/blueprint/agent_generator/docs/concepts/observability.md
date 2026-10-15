@@ -111,6 +111,8 @@ An exception propagating out of the method sets the span status to `ERROR` befor
 | `blueprint.namespace.inflight` | gauge | Dispatches that agent has in progress. Carries `agent`. |
 | `blueprint.events.unhandled` | counter | Events an agent received and found nothing to do with. Carries `agent` and `topic`. |
 | `blueprint.events.duplicate` | counter | Events an agent recognised as already processed. Carries `agent` and `topic`. |
+| `blueprint.nats.connection.bound` | gauge | `1` while a named NATS connection is bound and delivering, `0` otherwise. Carries `agent` and `connection`. |
+| `blueprint.nats.connection.permission_violations` | counter | Permission violations the broker reported on a named connection. Carries `agent` and `connection`. |
 | `llm.tokens.count` | counter | Tokens consumed, by an agent's model calls. |
 | `llm.response.latency` | histogram | Model call duration. |
 
@@ -131,7 +133,7 @@ the only attribution available is what was emitted *before* the process died.
 | Endpoint | Answers |
 |---|---|
 | `GET /health/live` | `200` while the process is running. Never namespace-dependent (C3). |
-| `GET /health/ready` | `200` when the pod should receive traffic, `503` otherwise. |
+| `GET /health/ready` | `200` when the pod should receive traffic, `503` otherwise. Answered from the last poll's result at once, also while a poll is still waiting on a slow check. |
 | `GET /info`, `/status/env`, `/status/llm`, `/status/build` | Service, configuration, AI-provider and build metadata. |
 
 **Liveness is never namespace-dependent, and that is a rule rather than an accident.** A failing
@@ -236,6 +238,33 @@ registration rather than silently reduced to one.
 
 The framework registers checks of its own: one per transport client, and one per declared cache
 (`cache`, or `cache:<name>` for a named one).
+
+### Named NATS connections
+
+With a `nats_connection_source`, each agent's client gets one more entry,
+`<agent>.nats_client:connections`. Its message lists every named connection and how it stands --
+`bound`, `connecting`, `reconnecting`, `retrying` (with the last error, credentials redacted) or
+`paused` -- and whether the broker reported a permission violation:
+
+```json
+"orders.nats_client:connections": {
+  "status": "unhealthy",
+  "message": "1/2 named connection(s) bound, readiness 'all': A=bound, B=retrying (Error: nats: 'Authorization Violation')"
+}
+```
+
+Whether it can fail is the agent's `nats_connections_readiness`: `never` (default) -- it is always
+healthy and only reports; `any` -- it fails while no named connection is bound; `all` -- it fails
+while any one is not bound.
+
+**It counts for readiness only, never for consumption.** A failing entry makes the agent `DOWN` in
+the payload and under the readiness policy, but the agent is not paused: a tenant whose connection
+is down must not stop the agent on every other tenant's connection. The default connection's
+entry keeps pausing the agent as described below.
+
+When the mode is `any` or `all`, a named connection becoming bound or unbound re-runs the checks at
+once rather than at the next interval. So does the default connection coming back while the agent
+is paused, so a pause its own disconnect caused ends on the reconnect.
 
 ---
 

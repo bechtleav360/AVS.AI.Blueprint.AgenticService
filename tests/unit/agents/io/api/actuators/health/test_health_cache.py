@@ -1,5 +1,6 @@
 """Unit tests for HealthCheckCache."""
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -314,6 +315,83 @@ class TestALatchedAgent:
         cache, supervisor = await self._run(ReadinessPolicy.ALL, set(), [])
         assert (await cache.get_health_status()).namespaces["billing"].status == "DOWN"
         supervisor.observe.assert_awaited_once()
+
+
+class TestAReadinessOnlyCheck:
+    """D5: a named connection's state feeds readiness, never the pause decision."""
+
+    async def test_it_takes_the_agent_out_of_readiness_but_never_pauses_it(self) -> None:
+        supervisor = TestTheVerdictIsPerAgent._supervisor(["", "orders"], set())
+        cache = HealthCheckCache(supervisor=supervisor)
+        readiness_only = HealthCheckEntry(
+            name="nats_client:connections", namespace="orders", checker=_make_provider("unhealthy", "B=retrying"), affects_consumption=False
+        )
+        cache.set_health_entries([_entry("nats_client", "healthy", namespace="orders"), readiness_only])
+
+        await cache._run_health_checks()
+
+        response = await cache.get_health_status()
+        assert response.status == "DOWN"
+        assert response.namespaces["orders"].failing == ["orders.nats_client:connections"]
+        supervisor.observe.assert_awaited_once_with({"": True, "orders": True})
+
+    async def test_a_failing_consumption_check_still_pauses_beside_it(self) -> None:
+        supervisor = TestTheVerdictIsPerAgent._supervisor(["", "orders"], set())
+        cache = HealthCheckCache(supervisor=supervisor)
+        readiness_only = HealthCheckEntry(
+            name="nats_client:connections", namespace="orders", checker=_make_provider("healthy"), affects_consumption=False
+        )
+        cache.set_health_entries([_entry("nats_client", "unhealthy", "broker gone", namespace="orders"), readiness_only])
+
+        await cache._run_health_checks()
+
+        supervisor.observe.assert_awaited_once_with({"": True, "orders": False})
+
+
+class TestTheProbeNeverWaitsForAPoll:
+    """Review finding #6: a slow check held the lock the readiness read waited for."""
+
+    async def test_the_cached_answer_comes_at_once_while_a_check_hangs(self) -> None:
+        cache = HealthCheckCache()
+        release = asyncio.Event()
+
+        async def slow() -> ComponentHealth:
+            await release.wait()
+            return ComponentHealth(status="unhealthy", message="late")
+
+        checker = MagicMock()
+        checker.health_check = slow
+        cache.set_health_entries([HealthCheckEntry(name="nats", namespace="", checker=checker)])
+        poll = asyncio.ensure_future(cache._run_health_checks())
+        await asyncio.sleep(0)
+
+        before = await asyncio.wait_for(cache.get_health_status(), timeout=0.1)
+        release.set()
+        await poll
+
+        assert before.status == "UP"
+        assert (await cache.get_health_status()).status == "DOWN"
+
+    async def test_polls_are_still_serialised(self) -> None:
+        cache = HealthCheckCache()
+        running = 0
+        overlap = 0
+
+        async def check() -> ComponentHealth:
+            nonlocal running, overlap
+            running += 1
+            overlap = max(overlap, running)
+            await asyncio.sleep(0.01)
+            running -= 1
+            return ComponentHealth(status="healthy", message="ok")
+
+        checker = MagicMock()
+        checker.health_check = check
+        cache.set_health_entries([HealthCheckEntry(name="nats", namespace="", checker=checker)])
+
+        await asyncio.gather(cache._run_health_checks(), cache.refresh())
+
+        assert overlap == 1
 
 
 # ---------------------------------------------------------------------------

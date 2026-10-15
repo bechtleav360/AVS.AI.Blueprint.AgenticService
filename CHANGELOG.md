@@ -3,6 +3,10 @@
 
 ### Fixed
 
+- **`/health/ready` no longer waits for a running health poll.** The cached answer was read under the
+  lock the poll holds while it awaits every check, so a slow check -- a NATS connect up to its 10 s
+  timeout -- delayed every readiness probe with it. Measured with a 4 s check: up to 3.9 s per probe
+  before, under 0.1 s now.
 - **A NATS connection that gave up reconnecting comes back, with its subscriptions.**
   `nats_max_reconnect_attempts` now defaults to unlimited (was 5, about 10 s of outage), and a
   connection that closes anyway restarts the client's retry loop, which connects and resubscribes;
@@ -168,6 +172,15 @@
 
 ### Added
 
+- **Per-connection state and `nats_connections_readiness`.** Each agent with named connections gets a
+  readiness entry `<agent>.nats_client:connections` listing every connection as `bound`, `connecting`,
+  `reconnecting`, `retrying` (with the last error, redacted) or `paused`, and any permission violation,
+  plus the gauge `blueprint.nats.connection.bound` and the counter
+  `blueprint.nats.connection.permission_violations` (attributes `agent`, `connection`). The new agent-scope
+  key decides whether the entry can fail: `"never"` (default), `"any"` (one bound) or `"all"` (every one
+  bound); another value fails startup. In every mode a named connection feeds readiness only and never
+  pauses the agent, so its other connections keep delivering. A paused agent whose default connection
+  comes back re-evaluates readiness at once instead of at the next health interval.
 - **Named connections change at runtime.** A connection source that defines `watch(notify)` tells every
   agent's client when its connections change; the client binds a new connection, replaces a changed one
   (new link bound before the old one is retired) and retires a removed one: drained, its runs given

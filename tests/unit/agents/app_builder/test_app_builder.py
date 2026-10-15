@@ -815,3 +815,45 @@ class TestConnectionSourceWiring:
 
         with pytest.raises(ValueError, match="nats_connection_source"):
             builder_for_build.build()
+
+    def test_named_connections_get_a_readiness_only_entry(
+        self, builder_for_build: AppBuilder, mock_registry: MagicMock, all_build_mocks: types.SimpleNamespace, build_config: MagicMock
+    ) -> None:
+        """Step 5 / D5: the named connections count for readiness, never for the pause decision."""
+        from blueprint.agents.io.api.actuators.health import NamedConnectionsHealthChecker
+
+        wire_empty_registry(mock_registry)
+        mock_registry.get_event_handler.return_value = [MagicMock()]
+        client = all_build_mocks.nats_client.return_value
+        client.base_name, client.namespace = "nats_client", ""
+        self._config(build_config, "tests.unit.agents.clients.io.test_nats_connection_source:make_source")
+
+        builder_for_build.build()
+
+        (entries,) = all_build_mocks.actuator.return_value.add_health_providers.call_args.args
+        (entry,) = [entry for entry in entries if entry.name == "nats_client:connections"]
+        assert entry.affects_consumption is False
+        assert isinstance(entry.checker, NamedConnectionsHealthChecker)
+
+    def test_without_a_source_there_is_no_such_entry(
+        self, builder_for_build: AppBuilder, mock_registry: MagicMock, all_build_mocks: types.SimpleNamespace, build_config: MagicMock
+    ) -> None:
+        wire_empty_registry(mock_registry)
+        mock_registry.get_event_handler.return_value = [MagicMock()]
+        self._config(build_config, None)
+
+        builder_for_build.build()
+
+        calls = all_build_mocks.actuator.return_value.add_health_providers.call_args_list
+        assert not [entry for call in calls for entry in call.args[0] if entry.name.endswith(":connections")]
+
+    def test_the_client_can_ask_for_a_readiness_refresh(
+        self, builder_for_build: AppBuilder, mock_registry: MagicMock, all_build_mocks: types.SimpleNamespace, build_config: MagicMock
+    ) -> None:
+        wire_empty_registry(mock_registry)
+        mock_registry.get_event_handler.return_value = [MagicMock()]
+        self._config(build_config, None)
+
+        builder_for_build.build()
+
+        all_build_mocks.nats_client.return_value.set_health_refresh.assert_called_once_with(builder_for_build._refresh_health)

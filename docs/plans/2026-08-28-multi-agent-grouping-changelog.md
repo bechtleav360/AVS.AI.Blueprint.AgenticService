@@ -8537,6 +8537,37 @@ each, both failures pre-existing and failing at HEAD as well (`test_two_processe
 the subprocess does not find `blueprint`; `test_the_broker_counts_it_as_a_redelivery`: now
 deterministic, see Open points).
 
+### Named connections, step 5: readiness and telemetry per connection (D5, review finding #6)
+
+- **Readiness only, never a pause.** `HealthCheckEntry` gains `affects_consumption` (default `True`).
+  `HealthCheckCache` computes two verdicts per agent: readiness from every entry (payload, policy) and
+  consumption from the entries that may pause (what `NamespaceSupervisor.observe` gets). The new
+  entry `<agent>.nats_client:connections` (`NamedConnectionsHealthChecker`, registered by `build()`
+  for each NATS client given a connection source) is readiness-only: a tenant connection that is down
+  never pauses the agent on its other connections, in any mode.
+- **`nats_connections_readiness`** (agent scope): `"never"` (default, the entry always healthy and
+  only reports), `"any"` (fails while none is bound; zero connections count as none), `"all"` (fails
+  while one is not bound). Another value fails `subscribe()`, naming the key. The default
+  connection's entry is unchanged.
+- **Per-connection state** (`NATSClient.named_connection_states()`): `bound`, `connecting`,
+  `reconnecting`, `retrying` with the last error (URL and the link's credentials redacted, 200
+  characters), `paused`, and whether a permission violation was seen. A refused login never surfaces
+  as an exception -- with `max_reconnect_attempts=-1` `nats.connect()` retries it itself and never
+  returns -- so `error_cb` records it as the last error, and the state reads `retrying`.
+- **Metrics** on the agent's meter: gauge `blueprint.nats.connection.bound` and counter
+  `blueprint.nats.connection.permission_violations`, both with `agent` and `connection`.
+- **#6:** `get_health_status()` no longer takes the lock the poll holds while it awaits the checks;
+  the lock now only serialises polls. Live over HTTP with a 4 s check: max 3928 ms and 5 of 25 probes
+  over 0.5 s on the old code, max 82 ms and none over 0.5 s now.
+- **Immediate re-evaluation:** `NATSClient.set_health_refresh()` (wired by `build()` to
+  `ActuatorApi.refresh_health`). The default connection coming back while the agent is paused runs
+  the checks at once, so a pause its own disconnect caused ends on the reconnect; under `any`/`all`
+  a named connection becoming bound or unbound does the same. The refresh runs in a watched task.
+- Tests: unit (states, redaction, modes, checker, two verdicts, lock-free read, serialised polls,
+  refresh, gauge, counter, wiring); integration `TestADeadConnectionCountsForReadinessOnly` on the
+  accounts broker -- tenant B with a wrong password, per mode: A bound and B `retrying`, `/health/ready`
+  200/200/503 for never/any/all, the agent not paused, A still delivering, no password in the payload.
+
 ---
 
 ## Open points

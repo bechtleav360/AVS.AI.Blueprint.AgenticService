@@ -3,7 +3,8 @@
 One named connection per tenant, each logging in as that tenant's agent user on the accounts broker
 (nats-accounts.conf). Everything per test comes from the process config the factory is called with,
 because that is all the framework hands it: ``test_source_url``, ``test_source_prefix`` (keeps
-streams and subjects apart between tests), ``test_source_tenants`` and ``test_source_unclaimed``.
+streams and subjects apart between tests), ``test_source_tenants``, ``test_source_unclaimed`` and
+``test_source_wrong_password`` (tenants whose connection logs in with a password the broker refuses).
 """
 
 from collections.abc import Callable, Iterator
@@ -59,6 +60,7 @@ class TenantSource:
         self.prefix = str(config.get("test_source_prefix"))
         self.users = {tenant: f"agent-{tenant.lower()}" for tenant in config.get("test_source_tenants") or []}
         self.unclaimed = tuple(config.get("test_source_unclaimed") or ())
+        self.wrong_password = set(config.get("test_source_wrong_password") or ())
         self.notifiers: list[Callable[[], None]] = []
         SOURCES.append(self)
 
@@ -76,7 +78,10 @@ class TenantSource:
 
     def connections(self) -> dict[str, ConnectionSpec]:
         return {
-            tenant: ConnectionSpec(name=tenant, url=self.url, user=user, password=PASSWORDS[user]) for tenant, user in self.users.items()
+            tenant: ConnectionSpec(
+                name=tenant, url=self.url, user=user, password="wrong-test-only" if tenant in self.wrong_password else PASSWORDS[user]
+            )
+            for tenant, user in self.users.items()
         }
 
     def binding(self, agent: str, subjects: tuple[str, ...], connection: ConnectionSpec) -> JetStreamBinding:

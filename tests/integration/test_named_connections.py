@@ -7,7 +7,9 @@ What a tenant deployment depends on, observed rather than asserted on the client
 - a run sees one tenant only: its connection, the source's run scope and the event's tenant agree;
 - a delivery the source rejects never runs and is termed;
 - a subject the source does not claim fails startup unless the hybrid mode is asked for;
-- connections added, changed and removed at runtime lose and duplicate nothing.
+- connections added, changed and removed at runtime lose and duplicate nothing;
+- a tenant connection that cannot log in moves readiness as ``nats_connections_readiness`` says,
+  and never pauses the agent: its other connection keeps delivering.
 """
 
 import json
@@ -16,6 +18,7 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
+import httpx
 import nats
 import pytest
 
@@ -271,3 +274,45 @@ class TestConnectionsChangeAtRuntime:
         info = await consumer_info(accounts_url, subject_prefix, "A", agent)
         assert info.num_ack_pending == 0 and info.num_redelivered == 0
         assert permission_violations(caplog) == []
+
+
+class TestADeadConnectionCountsForReadinessOnly:
+    """Step 5 / D5: a tenant whose connection cannot log in never pauses the agent on its other tenants."""
+
+    @pytest.mark.parametrize("mode, ready", [("never", True), ("any", True), ("all", False)])
+    async def test_readiness_follows_the_mode_and_nothing_is_paused(
+        self, settings_group: Any, operator: Operator, accounts_url: str, subject_prefix: str, mode: str, ready: bool
+    ) -> None:
+        agent = f"risk_{subject_prefix}"
+        await operator(["A", "B"], {agent: ["risk.>"]})
+        runs: list[dict[str, Any]] = []
+        extra = f'test_source_wrong_password = ["B"]\nnats_connections_readiness = "{mode}"\nhealth_check_interval_seconds = 1\n'
+        apps: list[Any] = []
+        async with settings_group(
+            settings(accounts_url, subject_prefix, ["A", "B"], extra), {agent: recording_handler(["risk.>"], runs)}, named=1, apps=apps
+        ) as clients:
+            client = clients[agent]
+            await wait_until(
+                lambda: {s.name: s.state for s in client.named_connection_states()} == {"A": "bound", "B": "retrying"},
+                timeout=15,
+                description="A bound, B retrying",
+            )
+            (b,) = [s for s in client.named_connection_states() if s.name == "B"]
+            assert "wrong-test-only" not in b.describe()
+
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=apps[0]), base_url="http://it") as http:
+
+                async def probe_settled() -> bool:
+                    response = await http.get("/health/ready")
+                    # The payload of a poll after both connections were tried, not the startup one.
+                    return (response.status_code == 200) is ready and "B=retrying" in response.text
+
+                await poll_until(probe_settled, timeout=10, description=f"readiness {'UP' if ready else 'DOWN'} under '{mode}'")
+                body = (await http.get("/health/ready")).json()
+            payload = body if ready else body["detail"]
+            entry = payload["components"][f"{agent}.nats_client:connections"]
+            assert "B=retrying" in entry["message"] and "wrong-test-only" not in json.dumps(payload)
+
+            assert not client.consumption_paused, "a dead named connection never pauses the agent"
+            sent = await publish(accounts_url, subject_prefix, "A", "risk.created")
+            await wait_until(lambda: sent in [run["id"] for run in runs], timeout=10, description="A to keep delivering")

@@ -380,7 +380,7 @@ def settings_group(tmp_path: Path) -> GroupFactory:
         async with settings_group(settings, {"orders_x": OrdersHandler}) as clients:
             ...
 
-    The test writes every key itself, because the features under test are configured per test
+    ``apps``, if given, receives the assembled application. The test writes every key itself, because the features under test are configured per test
     (run limits, heartbeat, timeouts, a connection source). Waits until every agent's default
     subscriptions are ready and, when ``named`` is set, until each agent is bound on that many
     named connections.
@@ -388,13 +388,15 @@ def settings_group(tmp_path: Path) -> GroupFactory:
 
     @asynccontextmanager
     async def factory(
-        settings: str, agents: dict[str, type], *, named: int = 0, ready_timeout: float = 20.0
+        settings: str, agents: dict[str, type], *, named: int = 0, ready_timeout: float = 20.0, apps: list[Any] | None = None
     ) -> AsyncIterator[dict[str, NATSClient]]:
         (tmp_path / "settings.toml").write_text(settings, encoding="utf-8")
         config = Config(settings_files=["settings.toml"], root_path=str(tmp_path))
         group = AgentGroup("integration", {name: AppBuilder().with_handler(handler) for name, handler in agents.items()})
         try:
             app = group.assemble(config)
+            if apps is not None:
+                apps.append(app)  # for a test that asks the app itself, e.g. its readiness probe
             async with app.router.lifespan_context(app):
                 registry = Component.shared_registry
                 assert registry is not None

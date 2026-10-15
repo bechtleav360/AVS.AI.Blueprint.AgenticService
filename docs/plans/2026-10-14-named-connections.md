@@ -283,7 +283,11 @@ One step, one reviewable commit. Each step names its acceptance.
    (also #10) is not part of this feature; a configurable limit is left for later.
 5. **Readiness and telemetry per connection** (D5): connection state in the readiness payload,
    metrics labelled with the connection name. Take review finding #6 (the readiness probe waits on a
-   lock held during slow health checks) into account here.
+   lock held during slow health checks) into account here. **Done 2026-10-15:** readiness entry
+   `<agent>.nats_client:connections` registered with `affects_consumption=False` (feeds the verdict,
+   never the supervisor), `nats_connections_readiness`, gauge `blueprint.nats.connection.bound`,
+   counter `blueprint.nats.connection.permission_violations`; `/health/ready` reads the cache without
+   the poll lock (#6); a paused agent whose default connection comes back re-evaluates at once.
 6. **Everything that describes the framework agrees with it -- no contradiction left anywhere.**
    Not only the new feature: every statement about NATS delivery, consumers, concurrency, heartbeat,
    run limits and connections is checked against the code after steps 1-5, and corrected or

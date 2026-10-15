@@ -32,7 +32,7 @@ from .handler.event_handler_base import EventHandlerBase
 from .io.api.rest_api_base import RestApiBase
 from .io.api.scheduling.scheduler import SchedulerBase
 from .io.api.actuators.actuator_api import ActuatorApi
-from .io.api.actuators.health import CacheHealthChecker, ClientHealthChecker, HealthCheckEntry
+from .io.api.actuators.health import CacheHealthChecker, ClientHealthChecker, HealthCheckEntry, NamedConnectionsHealthChecker
 from .io.api.eventing.dapr import DaprEventing
 from .io.api.eventing.nats import NatsEventing
 from .io.api.eventing.sessions_bus import SessionsBus
@@ -265,6 +265,8 @@ class AppBuilder:
         # because a group's agents each subscribe on their own behalf (spec sec. 7.6); it holds
         # exactly one element for every application that declares no namespace.
         self._eventing_components: list[DaprEventing | NatsEventing] = []
+        # The NATS clients given a connection source, for their named connections' readiness entries.
+        self._sourced_nats_clients: list[NATSClient] = []
         # Components that need lifespan (on_startup / on_shutdown) but do not expose
         # a FastAPI router. SessionsBus lives here because it is SSE-driven, not
         # HTTP-driven; keeping it out of _eventing_component avoids the routerless
@@ -1011,6 +1013,7 @@ class AppBuilder:
         )
         # One pool of runs beyond each pair's guaranteed one, shared by the whole process (plan D7).
         run_pool = RunPool(RunLimit.parse("nats_extra_runs_per_process", resolved_config.get("nats_extra_runs_per_process"), minimum=0))
+        self._sourced_nats_clients = []
         for namespace in self.hosted_namespaces:
             self._wire_transport(registry, namespace, event_bus_type, connection_source, run_pool)
         self._wire_dapr_endpoint(registry, event_bus_type)
@@ -1053,6 +1056,17 @@ class AppBuilder:
             # The agent is carried on the entry, so two agents' default caches are two entries
             # rather than one that silently reports whichever was registered last.
             health_providers.append(HealthCheckEntry(name=name, namespace=namespace, checker=CacheHealthChecker(cache)))
+        # Each agent's named connections: one entry for readiness only. Never one that pauses the
+        # agent -- a dead tenant connection must not stop it on its other connections (plan D5).
+        health_providers.extend(
+            HealthCheckEntry(
+                name=f"{client.base_name}:connections",
+                namespace=client.namespace,
+                checker=NamedConnectionsHealthChecker(client),
+                affects_consumption=False,
+            )
+            for client in self._sourced_nats_clients
+        )
         health_providers.extend(self._health_checkers)
         if health_providers:
             self._actuator_api.add_health_providers(health_providers)
@@ -1138,7 +1152,10 @@ class AppBuilder:
         elif event_bus_type == "nats":
             client = NATSClient(namespace=namespace)  # auto-registers
             client.set_fatal_handler(self._on_transport_fatal)
+            client.set_health_refresh(self._refresh_health)
             client.set_connection_source(connection_source)
+            if connection_source is not None:
+                self._sourced_nats_clients.append(client)
             if run_pool is not None:
                 client.set_run_pool(run_pool)
             if consumes:
@@ -1572,6 +1589,11 @@ class AppBuilder:
             threshold_seconds=float(config.get(BLOCK_THRESHOLD_KEY, DEFAULT_BLOCK_THRESHOLD_SECONDS)),
         )
         await self._loop_watchdog.start()
+
+    async def _refresh_health(self) -> None:
+        """Recompute readiness now; what a transport client calls for a change it saw before a poll would."""
+        if self._actuator_api is not None:
+            await self._actuator_api.refresh_health()
 
     async def _mark_agent_down(self, namespace: str, reason: str) -> None:
         """Take one agent out of service for a failure no health check can see.

@@ -55,11 +55,15 @@ class HealthCheckEntry:
         name: What this check is called within its agent.
         namespace: The agent it belongs to; ``""`` for the root.
         checker: The checker to poll.
+        affects_consumption: Whether a failure also stops the agent consuming (C4). ``False``
+            makes the check count for readiness only: a named NATS connection that is down must
+            never pause the agent on its other connections (named-connections plan, D5).
     """
 
     name: str
     namespace: str
     checker: HealthCheckerBase
+    affects_consumption: bool = True
 
     @property
     def key(self) -> str:
