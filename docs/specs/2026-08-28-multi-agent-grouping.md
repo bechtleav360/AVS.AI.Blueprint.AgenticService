@@ -510,12 +510,17 @@ to do, and redelivery cannot make a handler appear: a nak is a pointless loop un
 and under a queue group a loop that visits every replica in turn. `dapr.py:75` returns `RETRY` for
 this case today and **MUST** change.
 
-**An unmatched event is normal, and the framework MUST treat it as normal.** Deciding there is
-nothing to do is the handler's job and an ordinary outcome of doing it: an agent reads an event,
-finds no work in it for whatever domain reason, and says so. Why is the agent's business and not
-the framework's. The framework therefore **MUST NOT** log it at WARNING or otherwise present it as
-a fault, and **MUST NOT** accumulate per-topic state about it -- under Dapr the topic arrives from a
-URL path, so remembering each distinct value lets a caller grow the process's memory.
+**An unmatched event is acknowledged, and it is reported as a probable misconfiguration
+(changed 2026-10-15).** Deciding there is nothing to do is the handler's job: a handler that is
+responsible for the event and finds no work in it returns `HandlerResult.skipped(reason)` (below),
+which is an ordinary outcome, logged at INFO. An event that *no* handler takes therefore no longer
+stands for "the agent found nothing to do" -- it means the agent is subscribed to something none of
+its handlers routes, or a handler declines what it should claim. The framework **MUST** log it at
+WARNING ("No handler processed event", from the handler chain) and **MUST** still acknowledge it,
+since no redelivery makes a handler appear. It **MUST NOT** accumulate per-topic state about it --
+under Dapr the topic arrives from a URL path, so remembering each distinct value lets a caller grow
+the process's memory. (Before 2026-10-15 this paragraph required the opposite -- no WARNING --
+because "nothing to do" could only be said by declining; the chain logged a WARNING regardless.)
 
 It **MUST** be counted per namespace and topic, for one purpose: the *proportion* of received
 events a namespace declines is how a too-broad subscription shows up (sec. 7.7). A high count is a
