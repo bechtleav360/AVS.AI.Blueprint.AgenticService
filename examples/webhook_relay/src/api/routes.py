@@ -15,7 +15,7 @@ from blueprint.agents.services.eventing.event_processing_service import (
     EventProcessingService,
 )
 
-from ..models.schemas import WebhookPayload
+from ..models.dto import WebhookPayload
 from ..services.webhook_service import WebhookService
 
 logger = logging.getLogger(__name__)

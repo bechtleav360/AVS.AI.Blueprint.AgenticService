@@ -5,7 +5,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 
-from src.models.domain import IncomingWebhook, NormalizedEvent
+from src.models.domain_models import IncomingWebhook, NormalizedEvent
 from src.services.webhook_service import WebhookService
 
 # ---------------------------------------------------------------------------

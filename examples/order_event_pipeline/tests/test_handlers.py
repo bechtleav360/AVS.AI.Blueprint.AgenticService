@@ -7,7 +7,7 @@ import pytest
 from blueprint.agents.models.events import GenericCloudEvent
 
 from src.handlers.order_handler import OrderHandler
-from src.models.domain import Order, OrderOutcome
+from src.models.domain_models import Order, OrderOutcome
 
 
 def _make_event(data: dict, event_type: str = "order.created") -> GenericCloudEvent:

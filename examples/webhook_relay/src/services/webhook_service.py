@@ -9,7 +9,7 @@ from typing import Any
 from blueprint.agents.services.service_base import ServiceBase
 from blueprint.agents.services.infrastructure.cache_service import CacheService
 
-from ..models.domain import IncomingWebhook, NormalizedEvent, RelayOutcome
+from ..models.domain_models import IncomingWebhook, NormalizedEvent, RelayOutcome
 
 logger = logging.getLogger(__name__)
 

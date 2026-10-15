@@ -8,7 +8,7 @@ import pytest
 from blueprint.agents.models.events import GenericCloudEvent
 
 from src.handlers.reading_handler import ReadingHandler
-from src.models.domain import Alert, Reading
+from src.models.domain_models import Alert, Reading
 from src.services.reading_service import ReadingService
 from src.sites import SiteSettings, enter_site, leave_site
 

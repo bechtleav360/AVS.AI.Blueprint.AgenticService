@@ -7,8 +7,8 @@ from typing import Any
 from blueprint.agents.handler.event_handler_base import EventHandlerBase
 from blueprint.agents.models.events import GenericCloudEvent, HandlerResult
 
-from ..models.domain import IncomingWebhook
-from ..models.schemas import WebhookPayload
+from ..models.domain_models import IncomingWebhook
+from ..models.dto import WebhookPayload
 from ..services.webhook_service import WebhookService
 
 WEBHOOK_RECEIVED = "webhook.received"

@@ -11,7 +11,7 @@ import pytest
 from blueprint.agents.models.events import GenericCloudEvent, HandlerResult
 
 from src.handlers.webhook_handler import WebhookHandler
-from src.models.domain import IncomingWebhook, RelayOutcome
+from src.models.domain_models import IncomingWebhook, RelayOutcome
 from src.services.webhook_service import WebhookService
 
 # ---------------------------------------------------------------------------

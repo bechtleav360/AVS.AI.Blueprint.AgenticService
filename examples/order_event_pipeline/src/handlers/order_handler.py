@@ -6,8 +6,8 @@ from typing import Any
 from blueprint.agents.handler.event_handler_base import EventHandlerBase
 from blueprint.agents.models.events import GenericCloudEvent, HandlerResult
 
-from ..models.domain import Order
-from ..models.schemas import OrderPayload
+from ..models.domain_models import Order
+from ..models.dto import OrderPayload
 from ..services.order_service import OrderService
 
 logger = logging.getLogger(__name__)

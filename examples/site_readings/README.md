@@ -51,8 +51,8 @@ site_readings/
     sites.py               # per-run site settings, set by run_scope
     handlers/reading_handler.py
     services/reading_service.py
-    models/schemas.py      # DTO: ReadingRecorded
-    models/domain.py       # Reading, Alert
+    models/dto.py            # DTO: ReadingRecorded
+    models/domain_models.py  # Reading, Alert
     api/routes.py          # GET /api/alerts
   deploy/
     nats-accounts.conf     # the example broker: one account per site, passwords from the environment

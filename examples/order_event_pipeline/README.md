@@ -30,8 +30,8 @@ order_event_pipeline/
   src/
     main.py              # Application entry point
     models/
-      schemas.py         # DTO: OrderPayload (event data)
-      domain.py          # Domain: Order, ValidationError, OrderOutcome
+      dto.py             # DTO: OrderPayload (event data)
+      domain_models.py   # Domain: Order, ValidationError, OrderOutcome
     handlers/
       order_handler.py   # order.created -> OrderService.process_order()
     services/

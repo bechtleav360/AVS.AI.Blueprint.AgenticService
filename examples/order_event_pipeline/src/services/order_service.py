@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from blueprint.agents.services.service_base import ServiceBase
 from blueprint.agents.services.infrastructure.cache_service import CacheService
 
-from ..models.domain import Order, OrderOutcome, ValidationError
+from ..models.domain_models import Order, OrderOutcome, ValidationError
 
 logger = logging.getLogger(__name__)
 

@@ -118,8 +118,8 @@ webhook_relay/
   src/
     main.py              # AppBuilder wiring
     models/
-      schemas.py         # DTO: WebhookPayload (REST body and event data)
-      domain.py          # Domain: IncomingWebhook, NormalizedEvent, RelayOutcome
+      dto.py             # DTO: WebhookPayload (REST body and event data)
+      domain_models.py   # Domain: IncomingWebhook, NormalizedEvent, RelayOutcome
     handlers/
       webhook_handler.py # webhook.received -> WebhookService.relay()
     services/

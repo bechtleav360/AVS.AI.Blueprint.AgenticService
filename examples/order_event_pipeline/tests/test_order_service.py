@@ -4,7 +4,7 @@ import pytest
 
 from unittest.mock import MagicMock
 
-from src.models.domain import Order, OrderLine
+from src.models.domain_models import Order, OrderLine
 from src.services.order_service import OrderService
 
 

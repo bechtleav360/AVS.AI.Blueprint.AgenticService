@@ -5,7 +5,7 @@ from typing import Any
 
 from blueprint.agents.services.service_base import ServiceBase
 
-from ..models.domain import Alert, Reading
+from ..models.domain_models import Alert, Reading
 from ..sites import current_site
 
 logger = logging.getLogger(__name__)

@@ -5,8 +5,8 @@ from typing import Any
 from blueprint.agents.handler.event_handler_base import EventHandlerBase
 from blueprint.agents.models.events import GenericCloudEvent, HandlerResult
 
-from ..models.domain import Reading
-from ..models.schemas import ReadingRecorded
+from ..models.domain_models import Reading
+from ..models.dto import ReadingRecorded
 from ..services.reading_service import ReadingService
 
 READING_RECORDED = "reading.recorded"
