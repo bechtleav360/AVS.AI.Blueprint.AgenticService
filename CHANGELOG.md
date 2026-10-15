@@ -172,6 +172,10 @@
 
 ### Added
 
+- **A JetStream run knows which attempt it is.** The handler context carries `nats_delivery_attempt`
+  (1-based) and `nats_max_deliver` (`None` when unlimited) on the default and on named connections,
+  so a service can close open work on the last attempt instead of leaving it open. Core NATS
+  deliveries carry neither key.
 - **`HandlerResult.skipped(reason)`.** A handler that is responsible for an event but finds it needs
   nothing returns it: the chain stops (no later handler is asked, unlike `None`), the delivery is
   acknowledged, nothing is published, the reason is logged at INFO and the event is counted as

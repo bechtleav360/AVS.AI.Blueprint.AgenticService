@@ -31,6 +31,10 @@ pod restart, a rolling deploy. Either make the service it calls safe to repeat, 
 whose id and source it has already dispatched, within that window. It is off by default on purpose -
 only you know whether replaying your side effects is acceptable.
 
+**The handler context tells a JetStream run which attempt it is:** `nats_delivery_attempt`
+(1-based) and `nats_max_deliver` (`None` when unlimited). Equal means the last attempt: a failure is
+not redelivered. Pass both to the service if it must close open work on the last attempt.
+
 **Never swallow `asyncio.CancelledError`** in a handler or anything it calls. A run that exceeds
 `nats_handler_timeout` is cancelled; code that catches the cancellation (`except BaseException`, a
 bare `except:`, `except asyncio.CancelledError` without `raise`) keeps working past the limit and is

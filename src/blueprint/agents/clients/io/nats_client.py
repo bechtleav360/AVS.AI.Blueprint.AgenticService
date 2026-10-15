@@ -31,7 +31,7 @@ from ...models.errors import DeliveryDisposition, DeliveryRevokedError, disposit
 from ...models.events import CloudEvent
 from ..client_base import DeliveryCallback
 from .io_client_base import IOClientBase, subject_is_covered_by, validate_publish_subject, validate_subject_segment
-from .nats_connections import ConnectionSource, ConnectionSpec, JetStreamBinding, mark_connection
+from .nats_connections import ConnectionSource, ConnectionSpec, DeliveryAttempt, JetStreamBinding, mark_connection, mark_delivery
 from .nats_run_pool import PairRuns, Release, RunLimit, RunPool
 
 logger = logging.getLogger(__name__)
@@ -2516,6 +2516,11 @@ class NATSClient(IOClientBase):
             await self._settle(msg, DeliveryDisposition.TERM, topic, None, binding)
             return
 
+        attempt = self._delivery_count(msg)
+        if attempt is not None:
+            # The run's own task: the handler context gets it as nats_delivery_attempt / nats_max_deliver.
+            mark_delivery(DeliveryAttempt(attempt=attempt, max_deliver=self._max_deliver_of(binding)))
+
         connection = binding.link.name
         if connection and self._source is not None:
             mark_connection(connection)
@@ -2752,16 +2757,26 @@ class NATSClient(IOClientBase):
         and is never exhausted. A message whose JetStream metadata cannot be read is treated
         as not exhausted, so an unreadable header can only cost a retry, never a payload.
         """
-        # Not configured means the server's default, which is unlimited.
-        binding = binding or self._binding
+        max_deliver = self._max_deliver_of(binding or self._binding)
+        if max_deliver is None:
+            return False
+        delivered = self._delivery_count(msg)
+        return delivered is not None and delivered >= max_deliver
+
+    @staticmethod
+    def _max_deliver_of(binding: _Binding) -> int | None:
+        """The attempts ``binding``'s consumer allows; ``None`` for unlimited or unknown.
+
+        A named connection's binding carries the deployment's value; the agent's own consumers
+        carry ``nats_max_deliver``. Not configured means the server's default, which is unlimited.
+        """
         if binding.jetstream is not None:
             max_deliver = binding.jetstream.max_deliver
         else:
             max_deliver = binding.tuning.max_deliver if binding.tuning else None
         if max_deliver is None or max_deliver < 0:
-            return False
-        delivered = self._delivery_count(msg)
-        return delivered is not None and delivered >= max_deliver
+            return None
+        return max_deliver
 
     @staticmethod
     def _delivery_count(msg: Any) -> int | None:

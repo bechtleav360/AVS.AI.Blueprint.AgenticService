@@ -155,6 +155,8 @@ delivery:
 | `nats_topic` | NATS | The subscription as the agent declared it, possibly a wildcard: `orders.>` |
 | `nats_subject` | NATS | The subject the message was delivered on, as the agent knows it: `orders.created`. On a named connection the binding's `subject_prefix` is stripped again, so a handler sees the same subject on every connection. |
 | `nats_connection` | NATS | The name of the named connection the delivery came from; absent on the default connection. An opaque name for logs and for passing on -- the framework attaches no meaning to it. |
+| `nats_delivery_attempt` | NATS, JetStream | Which attempt this delivery is, 1-based (the broker's `num_delivered`): `1` the first time, `2` after one redelivery. Absent for Core NATS, which does not redeliver. |
+| `nats_max_deliver` | NATS, JetStream | The attempts the delivering consumer allows -- the binding's `max_deliver` on a named connection, `nats_max_deliver` otherwise; `None` when unlimited or unknown. Present exactly when `nats_delivery_attempt` is. |
 | `dapr_topic` | Dapr | The topic the sidecar delivered to |
 
 **Derive anything security-relevant from the delivery, not from the event.** Every field of the
@@ -162,6 +164,11 @@ event is whatever the publisher wrote. The connection and the subject are what t
 under subject-scoped publish permissions, what the broker checked the publisher was allowed to use.
 Nothing in the payload can overwrite a context key. Which deployment-level scope a connection stands
 for is decided by the connection source (its `validate` and `run_scope` hooks), not by handlers.
+
+**The last attempt.** When `nats_delivery_attempt == nats_max_deliver`, a failure of this run is not
+redelivered -- it is dead-lettered or dropped. A service that keeps work open across attempts (a
+claimed job, a pending record) can close or hand it off on that attempt instead of leaving it open.
+The handler passes the two values to the service as parameters; it does not decide.
 
 The keys are present only for events NATS delivered: a test, a direct `process_event` call or another
 transport has none, so read them with `.get()` where that can happen. Handlers share `context`,

@@ -45,6 +45,33 @@ def current_connection() -> str | None:
 
 
 @dataclass(frozen=True)
+class DeliveryAttempt:
+    """Which attempt the current JetStream delivery is, and how many the consumer allows.
+
+    ``attempt`` is 1-based (the broker's ``num_delivered``). ``max_deliver`` is ``None`` when the
+    consumer allows unlimited attempts or the limit is not known, so ``attempt == max_deliver``
+    means: this is the last attempt -- a failure now is not redelivered.
+    """
+
+    attempt: int
+    max_deliver: int | None
+
+
+_CURRENT_DELIVERY: ContextVar[DeliveryAttempt | None] = ContextVar("blueprint_nats_delivery", default=None)
+"""Set inside a JetStream run, in the run's own task, so it can never be another run's."""
+
+
+def current_delivery() -> DeliveryAttempt | None:
+    """The current run's delivery attempt; ``None`` outside a JetStream run (Core NATS has no redelivery)."""
+    return _CURRENT_DELIVERY.get()
+
+
+def mark_delivery(attempt: DeliveryAttempt) -> None:
+    """Record the current run's delivery attempt. Called by the client inside a run's own task only."""
+    _CURRENT_DELIVERY.set(attempt)
+
+
+@dataclass(frozen=True)
 class ConnectionSpec:
     """One connection a deployment supplies: a name and how to log in. Secrets are never logged."""
 

@@ -15,9 +15,12 @@ from blueprint.agents.clients.io.nats_client import NATSClient
 from blueprint.agents.clients.io.nats_connections import (
     ConnectionSpec,
     JetStreamBinding,
+    DeliveryAttempt,
     current_connection,
+    current_delivery,
     load_connection_source,
     mark_connection,
+    mark_delivery,
 )
 from blueprint.agents.io.api.eventing.nats import NatsEventing
 from blueprint.agents.models.events import CloudEvent
@@ -322,6 +325,87 @@ class TestTheHandlerContext:
         assert "nats_connection" not in captured[0]
         assert captured[1]["nats_connection"] == "A"
         assert captured[1]["nats_topic"] == "risk.>"
+
+
+class TestTheDeliveryAttempt:
+    """Which attempt a JetStream delivery is, and the consumer's limit -- on every connection."""
+
+    async def test_a_named_run_knows_its_attempt_and_the_bindings_limit(
+        self, nats_client: NATSClient, mock_nats_core: MagicMock, cloud_event: CloudEvent
+    ) -> None:
+        seen: list[DeliveryAttempt | None] = []
+
+        async def callback(event: CloudEvent, subject: str) -> None:
+            seen.append(current_delivery())
+
+        await _subscribed(nats_client, FakeSource({"A": _binding("A", "risk.>")}), ("risk.>",))
+        nats_client._named[0].topic_callbacks["risk.>"] = callback
+        binding, handler = await _bound_handler(nats_client, mock_nats_core, "A")
+        first = _delivery(cloud_event, "t.A.risk.created")
+        again = _delivery(cloud_event, "t.A.risk.created")
+        again.metadata.num_delivered = 2
+        await _deliver(binding, handler, first)
+        await _deliver(binding, handler, again)
+        assert seen == [DeliveryAttempt(attempt=1, max_deliver=5), DeliveryAttempt(attempt=2, max_deliver=5)]
+
+    async def test_the_default_connection_carries_nats_max_deliver_or_none(
+        self, nats_client: NATSClient, mock_nats_core: MagicMock, cloud_event: CloudEvent
+    ) -> None:
+        """Unset nats_max_deliver is the server's unlimited default: None, not a number."""
+        seen: list[DeliveryAttempt | None] = []
+
+        async def callback(event: CloudEvent, subject: str) -> None:
+            seen.append(current_delivery())
+
+        nats_client._nats_client = mock_nats_core
+        nats_client._client = mock_nats_core
+        await nats_client._subscribe_one("risk.>", callback)
+        handler = mock_nats_core.subscribe.await_args.kwargs["cb"]
+        msg = _delivery(cloud_event, "risk.created")
+        msg.metadata.num_delivered = 3
+        await handler(msg)
+        await asyncio.gather(*list(nats_client._runs))
+        assert seen == [DeliveryAttempt(attempt=3, max_deliver=None)]
+
+    async def test_a_delivery_without_jetstream_metadata_has_no_attempt(
+        self, nats_client: NATSClient, mock_nats_core: MagicMock, cloud_event: CloudEvent
+    ) -> None:
+        """Core NATS does not redeliver: no attempt to report, rather than a made-up 1."""
+        seen: list[DeliveryAttempt | None] = []
+
+        async def callback(event: CloudEvent, subject: str) -> None:
+            seen.append(current_delivery())
+
+        nats_client._nats_client = mock_nats_core
+        nats_client._client = mock_nats_core
+        await nats_client._subscribe_one("risk.>", callback)
+        handler = mock_nats_core.subscribe.await_args.kwargs["cb"]
+        msg = _delivery(cloud_event, "risk.created")
+        type(msg).metadata = property(lambda self: (_ for _ in ()).throw(ValueError("not a JetStream message")))
+        await handler(msg)
+        await asyncio.gather(*list(nats_client._runs))
+        assert seen == [None]
+
+    async def test_the_attempt_reaches_the_handler_context_as_two_keys(self) -> None:
+        eventing = NatsEventing.__new__(NatsEventing)
+        captured: list[dict] = []
+
+        async def process(event: Any, context: dict, topic: str) -> Any:
+            captured.append(dict(context))
+            return MagicMock()
+
+        eventing._process_cloud_event = process  # type: ignore[method-assign]
+        callback = eventing._make_event_callback("risk.>")
+
+        async def jetstream_run() -> None:
+            mark_delivery(DeliveryAttempt(attempt=5, max_deliver=5))
+            await callback(MagicMock(), "risk.created")
+
+        await asyncio.create_task(callback(MagicMock(), "risk.created"), context=contextvars.Context())
+        await asyncio.create_task(jetstream_run(), context=contextvars.Context())
+        assert "nats_delivery_attempt" not in captured[0] and "nats_max_deliver" not in captured[0]
+        assert captured[1]["nats_delivery_attempt"] == 5
+        assert captured[1]["nats_max_deliver"] == 5
 
 
 class TestShutdown:

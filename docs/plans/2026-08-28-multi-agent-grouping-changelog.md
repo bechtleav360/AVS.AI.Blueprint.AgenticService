@@ -8620,6 +8620,18 @@ deterministic, see Open points).
 - **`asbs validate`** (`_nats_findings`): the NATS keys parsed with the client's own parsers; the
   source's module found via `importlib.util.find_spec`, the factory never called.
 
+### The delivery attempt in the handler context
+
+- `nats_connections.py`: `DeliveryAttempt(attempt, max_deliver)` in a ContextVar, set by
+  `NATSClient._run_delivery` inside the run's own task from `msg.metadata.num_delivered` and
+  `_max_deliver_of(binding)` (the binding's `max_deliver` on a named connection, `nats_max_deliver`
+  on the agent's own consumers; `None` for unset or `-1`). `_deliveries_exhausted` now uses the same
+  helper. A message without JetStream metadata (Core NATS) sets nothing.
+- `NatsEventing._make_event_callback` copies it into the context as `nats_delivery_attempt` and
+  `nats_max_deliver`.
+- Unit tests: named run attempts 1 and 2 with the binding's limit, default connection with unset
+  `nats_max_deliver` -> `None`, no metadata -> no keys, both keys in the context.
+
 ---
 
 ## Open points

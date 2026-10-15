@@ -14,6 +14,7 @@ Test coverage for `src/blueprint/agents/clients/`.
 | `ai/test_vllm_client.py` | `VLLMClient` | Same shape as OpenAI; additionally verifies `base_url`/`api_key` forwarding to `AsyncOpenAI` |
 | `io/test_dapr_client.py` | `DaprClient` | `_is_connected`, `connect`/`close`, `subscribe` (no-op), `publish` (URL, headers, routing key, pubsub name), `health_check` |
 | `io/test_nats_client.py` | `NATSClient` | `__init__` defaults, `_is_connected` variants, `connect` (Core + JetStream), `close`, `publish`, `health_check` |
+| `io/test_nats_connection_source.py` | `NATSClient` with a `ConnectionSource` | Loading the source, `ConnectionSpec`, planning bindings (claims, hybrid mode, result publishing refused), runs from named connections (run scope, validation, isolation, default connection unchanged), the handler context (`nats_connection`), the delivery attempt (named run: attempt 1 and 2 with the binding's `max_deliver`; default connection: `nats_max_deliver` unset -> `None`; no JetStream metadata -> no attempt; both keys in the handler context), shutdown. *Earlier coverage was not itemised here.* |
 
 `IOClientBase` has no logic and has no test file.
 

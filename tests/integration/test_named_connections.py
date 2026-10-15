@@ -23,6 +23,7 @@ import nats
 import pytest
 
 from blueprint.agents.handler.event_handler_base import EventHandlerBase
+from blueprint.agents.models.errors import RetryableHandlerError
 from blueprint.agents.models.events import GenericCloudEvent
 
 from .connection_source import SCOPE, SOURCES, binding_for, stream_for, subject_prefix_for
@@ -194,6 +195,39 @@ class TestTenantsAreKeptApart:
                 return info.delivered.stream_seq == 2 and info.num_ack_pending == 0 and info.num_redelivered == 0
 
             await poll_until(termed, timeout=10, description="the rejected delivery to be settled for good")
+
+
+class TestTheAttemptOnANamedConnection:
+    async def test_a_redelivery_shows_attempt_2_and_the_bindings_limit(
+        self, settings_group: Any, operator: Operator, accounts_url: str, subject_prefix: str
+    ) -> None:
+        """The binding's max_deliver (3 in connection_source.binding_for), not the agent's own key."""
+        agent = f"risk_{subject_prefix}"
+        await operator(["A"], {agent: ["risk.>"]})
+        seen: list[tuple[Any, Any]] = []
+
+        class FailsOnce(EventHandlerBase):
+            async def on_startup(self) -> None:
+                pass
+
+            async def on_shutdown(self) -> None:
+                pass
+
+            def get_subscribed_topics(self) -> list[str]:
+                return ["risk.>"]
+
+            async def can_handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> bool:
+                return True
+
+            async def handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> None:
+                seen.append((context.get("nats_delivery_attempt"), context.get("nats_max_deliver")))
+                if len(seen) == 1:
+                    raise RetryableHandlerError(status="retry", reason="first attempt fails on purpose")
+
+        async with settings_group(settings(accounts_url, subject_prefix, ["A"]), {agent: FailsOnce}, named=1):
+            await publish(accounts_url, subject_prefix, "A", "risk.created")
+            await wait_until(lambda: len(seen) >= 2, timeout=15, description="the redelivery after the nak")
+        assert seen == [(1, 3), (2, 3)]
 
 
 class TestClaims:

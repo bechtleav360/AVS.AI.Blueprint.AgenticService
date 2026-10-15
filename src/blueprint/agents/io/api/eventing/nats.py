@@ -5,7 +5,7 @@ from typing import Any
 
 from ....clients.client_base import DeliveryCallback
 from ....clients.io.nats_client import NATSClient
-from ....clients.io.nats_connections import NATS_CONNECTION_CONTEXT_KEY, current_connection
+from ....clients.io.nats_connections import NATS_CONNECTION_CONTEXT_KEY, current_connection, current_delivery
 from ....component.namespace import ROOT_NAMESPACE
 from ....models.events import CloudEvent
 from ..rest_api_base import RestApiBase
@@ -20,6 +20,23 @@ Beside ``nats_topic``, which is the *subscription* -- possibly a wildcard such a
 this is the concrete subject that matched it, e.g. ``t.T1.risk.created``. It comes from the broker,
 never from the event, so a handler can derive a tenant from it without trusting the publisher's
 ``tenantid``. Present only on events delivered by NATS.
+"""
+
+
+NATS_DELIVERY_ATTEMPT_CONTEXT_KEY = "nats_delivery_attempt"
+"""Handler context key: which attempt this JetStream delivery is, 1-based (the broker's ``num_delivered``).
+
+Present only on JetStream deliveries -- Core NATS does not redeliver. Read it with
+``nats_max_deliver``: when the two are equal this is the last attempt, and a failure now is
+dead-lettered or dropped rather than redelivered, so a handler can close or hand off what it
+would otherwise leave open.
+"""
+
+NATS_MAX_DELIVER_CONTEXT_KEY = "nats_max_deliver"
+"""Handler context key: the attempts the delivering consumer allows; ``None`` when unlimited or unknown.
+
+Present exactly when ``nats_delivery_attempt`` is. On a named connection the value is the
+binding's ``max_deliver``; on the agent's own consumers it is ``nats_max_deliver``.
 """
 
 
@@ -119,11 +136,16 @@ class NatsEventing(EventHandlingBase):
         """Return an async callback that routes an incoming event through the handler chain."""
 
         async def _process_event(event: CloudEvent[Any], subject: str) -> None:
-            context = {"nats_topic": topic, NATS_SUBJECT_CONTEXT_KEY: subject}
+            context: dict[str, Any] = {"nats_topic": topic, NATS_SUBJECT_CONTEXT_KEY: subject}
             connection = current_connection()
             if connection is not None:
                 # Only a run from a named connection has one; the default connection adds no key (N6).
                 context[NATS_CONNECTION_CONTEXT_KEY] = connection
+            delivery = current_delivery()
+            if delivery is not None:
+                # JetStream only, on every connection: Core NATS has no redelivery to count.
+                context[NATS_DELIVERY_ATTEMPT_CONTEXT_KEY] = delivery.attempt
+                context[NATS_MAX_DELIVER_CONTEXT_KEY] = delivery.max_deliver
             processing_result = await self._process_cloud_event(event, context, topic)
             logger.debug(
                 "Processed CloudEvent %s on topic %s with status %s",

@@ -567,6 +567,12 @@ bounds a run. Heartbeats address slow handlers; they do **not** address connecti
 they travel over the same connection, and they do not cover messages still waiting in the client's
 queue (bound those with `nats_max_ack_pending`).
 
+**A run knows its attempt (added 2026-10-15).** Every JetStream delivery, on the default and on
+named connections, puts `nats_delivery_attempt` (1-based, from `num_delivered`) and
+`nats_max_deliver` (the consumer's limit; `None` when unlimited or unknown) into the handler
+context, beside `nats_topic`, `nats_subject` and `nats_connection`. Equal values mark the last
+attempt, after which a failure is dead-lettered or dropped. Core NATS deliveries carry neither key.
+
 ### 7.4 Idempotency
 
 At-least-once is unavoidable: rebalance, eviction, node drain and every rolling deploy produce
