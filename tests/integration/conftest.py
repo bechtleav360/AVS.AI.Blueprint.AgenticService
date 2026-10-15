@@ -19,6 +19,10 @@ The services:
 
     docker compose -f tests/integration/docker-compose.yml up -d
     pytest tests/ -m integration
+
+``nats`` (4222) is a plain JetStream broker, ``redis`` (6379) the shared cache, and
+``nats-accounts`` (4223) a second broker with one account per tenant and per-user permissions
+(``nats-accounts.conf``) -- the named-connection tests need a broker that can refuse.
 """
 
 import asyncio
@@ -352,3 +356,91 @@ def nats_group(integration_config: Config) -> NatsAppFactory:
             Component.reset_shared_state()
 
     return factory
+
+
+# ---------------------------------------------------------------------------
+# A group built from settings the test writes (the NATS delivery features)
+# ---------------------------------------------------------------------------
+
+
+GroupFactory = Callable[..., Any]
+
+
+def _ready(client: NATSClient, named: int) -> bool:
+    """Default subscriptions up and, if asked, bound on that many named connections."""
+    return client.subscriptions_ready and len([binding for binding in client._named if binding.subscriptions_ready]) >= named
+
+
+@pytest.fixture
+def settings_group(tmp_path: Path) -> GroupFactory:
+    """Return a context manager yielding the clients of a group built from the given settings lines.
+
+    Used as::
+
+        async with settings_group(settings, {"orders_x": OrdersHandler}) as clients:
+            ...
+
+    The test writes every key itself, because the features under test are configured per test
+    (run limits, heartbeat, timeouts, a connection source). Waits until every agent's default
+    subscriptions are ready and, when ``named`` is set, until each agent is bound on that many
+    named connections.
+    """
+
+    @asynccontextmanager
+    async def factory(
+        settings: str, agents: dict[str, type], *, named: int = 0, ready_timeout: float = 20.0
+    ) -> AsyncIterator[dict[str, NATSClient]]:
+        (tmp_path / "settings.toml").write_text(settings, encoding="utf-8")
+        config = Config(settings_files=["settings.toml"], root_path=str(tmp_path))
+        group = AgentGroup("integration", {name: AppBuilder().with_handler(handler) for name, handler in agents.items()})
+        try:
+            app = group.assemble(config)
+            async with app.router.lifespan_context(app):
+                registry = Component.shared_registry
+                assert registry is not None
+                clients = {name: registry.get_component(NATSClient, namespace=name) for name in agents}
+                for name, client in clients.items():
+                    await wait_until(
+                        lambda client=client: _ready(client, named),  # type: ignore[misc]
+                        timeout=ready_timeout,
+                        description=f"agent '{name}' to subscribe (and bind {named} named connection(s))",
+                    )
+                yield clients
+        finally:
+            Component.reset_shared_state()
+
+    return factory
+
+
+def base_settings(nats_url: str, stream: str, extra: str = "") -> str:
+    """The settings every delivery test starts from: one stream for the test, JetStream on."""
+    return (
+        "[default]\n"
+        'app_name = "blueprint-it"\n'
+        'app_environment = "development"\n'
+        "app_port = 8000\n"
+        'model_provider = "openai"\n'
+        'event_bus = "nats"\n'
+        f'nats_url = "{nats_url}"\n'
+        f'nats_stream_name = "{stream}"\n'
+        "nats_use_jetstream = true\n"
+        "event_client_max_retries = 2\n"
+        "event_client_retry_delay = 0.5\n" + extra
+    )
+
+
+# ---------------------------------------------------------------------------
+# The broker with accounts (named connections)
+# ---------------------------------------------------------------------------
+
+
+NATS_ACCOUNTS_URL = os.environ.get("BLUEPRINT_TEST_NATS_ACCOUNTS_URL", "nats://127.0.0.1:4223")
+"""The broker with one account per tenant (``nats-accounts`` in docker-compose.yml)."""
+
+
+@pytest.fixture(scope="session")
+def accounts_url() -> str:
+    """The accounts broker's URL, or skip: the named-connection tests need its permissions."""
+    if not server_is_listening(NATS_ACCOUNTS_URL):
+        pytest.skip(f"No NATS server with accounts at {NATS_ACCOUNTS_URL}. Start it with: {COMPOSE_HINT}")
+    return NATS_ACCOUNTS_URL

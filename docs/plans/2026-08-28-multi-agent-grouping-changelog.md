@@ -8512,6 +8512,31 @@ unclaimed `scheduler.tick` fails startup with the message; with `"default_connec
 subscribed there (1 violation, because that test's process account may subscribe nothing -- the
 deployment must allow it).
 
+### Broker integration tests for the delivery features and named connections
+
+The acceptance runs of steps 1 to 4c, as repeatable tests in `tests/integration`.
+
+- `test_delivery_concurrency.py`: up to K runs at once on one subscription; unset, one run per
+  subscription with subscriptions in parallel; heartbeat keeps a run longer than `ack_wait` from
+  being redelivered, and switched off it is redelivered while it runs; `nats_handler_timeout` cuts a
+  hung run, which comes back at once (`nak`) while the others flow; an exhausted run pool never holds
+  back a pair's first run.
+- `test_named_connections.py`: two tenants on their own accounts, 16 runs, no run whose connection,
+  scope tenant and event tenant disagree, consumer config unchanged, 0 permission violations; an
+  event `validate` rejects never runs and is `term`ed; an unclaimed subject fails startup; with
+  `nats_unclaimed_subjects = "default_connection"` it is served there; a connection added, its
+  credentials switched and removed at runtime, none lost, none duplicated.
+- `docker-compose.yml` gains `nats-accounts` (4223) with `nats-accounts.conf`: process account
+  allowed nothing (and a hybrid user allowed `hybrid.>`), one account per tenant with an admin and
+  agent users allowed only their deliver subjects and `$JS.ACK.>`. Test-only placeholder passwords.
+- `conftest.py`: `settings_group` (a group from settings the test writes, waiting for named
+  bindings), `base_settings`, `accounts_url`; `connection_source.py` is the test `ConnectionSource`.
+
+11 new tests, about 15 s together. Two full integration runs on fresh brokers: 52 passed, 2 failed
+each, both failures pre-existing and failing at HEAD as well (`test_two_processes_share_cache`:
+the subprocess does not find `blueprint`; `test_the_broker_counts_it_as_a_redelivery`: now
+deterministic, see Open points).
+
 ---
 
 ## Open points
@@ -8525,6 +8550,12 @@ deployment must allow it).
 - **`test_three_replicas_run_one_tick` is flaky in a full run.** Seen once on 2026-09-24 (two of three
   replicas ran one tick), passing alone. Likely `DiskCacheService.claim`'s documented non-atomic
   takeover of an expired claim, or a run straddling a minute boundary; not investigated.
+
+- **`test_the_broker_counts_it_as_a_redelivery` now fails every time** (2026-10-15, also with the
+  test changes stashed). The consumer info it reads shows `num_pending=0, num_redelivered=0`: the
+  retryable failure is `nak`ed at once, so all `max_deliver` attempts are used up within
+  milliseconds and the message has left the pending set before the test reads the count, which
+  then no longer includes it. Likely the assertion, not the client; not fixed here.
 
 - ~~**A startup-failure latch is never released.**~~ **Closed** -- see *A latched agent recovers, and
   readiness shows it* above. A non-critical agent whose `on_startup` raised

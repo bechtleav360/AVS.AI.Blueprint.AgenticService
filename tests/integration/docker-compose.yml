@@ -33,6 +33,24 @@ services:
       retries: 5
       start_period: 5s
 
+  nats-accounts:
+    # A second broker, with accounts and permissions: what a deployment with one account per tenant
+    # looks like. The named-connection tests run against it; see nats-accounts.conf.
+    image: nats:2.10-alpine
+    container_name: blueprint-test-nats-accounts
+    command: ["-c", "/etc/nats/accounts.conf"]
+    volumes:
+      - ./nats-accounts.conf:/etc/nats/accounts.conf:ro
+    ports:
+      - "4223:4222"
+      - "8223:8222"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
   redis:
     image: redis:7-alpine
     container_name: blueprint-test-redis
