@@ -92,10 +92,21 @@ class ConnectionSource(Protocol):
 
     The factory named by ``nats_connection_source`` is called with the process ``Config`` and
     returns the source. Every agent of the process shares it, so it must hold no per-run state.
+
+    **Runtime changes (optional).** A source may also define ``watch(notify)``: every agent's client
+    calls it once with a ``notify`` callable, and the source calls ``notify()`` -- from any thread --
+    whenever its connections may have changed. The client then reads :meth:`connections` and
+    :meth:`binding` again and applies the difference: a new connection is bound; a changed one
+    (another :class:`ConnectionSpec` or :class:`JetStreamBinding`) gets a new link, bound before the
+    old one is retired; a removed one is drained, its runs get ``subscription_change_grace`` seconds,
+    and what still runs then is revoked -- never acked or nak'd, ``publish`` refused with
+    ``DeliveryRevokedError``, not cancelled. No consumer is ever deleted. A source without ``watch``
+    is read once, at startup. ``watch`` is not part of this protocol's ``isinstance`` check, so such
+    a source still qualifies. The agent's default connection keeps the subjects it had at startup.
     """
 
     def connections(self) -> Mapping[str, ConnectionSpec]:
-        """The connections to open, by name. Read at startup."""
+        """The connections to open, by name. Read at startup, and again after each ``notify()``."""
         ...
 
     def binding(self, agent: str, subjects: tuple[str, ...], connection: ConnectionSpec) -> "JetStreamBinding | None":

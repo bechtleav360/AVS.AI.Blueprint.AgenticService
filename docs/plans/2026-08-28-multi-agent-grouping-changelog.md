@@ -8438,6 +8438,58 @@ passing with the warning.
   14.2-29.3 s after, by phase of the 30 s poll. **Open:** resume on reconnect without waiting for the
   next poll would cut up to one `health_check_interval_seconds` from every recovery.
 
+### Named connections change at runtime (named connections, step 4b)
+
+Step 4b of `docs/plans/2026-10-14-named-connections.md`, following the rules of the
+dynamic-subscriptions draft spec (7.2, 7.4, 7.5, 7.7, 7.9, 7.10) for whole connections.
+
+- `ConnectionSource.watch(notify)` is optional (looked up with `getattr`; not part of the protocol's
+  `isinstance` check). `subscribe()` registers `_connections_changed`, which hops onto the client's
+  loop with `call_soon_threadsafe`; `_schedule_reconcile` runs one `_reconcile_loop` at a time and a
+  notify during a pass makes it run once more.
+- `_reconcile` (under `_change_lock`, which `pause_consumption` and `resume_consumption` also take)
+  re-reads `connections()`/`binding()` for the declared subjects and diffs by name against the
+  bindings that are not `superseded`: **added** -> `_new_named_binding` + `_start_named_link`; **changed**
+  (`ConnectionSpec` or `JetStreamBinding` differs) -> a new binding with `replaces` = the old one, which
+  is marked `superseded` and keeps serving; `_run_named_link` retires it only once the new one is bound
+  (`_start_retirement`); **removed** -> `_retire`. A binding claiming undeclared subjects is skipped with
+  an ERROR; an agent mapping results to topics gains no connection (D4). The default connection's
+  subjects stay as computed at startup.
+- `_retire`: cancels the binding's loop, drains its subscriptions, waits `subscription_change_grace`
+  (agent scope, default `event_client_drain_timeout`) for its runs, then sets `revoked`, cancels their
+  heartbeats (`_Binding.heartbeats`), closes the link (`_Link.closing`, so the disconnect is not logged
+  as a lost broker) and removes the pair from the pool. A revoked run is never settled
+  (`_run_delivery` returns before `_settle`), and `publish` from it raises the new
+  `models.errors.DeliveryRevokedError` (the run's binding is in the ContextVar `_CURRENT_BINDING`). No
+  consumer is deleted.
+- Permission violations reported through a named link's `error_cb` are kept on `_Link.permission_errors`;
+  an attempt that failed while one arrived is logged at ERROR and retried every
+  `PERMISSION_RETRY_SECONDS` (60) instead of at the normal pace.
+- `close()` cancels a running reconcile and pending retirements first; the normal close then drains
+  and closes every binding still listed.
+- Found by the unit tests while building it: `_reconcile` first called `_start_named_links()`, which
+  restarted the loop of every already bound connection -- each would have bound a second subscription.
+  It now starts only the bindings it created (`_start_named_link`).
+
+Tests: `test_nats_runtime_changes.py`, 19 (watch optional and registered; added, removed, changed with
+new-before-old order and the old link serving while the new one cannot bind; unchanged left alone;
+undeclared subjects and D4 skipped; revocation -- never settled, publish refused, heartbeat stopped,
+settled normally within the grace; coalescing; notify from another thread; pause waits for a change;
+close during a change; permission back-off and error_cb recording). Unit suite 3509 passed.
+
+Acceptance in WSL against `nats:2.10-alpine` with accounts PROC (nothing allowed) and TA/TB/TC (admin
+plus two agent users each, allowed only their deliver subjects and `$JS.ACK.>`), a group of two
+agents, a source changed through `watch` while A and B received an event every 0.1 s:
+(1) C added -> 10 of 10 runs, A and B undisturbed; (2) A's credentials switched to its second user ->
+114 events, none missing, none duplicated, longest gap 0.14 s, consumers of A ack pending 0;
+(3) B removed while a 5 s run was in flight, grace 1 s -> revoked after 1 s, the run finished 4.5 s
+later and was not settled (each B consumer: ack pending 1, the delivery stays with the broker); every
+B event before the removal handled. 360 runs, none whose connection, scope tenant and event tenant
+disagreed; 0 permission violations. **Control for (2):** the old link closed abruptly before the change
+-> still none missing and no visible gap, but each A consumer ended with **ack pending 2**: acks lost
+with the link, redelivered after `ack_wait` as duplicates. That is what binding first and draining
+then prevents.
+
 ---
 
 ## Open points

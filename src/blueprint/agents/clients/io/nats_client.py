@@ -27,11 +27,11 @@ from ...component.namespace import ROOT_LABEL, ROOT_NAMESPACE
 from ...deployment import UNGROUPED_LABEL, UNKNOWN_POD_LABEL, deployment_group, pod_identity
 from ...io.telemetry.providers import agent_meter
 from ...models.api import ComponentHealth
-from ...models.errors import DeliveryDisposition, disposition_for
+from ...models.errors import DeliveryDisposition, DeliveryRevokedError, disposition_for
 from ...models.events import CloudEvent
 from ..client_base import DeliveryCallback
 from .io_client_base import IOClientBase, subject_is_covered_by, validate_publish_subject, validate_subject_segment
-from .nats_connections import ConnectionSource, JetStreamBinding, mark_connection
+from .nats_connections import ConnectionSource, ConnectionSpec, JetStreamBinding, mark_connection
 from .nats_run_pool import PairRuns, Release, RunLimit, RunPool
 
 logger = logging.getLogger(__name__)
@@ -67,6 +67,15 @@ SERVER_DEFAULT_ACK_WAIT = 30.0
 Only a fallback for a bound consumer whose config reports no ``ack_wait``; the heartbeat interval
 is otherwise derived from the consumer's own value (handler-time-bounds spec sec. 4.2).
 """
+
+
+PERMISSION_RETRY_SECONDS = 60.0
+"""How often a named connection retries after the broker refused it a permission: a missing grant does
+not heal in seconds, so retrying at the normal pace would only fill the log (spec 7.9)."""
+
+_CURRENT_BINDING: contextvars.ContextVar["_Binding | None"] = contextvars.ContextVar("blueprint_nats_binding", default=None)
+"""The named binding a run's delivery arrived on; set inside that run's own task only, so ``publish``
+can refuse a revoked run (dynamic-subscriptions spec 7.5)."""
 
 
 FatalHandler = Callable[[str, BaseException], Awaitable[None]]
@@ -139,6 +148,10 @@ class _Link:
     nats_client: NatsClient | None = None
     js: JetStreamContext | None = None
     jetstream_mismatch: JetStreamUnavailableError | None = None
+    permission_errors: list[str] = field(default_factory=list)
+    """Permission violations the broker reported through ``error_cb`` since the last attempt."""
+    closing: bool = False
+    """We are closing this link ourselves: its disconnect is not a lost broker."""
 
 
 @dataclass(eq=False)
@@ -169,6 +182,15 @@ class _Binding:
     """Per topic, the bound consumer's own ``ack_wait`` -- what the heartbeat interval derives from."""
     inflight: int = 0
     idle: asyncio.Event = field(default_factory=asyncio.Event)
+    spec: ConnectionSpec | None = None
+    """The connection as the source last described it; a named binding is replaced when it differs."""
+    replaces: "_Binding | None" = None
+    """The binding this one replaces; retired as soon as this one is bound (new before old, spec 7.4)."""
+    superseded: bool = False
+    """A newer binding of the same connection exists; this one serves until that one is bound."""
+    revoked: bool = False
+    """Retired with runs still in flight after the grace period: those runs are never settled (spec 7.5)."""
+    heartbeats: set[asyncio.Task[None]] = field(default_factory=set)
 
     def __post_init__(self) -> None:
         self.idle.set()
@@ -319,7 +341,15 @@ class NATSClient(IOClientBase):
         self._handler_timeout: float | None = None
         self._source: ConnectionSource | None = None
         self._named: list[_Binding] = []
-        self._named_tasks: dict[str, asyncio.Task[None]] = {}
+        self._named_tasks: dict[_Binding, asyncio.Task[None]] = {}
+        self._declared: dict[str, DeliveryCallback] = {}
+        self._default_pairs = 0
+        self._change_grace = 30.0
+        self._change_lock = asyncio.Lock()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._reconcile_task: asyncio.Task[None] | None = None
+        self._reconcile_dirty = False
+        self._retirements: set[asyncio.Task[None]] = set()
 
     # ------------------------------------------------------------------
     # The default link and binding, under the names the client used before it had them
@@ -499,6 +529,8 @@ class NATSClient(IOClientBase):
         self._binding.limit = self._max_concurrent_runs
         self._heartbeat_enabled = self._resolve_heartbeat_enabled()
         self._handler_timeout = self._resolve_handler_timeout()
+        self._change_grace = self._resolve_change_grace()
+        self._declared = dict(topic_callbacks)
         # What a named connection serves leaves the default connection (plan D10).
         default_topics = self._plan_named_bindings(topic_callbacks)
         self._topic_callbacks = default_topics
@@ -507,7 +539,9 @@ class NATSClient(IOClientBase):
             self._tuning = self._resolve_consumer_tuning(list(default_topics))
         self._subscriptions_managed = True
         self._subscriptions_ready = False
-        self._register_pairs((1 if default_topics else 0) + len(self._named))
+        self._default_pairs = 1 if default_topics else 0
+        self._register_pairs(self._default_pairs + len(self._named))
+        self._watch_source()
         if self._consumption_paused:
             logger.info(
                 "Agent '%s' is degraded, so its %d subscription(s) are registered but not started",
@@ -559,12 +593,7 @@ class NATSClient(IOClientBase):
                     f"Agent '{self.namespace or ROOT_LABEL}': the binding for connection '{spec.name}' claims "
                     f"{', '.join(unknown)}, which the agent does not declare. A binding serves declared subjects only."
                 )
-            binding = _Binding(
-                link=_Link(name=spec.name, url=spec.url, connect_options=spec.connect_options()),
-                jetstream=jetstream,
-                topic_callbacks={subject: topic_callbacks[subject] for subject in jetstream.subjects},
-            )
-            binding.limit = self._max_concurrent_runs
+            binding = self._new_named_binding(spec, jetstream)
             self._named.append(binding)
             served.update(jetstream.subjects)
         if self._named:
@@ -595,12 +624,16 @@ class NATSClient(IOClientBase):
     def _start_named_links(self) -> None:
         """Connect and bind every named connection in a loop of its own; one failing never holds up another."""
         for binding in self._named:
-            running = self._named_tasks.get(binding.link.name)
-            if running is not None and not running.done():
-                continue
-            task = asyncio.ensure_future(self._run_named_link(binding))
-            task.add_done_callback(functools.partial(self._on_named_link_done, binding))
-            self._named_tasks[binding.link.name] = task
+            self._start_named_link(binding)
+
+    def _start_named_link(self, binding: _Binding) -> None:
+        """Start ``binding``'s connect-and-bind loop, unless one is running."""
+        running = self._named_tasks.get(binding)
+        if running is not None and not running.done():
+            return
+        task = asyncio.ensure_future(self._run_named_link(binding))
+        task.add_done_callback(functools.partial(self._on_named_link_done, binding))
+        self._named_tasks[binding] = task
 
     async def _run_named_link(self, binding: _Binding) -> None:
         """Connect ``binding``'s link and bind, retrying until it works.
@@ -611,6 +644,7 @@ class NATSClient(IOClientBase):
         delay = float(self.config.get("event_client_retry_delay", 5.0))
         attempt = 0
         while True:
+            binding.link.permission_errors.clear()
             try:
                 await self._open_named_link(binding.link)
                 if self._consumption_paused:
@@ -618,12 +652,30 @@ class NATSClient(IOClientBase):
                 binding.subscriptions.clear()
                 await self._bind(binding)
                 binding.subscriptions_ready = True
+                if binding.replaces is not None:
+                    # New before old (spec 7.4): only now that this one delivers is the old one retired.
+                    old, binding.replaces = binding.replaces, None
+                    self._start_retirement(old, "replaced")
                 return
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 attempt += 1
                 binding.subscriptions_ready = False
+                denied = list(binding.link.permission_errors)
+                if denied:
+                    # The broker reports a missing grant through error_cb and lets the request time
+                    # out: that is permanent, not a slow broker (spec 7.9).
+                    logger.error(
+                        "Agent '%s': named connection '%s' was refused a permission (%s); retrying every %.0fs until "
+                        "the deployment grants it",
+                        self.namespace or ROOT_LABEL,
+                        binding.link.name,
+                        "; ".join(denied),
+                        PERMISSION_RETRY_SECONDS,
+                    )
+                    await asyncio.sleep(PERMISSION_RETRY_SECONDS)
+                    continue
                 logger.warning(
                     "Agent '%s': named connection '%s' attempt %d failed, retrying in %.1fs: %s",
                     self.namespace or ROOT_LABEL,
@@ -654,6 +706,8 @@ class NATSClient(IOClientBase):
         agent = self.namespace or ROOT_LABEL
 
         async def on_disconnected() -> None:
+            if link.closing or self._closing:
+                return
             for binding in self._named:
                 if binding.link is link:
                     binding.subscriptions_ready = False
@@ -669,6 +723,8 @@ class NATSClient(IOClientBase):
 
         async def on_error(error: Exception) -> None:
             # Permission violations land here: a subject the deployment did not grant this account.
+            if "permissions violation" in str(error).lower():
+                link.permission_errors.append(str(error))
             logger.error("Agent '%s': error on named connection '%s': %s", agent, link.name, error)
 
         link.nats_client = await nats.connect(
@@ -683,6 +739,203 @@ class NATSClient(IOClientBase):
             **link.connect_options,
         )
         logger.info("Agent '%s' connected named connection '%s' as '%s'", agent, link.name, link.connection_name)
+
+    # ------------------------------------------------------------------
+    # Named connections at runtime (named-connections plan, step 4)
+    # ------------------------------------------------------------------
+
+    def _new_named_binding(self, spec: ConnectionSpec, jetstream: JetStreamBinding) -> _Binding:
+        """A binding for ``spec``: a link of its own (plan D1), the declared callbacks, the agent's run limit."""
+        binding = _Binding(
+            link=_Link(name=spec.name, url=spec.url, connect_options=spec.connect_options()),
+            jetstream=jetstream,
+            topic_callbacks={subject: self._declared[subject] for subject in jetstream.subjects},
+            spec=spec,
+        )
+        binding.limit = self._max_concurrent_runs
+        return binding
+
+    def _resolve_change_grace(self) -> float:
+        """Return ``subscription_change_grace``: seconds a removed connection's runs get before revocation."""
+        raw = self.config.get("subscription_change_grace", None)
+        value = (
+            float(self.config.get("event_client_drain_timeout", 30.0))
+            if raw is None
+            else self._read_float("subscription_change_grace", 0.0)
+        )
+        if value <= 0:
+            raise ValueError(f"'subscription_change_grace' must be greater than 0, got {value}.")
+        return value
+
+    def _watch_source(self) -> None:
+        """Ask the source to tell this client when its connections change, if the source can (``watch`` is optional)."""
+        self._loop = asyncio.get_running_loop()
+        watch = getattr(self._source, "watch", None) if self._source is not None else None
+        if callable(watch):
+            watch(self._connections_changed)
+
+    def _connections_changed(self) -> None:
+        """The source's notify: callable from any thread; hops onto this client's loop and coalesces."""
+        loop = self._loop
+        if loop is None or loop.is_closed() or self._closing:
+            return
+        loop.call_soon_threadsafe(self._schedule_reconcile)
+
+    def _schedule_reconcile(self) -> None:
+        """Run one reconcile at a time; a change notified while one runs makes it run once more."""
+        if self._closing:
+            return
+        if self._reconcile_task is not None and not self._reconcile_task.done():
+            self._reconcile_dirty = True
+            return
+        self._reconcile_task = asyncio.ensure_future(self._reconcile_loop())
+        self._reconcile_task.add_done_callback(self._on_reconcile_done)
+
+    def _on_reconcile_done(self, task: asyncio.Task[None]) -> None:
+        """Report a reconcile that died of anything but its cancellation, naming the agent."""
+        if not task.cancelled() and task.exception() is not None:
+            logger.error(
+                "Agent '%s': applying a change of its named connections failed: %s",
+                self.namespace or ROOT_LABEL,
+                task.exception(),
+                exc_info=task.exception(),
+            )
+
+    async def _reconcile_loop(self) -> None:
+        while True:
+            self._reconcile_dirty = False
+            async with self._change_lock:
+                await self._reconcile()
+            if not self._reconcile_dirty:
+                return
+
+    async def _reconcile(self) -> None:
+        """Bring the named bindings in line with what the source says now: add, replace, retire.
+
+        Runs under the agent's change lock, so it never interleaves with a pause or a resume. The
+        default connection's subjects stay as computed at startup: a subject a connection stops
+        serving is not moved back to it, and a connection added later takes only what it claims.
+        """
+        source = self._source
+        if source is None or self._closing:
+            return
+        agent = self.namespace or ROOT_LABEL
+        declared = tuple(self._declared)
+        wanted: dict[str, tuple[ConnectionSpec, JetStreamBinding]] = {}
+        for spec in source.connections().values():
+            jetstream = source.binding(self._queue_group, declared, spec)
+            if jetstream is None:
+                continue
+            unknown = [subject for subject in jetstream.subjects if subject not in self._declared]
+            if unknown:
+                logger.error(
+                    "Agent '%s': connection '%s' skipped -- its binding claims %s, which the agent does not declare",
+                    agent,
+                    spec.name,
+                    ", ".join(unknown),
+                )
+                continue
+            wanted[spec.name] = (spec, jetstream)
+
+        current = {binding.link.name: binding for binding in self._named if not binding.superseded}
+        created: list[_Binding] = []
+        maps_results = bool(self.config.get("event_publishing.topic_mapping", {}) or {})
+        for name, (spec, jetstream) in wanted.items():
+            existing = current.get(name)
+            if existing is not None and existing.spec == spec and existing.jetstream == jetstream:
+                continue
+            if existing is None and maps_results:
+                logger.error(
+                    "Agent '%s': connection '%s' not added -- the agent maps handler results to topics, and a result "
+                    "would leave the connection its event arrived on (plan D4)",
+                    agent,
+                    name,
+                )
+                continue
+            binding = self._new_named_binding(spec, jetstream)
+            if existing is not None:
+                existing.superseded = True
+                binding.replaces = existing
+            self._named.append(binding)
+            created.append(binding)
+            logger.info("Agent '%s': connection '%s' %s", agent, name, "changed; binding the new one" if existing else "added")
+        self._register_pairs(self._default_pairs + len(self._named))
+        if not self._consumption_paused:
+            # Only the new ones: a binding that is already bound must not bind a second time.
+            for binding in created:
+                self._start_named_link(binding)
+
+        for name, binding in current.items():
+            if name not in wanted:
+                await self._retire(binding, "removed")
+
+    def _start_retirement(self, binding: _Binding, reason: str) -> None:
+        """Retire ``binding`` in the background, under the change lock (a replacement that just bound)."""
+
+        async def retire() -> None:
+            async with self._change_lock:
+                await self._retire(binding, reason)
+
+        task = asyncio.ensure_future(retire())
+        self._retirements.add(task)
+        task.add_done_callback(self._retirement_done)
+
+    def _retirement_done(self, task: asyncio.Task[None]) -> None:
+        self._retirements.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            logger.error(
+                "Agent '%s': retiring a named connection failed: %s",
+                self.namespace or ROOT_LABEL,
+                task.exception(),
+                exc_info=task.exception(),
+            )
+
+    async def _retire(self, binding: _Binding, reason: str) -> None:
+        """Stop consuming on ``binding``, give its runs the grace period, revoke the rest, close its link.
+
+        Drained, not unsubscribed: what the client already holds still reaches a handler and is
+        settled over this link. A run still going when the grace period ends is revoked -- never
+        acked or nak'd (the delivery stays with the broker), its heartbeat stopped, its ``publish``
+        refused, but not cancelled (spec 7.5). No consumer is deleted: it is the deployment's.
+        """
+        if binding not in self._named:
+            return
+        agent = self.namespace or ROOT_LABEL
+        task = self._named_tasks.pop(binding, None)
+        if task is not None and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+        binding.subscriptions_ready = False
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._change_grace
+        await self._drain_subscriptions(deadline, binding)
+        if binding.inflight:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(binding.idle.wait(), timeout=max(0.0, deadline - loop.time()))
+        revoked = binding.inflight
+        if revoked:
+            binding.revoked = True
+            for heartbeat in list(binding.heartbeats):
+                heartbeat.cancel()
+            logger.warning(
+                "Agent '%s': connection '%s' %s with %d run(s) still in flight after %.1fs; revoked -- they are not "
+                "settled and stay with the broker",
+                agent,
+                binding.link.name,
+                reason,
+                revoked,
+                self._change_grace,
+            )
+        client = binding.link.nats_client
+        if client is not None:
+            binding.link.closing = True
+            with contextlib.suppress(Exception):
+                await client.close()
+            binding.link.nats_client = None
+        self._named.remove(binding)
+        self._register_pairs(self._default_pairs + len(self._named))
+        logger.info("Agent '%s': connection '%s' %s and closed (%d run(s) revoked)", agent, binding.link.name, reason, revoked)
 
     def _start_retry_task(self) -> None:
         """Start the background connect-and-subscribe loop, unless one is already running."""
@@ -1352,17 +1605,18 @@ class NATSClient(IOClientBase):
             return
         self._consumption_paused = True
         self._subscriptions_ready = False
-        timeout = float(self.config.get("event_client_drain_timeout", 30.0))
-        deadline = asyncio.get_running_loop().time() + timeout
-        for binding in self._named:
-            binding.subscriptions_ready = False
-            await self._drain_subscriptions(deadline, binding)
-        if self._nats_client is not None:
-            await self._drain_subscriptions(deadline)
-        for binding in self._named:
-            await self._await_inflight(deadline, binding)
-        if self._nats_client is not None:
-            await self._await_inflight(deadline)
+        async with self._change_lock:  # never interleaved with a connection change (spec 7.2)
+            timeout = float(self.config.get("event_client_drain_timeout", 30.0))
+            deadline = asyncio.get_running_loop().time() + timeout
+            for binding in self._named:
+                binding.subscriptions_ready = False
+                await self._drain_subscriptions(deadline, binding)
+            if self._nats_client is not None:
+                await self._drain_subscriptions(deadline)
+            for binding in self._named:
+                await self._await_inflight(deadline, binding)
+            if self._nats_client is not None:
+                await self._await_inflight(deadline)
         logger.error(
             "Agent '%s' stopped consuming: its subscriptions are drained while it is degraded, so its events "
             "redeliver to a healthy replica",
@@ -1382,7 +1636,8 @@ class NATSClient(IOClientBase):
         if not self._subscriptions_managed:
             return
         # Each named connection re-binds in its own loop, over its still-open link.
-        self._start_named_links()
+        async with self._change_lock:
+            self._start_named_links()
         if self._nats_client is None:
             # Paused before it ever connected -- subscribe() registered the topics and waited.
             # The retry loop is what connects and subscribes; a loop still running picks up the
@@ -1410,6 +1665,13 @@ class NATSClient(IOClientBase):
         """
         self._subscriptions_ready = False
         self._closing = True
+
+        # A change in progress is cancelled, not finished: everything it left is cleaned up below.
+        for change in [self._reconcile_task, *self._retirements]:
+            if change is not None and not change.done():
+                change.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await change
 
         if self._retry_task and not self._retry_task.done():
             self._retry_task.cancel()
@@ -1526,7 +1788,13 @@ class NATSClient(IOClientBase):
             topic: The topic, used for event routing.
             event: The CloudEvent to publish.
             routing_key: Ignored — NATS does not use routing keys.
+
+        Raises:
+            DeliveryRevokedError: called from a run whose connection was removed under it.
         """
+        running_on = _CURRENT_BINDING.get()
+        if running_on is not None and running_on.revoked:
+            raise DeliveryRevokedError()
         client = await self.client
 
         try:
@@ -2030,6 +2298,7 @@ class NATSClient(IOClientBase):
         connection = binding.link.name
         if connection and self._source is not None:
             mark_connection(connection)
+            _CURRENT_BINDING.set(binding)
             if not await self._accepted(msg, topic, cloud_event, binding):
                 return
 
@@ -2043,6 +2312,15 @@ class NATSClient(IOClientBase):
             async with limit:
                 async with self._run_scope(connection):
                     await callback(cloud_event, subject)
+        except DeliveryRevokedError:
+            disposition = DeliveryDisposition.NAK  # never sent: a revoked delivery is not settled
+            logger.warning(
+                "Agent '%s': event %s on topic '%s' from connection '%s' was revoked; its result is discarded",
+                self.namespace or ROOT_LABEL,
+                cloud_event.id,
+                topic,
+                connection,
+            )
         except Exception as ex:
             if isinstance(ex, TimeoutError) and limit.expired():
                 disposition = DeliveryDisposition.NAK
@@ -2083,6 +2361,16 @@ class NATSClient(IOClientBase):
                 # A heartbeat never fails the run (handler-time-bounds spec sec. 4.1).
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await heartbeat
+        if binding.revoked:
+            # Its connection was removed and the grace period ran out (spec 7.5): no ack, no nak.
+            logger.warning(
+                "Agent '%s': event %s on topic '%s' finished after its connection '%s' was retired; not settled",
+                self.namespace or ROOT_LABEL,
+                cloud_event.id,
+                topic,
+                connection,
+            )
+            return
         await self._settle(msg, disposition, topic, cloud_event.id, binding)
 
     async def _accepted(self, msg: Any, topic: str, cloud_event: CloudEvent[Any], binding: _Binding) -> bool:
@@ -2159,6 +2447,8 @@ class NATSClient(IOClientBase):
             return None
         heartbeat = asyncio.create_task(self._keep_alive(msg, ack_wait / 3), name=f"nats-heartbeat-{self.namespace or ROOT_LABEL}")
         heartbeat.add_done_callback(self._heartbeat_finished)
+        binding.heartbeats.add(heartbeat)
+        heartbeat.add_done_callback(binding.heartbeats.discard)
         return heartbeat
 
     def _heartbeat_finished(self, heartbeat: asyncio.Task[None]) -> None:

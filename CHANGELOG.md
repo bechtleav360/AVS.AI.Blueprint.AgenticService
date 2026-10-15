@@ -168,6 +168,12 @@
 
 ### Added
 
+- **Named connections change at runtime.** A connection source that defines `watch(notify)` tells every
+  agent's client when its connections change; the client binds a new connection, replaces a changed one
+  (new link bound before the old one is retired) and retires a removed one: drained, its runs given
+  `subscription_change_grace` seconds, the rest revoked -- never settled, `publish` refused with the new
+  `DeliveryRevokedError`, not cancelled. A change never interleaves with a pause, and no consumer is
+  deleted. A permission the broker refuses is retried every 60 s with an ERROR instead of at full pace.
 - **`asbs validate` warns about a swallowed `asyncio.CancelledError`** in an agent's `src/` (and for
   every agent with `--group`), with file and line: such code keeps a run going past
   `nats_handler_timeout`, and the delivery is nak'd and redelivered anyway.

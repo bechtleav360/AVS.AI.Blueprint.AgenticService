@@ -262,7 +262,7 @@ One step, one reviewable commit. Each step names its acceptance.
    validation hook (N2), empty Context per run, `nats_connection` context key, run scope hook (D3),
    per-connection slots and per-process cap (D7), handler timeout (D9).
    *Acceptance:* isolation test below; mismatch -> term; limits respected (measured overlap).
-4. **Connection source, dynamic.** Add, change, remove at runtime; drain on remove; never delete a
+4. **Connection source, dynamic. Done 2026-10-15 (4a `3c16c10`, 4b).** Add, change, remove at runtime; drain on remove; never delete a
    foreign consumer. Built on the rules of `docs/specs/2026-09-23-dynamic-subscriptions.md`, for whole
    connections only (no selectors, no REST API), with building blocks that spec can reuse later:
    - a change and a reconnect never interleave (one lock per agent, spec 7.2);

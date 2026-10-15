@@ -35,6 +35,20 @@ class InvalidEventError(HandlerError):
         super().__init__(status=status, reason=reason, code=code)
 
 
+class DeliveryRevokedError(Exception):
+    """The connection this event arrived on was removed while it was being handled.
+
+    Raised by framework calls made on behalf of a revoked delivery -- ``publish`` from within
+    its run -- after the grace period of a connection change ran out (dynamic-subscriptions
+    spec sec. 7.5). Deliberately not a :class:`HandlerError`: every ``HandlerError`` maps to a
+    settlement, and a revoked delivery is never settled. A handler may catch it to store or
+    compensate its work its own way; if it escapes, the framework logs it and sends nothing.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("the subscription this event arrived on was removed while it was being handled; its result cannot be delivered")
+
+
 class DeliveryDisposition(Enum):
     """What a transport does with a delivery once dispatch has finished.
 
