@@ -10,9 +10,9 @@ import pytest
 
 from blueprint.agents.handler.handler_chain import DUPLICATE_CONTEXT_KEY
 from blueprint.agents.io.api.eventing.dapr import DaprEventing
-from blueprint.agents.io.api.eventing.event_handling_base import DUPLICATE_EVENTS_COUNTER, UNHANDLED_EVENTS_COUNTER
+from blueprint.agents.io.api.eventing.event_handling_base import DUPLICATE_EVENTS_COUNTER, SKIPPED_EVENTS_COUNTER, UNHANDLED_EVENTS_COUNTER
 from blueprint.agents.models.events import CloudEvent
-from blueprint.agents.models.result import ProcessingResult
+from blueprint.agents.models.result import ProcessingResult, ProcessingStatus
 
 
 @contextmanager
@@ -327,3 +327,31 @@ class TestDuplicateAccounting:
 
         counters[UNHANDLED_EVENTS_COUNTER].add.assert_called_once_with(1, {"agent": "<root>", "topic": "orders"})
         counters[DUPLICATE_EVENTS_COUNTER].add.assert_not_called()
+
+
+class TestSkippedAccounting:
+    """``HandlerResult.skipped`` -- counted as skipped, never as unhandled, and still acknowledged."""
+
+    @staticmethod
+    def _skipped() -> ProcessingResult:
+        return ProcessingResult(request_id="req-3", status=ProcessingStatus.SKIPPED, message="Skipped: status unchanged")
+
+    async def test_a_skip_is_counted_as_skipped_not_as_unhandled(self, dapr_eventing: DaprEventing, cloud_event: CloudEvent) -> None:
+        """A skip is the agent's own relevance rule; counting it as unhandled would blame the subscription."""
+        dapr_eventing._dispatch_cloud_event = AsyncMock(return_value=self._skipped())  # type: ignore[method-assign]
+
+        with _counters() as counters:
+            await dapr_eventing._process_cloud_event(cloud_event, {}, "orders")
+
+        counters[SKIPPED_EVENTS_COUNTER].add.assert_called_once_with(1, {"agent": "<root>", "topic": "orders"})
+        counters[UNHANDLED_EVENTS_COUNTER].add.assert_not_called()
+
+    async def test_a_skip_acknowledges_and_reports_no_fault(
+        self, dapr_eventing: DaprEventing, cloud_event: CloudEvent, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        dapr_eventing._dispatch_cloud_event = AsyncMock(return_value=self._skipped())  # type: ignore[method-assign]
+
+        with _counters(), caplog.at_level("DEBUG"):
+            result = await dapr_eventing.handle_event("orders", cloud_event)
+        assert result == {"status": "SUCCESS"}
+        assert [r for r in caplog.records if r.levelname in {"WARNING", "ERROR", "CRITICAL"}] == []

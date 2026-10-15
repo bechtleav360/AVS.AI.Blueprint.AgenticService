@@ -55,3 +55,42 @@ class TestValidateDataExclusivity:
     def test_both_data_and_data_base64_raises(self) -> None:
         with pytest.raises(ValidationError):
             CloudEvent(id="1", type="t", data={"x": 1}, data_base64="aGVsbG8=")
+
+
+# ---------------------------------------------------------------------------
+# HandlerResult.skipped
+# ---------------------------------------------------------------------------
+
+
+class TestHandlerResultSkipped:
+    """``HandlerResult.skipped``: the responsible handler's "this event needs nothing"."""
+
+    def test_skipped_carries_its_reason_and_reports_itself(self) -> None:
+        from blueprint.agents.models.events import HandlerResult
+
+        result = HandlerResult.skipped("status unchanged", metadata={"field": "status"})
+        assert result.is_skipped
+        assert result.skip_reason == "status unchanged"
+        assert result.metadata == {"field": "status"}
+        assert result.event_type is None and result.data is None
+
+    def test_an_ordinary_result_is_not_skipped(self) -> None:
+        from blueprint.agents.models.events import HandlerResult
+
+        assert not HandlerResult(event_type="x").is_skipped
+
+    @pytest.mark.parametrize("reason", ["", "   "])
+    def test_an_empty_reason_is_refused(self, reason: str) -> None:
+        """A skip without a reason leaves the INFO line saying nothing about why the event was dropped."""
+        from blueprint.agents.models.events import HandlerResult
+
+        with pytest.raises(ValidationError, match="must name why"):
+            HandlerResult.skipped(reason)
+
+    @pytest.mark.parametrize("extra", [{"event_type": "x"}, {"subject": "s"}, {"data": {"a": 1}}])
+    def test_a_skip_that_would_also_publish_or_return_data_is_refused(self, extra: dict) -> None:
+        """Both published and skipped would leave nobody able to tell which one the author meant."""
+        from blueprint.agents.models.events import HandlerResult
+
+        with pytest.raises(ValidationError, match="carries only its reason"):
+            HandlerResult(skip_reason="r", **extra)

@@ -357,6 +357,12 @@ class HandlerChain(Component):
                     result = await handler.handle(event, context)
                     if result is not None:
                         span.set_attribute("handler.processed_by", handler.name)
+                        if isinstance(result, HandlerResult) and result.is_skipped:
+                            # The selected handler's own answer that the event needs nothing: an
+                            # ordinary outcome, so INFO and no WARNING, and the chain stops here.
+                            span.set_attribute("handler.skipped", True)
+                            span.set_attribute("handler.skip_reason", result.skip_reason or "")
+                            logger.info("Handler '%s' skipped event '%s': %s", handler.name, event.type, result.skip_reason)
                         return result
                     logger.info("Handler '%s' passed event '%s' to next handler", handler.name, event.type)
 

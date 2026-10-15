@@ -23,10 +23,12 @@ logger = logging.getLogger(__name__)
 
 UNHANDLED_EVENTS_COUNTER = "blueprint.events.unhandled"
 DUPLICATE_EVENTS_COUNTER = "blueprint.events.duplicate"
+SKIPPED_EVENTS_COUNTER = "blueprint.events.skipped"
 
 _COUNTER_DESCRIPTIONS = {
     UNHANDLED_EVENTS_COUNTER: "Events an agent received and found nothing to do with",
     DUPLICATE_EVENTS_COUNTER: "Events an agent recognised as already processed and did not dispatch",
+    SKIPPED_EVENTS_COUNTER: "Events whose selected handler was responsible but found nothing to do (HandlerResult.skipped)",
 }
 
 
@@ -89,6 +91,11 @@ class EventHandlingBase(RestApiBase, CloudEventProcessorMixin, ABC):
         URL path under Dapr, and remembering each distinct value would let a caller grow this
         process's memory.
 
+        A dispatch whose selected handler returned ``HandlerResult.skipped`` is counted apart
+        too. The handler was responsible and decided the event needs nothing; the chain has
+        already logged the reason at INFO. Counting it as unhandled would blame the
+        subscription for what is the agent's own relevance rule.
+
         A dispatch the chain skipped as a duplicate is counted apart from both (spec
         sec. 7.4). It reaches here looking exactly like an unmatched event -- no handler
         ran, so no result came back -- but the two say opposite things about the
@@ -111,6 +118,10 @@ class EventHandlingBase(RestApiBase, CloudEventProcessorMixin, ABC):
         elif processing_result.status is ProcessingStatus.NO_HANDLER_FOUND:
             self._count(UNHANDLED_EVENTS_COUNTER, agent, topic)
             logger.debug("No handler in '%s' had work for event %s on topic '%s'", agent or ROOT_LABEL, cloud_event.id, topic)
+        elif processing_result.status is ProcessingStatus.SKIPPED:
+            # Apart from unhandled: a skip is the responsible handler's decision, so a high count says
+            # the agent's own relevance rules filter a lot -- not that its subscription is too broad.
+            self._count(SKIPPED_EVENTS_COUNTER, agent, topic)
         return processing_result
 
     def _count(self, name: str, namespace: str, topic: str) -> None:

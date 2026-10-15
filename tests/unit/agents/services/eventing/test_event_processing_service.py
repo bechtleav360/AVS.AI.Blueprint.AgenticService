@@ -64,6 +64,10 @@ class TestBuildResult:
         result = EventProcessingService._build_result("req-2", [], ProcessingStatus.NO_HANDLER_FOUND)
         assert result.message == "No handler processed this event"
 
+    def test_skipped_message_names_the_reason(self) -> None:
+        result = EventProcessingService._build_result("req-3", [HandlerResult.skipped("status unchanged")], ProcessingStatus.SKIPPED)
+        assert result.message == "Skipped: status unchanged"
+
     def test_result_contains_request_id(self) -> None:
         result = EventProcessingService._build_result("req-42", [], ProcessingStatus.PROCESSED)
         assert result.request_id == "req-42"
@@ -240,6 +244,39 @@ class TestAFailedResultPublish:
         _, publisher = self._wire(event_processing_service, mock_registry, results)
         await event_processing_service.process_event(GenericCloudEvent(id="e1", type="t", source="s"))
         assert [call.kwargs["index"] for call in publisher.publish_handler_event.await_args_list] == [0, 1]
+
+
+class TestASkippedRun:
+    """``HandlerResult.skipped``: acknowledged as SKIPPED, nothing published."""
+
+    @staticmethod
+    def _wire(service: EventProcessingService, mock_registry: MagicMock, results: object) -> MagicMock:
+        chain = MagicMock()
+        chain.process = AsyncMock(return_value=results)
+        service._handler_chains[ROOT_NAMESPACE] = chain
+        publisher = MagicMock()
+        publisher.publish_handler_event = AsyncMock()
+        mock_registry.get_component.return_value = publisher
+        return publisher
+
+    async def test_a_skip_is_reported_as_skipped_and_publishes_nothing(
+        self, event_processing_service: EventProcessingService, mock_registry: MagicMock
+    ) -> None:
+        publisher = self._wire(event_processing_service, mock_registry, HandlerResult.skipped("status unchanged"))
+        result = await event_processing_service.process_event(GenericCloudEvent(id="e1", type="t", source="s"))
+        assert result.status is ProcessingStatus.SKIPPED
+        assert result.message == "Skipped: status unchanged"
+        publisher.publish_handler_event.assert_not_awaited()
+
+    async def test_a_list_mixing_a_skip_with_real_results_is_processed_and_publishes_the_real_ones(
+        self, event_processing_service: EventProcessingService, mock_registry: MagicMock
+    ) -> None:
+        """Only a run whose every result is a skip counts as skipped; a skip in a list publishes nothing."""
+        results = [HandlerResult.skipped("nothing for a"), HandlerResult(event_type="b", data={})]
+        publisher = self._wire(event_processing_service, mock_registry, results)
+        result = await event_processing_service.process_event(GenericCloudEvent(id="e1", type="t", source="s"))
+        assert result.status is ProcessingStatus.PROCESSED
+        assert [call.kwargs["event_type"] for call in publisher.publish_handler_event.await_args_list] == ["b"]
 
 
 class TestTheRequestIdIsKept:

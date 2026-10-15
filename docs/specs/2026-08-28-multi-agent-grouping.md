@@ -516,6 +516,15 @@ It **MUST** be counted per namespace and topic, for one purpose: the *proportion
 events a namespace declines is how a too-broad subscription shows up (sec. 7.7). A high count is a
 question about the subject filter, not about the handler.
 
+**A skip is the selected handler's own "nothing to do" (added 2026-10-15).** A handler that is
+responsible for an event -- `can_handle_event` routed it there -- and finds that this particular
+event needs nothing returns `HandlerResult.skipped(reason)`. The chain stops (no later handler is
+asked, unlike `None`), the run reports `ProcessingStatus.SKIPPED`, nothing is published, the reason
+is logged at INFO, and the transport acknowledges as for any return. It is counted apart from
+unmatched events, as `blueprint.events.skipped` per agent and topic: a skip is the agent's relevance
+rule at work, not a sign that the subscription is too broad. A REST caller gets `success = true`
+with the reason as message.
+
 **Both transports MUST map the same outcome to the same disposition.** Dapr's response dict *is*
 its acknowledgement, so the table above is normative for `dapr.py` and
 `event_handling_base.handle_event` exactly as it is for `nats_client.py`. They disagree in two

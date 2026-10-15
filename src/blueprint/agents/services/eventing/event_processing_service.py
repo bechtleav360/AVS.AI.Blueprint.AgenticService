@@ -189,7 +189,14 @@ class EventProcessingService(ServiceBase):
                         self._chain_for(namespace).release(event)
                         raise
 
-            status = ProcessingStatus.NO_HANDLER_FOUND if handler_result is None else ProcessingStatus.PROCESSED
+            if handler_result is None:
+                status = ProcessingStatus.NO_HANDLER_FOUND
+            elif handler_results and all(result.is_skipped for result in handler_results):
+                # Only a run whose every result is a skip counts as skipped: a list that mixes a
+                # skip with real results did work, and its skips simply publish nothing.
+                status = ProcessingStatus.SKIPPED
+            else:
+                status = ProcessingStatus.PROCESSED
             return self._build_result(request_id, handler_results, status)
 
         # A failure propagates unlogged: every caller is a transport edge (NATS, Dapr, REST) that
@@ -267,7 +274,12 @@ class EventProcessingService(ServiceBase):
         status: ProcessingStatus,
     ) -> ProcessingResult:
         """Build a ProcessingResult from handler outputs."""
-        message = "No handler processed this event" if status == ProcessingStatus.NO_HANDLER_FOUND else "Message acknowledged"
+        if status == ProcessingStatus.NO_HANDLER_FOUND:
+            message = "No handler processed this event"
+        elif status == ProcessingStatus.SKIPPED:
+            message = "Skipped: " + "; ".join(result.skip_reason or "" for result in handler_results)
+        else:
+            message = "Message acknowledged"
         return ProcessingResult(
             request_id=request_id,
             status=status,

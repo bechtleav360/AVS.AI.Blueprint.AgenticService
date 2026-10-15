@@ -286,3 +286,28 @@ class TestProcessResourceLogging:
 
         context = service.process_rest_request.await_args.args[1]
         assert context["request_id"] == request.state.trace_id
+
+
+class TestProcessResourceSkipped:
+    """``HandlerResult.skipped`` reaches a REST caller as a success with the reason, not as a failure."""
+
+    async def test_a_skip_is_a_success_and_carries_its_reason(self, mock_config: MagicMock, mock_registry: MagicMock) -> None:
+        from blueprint.agents.models.events import HandlerResult
+        from blueprint.agents.models.result import ProcessingResult, ProcessingStatus
+
+        api = _MinimalApi()
+        service = MagicMock()
+        skipped = ProcessingResult(
+            request_id="r",
+            status=ProcessingStatus.SKIPPED,
+            message="Skipped: status unchanged",
+            result=[HandlerResult.skipped("status unchanged")],
+        )
+        service.process_rest_request = AsyncMock(return_value=skipped)
+        mock_registry.get_service.return_value = service
+
+        response = await api._process_resource(MagicMock(), {})
+
+        assert response.success is True
+        assert response.message == "Skipped: status unchanged"
+        assert response.data is None

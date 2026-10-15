@@ -84,6 +84,8 @@ class HandlerResult(BaseModel):
     Handlers can return:
     - A single HandlerResult to publish one event
     - A list of HandlerResult objects to publish multiple events
+    - ``HandlerResult.skipped(reason)`` when the handler is responsible for the event but the
+      event needs nothing: the chain stops, the delivery is acknowledged and the reason is logged
     - None to pass control to the next handler
     - Any other value for internal chaining (no event publication)
     """
@@ -92,6 +94,42 @@ class HandlerResult(BaseModel):
     subject: str | None = None
     data: dict[str, Any] | None = None
     metadata: dict[str, Any] | None = None
+    skip_reason: str | None = None
+
+    @model_validator(mode="after")
+    def _skip_carries_nothing_else(self) -> "HandlerResult":
+        """A skipped result publishes nothing and returns nothing, so it may carry only its reason.
+
+        Without this, ``HandlerResult(event_type="x", skip_reason="y")`` would be both published and
+        reported as skipped, and nobody could tell from the result which of the two the author meant.
+        """
+        if self.skip_reason is not None:
+            if not self.skip_reason.strip():
+                raise ValueError("HandlerResult.skip_reason must name why the event needs nothing, not be empty")
+            if self.event_type is not None or self.subject is not None or self.data is not None:
+                raise ValueError("A skipped HandlerResult carries only its reason (and metadata), never event_type, subject or data")
+        return self
+
+    @classmethod
+    def skipped(cls, reason: str, *, metadata: dict[str, Any] | None = None) -> "HandlerResult":
+        """Return the result of a handler that is responsible for the event but finds it needs nothing.
+
+        This is the answer of the handler that *was* selected: the chain stops here and offers the
+        event to no other handler, the transport acknowledges it, and the reason is logged at INFO
+        and counted as ``blueprint.events.skipped``. Return ``None`` instead only when another
+        handler should get the event; an event no handler is selected for keeps the WARNING.
+
+        Args:
+            reason: Why the event needs nothing, e.g. ``"status unchanged"``. Logged; keep personal
+                data and secrets out of it.
+            metadata: Optional values kept on the processing result for the caller; never published.
+        """
+        return cls(skip_reason=reason, metadata=metadata)
+
+    @property
+    def is_skipped(self) -> bool:
+        """Whether this is a :meth:`skipped` result."""
+        return self.skip_reason is not None
 
 
 def create_cloud_event(

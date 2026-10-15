@@ -98,6 +98,42 @@ class TestProcess:
         result = await chain.process(cloud_event, {})
         assert result is first_result
 
+    async def test_skipped_result_stops_the_chain_and_offers_the_event_to_nobody_else(
+        self, chain: HandlerChain, mock_registry: MagicMock, cloud_event: GenericCloudEvent
+    ) -> None:
+        """A skip is the selected handler's answer, not a decline: the next handler must not run.
+
+        Regression guard for the difference to ``None``, which does pass the event on.
+        """
+        asked: list[int] = []
+
+        class Recording(StubHandler):
+            async def can_handle_event(self, event, context):
+                asked.append(self._priority)
+                return True
+
+        skip = HandlerResult.skipped("status unchanged")
+        _wire_handlers(mock_registry, [Recording(priority=10, result=skip), Recording(priority=20, result=HandlerResult(event_type="x"))])
+        result = await chain.process(cloud_event, {})
+        assert result is skip
+        assert asked == [10]
+
+    async def test_skipped_result_logs_its_reason_at_info_and_no_warning(
+        self,
+        chain: HandlerChain,
+        mock_registry: MagicMock,
+        cloud_event: GenericCloudEvent,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A skip is an ordinary outcome: its reason at INFO, never the no-handler WARNING."""
+        _wire_handlers(mock_registry, [StubHandler(result=HandlerResult.skipped("status unchanged"))])
+        with caplog.at_level("DEBUG", logger="blueprint.agents.handler.handler_chain"):
+            await chain.process(cloud_event, {})
+        skipped = [r for r in caplog.records if "skipped event" in r.getMessage()]
+        assert [r.levelname for r in skipped] == ["INFO"]
+        assert "status unchanged" in skipped[0].getMessage()
+        assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
     async def test_handlers_executed_in_ascending_priority_order(
         self, chain: HandlerChain, mock_registry: MagicMock, cloud_event: GenericCloudEvent
     ) -> None:

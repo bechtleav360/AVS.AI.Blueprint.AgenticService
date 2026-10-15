@@ -72,13 +72,15 @@ class ProcessingStatus(StrEnum):
 
     PROCESSED = "processed"
     NO_HANDLER_FOUND = "no_handler_found"
+    # The selected handler was responsible but the event needed nothing (HandlerResult.skipped).
+    SKIPPED = "skipped"
 
 
 class ProcessingResult(BaseModel):
     """Structured result emitted by the processing service."""
 
     request_id: str = Field(..., description="Unique identifier for the processing request.")
-    status: ProcessingStatus = Field(..., description="Processing status (e.g., 'processed', 'no_handler_found').")
+    status: ProcessingStatus = Field(..., description="Processing status ('processed', 'skipped' or 'no_handler_found').")
     result: list[HandlerResult] = Field(default_factory=list, description="Handler results produced during processing.")
     metadata: dict[str, Any] = Field(default_factory=dict, description="Additional metadata about the processing run.")
     message: str | None = Field(None, description="Optional explanatory message for the processing outcome.")

@@ -8568,6 +8568,26 @@ deterministic, see Open points).
   accounts broker -- tenant B with a wrong password, per mode: A bound and B `retrying`, `/health/ready`
   200/200/503 for never/any/all, the agent not paused, A still delivering, no password in the payload.
 
+### A responsible handler can skip an event: `HandlerResult.skipped` (named connections, D11)
+
+- **`HandlerResult.skipped(reason, *, metadata=None)`** (`models/events.py`): a new field
+  `skip_reason`, a validator that refuses an empty reason and a skip that would also carry
+  `event_type`, `subject` or `data`, and the property `is_skipped`.
+- **`HandlerChain._dispatch`**: a skipped result is returned like any non-`None` result -- so the
+  chain stops and no later handler is asked -- and is logged at INFO with the reason, with the span
+  attributes `handler.skipped` and `handler.skip_reason`.
+- **`ProcessingStatus.SKIPPED`**: `EventProcessingService.process_event` reports it when every result
+  of the run is a skip (a list mixing a skip with real results stays `PROCESSED`; the skip publishes
+  nothing either way, because it has no `event_type`). Message: `Skipped: <reason>`.
+- **`EventHandlingBase._process_cloud_event`** counts it as `blueprint.events.skipped` (`agent`,
+  `topic`), apart from `blueprint.events.unhandled`. Acknowledgement is unchanged: a return acks.
+- **`RestApiBase._process_resource`**: `success` is true for `PROCESSED` and `SKIPPED`.
+- Live in WSL against `nats:2.10-alpine` (`tests/integration/test_skipped_result.py`): a skipped event
+  acked once, ack floor 1, 0 redeliveries after `nats_ack_wait`, nothing on the outbound subject, the
+  second handler never called, INFO line with the reason and no "No handler processed event". Control
+  on the unchanged code (the only handler returning `None`, the way an agent had to say "nothing to
+  do"): acked, but WARNING `No handler processed event 'orders.created'` and counted as unhandled.
+
 ---
 
 ## Open points

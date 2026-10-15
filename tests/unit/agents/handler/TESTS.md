@@ -9,7 +9,7 @@ Test coverage for `src/blueprint/agents/handler/`.
 | File | Class under test | What is covered |
 |---|---|---|
 | `test_event_handler_base.py` | `EventHandlerBase` | `__init__` stores default and custom priority; `can_handle` delegates to `can_handle_event` (True/False); `handle` passes through `HandlerResult`, `list[HandlerResult]`, dict, and `None` unchanged; `get_published_event_types` default returns `None`; `get_subscribed_topics` default returns `[]`; `__lt__` priority ordering and `sorted()` correctness |
-| `test_handler_chain.py` | `HandlerChain` | `on_startup`/`on_shutdown` lifecycle no-ops; `process` with no handlers → `None`; declining handler skipped; accepting handler result returned; handler returning `None` passes to next; chain stops at first non-`None` result; handlers executed in ascending priority order; handler exception re-raised |
+| `test_handler_chain.py` | `HandlerChain` | `on_startup`/`on_shutdown` lifecycle no-ops; `process` with no handlers → `None`; declining handler skipped; accepting handler result returned; handler returning `None` passes to next; chain stops at first non-`None` result; a `HandlerResult.skipped` stops the chain without asking the next handler and logs its reason at INFO with no WARNING; handlers executed in ascending priority order; handler exception re-raised |
 
 ---
 

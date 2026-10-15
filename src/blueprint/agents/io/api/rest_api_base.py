@@ -242,7 +242,8 @@ class RestApiBase(IOBase, ABC):
             # another agent's handlers.
             processing_result = await event_processing_service.process_rest_request(payload, context, namespace=self.namespace)
 
-            success = processing_result.status == ProcessingStatus.PROCESSED
+            # A skip is a success: the responsible handler ran and decided there is nothing to do.
+            success = processing_result.status in (ProcessingStatus.PROCESSED, ProcessingStatus.SKIPPED)
             success_message = processing_result.message or "Processing completed successfully"
 
             # Extract response data from handler results

@@ -239,6 +239,14 @@ All taken on 2026-10-14; each entry starts with the decision, followed by the an
   subjects it serves; a subject no connection serves stays on the default connection, as today.
   The default connection then subscribes only what is left -- possibly nothing, which matters where
   the process account may not subscribe at all (the first consumer).
+- **D11 -- "Responsible, but nothing to do" is a result, not a decline. Decided 2026-10-15: (B),
+  `HandlerResult.skipped(reason)`.** `can_handle_event` routes on the envelope only; whether a
+  particular event needs work is decided by the service the handler calls, and the handler reports
+  "no" as `HandlerResult.skipped(reason)`: the chain stops, the delivery is acknowledged, the reason
+  is logged at INFO and counted as `blueprint.events.skipped`, nothing is published. Rejected: (A) a
+  second hook (`is_relevant`) beside `can_handle_event` -- the relevance check usually needs the same
+  reads as the work, so it would split one service call into two. `None` keeps meaning "offer the
+  event to the next handler"; an event no handler is selected for is unchanged. Done in step 6.
 
 ---
 

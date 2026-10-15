@@ -172,6 +172,11 @@
 
 ### Added
 
+- **`HandlerResult.skipped(reason)`.** A handler that is responsible for an event but finds it needs
+  nothing returns it: the chain stops (no later handler is asked, unlike `None`), the delivery is
+  acknowledged, nothing is published, the reason is logged at INFO and the event is counted as
+  `blueprint.events.skipped` rather than as unhandled. The run reports the new
+  `ProcessingStatus.SKIPPED`; a REST caller gets `success = true` with the reason as message.
 - **Per-connection state and `nats_connections_readiness`.** Each agent with named connections gets a
   readiness entry `<agent>.nats_client:connections` listing every connection as `bound`, `connecting`,
   `reconnecting`, `retrying` (with the last error, redacted) or `paused`, and any permission violation,

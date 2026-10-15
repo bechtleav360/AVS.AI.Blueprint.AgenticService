@@ -9,7 +9,7 @@ Test coverage for `src/blueprint/agents/models/`.
 | File | Classes under test | What is covered |
 |---|---|---|
 | `test_config.py` | `EventPublishingConfig` | `normalize_topic_mapping`: `TopicConfig` / dict / plain-string / invalid-type values, non-dict mapping → error; `_parse_mapping_string`: empty string, quoted-key string, unquoted-key string (auto-quoting regex), non-brace format → error, malformed brace string → error; `_parse_topic_config_value`: plain string, `map[topic:t]`, `map[topic:t routing_key:rk]`, empty `map[]` → error, missing `topic` entry → error, entry without `:` → error |
-| `test_events.py` | `CloudEvent` | `validate_time_format`: Z-suffix, `+00:00` offset, missing timezone → error, non-string → error, default factory produces valid timestamp; `validate_data_exclusivity`: data-only, data_base64-only, neither, both → error |
+| `test_events.py` | `CloudEvent`, `HandlerResult` | `validate_time_format`: Z-suffix, `+00:00` offset, missing timezone → error, non-string → error, default factory produces valid timestamp; `validate_data_exclusivity`: data-only, data_base64-only, neither, both → error; `HandlerResult.skipped`: carries its reason and metadata and reports `is_skipped`, an ordinary result is not skipped, an empty or blank reason is refused, a skip combined with `event_type`, `subject` or `data` is refused |
 | `test_result.py` | `Evidence`, `AgentOutput` | `Evidence.confidence` ge/le constraints (0.0/1.0 pass, outside → error); `AgentOutput.sort_evidence_by_confidence`: empty list, single item, multiple items sorted descending, already-sorted input |
 
 ---
