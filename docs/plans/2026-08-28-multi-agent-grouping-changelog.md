@@ -146,6 +146,15 @@ framework endpoints (`nats`, `cache`, `scheduler`), one Swagger tag per agent, a
   per-data-source state is keyed by that context key. Broker test on the accounts broker: the same
   `(source, id)` on connections A and B runs on both, a repeat on A is skipped; without the change B
   was skipped.
+- Step 4, JetStream reconnect (M1, N4, N11): `_on_reconnected` re-checks stream and consumers
+  (`_ensure_broker_state`) instead of subscribing again; the message handler naks a JetStream delivery
+  while paused; the first `nats.connect()` is bounded (`_first_connect_attempts`) and the configured
+  count is set on the connection afterwards; a connect while paused requests a health refresh. Live
+  (NATS 2.10, `/connz?subs=1`): broker restart -- 2 subscriptions before and after (control: 4), each of
+  20 events run once; restart then pause -- 0 of 10 events run (control: 10); broker without storage
+  replaced -- stream and consumers recreated, 20 of 20 run once; no broker at startup -- startup
+  returns in 5.6 s and the agent consumes after the broker comes up (control: no return within 120 s).
+  Integration suite: 60 passed, 3 skipped (Redis not started).
 - Step 3, internal naming (B3): the first consumer's product name, subject prefix and module names are
   replaced by generic ones (`acme.agent.<tenant>.<agent>`, "the first consumer") in the named-connections
   plan, the accounts broker config, its connection source and three unit tests. Tree only; the

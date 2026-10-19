@@ -12,6 +12,26 @@
   when it is acknowledged. Measured against JetStream with a 0.5 s limit: before, one run and the
   redelivery acknowledged unrun; now the redelivery runs to completion.
 
+- **A JetStream agent no longer gains a second subscription per topic on every reconnect.** nats-py
+  restores every subscription itself after a reconnect, the JetStream ones included; the client
+  subscribed again on top, and the extra subscriptions were unknown to pause, drain and shutdown. A
+  degraded agent therefore kept consuming through them: after one broker restart, a paused agent ran
+  all 10 of 10 events sent to it. A reconnect now re-checks the stream and the consumers (recreating
+  them if the broker lost them) and subscribes nothing. Measured: subscriptions 2 before and 2 after
+  a restart (4 before the fix), 0 runs while paused, every event run once after a restart and after a
+  broker that lost its storage.
+
+- **An agent started before its broker no longer hangs in startup.** With reconnects unlimited (the
+  default, `nats_max_reconnect_attempts = -1`) nats-py retried the first connect inside itself for
+  ever, so startup never returned and `event_client_max_retries` was never consulted. The first
+  connect now fails after two attempts, the retry loop takes over, and reconnects of an established
+  connection stay unlimited. An agent that connects while it is paused re-evaluates its health at once
+  instead of one health interval later. Measured: startup returned after 5.6 s (before: not within
+  120 s), and the agent consumed once the broker was up.
+
+- **A delivery that reaches a paused agent is nak'd instead of run** (JetStream), so it redelivers to a
+  healthy replica; Core NATS, which cannot nak, still handles what the drain lets through.
+
 - **With deduplication on, one named connection's event no longer suppresses another's.** The dedup
   key was the event's `source` and `id` only, so the same producer behind two connections -- two data
   sources emitting the same ids for different data -- had the second connection's event skipped as a

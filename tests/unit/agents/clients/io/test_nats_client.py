@@ -1534,20 +1534,55 @@ class TestNATSClientReconnect:
         await connected_nats_client._on_reconnected()
         assert connected_nats_client.subscriptions_ready is False
 
-    async def test_reconnected_resubscribes_jetstream_topics(self, connected_nats_client: NATSClient, mock_nats_jetstream: tuple) -> None:
-        mock_nc, mock_js = mock_nats_jetstream
-        connected_nats_client._nats_client = mock_nc
-        connected_nats_client._client = mock_nc
-        connected_nats_client._use_jetstream = True
-        connected_nats_client._subscriptions_managed = True
-        connected_nats_client._subscriptions_ready = False
-        connected_nats_client._topic_callbacks = {"topic.a": AsyncMock(), "topic.b": AsyncMock()}
+    @staticmethod
+    def _jetstream_client(client: NATSClient, mock_nats_jetstream: tuple) -> MagicMock:
+        """A managed JetStream client whose broker connection replays its subscriptions, as nats-py does."""
+        mock_nc, _ = mock_nats_jetstream
+        mock_nc._subs = {}
+        client._nats_client = mock_nc
+        client._client = mock_nc
+        client._use_jetstream = True
+        client._subscriptions_managed = True
+        client._subscriptions_ready = False
+        client._topic_callbacks = {"topic.a": AsyncMock(), "topic.b": AsyncMock()}
+        return mock_nc
 
-        with patch.object(connected_nats_client, "_subscribe_one", new_callable=AsyncMock) as mock_sub:
+    async def test_a_reconnect_subscribes_nothing_again_under_jetstream(
+        self, connected_nats_client: NATSClient, mock_nats_jetstream: tuple
+    ) -> None:
+        """M1 -- nats-py replays every subscription in ``_subs``; subscribing again left an orphan per topic.
+
+        The orphan joined the deliver group next to the replayed one, so it took a share of the
+        deliveries, and no pause, drain or close knew of it.
+        """
+        mock_nc = self._jetstream_client(connected_nats_client, mock_nats_jetstream)
+        mock_nc._subs = {1: "topic.a (replayed)", 2: "topic.b (replayed)"}
+
+        with (
+            patch.object(connected_nats_client, "_subscribe_one", new_callable=AsyncMock) as subscribe_one,
+            patch.object(connected_nats_client, "_provision_stream", new_callable=AsyncMock) as provision,
+            patch.object(connected_nats_client, "_ensure_consumer", new_callable=AsyncMock) as ensure_consumer,
+        ):
             await connected_nats_client._on_reconnected()
 
-        assert mock_sub.await_count == 2
+        subscribe_one.assert_not_awaited()
+        assert len(mock_nc._subs) == 2, "only nats-py's replayed subscriptions"
+        provision.assert_awaited_once()
+        assert [call.args[0] for call in ensure_consumer.await_args_list] == ["topic.a", "topic.b"]
         assert connected_nats_client.subscriptions_ready is True
+
+    async def test_a_failed_recheck_after_a_reconnect_leaves_it_unready(
+        self, connected_nats_client: NATSClient, mock_nats_jetstream: tuple, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        self._jetstream_client(connected_nats_client, mock_nats_jetstream)
+        with (
+            patch.object(connected_nats_client, "_provision_stream", new_callable=AsyncMock, side_effect=OSError("stream gone")),
+            caplog.at_level("ERROR"),
+        ):
+            await connected_nats_client._on_reconnected()
+
+        assert connected_nats_client.subscriptions_ready is False
+        assert "re-checking the JetStream stream and consumers after a reconnect failed" in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -2332,6 +2367,48 @@ async def _js_delivery_handler(nats_client: NATSClient, mock_config: MagicMock, 
     return mock_nc.jetstream().subscribe_bind.await_args.kwargs["cb"]
 
 
+class TestAPausedAgentRunsNothing:
+    """N4 -- a delivery that reaches a paused agent is nak'd under JetStream, never run."""
+
+    async def test_a_jetstream_delivery_is_nakd_without_running(
+        self, nats_client: NATSClient, mock_config: MagicMock, mock_nats_jetstream: tuple, cloud_event: CloudEvent
+    ) -> None:
+        ran: list[str] = []
+
+        async def callback(event: CloudEvent, subject: str) -> None:
+            ran.append(event.id)
+
+        handler = await _js_delivery_handler(nats_client, mock_config, mock_nats_jetstream, callback)
+        nats_client._consumption_paused = True
+        msg = _delivery(cloud_event)
+
+        await handler(msg)
+        await asyncio.gather(*list(nats_client._runs), return_exceptions=True)
+
+        assert ran == []
+        msg.nak.assert_awaited_once()
+        msg.ack.assert_not_awaited()
+
+    async def test_a_core_nats_message_in_the_buffer_still_runs(
+        self, nats_client: NATSClient, mock_nats_core: MagicMock, cloud_event: CloudEvent
+    ) -> None:
+        """Core NATS cannot nak; what the drain lets through is handled, as before."""
+        ran: list[str] = []
+
+        async def callback(event: CloudEvent, subject: str) -> None:
+            ran.append(event.id)
+
+        nats_client._nats_client = mock_nats_core
+        nats_client._client = mock_nats_core
+        await nats_client._subscribe_one("orders.created", callback)
+        handler = _until_settled(nats_client, mock_nats_core.subscribe.await_args.kwargs["cb"])
+        nats_client._consumption_paused = True
+
+        await handler(MagicMock(subject="orders.created", data=json.dumps(dict(cloud_event)).encode()))
+
+        assert ran == [cloud_event.id]
+
+
 class TestConcurrentRuns:
     """Deliveries run as tasks of their own, up to nats_max_concurrent_runs per binding."""
 
@@ -2473,10 +2550,37 @@ class TestAClosedConnectionComesBack:
     async def test_reconnect_attempts_are_unlimited_by_default(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
         base = mock_config.get.side_effect
         mock_config.get.side_effect = lambda key, default=None: default if key == "nats_max_reconnect_attempts" else base(key, default)
-        with patch("blueprint.agents.clients.io.nats_client.nats.connect", new_callable=AsyncMock) as mock_connect:
+        connection = MagicMock(options={})
+        with patch("blueprint.agents.clients.io.nats_client.nats.connect", new_callable=AsyncMock, return_value=connection) as mock_connect:
             await nats_client.connect()
-        assert mock_connect.await_args.kwargs["max_reconnect_attempts"] == -1
+        assert connection.options["max_reconnect_attempts"] == -1, "reconnects of the established connection"
         assert mock_connect.await_args.kwargs["closed_cb"] == nats_client._on_closed
+
+    async def test_the_first_connect_is_bounded_even_when_reconnects_are_not(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        """N11 -- nats-py applies the count to the first connect too; unlimited, it never returned and startup hung."""
+        base = mock_config.get.side_effect
+        mock_config.get.side_effect = lambda key, default=None: default if key == "nats_max_reconnect_attempts" else base(key, default)
+        with patch(
+            "blueprint.agents.clients.io.nats_client.nats.connect", new_callable=AsyncMock, return_value=MagicMock(options={})
+        ) as mock_connect:
+            await nats_client.connect()
+        assert mock_connect.await_args.kwargs["max_reconnect_attempts"] == 1
+
+    @pytest.mark.parametrize(("configured", "first"), [(-1, 1), (0, 1), (5, 5)])
+    def test_first_connect_attempts(self, configured: int, first: int) -> None:
+        assert NATSClient._first_connect_attempts(configured) == first
+
+    async def test_a_broker_that_is_not_there_fails_the_first_connect(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        """Against a port nobody listens on, connect() raises instead of retrying inside nats-py for ever."""
+        base = mock_config.get.side_effect
+        overrides = {"nats_reconnect_time_wait": 0}
+        mock_config.get.side_effect = lambda key, default=None: (
+            default if key == "nats_max_reconnect_attempts" else overrides.get(key, base(key, default))
+        )
+        nats_client._nats_url = "nats://127.0.0.1:1"
+        with pytest.raises(Exception) as caught:
+            await asyncio.wait_for(nats_client.connect(), timeout=20)
+        assert not isinstance(caught.value, TimeoutError), "connect() never returned"
 
     async def test_a_closed_connection_restarts_the_retry_loop(self, nats_client: NATSClient) -> None:
         nats_client._subscriptions_managed = True

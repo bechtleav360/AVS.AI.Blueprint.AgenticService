@@ -276,8 +276,9 @@ class NATSClient(IOClientBase):
     keeps the pod out of service rotation until then.
 
     On disconnect the NATS library fires ``_on_disconnected``, which clears
-    the ready flag.  On reconnect ``_on_reconnected`` re-subscribes (JetStream
-    only — Core NATS re-subscribes automatically) and restores the flag.
+    the ready flag.  On reconnect the NATS library replays every subscription,
+    JetStream push subscriptions included; ``_on_reconnected`` re-checks the
+    JetStream stream and consumers (never subscribes again) and restores the flag.
 
     One connection per namespace
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1722,13 +1723,14 @@ class NATSClient(IOClientBase):
             self._connect_options = self._resolve_connect_options(self._nats_url)
         nats_url = redact_url(self._nats_url)
         self._connection_name = self._resolve_connection_name()
+        # Unlimited by default: with 5 attempts 2 s apart, an outage of about 10 s closed the
+        # connection for good (review finding #10). _on_closed restarts it either way.
+        reconnect_attempts = self.config.get("nats_max_reconnect_attempts", -1)
         try:
             self._nats_client = await nats.connect(
                 self._nats_url,
                 name=self._connection_name or None,
-                # Unlimited by default: with 5 attempts 2 s apart, an outage of about 10 s closed the
-                # connection for good (review finding #10). _on_closed restarts it either way.
-                max_reconnect_attempts=self.config.get("nats_max_reconnect_attempts", -1),
+                max_reconnect_attempts=self._first_connect_attempts(reconnect_attempts),
                 reconnect_time_wait=self.config.get("nats_reconnect_time_wait", 2),
                 connect_timeout=10,
                 disconnected_cb=self._on_disconnected,
@@ -1736,6 +1738,8 @@ class NATSClient(IOClientBase):
                 closed_cb=self._on_closed,
                 **self._connect_options,
             )
+            # Read by nats-py on every reconnect attempt, so from here on the configured count governs.
+            self._nats_client.options["max_reconnect_attempts"] = reconnect_attempts
             self._client = self._nats_client
             self._use_jetstream = self.config.get("nats_use_jetstream", False)
             self._publish_via_jetstream = self._resolve_publish_mode()
@@ -1753,6 +1757,19 @@ class NATSClient(IOClientBase):
             # decides for itself. Logging here as well doubled every connection failure.
             e.add_note(f"while connecting to NATS at {nats_url}")
             raise
+
+    @staticmethod
+    def _first_connect_attempts(reconnect_attempts: int) -> int:
+        """``max_reconnect_attempts`` for the first ``nats.connect()``: bounded, whatever reconnects may do (N11).
+
+        nats-py applies the count to the first connect as well, and with an unlimited count it
+        retries a broker that is not there inside ``nats.connect()`` for ever: the call never
+        returns, so neither the retry loop (``event_client_max_retries``, its WARNING per attempt)
+        nor the health poll that connects before startup gets an answer, and startup hangs. The
+        first connect therefore fails after two attempts and the retry loop decides what follows;
+        a positive configured count is kept as it is.
+        """
+        return reconnect_attempts if reconnect_attempts > 0 else 1
 
     def _log_connected(self, mode: str, nats_url: str) -> None:
         """Log the connection; a standalone agent's line is the one it has always logged."""
@@ -2123,6 +2140,9 @@ class NATSClient(IOClientBase):
             # Paused while this loop was still connecting: stay connected, subscribe nothing.
             # resume_consumption() subscribes over this connection if the agent is released.
             logger.info("Agent '%s' connected while degraded; not subscribing", self.namespace or ROOT_LABEL)
+            # The pause may have been this connection's absence -- an agent that started before its
+            # broker. Re-evaluate now, so it resumes on this connect rather than one health interval later.
+            self._request_health_refresh("the default connection is up while the agent is paused")
             return
         await self._subscribe_all()
 
@@ -2451,6 +2471,13 @@ class NATSClient(IOClientBase):
         """
 
         async def message_handler(msg: Any) -> None:
+            if self._consumption_paused and self._settles(binding):
+                # A degraded agent runs nothing (C4). What reaches it anyway -- a delivery still in
+                # the buffer while the pause waits for a connection change to finish, before it
+                # can drain -- is nak'd at once, so it redelivers to a healthy replica (N4). Core
+                # NATS cannot nak; its buffered messages run, as the drain lets them.
+                await self._settle(msg, DeliveryDisposition.NAK, msg.subject, self._peek_event_id(msg), binding)
+                return
             resolved = topic if topic is not None else self._bound_topic(binding, msg)
             if resolved is None:
                 await self._settle(msg, DeliveryDisposition.TERM, msg.subject, None, binding)
@@ -2471,6 +2498,15 @@ class NATSClient(IOClientBase):
             run.add_done_callback(functools.partial(self._run_finished, binding, release))
 
         return message_handler
+
+    @staticmethod
+    def _peek_event_id(msg: Any) -> str | None:
+        """The event id of a delivery that is settled without being decoded, for its log line; ``None`` if unreadable."""
+        try:
+            event_id = json.loads(msg.data.decode()).get("id")
+        except Exception:
+            return None
+        return event_id if isinstance(event_id, str) else None
 
     async def _acquire_run(self, binding: _Binding, slot_key: str) -> Release:
         """Wait until ``binding`` may start a run; return what frees it.
@@ -2911,13 +2947,26 @@ class NATSClient(IOClientBase):
             self._request_health_refresh("the default connection is back while the agent is paused")
             return
         if self._use_jetstream and self._topic_callbacks:
-            # JetStream durable consumers do not survive reconnects; re-subscribe manually.
-            # Core NATS re-subscribes automatically via the client library.
-            self._subscriptions.clear()
+            # nats-py replays every subscription it holds on a reconnect -- the JetStream push
+            # ones too, and their deliver subject is fixed (_DELIVER.<durable>) -- so delivery
+            # resumes by itself. Subscribing again added a second subscription per topic that no
+            # pause, drain or close knew of (M1). What a reconnect can lose is broker state: a
+            # broker restarted without storage, a failover to a peer that never had the stream.
+            # That is re-checked; nothing is re-subscribed.
             try:
-                await self._subscribe_all()
+                await self._ensure_broker_state()
             except Exception as e:
-                logger.error("NATSClient failed to re-establish JetStream subscriptions after reconnect: %s", e)
+                logger.error(
+                    "Agent '%s': re-checking the JetStream stream and consumers after a reconnect failed: %s",
+                    self.namespace or ROOT_LABEL,
+                    self._describe_error(self._link, e),
+                )
                 return
         self._subscriptions_ready = True
         logger.info("NATSClient subscriptions ready after reconnect")
+
+    async def _ensure_broker_state(self) -> None:
+        """Provision the stream and every consumer this client's subscriptions deliver from, subscribing nothing."""
+        await self._provision_stream()
+        for topic in self._topic_callbacks:
+            await self._ensure_consumer(topic, self._durables.get(topic) or self._durable_for(topic))
