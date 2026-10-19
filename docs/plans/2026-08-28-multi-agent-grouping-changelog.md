@@ -146,6 +146,10 @@ framework endpoints (`nats`, `cache`, `scheduler`), one Swagger tag per agent, a
   per-data-source state is keyed by that context key. Broker test on the accounts broker: the same
   `(source, id)` on connections A and B runs on both, a repeat on A is skipped; without the change B
   was skipped.
+- Step 7, group config validation (M7, N2, D8): unknown critical names (also against a
+  `BLUEPRINT_AGENTS`-replaced list), scalar `agents`/`critical_agents` and duplicate group names raise
+  `GroupConfigError`; `AgentGroup.from_config` refuses a group left with no agent. Unit tests fail on the
+  old code; the live check runs with the group image (step 14).
 - Step 6, named bindings (M3, M4, S2, S3): a binding superseded before it bound is retired at once and
   hands over the binding still delivering, and a removal retires that one too; `_bind` flushes and fails
   on a refusal naming its deliver subject (compared lowercased -- nats-py lowercases the -ERR line, found

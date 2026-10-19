@@ -223,6 +223,43 @@ class TestCriticality:
         assert {agent.name: agent.critical for agent in group.agents} == {"invoice": False, "order": True}
 
 
+class TestTheGroupFileMeansWhatItSays:
+    """M7, N2 -- every shape that silently resolved to a different group now fails startup."""
+
+    def test_a_critical_name_the_group_does_not_run_is_refused(self, project: Config) -> None:
+        """A typo in it made every agent non-critical."""
+        with pytest.raises(GroupConfigError, match="names invocie, which group 'finance' does not run"):
+            GroupConfig.resolve(project, environ={"BLUEPRINT_GROUP": "finance", "BLUEPRINT_CRITICAL_AGENTS": "invocie"})
+
+    def test_the_files_critical_list_still_applies_when_the_environment_replaces_the_agents(self, project: Config, tmp_path: Path) -> None:
+        """Plan D8: the file's list is kept, and a name outside the resolved group fails startup."""
+        path = tmp_path / "with-critical.yaml"
+        path.write_text("groups:\n  - name: finance\n    agents: [invoice, order]\n    critical_agents: [order]\n")
+
+        with pytest.raises(GroupConfigError, match=r"from file\) names order.*from \$BLUEPRINT_AGENTS: invoice"):
+            GroupConfig.resolve(
+                project, environ={"BLUEPRINT_GROUP_CONFIG": str(path), "BLUEPRINT_GROUP": "finance", "BLUEPRINT_AGENTS": "invoice"}
+            )
+
+    @pytest.mark.parametrize("key", ["agents", "critical_agents"])
+    def test_a_scalar_where_a_list_belongs_is_refused(self, project: Config, tmp_path: Path, key: str) -> None:
+        """It was iterated character by character."""
+        path = tmp_path / "scalar.yaml"
+        lines = {"agents": "agents: invoice", "critical_agents": "agents: [invoice]\n    critical_agents: invoice"}
+        path.write_text(f"groups:\n  - name: finance\n    {lines[key]}\n")
+
+        with pytest.raises(GroupConfigError, match=f"'{key}' of group 'finance' must be a list of agent names, got a str"):
+            GroupConfig.resolve(project, environ={"BLUEPRINT_GROUP_CONFIG": str(path)})
+
+    def test_a_group_declared_twice_is_refused(self, project: Config, tmp_path: Path) -> None:
+        """Last one won, silently: which agents ran depended on the order of the file."""
+        path = tmp_path / "twice.yaml"
+        path.write_text("groups:\n  - name: finance\n    agents: [invoice]\n  - name: finance\n    agents: [order]\n")
+
+        with pytest.raises(GroupConfigError, match="declares 'finance' more than once"):
+            GroupConfig.resolve(project, environ={"BLUEPRINT_GROUP_CONFIG": str(path), "BLUEPRINT_GROUP": "finance"})
+
+
 class TestAgainstTheAgentMap:
     def test_an_agent_the_image_does_not_contain_is_refused(self, project: Config) -> None:
         """The seam that turns a config typo into a crash-loop with a readable message."""

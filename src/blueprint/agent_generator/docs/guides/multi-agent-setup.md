@@ -339,6 +339,11 @@ groups:
 pod's readiness. The default is **critical**: an agent that fails to load stops the process, because
 a pod that passes its probes while one agent's queue silently backs up is a worse failure than no
 pod at all. Naming an agent non-critical is the deliberate choice to run the rest without it.
+Every name in `critical_agents` must be an agent the group runs -- also when
+`BLUEPRINT_AGENTS` replaces the file's agent list -- or startup fails: a name that matches none
+would make every agent non-critical. `agents` and `critical_agents` are lists (`[order]`, never a
+bare `order`), a group name appears once per file, and a group none of whose agents could be loaded
+fails startup instead of running empty.
 
 ### Environment
 

@@ -336,6 +336,19 @@ class TestLoadingADeclaration:
         assert list(assembled.agents) == ["billing"]
         assert "is not critical, so it is skipped" in caplog.text
 
+    def test_a_group_left_with_no_agent_fails(self) -> None:
+        """M7 -- every agent non-critical and none loadable: the pod ran empty and reported ready."""
+        group = GroupConfig(
+            name="finance",
+            agents=(
+                AgentSpec(name="order", module="no.such.module:declaration", root=Path("agents") / "order", critical=False),
+                AgentSpec(name="billing", module="no.such.module:declaration", root=Path("agents") / "billing", critical=False),
+            ),
+        )
+
+        with pytest.raises(GroupConfigError, match="no agent left to run: every one of order, billing was skipped"):
+            AgentGroup.from_config(group)
+
     def test_a_skipped_agent_does_not_stop_the_ones_after_it(self, config: Config) -> None:
         group = GroupConfig(
             name="finance",

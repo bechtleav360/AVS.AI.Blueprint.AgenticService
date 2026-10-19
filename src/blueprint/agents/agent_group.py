@@ -253,6 +253,13 @@ class AgentGroup:
             else:
                 logger.debug("Agent '%s' ships no settings of its own (looked at %s)", spec.name, fragment)
 
+        if not agents:
+            # Every agent was non-critical and none loaded. A pod with no agent passes its probes
+            # while it consumes nothing at all -- the exact failure criticality exists to prevent (M7).
+            raise GroupConfigError(
+                f"Group '{group.name}' has no agent left to run: every one of {', '.join(group.agent_names) or 'none'} "
+                "was skipped. Fix the agents above, or mark the one this pod must run as critical."
+            )
         return cls(group.name, agents, settings=settings, roots=roots, critical=critical)
 
     @staticmethod

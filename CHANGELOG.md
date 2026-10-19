@@ -12,6 +12,13 @@
   when it is acknowledged. Measured against JetStream with a 0.5 s limit: before, one run and the
   redelivery acknowledged unrun; now the redelivery runs to completion.
 
+- **A group file that says something other than what it means now fails startup.** A name in
+  `critical_agents` (or `BLUEPRINT_CRITICAL_AGENTS`) that the group does not run made every agent
+  non-critical -- also when `BLUEPRINT_AGENTS` replaced the file's list, whose `critical_agents` still
+  applies. `agents: order` (a scalar) was read letter by letter, a group declared twice in one file
+  resolved to whichever came last, and a group whose agents were all skipped started with none and
+  reported ready. Each of these is now a `GroupConfigError` naming the problem.
+
 - **Named connections changed at runtime no longer leave an old link consuming.** A connection changed
   twice before its new binding was bound, or changed and then removed, kept its original link
   subscribed for good: only the not-yet-bound binding in between was retired. Measured on a broker

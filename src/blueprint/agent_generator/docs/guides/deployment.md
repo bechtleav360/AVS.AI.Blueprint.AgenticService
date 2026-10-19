@@ -302,7 +302,11 @@ diff.
 `critical_agents` decides two things at once: whether the process starts at all when that agent
 cannot be loaded, and whether that agent can take the pod out of service rotation. The default is
 **critical** for every agent in the group. Naming a subset is the deliberate choice to run the rest
-without the others.
+without the others. Every name in `critical_agents` must be an agent the group runs -- also when
+`BLUEPRINT_AGENTS` replaces the file's agent list -- or startup fails: a name that matches none
+would make every agent non-critical. `agents` and `critical_agents` are lists (`[order]`, never a
+bare `order`), a group name appears once per file, and a group none of whose agents could be loaded
+fails startup instead of running empty.
 
 ### Deploying
 

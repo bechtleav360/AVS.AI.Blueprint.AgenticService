@@ -260,6 +260,15 @@ class GroupConfig:
         if not isinstance(groups, list) or not groups:
             raise GroupConfigError(f"Group file {path} declares no 'groups' list, so no group can be resolved from it.")
 
+        names = [str(entry.get("name", "")) for entry in groups if isinstance(entry, dict)]
+        duplicates = sorted({group_name for group_name in names if names.count(group_name) > 1})
+        if duplicates:
+            # Last one wins, silently, was the behaviour (N2): which agents a pod ran depended on
+            # the order of the file, and an edit to one copy did nothing.
+            raise GroupConfigError(
+                f"Group file {path} declares {', '.join(repr(group_name) for group_name in duplicates)} more than once. "
+                "A group name must be unique: which copy applies would depend on the order of the file."
+            )
         by_name = {str(entry.get("name", "")): entry for entry in groups if isinstance(entry, dict)}
         requested = requested_group
 
@@ -390,9 +399,22 @@ class GroupConfig:
         def _split(raw: str) -> list[str]:
             return [part.strip() for part in raw.split(",") if part.strip()]
 
+        def _names(key: str) -> list[str]:
+            # A list, and nothing else: a YAML scalar ('agents: invoice') was iterated character by
+            # character, and the error that followed named an agent called 'i' (M7, N2).
+            value = declared.get(key)
+            if value is None:
+                return []
+            if not isinstance(value, list):
+                raise GroupConfigError(
+                    f"'{key}' of group '{declared.get('name', '')}' must be a list of agent names, got a "
+                    f"{type(value).__name__} ({value!r}). Write it as {key}: [name, ...]."
+                )
+            return [str(agent).strip() for agent in value if str(agent).strip()]
+
         name = str(declared.get("name", "") or "").strip()
-        agents = [str(agent).strip() for agent in declared.get("agents", []) or [] if str(agent).strip()]
-        critical = {str(agent).strip() for agent in declared.get("critical_agents", []) or [] if str(agent).strip()}
+        agents = _names("agents")
+        critical = set(_names("critical_agents"))
         sources = {"name": "file", "agents": "file", "critical_agents": "file"}
 
         if override := str(env.get(GROUP_ENV, "") or "").strip():
@@ -411,6 +433,19 @@ class GroupConfig:
         for key, source in sources.items():
             if source != "file" or declared:
                 logger.info("Group value '%s' resolved from %s", key, source)
+
+        unknown = sorted(critical - set(agents))
+        if unknown:
+            # Refused rather than ignored (plan D8): a critical set names the agents that are
+            # critical, so every agent it does not name is not. A typo in it therefore made every
+            # agent non-critical, and a group whose agents all fail to load ran empty and ready.
+            # With $BLUEPRINT_AGENTS replacing the file's list, the file's critical_agents still
+            # applies and must name agents of the new list.
+            raise GroupConfigError(
+                f"'critical_agents' (from {sources['critical_agents']}) names {', '.join(unknown)}, which group "
+                f"'{name}' does not run (its agents, from {sources['agents']}: {', '.join(agents) or 'none'}). Every "
+                "agent it does not name is non-critical, so a name that matches none makes the whole group non-critical."
+            )
         return name, agents, critical
 
     @staticmethod
