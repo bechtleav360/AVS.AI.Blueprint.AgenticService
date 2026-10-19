@@ -165,19 +165,21 @@ class TestWhatIsRecorded:
             AppBuilder(config).with_service(42)  # type: ignore[arg-type]
 
 
+def _handler_order() -> list[str]:
+    return [type(handler).__name__ for handler in Component.shared_registry.get_event_handler()]
+
+
 class TestDeclarationOrder:
-    def test_an_instance_after_a_class_at_equal_priority_is_refused(self, config: Config) -> None:
-        """The instance is already registered, so it would be tried first -- the reverse of the file."""
-        builder = AppBuilder(config).with_handler(FirstHandler).with_handler(SecondHandler())
+    def test_an_instance_after_a_class_registers_after_it(self, config: Config) -> None:
+        """S20 -- the instance registered first, so it was tried first; 0.8 registered in call order."""
+        AppBuilder(config).with_handler(FirstHandler).with_handler(SecondHandler()).build()
 
-        with pytest.raises(ValueError, match="SecondHandler was passed to with_handler"):
-            builder.build()
+        assert _handler_order() == ["FirstHandler", "SecondHandler"]
 
-    def test_the_refusal_names_both_handlers_and_the_priority(self, config: Config) -> None:
-        builder = AppBuilder(config).with_handler(FirstHandler).with_handler(SecondHandler())
+    def test_classes_and_instances_mixed_follow_the_file(self, config: Config) -> None:
+        AppBuilder(config).with_handler(SecondHandler()).with_handler(FirstHandler).with_handler(LowPriorityHandler()).build()
 
-        with pytest.raises(ValueError, match=r"FirstHandler was declared as a class.*priority 100"):
-            builder.build()
+        assert _handler_order() == ["SecondHandler", "FirstHandler", "LowPriorityHandler"]
 
     def test_different_priorities_are_accepted(self, config: Config) -> None:
         """Priority decides, so registration order decides nothing and cannot be reversed."""

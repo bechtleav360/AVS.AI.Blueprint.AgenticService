@@ -146,6 +146,15 @@ framework endpoints (`nats`, `cache`, `scheduler`), one Swagger tag per agent, a
   per-data-source state is keyed by that context key. Broker test on the accounts broker: the same
   `(source, id)` on connections A and B runs on both, a repeat on A is skipped; without the change B
   was skipped.
+- Step 19, standalone compatibility (S10, S20, S21, N1): `HealthCheckEntry.builtin` and an application check
+  replacing a built-in one with a WARNING; `Registry.reorder` puts declared handlers in declaration order (the
+  refusal is gone); `SessionsJobHandler.get_handled_event_types` declares nothing when `can_handle_event` is
+  overridden; `event_loop_debug` off unless set, read with `parse_bool`; recovery tasks gathered with
+  `return_exceptions=True`, `actuator.on_shutdown` guarded; CHANGELOG "What the code sees change" for deferred
+  construction. Live (standalone app, Core NATS in WSL, `with_handler(First)` then `with_handler(Second())`,
+  `with_health_checker("cache", ...)`): both handlers ran First then Second, `/health/ready` showed the own
+  check under 'cache' with the WARNING, debug mode off and the watchdog started. Control: build refused the
+  handler order, then the 'cache' name; with both fixed away, debug mode was on.
 - Step 18, NATS leftovers (S1, W4, W5, N10): `_ensure_consumer` raises `JetStreamBindingError` for an existing
   durable whose filter is not the topic (no rename); the run slot and in-flight count are given back when the
   run cannot be started; `_durable_for` docstring corrected (dotted topics get a name 0.8 did not use); the

@@ -29,31 +29,37 @@ def _config(**values: object) -> MagicMock:
 
 
 class TestDebugMode:
-    async def test_development_turns_asyncio_debug_on(self) -> None:
-        loop = asyncio.get_running_loop()
-        try:
-            assert configure_loop_debug(_config(), development=True) is True
-            assert loop.get_debug() is True
-        finally:
-            loop.set_debug(False)
-
-    async def test_production_leaves_it_off(self) -> None:
-        assert configure_loop_debug(_config(), development=False) is False
+    async def test_it_is_off_unless_set(self) -> None:
+        """S21 -- it was on in development, the default environment: every coroutine wrapped by default."""
+        assert configure_loop_debug(_config()) is False
         assert asyncio.get_running_loop().get_debug() is False
 
-    async def test_production_can_ask_for_it(self) -> None:
-        """The exact answer is available in production; it just costs enough to be a decision."""
+    async def test_it_can_be_asked_for(self) -> None:
+        """The exact answer is available anywhere; it just costs enough to be a decision."""
         loop = asyncio.get_running_loop()
         try:
-            assert configure_loop_debug(_config(**{DEBUG_KEY: True}), development=False) is True
+            assert configure_loop_debug(_config(**{DEBUG_KEY: True})) is True
             assert loop.get_debug() is True
         finally:
             loop.set_debug(False)
+
+    async def test_an_environment_string_is_read_as_a_bool(self) -> None:
+        """'false' from an environment variable is a non-empty string, which bool() reads as True."""
+        assert configure_loop_debug(_config(**{DEBUG_KEY: "false"})) is False
+        loop = asyncio.get_running_loop()
+        try:
+            assert configure_loop_debug(_config(**{DEBUG_KEY: "true"})) is True
+        finally:
+            loop.set_debug(False)
+
+    async def test_a_value_that_is_no_bool_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="event_loop_debug"):
+            configure_loop_debug(_config(**{DEBUG_KEY: "sometimes"}))
 
     async def test_the_slow_callback_threshold_is_configurable(self) -> None:
         loop = asyncio.get_running_loop()
         try:
-            configure_loop_debug(_config(event_loop_slow_callback_seconds=0.5), development=True)
+            configure_loop_debug(_config(**{DEBUG_KEY: True}, event_loop_slow_callback_seconds=0.5))
             assert loop.slow_callback_duration == 0.5
         finally:
             loop.set_debug(False)

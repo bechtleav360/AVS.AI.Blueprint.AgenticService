@@ -812,14 +812,13 @@ What to watch when you turn it up:
   dies; it does not change which failures kill it. That is why attribution is emitted deliberately
   (see *Alerting on an agent*) -- and why the blast radius, not the happy path, is what should
   decide group size.
-- **Blocking the event loop is the mistake that only hurts in a group.** In development,
-  `app_environment = "development"` puts asyncio in debug mode and names the slow callback itself
-  (`event_loop_slow_callback_seconds`, default `0.2`). In production a lower-overhead watchdog
+- **Blocking the event loop is the mistake that only hurts in a group.** A low-overhead watchdog
   measures the loop's lag and reports which agents had work in flight when it stalled
   (`event_loop_block_threshold_seconds`, default `1.0`) -- candidates, not a culprit, because by
-  the time it runs the blocking call has returned. Debug mode is available in production behind
-  `event_loop_debug` at the cost of wrapping every coroutine creation, and the two are never both
-  on: with debug mode enabled the watchdog stands down.
+  the time it runs the blocking call has returned. `event_loop_debug = true` puts asyncio in debug
+  mode instead, which names the slow callback itself (`event_loop_slow_callback_seconds`, default
+  `0.2`) at the cost of wrapping every coroutine creation; it is off unless set, in development
+  too. The two are never both on: with debug mode enabled the watchdog stands down.
 - **One agent's failure should not remove the pod.** Use `critical_agents` plus
   `readiness_policy = "critical"` so that a non-critical agent going down is an alert rather than a
   pod out of rotation.

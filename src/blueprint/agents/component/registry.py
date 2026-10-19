@@ -26,6 +26,7 @@ group composition because it was told; it passes each namespace to the wiring th
 """
 
 import logging
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from copy import copy
 from typing import Any, TypeVar
@@ -678,6 +679,27 @@ class Registry:
                 raise ValueError(f"Component with name {name} is not of type {component_type}")
             return True
         return bool(self.get_components_by_type(component_type, namespace))
+
+    def reorder(self, components: Sequence[Any]) -> None:
+        """Give ``components`` the registration order they are listed in, within the slots they hold.
+
+        The listed components swap places among themselves; every other component stays where
+        it is. Used by ``AppBuilder`` to register handlers in declaration order (S20). The
+        mapping is changed in place, so a namespace view of this registry sees the new order.
+
+        Args:
+            components: Registered components, in the order wanted. One that is not registered
+                is ignored.
+        """
+        wanted = {id(component) for component in components}
+        items = list(self._components.items())
+        slots = [index for index, (_, component) in enumerate(items) if id(component) in wanted]
+        by_identity = {id(component): (name, component) for name, component in items if id(component) in wanted}
+        ordered = [by_identity[id(component)] for component in components if id(component) in by_identity]
+        for slot, item in zip(slots, ordered, strict=True):
+            items[slot] = item
+        self._components.clear()
+        self._components.update(items)
 
     def clear_components(self) -> None:
         """Clear all registered components (useful for testing)."""

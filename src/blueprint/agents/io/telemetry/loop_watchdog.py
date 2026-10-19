@@ -6,22 +6,22 @@ the group stops responding at once because there is one loop and they share it. 
 process it shows up as latency in the one service that caused it; in a group it shows up as
 latency in twenty services, nineteen of which did nothing wrong.
 
-Two mechanisms, because the two environments can afford different things:
+Two mechanisms, at two prices:
 
-- **Development** turns on asyncio's own debug mode, which reports the exact callback that ran
-  too long, with its source location. It is the better diagnostic by far and it is too
-  expensive to leave on: debug mode wraps coroutine creation and keeps tracebacks for every
-  task.
-- **Production** runs this watchdog instead. It sleeps for a known interval and measures how
-  much longer than that the sleep actually took; the excess is time the loop spent unable to
-  run anything. It cannot name the callback -- by the time it runs again, the callback has
-  returned -- so it names the agents that had work in flight, which is the set the culprit is
-  in.
+- **This watchdog**, by default in every environment. It sleeps for a known interval and
+  measures how much longer than that the sleep actually took; the excess is time the loop
+  spent unable to run anything. It cannot name the callback -- by the time it runs again, the
+  callback has returned -- so it names the agents that had work in flight, which is the set
+  the culprit is in.
+- **asyncio's own debug mode**, with ``event_loop_debug = true``, which reports the exact
+  callback that ran too long, with its source location. It is the better diagnostic by far
+  and too expensive to leave on: debug mode wraps coroutine creation and keeps tracebacks for
+  every task. It was on by default in development, the default environment, until S21 -- so
+  an application that never set an environment ran with it.
 
 Naming candidates rather than the culprit is the honest shape here, and it is still the
 difference between "the pod was slow" and "one of these two agents blocked the loop for four
-seconds". Turning debug mode on in production to get the exact answer is available and
-deliberate: set ``event_loop_debug`` and accept the cost.
+seconds". The exact answer is a deliberate choice: set ``event_loop_debug`` and accept the cost.
 """
 
 import asyncio
@@ -29,6 +29,7 @@ import logging
 from collections.abc import Mapping
 
 from ...component.namespace import ROOT_LABEL
+from ...utils import parse_bool
 from .inflight import IN_FLIGHT
 
 logger = logging.getLogger(__name__)
@@ -50,24 +51,28 @@ out, so it catches a real block without reporting a busy loop as a broken one.
 """
 
 DEFAULT_SLOW_CALLBACK_SECONDS = 0.2
-"""asyncio's own threshold in development, where the exact callback is worth the overhead."""
+"""asyncio's own threshold with debug mode on, where the exact callback is worth the overhead."""
 
 
-def configure_loop_debug(config: Mapping[str, object] | object, *, development: bool) -> bool:
-    """Turn on asyncio debug mode where it is wanted, and report whether it was turned on.
+def configure_loop_debug(config: Mapping[str, object] | object) -> bool:
+    """Turn on asyncio debug mode if ``event_loop_debug`` asks for it, and report whether it did.
+
+    Off unless set (S21), in every environment. Read with :func:`parse_bool`, so an environment
+    override of ``"false"`` -- a non-empty string, which ``bool()`` reads as true -- means false.
 
     Args:
         config: The application's configuration, read with ``get``.
-        development: Whether this process is running in the development environment, which is
-            what makes the debug mode's cost acceptable by default.
 
     Returns:
         Whether debug mode is now on, so the caller can skip the watchdog: with debug mode on,
         asyncio reports the blocking callback itself and the watchdog would only add a vaguer
         second line about the same event.
+
+    Raises:
+        ValueError: ``event_loop_debug`` is set to something that is not a boolean.
     """
     getter = getattr(config, "get", None)
-    enabled = bool(getter(DEBUG_KEY, development)) if callable(getter) else development
+    enabled = parse_bool(getter(DEBUG_KEY, False), DEBUG_KEY) if callable(getter) else False
     if not enabled:
         return False
 

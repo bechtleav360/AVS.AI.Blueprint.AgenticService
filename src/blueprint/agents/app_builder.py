@@ -1,7 +1,6 @@
 """Generic FastAPI application setup and configuration."""
 
 import asyncio
-import contextlib
 import copy
 import logging
 import signal
@@ -877,11 +876,7 @@ class AppBuilder:
             if entry.kind not in _UNCONSTRUCTED_KINDS:
                 built.append((entry, self._construct(entry, config)))
 
-        # After construction, not before: a class's priority is a property of the object, and
-        # asking the class for it means reading a default argument and being wrong about every
-        # handler that computes one. The application is not returned when this raises, so the
-        # components already in the registry go nowhere.
-        self._check_declaration_order(built)
+        self._restore_declaration_order(built)
 
         for entry in self._declarations:
             if entry.kind == "cache":
@@ -892,53 +887,26 @@ class AppBuilder:
         logger.debug("Constructed %d declaration(s)", len(self._declarations))
 
     @staticmethod
-    def _check_declaration_order(built: list[tuple[Declaration, Any]]) -> None:
-        """Refuse a declaration order that construction cannot reproduce.
+    def _restore_declaration_order(built: list[tuple[Declaration, Any]]) -> None:
+        """Register the declared handlers in the order they were declared (S20).
 
         An already-built instance is constructed by the caller at its own source line, so it is
         in the registry before ``build()`` runs; a class or a factory is constructed during the
-        replay. So an instance recorded *after* a class registers *before* it, and registration
+        replay. So an instance recorded *after* a class registered *before* it -- and registration
         order is not decoration: ``DispatchIndex.build`` resolves handler priority ties by it,
-        which a project may well be relying on without having said so.
+        which a project may well be relying on without having said so. Before 0.9 every
+        ``with_handler`` call registered at once, so the order was the call order.
 
-        Only handlers, only within one agent, and only at equal priority, because that is the
-        only case where the order decides anything. Different priorities sort deterministically
-        whichever way round the two were registered, two agents never share a chain, and
-        nothing else the registry holds is order sensitive.
-
-        Detected rather than repaired: the fix is one keyword away -- pass the class -- and
-        reordering the registry behind the caller's back would make the file say one thing and
-        the application do another.
+        Restored rather than refused: the handlers are put back in declaration order in the
+        registry slots they already hold, so nothing else the registry holds moves.
 
         Args:
             built: Each non-cache declaration paired with the component it produced, in
                 declaration order.
-
-        Raises:
-            ValueError: if a handler instance was recorded after a handler class or factory of
-                the same priority in the same namespace.
         """
-        handlers = [
-            (position, entry, component) for position, (entry, component) in enumerate(built) if isinstance(component, EventHandlerBase)
-        ]
-
-        for position, entry, component in handlers:
-            if entry.is_built:
-                continue
-            for later_position, later, later_component in handlers:
-                if later_position <= position or not later.is_built:
-                    continue
-                if later.namespace != entry.namespace or later_component.priority != component.priority:
-                    continue
-                raise ValueError(
-                    f"{type(later_component).__name__} was passed to with_handler() as an instance after "
-                    f"{type(component).__name__} was declared as a class, and both have priority "
-                    f"{component.priority}. An instance is built where it is written and a class is built by "
-                    "build(), so the instance registers first and is tried first -- the reverse of what this file "
-                    f"says. Pass {type(later_component).__name__} as a class as well, so that both are built in "
-                    "declaration order, or give one of them a different priority so the order stops depending on "
-                    "registration at all."
-                )
+        handlers = [component for _, component in built if isinstance(component, EventHandlerBase)]
+        if handlers:
+            Component.shared_registry.reorder(handlers)  # type: ignore[union-attr]
 
     def build(self, config: Config | None = None) -> FastAPI:
         """Construct everything declared, wire it, and return the FastAPI application.
@@ -1042,7 +1010,7 @@ class AppBuilder:
         # so passing the registry name would read 'orders.orders_nats_client'. A root client's
         # base name is its registry name, so an existing payload key does not move.
         health_providers: list[HealthCheckEntry] = [
-            HealthCheckEntry(name=client.base_name, namespace=client.namespace, checker=ClientHealthChecker([client]))
+            HealthCheckEntry(name=client.base_name, namespace=client.namespace, checker=ClientHealthChecker([client]), builtin=True)
             for client in registry.get_clients()
         ]
         # Pull every registered cache into the readiness probe so a Redis outage takes the pod
@@ -1055,7 +1023,7 @@ class AppBuilder:
             name = "cache" if cache_name == DEFAULT_CACHE_NAME else f"cache:{cache_name}"
             # The agent is carried on the entry, so two agents' default caches are two entries
             # rather than one that silently reports whichever was registered last.
-            health_providers.append(HealthCheckEntry(name=name, namespace=namespace, checker=CacheHealthChecker(cache)))
+            health_providers.append(HealthCheckEntry(name=name, namespace=namespace, checker=CacheHealthChecker(cache), builtin=True))
         # Each agent's named connections: one entry for readiness only. Never one that pauses the
         # agent -- a dead tenant connection must not stop it on its other connections (plan D5).
         health_providers.extend(
@@ -1064,6 +1032,7 @@ class AppBuilder:
                 namespace=client.namespace,
                 checker=NamedConnectionsHealthChecker(client),
                 affects_consumption=False,
+                builtin=True,
             )
             for client in self._sourced_nats_clients
         )
@@ -1485,9 +1454,9 @@ class AppBuilder:
         """Cancel every recovery still running, before any component is shut down."""
         for task in self._recovery_tasks:
             task.cancel()
-        for task in self._recovery_tasks:
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+        # Gathered, not awaited one by one (N1): a task that ended by raising -- reported by
+        # _on_recovery_done already -- re-raised here and aborted the whole shutdown.
+        await asyncio.gather(*self._recovery_tasks, return_exceptions=True)
         self._recovery_tasks.clear()
 
     async def _recover_agent(self, namespace: str, interval: float) -> None:
@@ -1578,8 +1547,7 @@ class AppBuilder:
         Args:
             config: The application's configuration.
         """
-        development = str(config.get("app_environment", "development")) == "development"
-        if configure_loop_debug(config, development=development):
+        if configure_loop_debug(config):
             return
         if not parse_bool(config.get(WATCHDOG_ENABLED_KEY, True), WATCHDOG_ENABLED_KEY):
             logger.info("Event loop watchdog is disabled by configuration")
@@ -1756,7 +1724,10 @@ class AppBuilder:
                     logger.error("Client %s shutdown failed: %s", client.name, e, exc_info=True)
 
             if self._actuator_api is not None:
-                await self._actuator_api.on_shutdown()
+                try:
+                    await self._actuator_api.on_shutdown()
+                except Exception as e:
+                    logger.error("Actuator shutdown failed: %s", e, exc_info=True)
 
             await self._loop_watchdog.stop()
 

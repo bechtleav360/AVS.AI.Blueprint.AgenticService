@@ -103,3 +103,78 @@ async def test_the_lifespan_shuts_telemetry_down_after_the_components(config: Co
     async with app.router.lifespan_context(app):
         pass
     assert order == ["executors", "telemetry"]
+
+
+class _OwnCacheCheck(HealthCheckerBase):
+    async def health_check(self) -> ComponentHealth:
+        return ComponentHealth(status="healthy", message="the application's own cache check")
+
+
+def _cache_config(tmp_path: Path) -> Config:
+    settings = tmp_path / "settings.toml"
+    settings.write_text(
+        '[development]\napp_name = "standalone"\napp_port = 8000\napp_environment = "development"\n\n'
+        f'[development.cache]\ncache_dir = "{(tmp_path / "cache").as_posix()}"\n'
+    )
+    return Config(settings_files=[str(settings)], root_path=str(tmp_path))
+
+
+class TestAUserCheckReplacesABuiltInOne:
+    """S20 -- in 0.8 a user check named like a built-in replaced it; 0.9 refused the build."""
+
+    def test_at_build(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        own = _OwnCacheCheck()
+        builder = AppBuilder(_cache_config(tmp_path)).with_cache().with_health_checker("cache", own)
+        with caplog.at_level("WARNING"):
+            builder.build()
+        entries = [entry for entry in builder._actuator_api._health_entries if entry.key == "cache"]  # type: ignore[union-attr]
+        assert [entry.checker for entry in entries] == [own]
+        assert any("replaces the framework's CacheHealthChecker" in message for message in caplog.messages)
+
+    def test_after_build(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        own = _OwnCacheCheck()
+        builder = AppBuilder(_cache_config(tmp_path)).with_cache()
+        builder.build()
+        with caplog.at_level("WARNING"):
+            builder.with_health_checker("cache", own)
+        entries = [entry for entry in builder._actuator_api._health_entries if entry.key == "cache"]  # type: ignore[union-attr]
+        assert [entry.checker for entry in entries] == [own]
+
+    def test_two_user_checks_under_one_name_are_still_refused(self, tmp_path: Path) -> None:
+        builder = (
+            AppBuilder(_cache_config(tmp_path)).with_health_checker("db", _OwnCacheCheck()).with_health_checker("db", _OwnCacheCheck())
+        )
+        with pytest.raises(ValueError, match="already taken"):
+            builder.build()
+
+
+class TestShutdownGoesOnPastAFailure:
+    """N1 -- a failed recovery task and a failing actuator shutdown each aborted the rest of shutdown."""
+
+    async def test_a_failed_recovery_task_does_not_abort_it(self, config: Config) -> None:
+        import asyncio
+
+        builder = AppBuilder(config)
+
+        async def broken() -> None:
+            raise RuntimeError("recovery bug")
+
+        task = asyncio.create_task(broken())
+        await asyncio.sleep(0)
+        builder._recovery_tasks.append(task)
+
+        await builder._stop_startup_recovery()
+
+        assert builder._recovery_tasks == []
+
+    async def test_a_failing_actuator_shutdown_is_logged_and_the_rest_runs(self, config: Config, caplog: pytest.LogCaptureFixture) -> None:
+        from unittest.mock import AsyncMock
+
+        builder = AppBuilder(config)
+        app = builder.build()
+        builder._telemetry_manager.on_shutdown = AsyncMock()  # type: ignore[method-assign]
+        with caplog.at_level("ERROR"):
+            async with app.router.lifespan_context(app):
+                builder._actuator_api.on_shutdown = AsyncMock(side_effect=RuntimeError("cache scheduler"))  # type: ignore[method-assign, union-attr]
+        builder._telemetry_manager.on_shutdown.assert_awaited_once()
+        assert any("cache scheduler" in message for message in caplog.messages)

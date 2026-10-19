@@ -12,6 +12,27 @@
   when it is acknowledged. Measured against JetStream with a 0.5 s limit: before, one run and the
   redelivery acknowledged unrun; now the redelivery runs to completion.
 
+- **A standalone application written for 0.8 builds again** (S20). Three 0.8 shapes were refused
+  or changed:
+  - A health check of the application's own under a built-in name (`cache`, a client's name)
+    replaced the built-in in 0.8 and failed the build here. It replaces it again, with a WARNING.
+    Two checks of the application's own under one name are still refused.
+  - A handler instance passed after a handler class of the same priority failed the build. Every
+    declared handler now registers in declaration order, as 0.8 did, whether passed as a class or
+    as an instance.
+  - A `SessionsJobHandler` subclass that widened `can_handle_event` was only offered its own job
+    type, which it declared automatically. It declares nothing now when it overrides the selector,
+    and is offered every event as in 0.8.
+
+- **asyncio debug mode is off unless `event_loop_debug` is set** (S21). It was on by default in
+  development -- the default environment -- so an application that never set one paid for debug
+  mode on every coroutine. The watchdog runs instead. The value is read as a boolean: `"false"`
+  from an environment variable means false, and a value that is no boolean fails startup.
+
+- **Shutdown runs to the end past a failed step** (N1). A startup recovery task that had ended by
+  raising re-raised while shutdown cancelled it, and a failing actuator shutdown raised out of the
+  lifespan; either skipped every later step. Both are logged and shutdown goes on.
+
 - **A JetStream consumer that filters another subject is no longer bound.** Root topic
   `orders-created` and agent `orders` on topic `created` derive the same durable name
   (`orders-created-durable`). Whichever started second bound the other's consumer with only a
@@ -636,6 +657,14 @@ What the broker sees change when an agent that ran on 0.8 starts on this version
   through JetStream, the publish subjects.
 - **Core NATS subscriptions join a queue group** (`nats_queue_group`, else `app_name`), so each
   message reaches one replica instead of every one.
+
+What the code sees change:
+
+- **Components are constructed by `build()`, not by the `with_*()` call.** `with_handler(MyHandler)`
+  records the class; `build()` constructs it, in declaration order. Code that looked a component up
+  in the registry between a `with_*()` call and `build()` finds nothing, and an error a constructor
+  raises -- a missing configuration key, say -- is raised by `build()`. An instance passed to
+  `with_*()` is the caller's own and is used as it is.
 
 ## [0.9.0] - 2026-09-14
 

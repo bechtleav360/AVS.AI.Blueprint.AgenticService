@@ -252,7 +252,8 @@ Two agents may both call theirs `database`; they appear as `orders.database` and
 registration rather than silently reduced to one.
 
 The framework registers checks of its own: one per transport client, and one per declared cache
-(`cache`, or `cache:<name>` for a named one).
+(`cache`, or `cache:<name>` for a named one). A check of yours under one of those names replaces
+the framework's, with a WARNING at startup -- the way to override a built-in check.
 
 ### Named NATS connections
 
@@ -336,14 +337,14 @@ short a consumer.
 The one group-wide failure a process can detect about itself. A blocked loop raises nothing, logs
 nothing and keeps the pod live, while every agent in the group stops responding at once.
 
-| Environment | Mechanism |
+| Setting | Mechanism |
 |---|---|
-| Development | asyncio's own debug mode, which names the exact callback and its source location. |
-| Production | A watchdog that measures how much longer a known sleep actually took, and names the agents that had work in flight. |
+| Default, every environment | A watchdog that measures how much longer a known sleep actually took, and names the agents that had work in flight. |
+| `event_loop_debug = true` | asyncio's own debug mode, which names the exact callback and its source location. |
 
 ```toml
 [default]
-event_loop_debug = false                       # defaults to true in development
+event_loop_debug = false                       # off unless set, in every environment
 event_loop_slow_callback_seconds = 0.2         # debug mode's threshold
 event_loop_watchdog_enabled = true
 event_loop_watchdog_interval_seconds = 1.0
@@ -351,9 +352,9 @@ event_loop_block_threshold_seconds = 1.0
 ```
 
 Never both: debug mode already reports the callback, which is strictly better than the watchdog's
-"one of these agents was busy". Setting `event_loop_debug = true` in production is available and
-deliberate -- debug mode wraps coroutine creation and keeps tracebacks for every task, which is
-why it is not the default there.
+"one of these agents was busy". Setting `event_loop_debug = true` is a deliberate choice -- debug
+mode wraps coroutine creation and keeps tracebacks for every task, which is why it is not the
+default anywhere, development included.
 
 The watchdog cannot name the culprit. By the time it runs again the blocking callback has
 returned, so it reports the agents that have work in flight *now*, which is the set the culprit is

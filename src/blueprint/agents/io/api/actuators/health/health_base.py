@@ -58,12 +58,15 @@ class HealthCheckEntry:
         affects_consumption: Whether a failure also stops the agent consuming (C4). ``False``
             makes the check count for readiness only: a named NATS connection that is down must
             never pause the agent on its other connections (named-connections plan, D5).
+        builtin: Whether the framework registered it (a client, cache or connection check). An
+            application's own check under the same entry replaces it, as it did before 0.9.
     """
 
     name: str
     namespace: str
     checker: HealthCheckerBase
     affects_consumption: bool = True
+    builtin: bool = False
 
     @property
     def key(self) -> str:

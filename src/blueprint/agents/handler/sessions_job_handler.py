@@ -201,11 +201,19 @@ class SessionsJobHandler(EventHandlerBase, ABC):
         return f"sessions.job.created.{self.JOB_TYPE}"
 
     def get_handled_event_types(self) -> list[str]:
-        """Declare the one event type this subclass's jobs arrive as.
+        """Declare the one event type this subclass's jobs arrive as -- if this class's selector decides.
 
         Derived from :attr:`JOB_TYPE`, so a subclass opts into the dispatch index by setting
         the class variable it already had to set -- it declares nothing of its own.
+
+        **Not when the subclass overrides** :meth:`can_handle_event` (S10). A declaration is
+        matched before the selector is asked, so a subclass that widened the selector -- to
+        accept a second job type, say -- was never offered the events it widened it for. Such a
+        subclass declares nothing and is offered every event, as before 0.9; it can declare its
+        own list by overriding this method as well.
         """
+        if type(self).can_handle_event is not SessionsJobHandler.can_handle_event:
+            return []
         return [self.job_created_event_type]
 
     async def can_handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> bool:

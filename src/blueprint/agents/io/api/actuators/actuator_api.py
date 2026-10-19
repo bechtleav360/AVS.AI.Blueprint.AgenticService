@@ -101,18 +101,32 @@ class ActuatorApi(RestApiBase):
 
         A duplicate key is refused. Two checks under one name is exactly the silent loss D4
         exists to remove: a dict kept the last one, so an agent's check could vanish with
-        nothing logged and nothing failing.
+        nothing logged and nothing failing. **The one exception** is an application's check
+        under the entry of a built-in one (``cache``, a client's name): it replaces the
+        built-in, with a WARNING, because that is what ``with_health_checker`` did before 0.9
+        and applications rely on it to override a check (S20).
 
         Args:
             providers: The checks to add, each carrying the agent it belongs to.
 
         Raises:
-            ValueError: if a key is already registered.
+            ValueError: if a key is already registered, other than a built-in one by an
+                application's check.
         """
         registered = {entry.key: entry for entry in self._health_entries}
         for entry in providers:
             existing = registered.get(entry.key)
-            if existing is not None:
+            if existing is not None and existing.builtin and not entry.builtin:
+                logger.warning(
+                    "Health check '%s' of agent '%s' replaces the framework's %s of the same name: the readiness "
+                    "payload shows it under '%s', and the framework's own check is not run.",
+                    entry.name,
+                    entry.agent,
+                    type(existing.checker).__name__,
+                    entry.key,
+                )
+                self._health_entries.remove(existing)
+            elif existing is not None:
                 raise ValueError(
                     f"Health check '{entry.name}' of agent '{entry.agent}' would appear in the readiness payload as "
                     f"'{entry.key}', which is already taken by a {type(existing.checker).__name__} of agent "

@@ -860,3 +860,17 @@ class TestTheReplayGuardIsBounded:
         clock[0] += 61
         assert job not in seen
         assert len(seen) == 0
+
+
+class TestTheDeclarationFollowsTheSelector:
+    """S10 -- the auto-declared job type narrowed a subclass that widened can_handle_event."""
+
+    def test_the_job_type_is_declared(self, mock_config: MagicMock, mock_registry: MagicMock) -> None:
+        assert _Handler().get_handled_event_types() == ["sessions.job.created.demo"]
+
+    def test_a_widened_selector_declares_nothing(self, mock_config: MagicMock, mock_registry: MagicMock) -> None:
+        class Widened(_Handler):
+            async def can_handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> bool:
+                return event.type.startswith("sessions.job.created.")
+
+        assert Widened().get_handled_event_types() == []
