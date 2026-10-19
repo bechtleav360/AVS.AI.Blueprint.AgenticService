@@ -12,6 +12,15 @@
   when it is acknowledged. Measured against JetStream with a 0.5 s limit: before, one run and the
   redelivery acknowledged unrun; now the redelivery runs to completion.
 
+- **Scaffolded images select the production environment, and the group image turns healthy.** The
+  generated Dockerfiles set `DYNACONF_ENVIRONMENT`, which selects nothing, so every image ran the
+  `development` section; they now set `DYNACONF_APP_ENVIRONMENT` (`production`, and `development` in
+  the dev stage). **Existing projects: rename the variable in your Dockerfile** -- the image then
+  loads `[production]`, with no localhost broker fallback. The group image's health check used `curl`,
+  which its slim base does not have, and is now a Python one. `asbs setup` checks the agent's name
+  before writing anything, `asbs create service` writes a service that imports, and the messages
+  about what `asbs dev` serves without `--name` (the agent alone, at the root namespace) are correct.
+
 - **`/status/env` no longer leaks what its masking missed, and no longer fails on `${PORT}`.** A URL
   password holding `/`, `?` or `#` was partly returned, a token in a query string, an `AccountKey=` in
   a connection string and every value of a section under a secret-named key (`credentials`) were

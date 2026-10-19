@@ -206,9 +206,9 @@ def _agent_findings(image_root: Path, name: str, entry: Any, claimed: dict[Path,
 
     if root != image_root and root.name != name:
         notices.append(
-            f"Agent '{name}' lives in a directory named '{root.name}'. Nothing breaks, but 'asbs dev' in that "
-            f"directory serves it as '{root.name}' unless --name says otherwise, so its routes differ between "
-            "development and this image."
+            f"Agent '{name}' lives in a directory named '{root.name}'. Nothing breaks; to develop it with the "
+            f"routes this image gives it, run 'asbs dev --name {name}' in that directory -- without --name it is "
+            "served on its own, at the root namespace."
         )
 
     return issues, warnings, notices

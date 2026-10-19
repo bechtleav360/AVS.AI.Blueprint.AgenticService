@@ -44,7 +44,7 @@ agent's namespace is that name in snake case (`order_processor`).
 There is no `agents.toml`. The agent map says which agents an *image* contains, which is a
 packaging decision -- an agent that carried one would be an agent that knows whether it is running
 alone. The generated `Dockerfile` writes a one-agent map into its own image; a group image maps it
-in the repository's `agents.toml`; `asbs dev` supplies the name from the directory. `asbs validate
+in the repository's `agents.toml`; `asbs dev --name` supplies it while developing. `asbs validate
 --group` refuses one found inside an agent.
 
 A `pyproject.toml` is written only if the directory has none: `asbs` runs from the project's own

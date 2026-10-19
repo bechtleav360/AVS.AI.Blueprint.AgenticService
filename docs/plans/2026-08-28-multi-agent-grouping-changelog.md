@@ -146,6 +146,15 @@ framework endpoints (`nats`, `cache`, `scheduler`), one Swagger tag per agent, a
   per-data-source state is keyed by that context key. Broker test on the accounts broker: the same
   `(source, id)` on connections A and B runs on both, a repeat on A is skipped; without the change B
   was skipped.
+- Step 14, scaffold and CLI (M10, S14, N6-N9, D10): `DYNACONF_APP_ENVIRONMENT` in both Dockerfiles
+  (production, development in the dev stage), a Python health check in `group_Dockerfile`, `asbs setup`
+  validates the name before writing, the `settings.txt` comment no longer carries the substituted token,
+  `asbs create service` imports what it names, `AgentRuntime` only where agents are used, the scheduler
+  template no longer claims a generated CronJob, and every `asbs dev` message says that without `--name`
+  the agent is served alone at the root. Live (WSL): a scaffolded two-agent group image built from the
+  working tree turned healthy in 10 s and loaded `production`; control with the old template: `curl: not
+  found`, never healthy, `development`. In the same image: `BLUEPRINT_CRITICAL_AGENTS=ordrs` exits 1
+  naming the typo (step 7), and a `.secrets.toml` mounted for `orders` reaches `orders` only (step 8).
 - Step 13, `/status/env` masker (M12): URL userinfo fails closed (an `@` left after `://`, an
   unparseable port), secret query parameters and `Name=value;` segments are masked, a section under a
   secret key is masked whole, `pass`/`dsn`/`conn`/`sig`/`signature` count as whole words. Live (a built

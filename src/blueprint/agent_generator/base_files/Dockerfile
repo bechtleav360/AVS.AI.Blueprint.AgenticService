@@ -31,7 +31,10 @@ FROM builder AS dev
 RUN uv pip install --system --no-cache ".[dev]" ipython debugpy pytest
 
 ENV PYTHONPATH="/app/src"
-ENV DYNACONF_ENVIRONMENT="development"
+# app_environment selects the settings section, and it defaults to development. The variable is
+# DYNACONF_APP_ENVIRONMENT -- DYNACONF_ENVIRONMENT selects nothing -- and a project that sets its own
+# envvar_prefix renames it to <PREFIX>_APP_ENVIRONMENT.
+ENV DYNACONF_APP_ENVIRONMENT="development"
 
 # src/main.py declares an agent; it does not build one, so there is no `src.main:app` to
 # serve. create_app() builds the declaration with this directory's settings, and uvicorn
@@ -92,8 +95,11 @@ RUN mkdir -p /app/.cache && chown -R appuser:appuser /app/.cache
 # An individual key can also be supplied as an environment variable instead, with no file at
 # all:  -e DYNACONF_MODEL_API_KEY=...
 
+# app_environment selects the settings section, and it defaults to development. The variable is
+# DYNACONF_APP_ENVIRONMENT -- DYNACONF_ENVIRONMENT selects nothing -- and a project that sets its own
+# envvar_prefix renames it to <PREFIX>_APP_ENVIRONMENT.
 ENV PYTHONPATH="/app/src" \
-    DYNACONF_ENVIRONMENT="production" \
+    DYNACONF_APP_ENVIRONMENT="production" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 

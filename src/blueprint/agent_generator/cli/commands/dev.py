@@ -32,11 +32,11 @@ GROUP_ENV = "BLUEPRINT_GROUP"
 def run(args: Namespace) -> None:
     """Execute the dev command.
 
-    Runs the project the way the deployment does, under the agents' **real** namespaces. A
-    development server at the root namespace would serve ``/api/orders/{id}`` where production
-    serves ``/api/order/orders/{id}`` and would consume under a different queue group, so every
-    local URL and every local integration test would differ from the deployed one in a way
-    nothing reports.
+    In an image directory (an ``agents.toml`` here) it hosts that image's agents under their real
+    namespaces, as the deployment does. In an agent directory it serves the agent **on its own, at
+    the root namespace** -- as its own Dockerfile does -- unless ``--name`` asks for the namespace a
+    group image would give it, which is the shape whose routes (``/api/<name>/...``) and consumer
+    identity match a grouped deployment.
 
     Args:
         args: Parsed command-line arguments
@@ -182,9 +182,9 @@ def _declares(entry_point: Path, name: str) -> bool:
 def _dev_agent_name(args: Namespace) -> str:
     """Return the name this agent runs under while developing.
 
-    ``--name``, or the directory's own name. The agent itself does not carry one: the name is
-    its identity on the broker, in telemetry and in its routes, and who supplies it depends on
-    who is hosting it -- a group image's map, a single-agent image's Dockerfile, or this.
+    ``--name`` -- only asked for when it was given; without it the agent is served at the root.
+    The agent itself does not carry a name: it is its identity on the broker, in telemetry and in
+    its routes, and who supplies it depends on who is hosting it -- a group image's map, or this.
 
     Raises:
         SystemExit: if neither yields a legal namespace, because a repaired name would be a
@@ -215,6 +215,6 @@ def _temporary_agent_map(args: Namespace) -> Path:
     os.environ[AGENT_MAP_ENV] = str(path)
     atexit.register(lambda: path.unlink(missing_ok=True))
     print(f"No {AGENT_MAP_FILE} here, which is how an agent directory should look.")
-    print(f"Serving it as '{name}' (from {'--name' if getattr(args, 'name', '') else 'the directory name'}).")
+    print(f"Serving it as '{name}' (from --name).")
     print(f"Its routes are under /api/{name}.")
     return path

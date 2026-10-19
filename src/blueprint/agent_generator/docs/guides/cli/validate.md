@@ -99,7 +99,7 @@ It checks, per agent:
 - which `settings.toml` each agent actually reads, printed, so "is it picking mine up?" is
   answerable without starting the process
 - process-wide keys left in an agent's settings, which are dropped before the merge
-- whether the map key matches the directory name, since `asbs dev` defaults to the latter
+- whether the map key matches the directory name, and the `asbs dev --name` that gives the image's routes
 
 Exit status is 1 when anything would stop the image starting, 0 otherwise.
 

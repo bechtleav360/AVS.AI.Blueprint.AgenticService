@@ -76,3 +76,23 @@ class TestWhenThereIsNoMainPyToRegisterIn:
         printed = capsys.readouterr().out
         assert f'.with_agent({RUNTIME}, name="{RUNTIME}")' in printed
         assert f'AgentBuilder(runtime_name="{RUNTIME}")' in printed
+
+
+class TestCreateService:
+    """N9 -- the generated service named InputData and OutputData nowhere and imported AgentRuntime for nothing."""
+
+    def test_the_service_compiles_and_imports_what_it_names(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        import ast
+        from argparse import Namespace
+
+        from blueprint.agent_generator.cli.commands.create import create_service
+
+        monkeypatch.chdir(tmp_path)
+        create_service(Namespace(name="Billing", output_dir="src/services"))
+        source = (tmp_path / "src" / "services" / "billing_service.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+
+        imported = {alias.asname or alias.name for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) for alias in node.names}
+        assert "InputData" not in source and "OutputData" not in source
+        assert "BaseModel" in imported
+        assert "AgentRuntime" not in source

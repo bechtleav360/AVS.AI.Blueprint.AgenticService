@@ -43,22 +43,22 @@ The development server watches for file changes in the `src/` directory and auto
 
 ## Running a single agent
 
-An agent directory carries no `agents.toml`, so there is nothing there to name it. `asbs dev`
-supplies the name instead -- from `--name`, or the directory's own name:
+An agent directory carries no `agents.toml`, so there is nothing there to name it. Without
+`--name`, `asbs dev` serves the agent on its own, at the root namespace, as its own Dockerfile
+does; `--name` serves it under that name, as a group image would:
 
 ```bash
 cd agents/some_topic/my_agent
-asbs dev                    # serves it as "my_agent"
-asbs dev --name orders      # serves it as "orders"
+asbs dev                    # served on its own: routes under /api/...
+asbs dev --name orders      # served as "orders": routes under /api/orders/...
 ```
 
-The map it needs is written outside the project for that run and removed afterwards. Nothing is
+With `--name`, the map it needs is written outside the project for that run and removed afterwards. Nothing is
 created in the agent's directory: an `agents.toml` left behind there is exactly the file an
 agent must not carry.
 
-The name decides the route prefix, so `/api/my_agent/...` here and `/api/<map key>/...` in a
-group image. If they differ, development and production differ -- `asbs validate --group` says
-so when a map key does not match its directory name.
+The name decides the route prefix, so pass the agent's map key as `--name` to develop against the
+routes of the group image (`/api/<map key>/...`).
 
 Where an `agents.toml` *is* present -- an image's directory -- `asbs dev` hosts the agents it
 names, as before.

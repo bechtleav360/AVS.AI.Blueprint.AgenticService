@@ -17,7 +17,7 @@ model_base_url = "https://YOUR_VLLM_HOST/v1"
 # Required as soon as a scheduler is registered -- it has no default, because neither
 # value is safe to inherit, and this template does not choose for you. "event" starts no
 # in-process timer: the tick arrives as an event on <agent>.scheduler.<scheduler_name>
-# (<app_name>.scheduler.<scheduler_name> when the agent is served on its own), published
+# (the application's name instead of the agent when it is served on its own), published
 # by an external CronJob, so exactly one replica runs it -- and it needs event_bus set.
 # "in_process" runs an APScheduler timer in the process and claims each tick in the cache
 # so one replica runs it; it is right for local development and plain Docker, and it

@@ -77,7 +77,7 @@ Whoever hosts the agent supplies its name:
 |---|---|
 | Its own `Dockerfile` | a one-agent map written into the image, with `root = "."` |
 | A group image | an entry in the repository's `agents.toml` |
-| `asbs dev` | `--name`, defaulting to the directory's name |
+| `asbs dev` | `--name`; without it the agent is served on its own, at the root namespace |
 
 The generated `Dockerfile` runs `uvicorn src.main:create_app --factory`: one agent, served directly,
 with no map and no group involved. A group image runs `python -m blueprint.agents.entrypoint`
@@ -91,7 +91,7 @@ asbs dev --agents order_processor
 asbs validate                 # what this project has not said yet
 ```
 
-`asbs dev` runs your agents under their **real** namespaces, so a local route is
+In an image directory `asbs dev` runs your agents under their **real** namespaces, so a local route is
 `/api/order_processor/orders/{id}` -- byte-identical to production -- and the local consumer
 identity is the production queue group. A development server at the root namespace would give every
 developer URLs and integration tests that differ from the deployed ones, in a way nothing reports.

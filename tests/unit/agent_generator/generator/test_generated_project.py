@@ -443,9 +443,9 @@ class TestTheImage:
 
         assert "src.main:create_app" in final
         assert "--factory" in final, "create_app is a factory; uvicorn needs an import string to reload it"
-        assert "blueprint.agents.entrypoint" not in final, (
-            "The image serves one agent through the group entry point, which makes a standalone agent declare itself a group of one."
-        )
+        assert (
+            "blueprint.agents.entrypoint" not in final
+        ), "The image serves one agent through the group entry point, which makes a standalone agent declare itself a group of one."
 
     def test_no_agent_map_is_in_the_image(self, project: Path) -> None:
         """This image holds one agent and serves it; there is no group for a map to describe."""
@@ -495,6 +495,50 @@ class TestTheImage:
         assert "8000/health || exit 1" not in dockerfile, "the bare /health is not a route this application serves"
 
 
+class TestTheImageEnvironment:
+    """S14, D10 -- DYNACONF_ENVIRONMENT selected nothing, so every image ran the development section."""
+
+    def test_the_production_stage_selects_production(self, project: Path) -> None:
+        final = (project / "Dockerfile").read_text(encoding="utf-8").split("FROM python:3.13-slim-bookworm AS final")[1]
+        assert 'DYNACONF_APP_ENVIRONMENT="production"' in final
+
+    def test_the_dev_stage_selects_development(self, project: Path) -> None:
+        dev = (project / "Dockerfile").read_text(encoding="utf-8").split("AS dev")[1].split("AS final")[0]
+        assert 'DYNACONF_APP_ENVIRONMENT="development"' in dev
+
+    def test_the_variable_that_selects_nothing_is_set_nowhere(self, project: Path) -> None:
+        dockerfile = (project / "Dockerfile").read_text(encoding="utf-8")
+        assert 'DYNACONF_ENVIRONMENT="' not in dockerfile
+
+    def test_the_variable_is_the_one_config_reads(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        (tmp_path / "settings.toml").write_text('[development]\nmarker = "dev"\n[production]\nmarker = "prod"\n')
+        monkeypatch.setenv("DYNACONF_APP_ENVIRONMENT", "production")
+        assert Config(settings_files=["settings.toml"], root_path=str(tmp_path)).get("marker") == "prod"
+
+
+class TestTheGroupImage:
+    """M10 -- the group image's slim base has no curl, so a curl health check failed for ever."""
+
+    GROUP_DOCKERFILE = Path(__file__).resolve().parents[4] / "src" / "blueprint" / "agent_generator" / "base_files" / "group_Dockerfile"
+
+    def test_the_health_check_needs_no_curl(self) -> None:
+        dockerfile = self.GROUP_DOCKERFILE.read_text(encoding="utf-8")
+        healthcheck = dockerfile.split("HEALTHCHECK", 1)[1].split("\n\n", 1)[0]
+        assert "curl" not in healthcheck
+        assert "/health/live" in healthcheck and "python" in healthcheck
+
+    def test_it_selects_production(self) -> None:
+        assert 'DYNACONF_APP_ENVIRONMENT="production"' in self.GROUP_DOCKERFILE.read_text(encoding="utf-8")
+
+
+class TestTheGeneratedSettingsComments:
+    """N8 -- the generator replaces the token app_name everywhere, comments included."""
+
+    def test_no_comment_carries_a_substituted_key(self, project: Path) -> None:
+        comments = [line for line in (project / "settings.toml").read_text(encoding="utf-8").splitlines() if line.lstrip().startswith("#")]
+        assert not [line for line in comments if 'app_name = "' in line]
+
+
 class TestAnUnusableProjectNameIsRefused:
     """A name that cannot be a namespace fails the generator rather than the deployment."""
 
@@ -503,6 +547,18 @@ class TestAnUnusableProjectNameIsRefused:
 
         with pytest.raises(ValueError, match="cannot be used"):
             PartGeneratorBase.agent_namespace({"name": "2ndAgent"})
+
+    def test_setup_refuses_it_before_writing_anything(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """N7 -- the name was checked after generate(), so a refused name left a whole project behind."""
+        from argparse import Namespace
+
+        from blueprint.agent_generator.cli.commands import setup
+
+        with pytest.raises(SystemExit):
+            setup.run(Namespace(project_name="Cache", output_dir=str(tmp_path), overwrite=False, verbose=False, group=False))
+
+        assert list(tmp_path.iterdir()) == []
+        assert "configuration section the whole process shares" in capsys.readouterr().err
 
 
 class TestTheGeneratedSettings:

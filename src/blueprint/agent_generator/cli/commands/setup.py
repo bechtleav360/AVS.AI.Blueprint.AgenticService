@@ -152,12 +152,19 @@ def run(args: Namespace) -> None:
         print("Use --overwrite to write over it", file=sys.stderr)
         sys.exit(1)
 
+    # The name is checked before anything is written (N7): it was checked after generate(),
+    # so a name that cannot be a namespace left a whole project behind with the error.
+    config = create_basic_config(project_name)
+    try:
+        namespace = PartGeneratorBase.agent_namespace(config)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
     print(f"\nScaffolding agent: {project_name}")
     print(f"Location: {output_dir}")
 
     try:
-        # Create basic configuration
-        config = create_basic_config(project_name)
 
         # Create a temporary config file for the generator
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as f:
@@ -186,7 +193,6 @@ def run(args: Namespace) -> None:
             print("  ├── Dockerfile")
             print("  └── .gitignore")
 
-            namespace = PartGeneratorBase.agent_namespace(config)
             print("\nNext steps:")
             print("  1. Review and edit the generated files")
             print("  2. Add your LLM API key to .secrets.toml")
@@ -204,7 +210,7 @@ def run(args: Namespace) -> None:
             print("knows whether it is running alone. Whoever hosts it supplies the name:")
             print("  - its own Dockerfile serves it directly with uvicorn src.main:create_app --factory")
             print("  - a group image maps it in the repository's agents.toml, with root and module")
-            print("  - asbs dev uses this directory's name unless --name says otherwise")
+            print("  - asbs dev serves it on its own; asbs dev --name <agent> serves it under that name")
             print("\nThat name is the agent's identity on the broker, in telemetry and in its routes")
             print("(/api/<name>) -- change it now if you are going to, because changing it after the")
             print("first deploy is a consumer migration.")

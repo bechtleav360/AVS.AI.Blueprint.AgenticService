@@ -200,8 +200,8 @@ def main() -> None:
     )
     dev_parser.add_argument(
         "--name",
-        help="The name to serve a single agent under (default: this directory's name). An agent "
-        "directory carries no agent map, so the name comes from whoever hosts it.",
+        help="Serve a single agent under this name, as a group image would (default: served on its own, "
+        "at the root namespace). An agent directory carries no agent map, so the name comes from whoever hosts it.",
     )
     dev_parser.add_argument(
         "--agents",

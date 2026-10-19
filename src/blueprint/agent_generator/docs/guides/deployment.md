@@ -48,14 +48,14 @@ COPY --chown=appuser:appuser agents.toml ./
 RUN mkdir -p /app/.cache && chown -R appuser:appuser /app/.cache
 
 ENV PYTHONPATH="/app/src" \
-    DYNACONF_ENVIRONMENT="production" \
+    DYNACONF_APP_ENVIRONMENT="production" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
 USER appuser
 
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/health/live || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD ["python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health/live', timeout=4).status == 200 else 1)"]
 
 EXPOSE 8000
 
@@ -74,6 +74,12 @@ Three things about it are load-bearing:
   this process's group, builds it and serves it. A project from before the split, whose `main.py`
   builds its own application, keeps `uvicorn src.main:app` and keeps working.
 - **`.secrets.toml` is never copied in.** Mount it, or supply the values as environment variables.
+- **`app_environment` defaults to `development`, and a deployment sets `production` itself.** The
+  variable is `DYNACONF_APP_ENVIRONMENT` (`<PREFIX>_APP_ENVIRONMENT` with a custom `envvar_prefix`);
+  `DYNACONF_ENVIRONMENT` selects nothing. Left at `development`, a process falls back to a localhost
+  broker when `nats_url` is unset, logs as in development and runs asyncio in debug mode.
+- **The health check is Python, not `curl`:** the slim base image has no `curl`, so a `curl` check
+  fails for ever and the container never turns healthy.
 
 ### Building and running
 

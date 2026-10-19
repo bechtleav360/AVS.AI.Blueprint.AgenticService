@@ -194,10 +194,13 @@ def create_service(args: Namespace) -> None:
                 "description": f"Service for {snake_name} operations",
                 "uses_domain_models": [],
                 "uses_agents": [],
+                # Types the generated file can import (N9): InputData and OutputData were
+                # named and defined nowhere, so the new service did not import.
+                "type_imports": "from pydantic import BaseModel",
                 "process_function": {
                     "name": "process",
-                    "input_type": "InputData",
-                    "output_type": "OutputData",
+                    "input_type": "BaseModel",
+                    "output_type": "BaseModel",
                 },
             }
         },
@@ -717,10 +720,11 @@ class {class_name}(SchedulerBase):
         The crontab is declared here in both scheduler modes, and 'scheduler_mode' in
         settings.toml decides what calls tick(). It is required and has no default: with
         'event' nothing in this process keeps time -- the tick arrives as an event on this
-        scheduler's own topic, published by an external CronJob generated from this
-        declaration, and 'event_bus' has to be set. With 'in_process' an APScheduler timer
-        runs here, which is right for local development and un-orchestrated Docker but
-        fires once per replica.
+        scheduler's own topic, published by an external CronJob that the deployment provides
+        (nothing in this project generates it), and 'event_bus' has to be set. With
+        'in_process' an APScheduler timer runs here, which is right for local development and
+        un-orchestrated Docker; with a cache each tick is claimed so one replica runs it.
+        Write days of the week as names ('mon-fri'): 0 is Monday here and Sunday to cron.
         """
         super().__init__(crontab="{args.cron}")
 

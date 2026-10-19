@@ -29,7 +29,7 @@ class PyprojectPartGenerator(PartGeneratorBase):
 
     def _pyproject(self) -> str:
         distribution = self.camel_to_snake(self.config["name"]).replace("_", "-")
-        return f'''[project]
+        return f"""[project]
 name = "{distribution}"
 version = "0.1.0"
 description = "{self.config["description"]}"
@@ -58,4 +58,4 @@ testpaths = ["tests"]
 # run in a new project fails on the import rather than on anything the author wrote.
 pythonpath = ["."]
 asyncio_mode = "auto"
-'''
+"""

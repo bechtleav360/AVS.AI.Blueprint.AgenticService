@@ -52,12 +52,21 @@ COPY --chown=appuser:appuser agents.toml ./
 # root-owned, so mkdir() as appuser fails with EACCES. Created and handed over at build time.
 RUN mkdir -p /app/.cache && chown -R appuser:appuser /app/.cache
 
+# app_environment selects the settings section, and it defaults to development. The variable is
+# DYNACONF_APP_ENVIRONMENT -- DYNACONF_ENVIRONMENT selects nothing -- and a project that sets its own
+# envvar_prefix renames it to <PREFIX>_APP_ENVIRONMENT.
+ENV DYNACONF_APP_ENVIRONMENT="production" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
 USER appuser
 
 EXPOSE 8000
 
+# Python, not curl: the slim base image has no curl, so a curl check failed for ever and the
+# container never turned healthy.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD curl -f http://localhost:8000/health/live || exit 1
+    CMD ["python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health/live', timeout=4).status == 200 else 1)"]
 
 # Which agents this process runs is the deployment's to say:
 #
