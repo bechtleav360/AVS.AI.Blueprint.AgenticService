@@ -198,6 +198,7 @@ default_ttl = 3600                       # seconds
 | `redis_password` | `str \| None` | `None` | redis -- read it from a secrets file |
 | `redis_db` | `int` | `0` | redis |
 | `redis_tls` | `bool` | `false` | redis |
+| `redis_socket_timeout` | `float` | unset -- redis-py's own, 5 s | redis |
 | `fallback_to_local` | `bool` | `false` | redis |
 
 In a group each agent may configure its own cache under its own scope, so one agent can run on

@@ -435,3 +435,25 @@ class TestTheRootStoreLeavesNestedStoresAlone:
         assert root.get("k") is None
         assert "no key_prefix" in caplog.text
         client.close()
+
+
+class TestSocketTimeout:
+    """S7 -- an opt-in bound on every Redis call; unset keeps redis-py's own (5 s since redis-py 8, the minimum)."""
+
+    def test_a_configured_timeout_reaches_the_connection(self, mock_registry, mock_config) -> None:
+        svc = RedisCacheService(redis_url="redis://127.0.0.1:1/0", socket_timeout=1.5)
+        kwargs = svc._client.connection_pool.connection_kwargs
+        assert (kwargs["socket_timeout"], kwargs["socket_connect_timeout"]) == (1.5, 1.5)
+        svc.close()
+
+    def test_unset_keeps_the_library_default_which_is_bounded(self, mock_registry, mock_config) -> None:
+        svc = RedisCacheService(redis_url="redis://127.0.0.1:1/0")
+        kwargs = svc._client.connection_pool.connection_kwargs
+        assert kwargs.get("socket_timeout", 5) is not None
+        svc.close()
+
+    def test_the_cache_config_carries_the_key(self, tmp_path) -> None:
+        from blueprint.agents.config import Config
+
+        (tmp_path / "settings.toml").write_text('[default]\napp_environment = "development"\n[default.cache]\nredis_socket_timeout = 2.5\n')
+        assert Config(settings_files=["settings.toml"], root_path=str(tmp_path)).get_cache_config().redis_socket_timeout == 2.5

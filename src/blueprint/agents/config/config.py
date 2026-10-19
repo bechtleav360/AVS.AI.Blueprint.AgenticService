@@ -1331,6 +1331,7 @@ class Config:
             redis_db=self.get("cache.redis_db", 0),
             redis_tls=self.get("cache.redis_tls", False),
             fallback_to_local=self.get("cache.fallback_to_local", False),
+            redis_socket_timeout=self.get("cache.redis_socket_timeout"),
         )
 
     def get_sessions_config(self) -> SessionsServiceConfig | None:

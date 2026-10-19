@@ -146,6 +146,11 @@ framework endpoints (`nats`, `cache`, `scheduler`), one Swagger tag per agent, a
   per-data-source state is keyed by that context key. Broker test on the accounts broker: the same
   `(source, id)` on connections A and B runs on both, a repeat on A is skipped; without the change B
   was skipped.
+- Step 15, dedup without a heartbeat and Redis calls (S6, S7, D4): `HandlerChain._claim`/`release` and the
+  scheduler's `_claim_tick_slot` run the cache call in `asyncio.to_thread`; a startup WARNING for dedup with
+  the NATS heartbeat off and for dedup under Dapr; `cache.redis_socket_timeout` (opt-in); redis-py floor
+  raised to 8.0 (its 5 s default timeout; 7.x had none). Live (Redis 7 in WSL, container paused, timeout 2 s):
+  longest event-loop gap 0.06 s and the claim failed open after 2.01 s; control: the loop stood for 2.02 s.
 - Step 14, scaffold and CLI (M10, S14, N6-N9, D10): `DYNACONF_APP_ENVIRONMENT` in both Dockerfiles
   (production, development in the dev stage), a Python health check in `group_Dockerfile`, `asbs setup`
   validates the name before writing, the `settings.txt` comment no longer carries the substituted token,

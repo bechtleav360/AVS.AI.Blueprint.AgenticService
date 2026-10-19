@@ -174,6 +174,13 @@ it ran into: that marker belongs to the first delivery. The marker is keyed on t
 and `id`, and on the named connection the event came from, if any: two connections delivering the
 same `source` and `id` are two events.
 
+**The marker has no "in progress" state.** A redelivery that arrives while the first run is still
+going finds the marker, is skipped and acknowledged; if the first run then fails, the event is lost.
+Under NATS the heartbeat (`nats_heartbeat_enabled`, on by default) keeps the broker from redelivering a
+running delivery, so this needs the heartbeat off; startup warns about that combination. Dapr has no
+heartbeat: keep runs well under the sidecar's app-call timeout -- startup warns there too. The claim
+and its release run in a worker thread, so a slow cache does not hold up other deliveries.
+
 **A result's event id is derived, not random:** a UUIDv5 over the agent, the inbound event's
 `source` and `id`, the result's `event_type` and its position in the list. A redelivery therefore
 republishes each result under the same id -- including results an earlier attempt had already sent

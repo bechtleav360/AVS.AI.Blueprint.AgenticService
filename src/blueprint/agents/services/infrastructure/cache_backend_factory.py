@@ -179,6 +179,7 @@ class CacheBackendFactory:
             default_ttl=config.default_ttl,
             fallback_to_local=config.fallback_to_local,
             component_name=CacheBackendFactory._component_name(name),
+            socket_timeout=config.redis_socket_timeout,
         )
 
         # Probe the connection synchronously so a "RedisCacheService" instance

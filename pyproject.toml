@@ -56,10 +56,10 @@ ci = [
     "mypy>=1.18.2",
     "httpx>=0.28.1",
     "fakeredis>=2.26.0",
-    "redis[hiredis]>=5.0.0",
+    "redis[hiredis]>=8.0.0",
     "respx>=0.22.0",
 ]
-redis = ["redis[hiredis]>=5.0.0"]
+redis = ["redis[hiredis]>=8.0.0"]
 dev = [
     "avs-blueprint-agents[ci]",
     "debugpy>=1.8.17",

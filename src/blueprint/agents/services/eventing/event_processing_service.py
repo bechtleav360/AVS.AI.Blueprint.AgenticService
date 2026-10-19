@@ -220,7 +220,7 @@ class EventProcessingService(ServiceBase):
         # logs it with what it decided to do about it. Logging here too duplicated each failure.
         finally:
             if not settled:
-                chain.release(event, context)
+                await chain.release(event, context)
             self._correlation_context.reset(correlation_token)
 
     async def process_rest_request(

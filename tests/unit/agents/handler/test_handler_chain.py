@@ -296,7 +296,7 @@ class TestIdempotencyEnabled:
 
         context: dict[str, Any] = {}
         await chain.process(cloud_event, context)
-        chain.release(cloud_event, context)
+        await chain.release(cloud_event, context)
         await chain.process(cloud_event, {})
 
         assert seen == ["evt-001", "evt-001"]
@@ -308,7 +308,7 @@ class TestIdempotencyEnabled:
         context: dict[str, Any] = {}
         await chain.process(cloud_event, context)
 
-        chain.release(cloud_event, context)
+        await chain.release(cloud_event, context)
 
         assert CLAIMED_CONTEXT_KEY not in context
         mock_registry.cache_service.delete.assert_not_called()
@@ -324,7 +324,7 @@ class TestIdempotencyEnabled:
         duplicate: dict[str, Any] = {}
         await chain.process(cloud_event, duplicate)
 
-        chain.release(cloud_event, duplicate)
+        await chain.release(cloud_event, duplicate)
 
         assert first[CLAIMED_CONTEXT_KEY] is True
         assert CLAIMED_CONTEXT_KEY not in duplicate
@@ -338,10 +338,10 @@ class TestIdempotencyEnabled:
         _wire_handlers(mock_registry, [StubHandler(result=None)])
         context: dict[str, Any] = {}
         await chain.process(cloud_event, context)
-        chain.release(cloud_event, context)
+        await chain.release(cloud_event, context)
         await chain.process(cloud_event, {})  # the redelivery claims again
 
-        chain.release(cloud_event, context)
+        await chain.release(cloud_event, context)
 
         assert len(cache.store) == 1
 
@@ -438,7 +438,7 @@ class TestIdempotencyEnabled:
         await chain.process(cloud_event, on_a)
         await chain.process(cloud_event, {CONNECTION_CONTEXT_KEY: "B"})
 
-        chain.release(cloud_event, on_a)
+        await chain.release(cloud_event, on_a)
 
         assert list(cache.store) == [_StubCache._key({"id": "evt-001", "source": "test-source", "connection": "B"})]
 
@@ -568,3 +568,62 @@ class TestStandaloneLogLines:
         with caplog.at_level("WARNING", logger="blueprint.agents.handler.handler_chain"):
             await chain.process(cloud_event, {})
         assert caplog.messages == [f"No handler processed event '{cloud_event.type}'"]
+
+
+class TestTheCacheIsCalledOffTheEventLoop:
+    """S7 -- claim and delete block (a Redis round trip, a disk write); on the loop every delivery waited."""
+
+    async def test_claim_and_delete_run_in_another_thread(
+        self, chain: HandlerChain, mock_registry: MagicMock, mock_config: MagicMock, cloud_event: GenericCloudEvent
+    ) -> None:
+        import threading
+
+        cache = _enable_dedup(mock_config, mock_registry)
+        threads: list[int] = []
+        claim, delete = cache.claim, cache.delete
+        cache.claim = lambda *a, **k: threads.append(threading.get_ident()) or claim(*a, **k)  # type: ignore[method-assign]
+        cache.delete = lambda *a, **k: threads.append(threading.get_ident()) or delete(*a, **k)  # type: ignore[method-assign]
+        _wire_handlers(mock_registry, [StubHandler(result=None)])
+        context: dict[str, Any] = {}
+
+        await chain.process(cloud_event, context)
+        await chain.release(cloud_event, context)
+
+        assert len(threads) == 2
+        assert threading.get_ident() not in threads
+
+
+class TestDedupWithoutAHeartbeatWarns:
+    """S6, plan D4 -- a redelivery while the first run still goes is skipped as a duplicate; the heartbeat prevents it."""
+
+    @staticmethod
+    def _settings(mock_config: MagicMock, **values: Any) -> None:
+        settings = {"idempotency_enabled": True, "idempotency_ttl": 60, **values}
+        mock_config.get.side_effect = lambda key, default=None: settings.get(key, default)
+
+    async def test_nats_with_the_heartbeat_off_warns(
+        self, chain: HandlerChain, mock_registry: MagicMock, mock_config: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        self._settings(mock_config, event_bus="nats", nats_heartbeat_enabled=False)
+        _wire_handlers(mock_registry, [])
+        with caplog.at_level("WARNING"):
+            await chain.on_startup()
+        assert "nats_heartbeat_enabled = false" in caplog.text
+
+    async def test_dapr_warns_naming_the_app_call_timeout(
+        self, chain: HandlerChain, mock_registry: MagicMock, mock_config: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        self._settings(mock_config, event_bus="dapr")
+        _wire_handlers(mock_registry, [])
+        with caplog.at_level("WARNING"):
+            await chain.on_startup()
+        assert "app-call timeout" in caplog.text
+
+    async def test_nats_with_the_heartbeat_on_is_quiet(
+        self, chain: HandlerChain, mock_registry: MagicMock, mock_config: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        self._settings(mock_config, event_bus="nats")
+        _wire_handlers(mock_registry, [])
+        with caplog.at_level("WARNING"):
+            await chain.on_startup()
+        assert [record for record in caplog.records if record.levelname == "WARNING"] == []

@@ -41,6 +41,7 @@ class RedisCacheService(_CacheKeyMixin, CacheService):
         default_ttl: int | None = None,
         fallback_to_local: bool = False,
         component_name: str | None = None,
+        socket_timeout: float | None = None,
     ) -> None:
         # component_name: registry name to use instead of the derived 'redis_cache_service'.
         # A process may hold several named caches (spec sec. 8), and two instances of this
@@ -62,11 +63,17 @@ class RedisCacheService(_CacheKeyMixin, CacheService):
             effective_url = "rediss://" + redis_url[len("redis://") :]
         # Typed as Any: redis-py's sync methods are statically declared as ``Awaitable | T``
         # (the same Redis class is used for sync and async), which trips mypy on every call.
+        # socket_timeout bounds every call, the connect included (S7). Unset leaves redis-py's
+        # default, which is 5 s since redis-py 8 -- the minimum this package requires, because
+        # before it the default was no timeout, and a Redis that stopped answering held the call
+        # (and, through the claim, a delivery) for ever.
+        timeouts = {} if socket_timeout is None else {"socket_timeout": socket_timeout, "socket_connect_timeout": socket_timeout}
         self._client: Any = redis.Redis.from_url(
             effective_url,
             password=password,
             db=db,
             decode_responses=True,
+            **timeouts,
         )
 
     async def ping(self) -> None:

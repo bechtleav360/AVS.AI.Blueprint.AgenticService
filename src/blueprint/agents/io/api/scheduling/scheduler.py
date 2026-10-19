@@ -38,6 +38,7 @@ Example::
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import logging
 import time
@@ -705,12 +706,12 @@ class SchedulerBase(RestApiBase):
         unconditionally. That is the behaviour this mode had before, and ``on_startup`` warns
         about it once rather than on every tick.
         """
-        if not self._claim_tick_slot():
+        if not await self._claim_tick_slot():
             logger.debug("Scheduler '%s' did not win this tick; another replica is running it", self.name)
             return
         await self.run_tick()
 
-    def _claim_tick_slot(self) -> bool:
+    async def _claim_tick_slot(self) -> bool:
         """Claim the current tick slot, reporting whether this replica may run it.
 
         The key is the *slot*, not the scheduler: ``(scheduler, minute)``. Cron granularity
@@ -728,7 +729,9 @@ class SchedulerBase(RestApiBase):
             return True
 
         slot = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M")
-        return self.registry.cache_service.claim(
+        # In a thread: a blocking Redis round trip or disk write on the event loop (S7).
+        return await asyncio.to_thread(
+            self.registry.cache_service.claim,
             {"scheduler": self.name, "slot": slot},
             {"claimed_at": time.time()},
             namespace=TICK_CACHE_NAMESPACE,

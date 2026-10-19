@@ -12,6 +12,16 @@
   when it is acknowledged. Measured against JetStream with a 0.5 s limit: before, one run and the
   redelivery acknowledged unrun; now the redelivery runs to completion.
 
+- **A slow cache no longer holds up every delivery of the process.** The dedup claim and release, and
+  the in-process scheduler's tick claim, ran on the event loop, so a Redis that stopped answering
+  stalled every agent for as long as the call blocked. They now run in a worker thread. **The minimum
+  redis-py is now 8.0**, the release that bounds every call by a 5 s default; before it the default
+  was no timeout at all. New, opt-in: `cache.redis_socket_timeout`. Measured with the Redis container
+  paused and a 2 s timeout: the event loop's longest gap was 0.06 s (before: 2.02 s), and the claim
+  failed open after 2 s. Startup now warns when deduplication runs without a heartbeat -- NATS with
+  `nats_heartbeat_enabled = false`, and Dapr -- where a redelivery of a running event is skipped as a
+  duplicate.
+
 - **Scaffolded images select the production environment, and the group image turns healthy.** The
   generated Dockerfiles set `DYNACONF_ENVIRONMENT`, which selects nothing, so every image ran the
   `development` section; they now set `DYNACONF_APP_ENVIRONMENT` (`production`, and `development` in

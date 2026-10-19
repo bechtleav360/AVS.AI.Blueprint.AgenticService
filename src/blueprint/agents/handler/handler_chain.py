@@ -1,5 +1,6 @@
 """Handler chain for executing event handlers in priority order."""
 
+import asyncio
 import logging
 import re
 import time
@@ -267,6 +268,7 @@ class HandlerChain(Component):
                 self.namespace or ROOT_LABEL,
                 self._policy.ttl,
             )
+            self._warn_without_a_heartbeat()
 
         index = self._refresh_index()
         logger.info(
@@ -302,7 +304,7 @@ class HandlerChain(Component):
         if policy is None:
             policy = self._policy = self._resolve_idempotency_policy()
 
-        if not self._claim(event, policy, context):
+        if not await self._claim(event, policy, context):
             context[DUPLICATE_CONTEXT_KEY] = True
             trace.get_current_span().set_attribute("event.duplicate", True)
             logger.info("Skipping event '%s' from '%s': already processed within the dedup window", event.id, event.source)
@@ -314,7 +316,7 @@ class HandlerChain(Component):
             # BaseException, not Exception: a handler cut off by nats_handler_timeout, or by a
             # shutdown, ends with CancelledError. Kept, the marker would make the nak'd
             # redelivery a duplicate that acknowledges, and the event would be lost unrun.
-            self.release(event, context)
+            await self.release(event, context)
             raise
 
     # ------------------------------------------------------------------
@@ -498,7 +500,34 @@ class HandlerChain(Component):
     # Idempotency (P4)
     # ------------------------------------------------------------------
 
-    def _claim(self, event: CloudEvent[Any], policy: IdempotencyPolicy, context: dict[str, Any]) -> bool:
+    def _warn_without_a_heartbeat(self) -> None:
+        """Warn when dedup runs where a run can outlast its delivery (S6, plan D4).
+
+        A marker has no "in progress" state: a redelivery that arrives while the first run is
+        still going finds the marker, is skipped as a duplicate and acknowledged -- and if the
+        first run then fails, the event is lost. The NATS heartbeat (``in_progress``) is what
+        stops the broker redelivering a running delivery, so dedup without it is the one
+        combination where that can happen. Dapr has no heartbeat at all: the sidecar's app-call
+        timeout decides when it gives up on a delivery and sends it again.
+        """
+        bus = str(self.config.get("event_bus", "") or "").strip().lower()
+        agent = self.namespace or ROOT_LABEL
+        if bus == "nats" and self.config.get("nats_heartbeat_enabled", True) is False:
+            logger.warning(
+                "Agent '%s' deduplicates events with 'nats_heartbeat_enabled = false': a run that outlasts ack_wait is "
+                "redelivered while it runs, the redelivery is skipped as a duplicate and acknowledged, and if the "
+                "first run then fails the event is lost. Keep the heartbeat on, or keep runs well under ack_wait.",
+                agent,
+            )
+        elif bus == "dapr":
+            logger.warning(
+                "Agent '%s' deduplicates events under Dapr, which has no heartbeat: a run that outlasts the sidecar's "
+                "app-call timeout is delivered again while it runs, that delivery is skipped as a duplicate, and if "
+                "the first run then fails the event is lost. Keep runs well under that timeout.",
+                agent,
+            )
+
+    async def _claim(self, event: CloudEvent[Any], policy: IdempotencyPolicy, context: dict[str, Any]) -> bool:
         """Record that this event is being processed, and report whether to dispatch it.
 
         A claim that is won is recorded in ``context`` (:data:`CLAIMED_CONTEXT_KEY`), so that
@@ -517,8 +546,11 @@ class HandlerChain(Component):
             return True
 
         # One atomic set-if-absent, not exists() then set(): between those two calls a second
-        # replica handed the same event passes the check too, and both dispatch.
-        claimed = self.registry.cache_service.claim(
+        # replica handed the same event passes the check too, and both dispatch. In a thread
+        # (S7): both backends block -- a Redis round trip, a disk write -- and on the event loop
+        # every other delivery of the process waited for it.
+        claimed = await asyncio.to_thread(
+            self.registry.cache_service.claim,
             key,
             {"seen_at": time.time(), "event_type": event.type},
             namespace=IDEMPOTENCY_CACHE_NAMESPACE,
@@ -528,7 +560,7 @@ class HandlerChain(Component):
             context[CLAIMED_CONTEXT_KEY] = True
         return claimed
 
-    def release(self, event: CloudEvent[Any], context: dict[str, Any]) -> None:
+    async def release(self, event: CloudEvent[Any], context: dict[str, Any]) -> None:
         """Drop the dedup marker this delivery claimed, so its redelivery is allowed to run.
 
         The claim is taken before dispatch, which is the only point at which it can stop a
@@ -556,7 +588,9 @@ class HandlerChain(Component):
         if key is None:
             return
 
-        self.registry.cache_service.delete(key, namespace=IDEMPOTENCY_CACHE_NAMESPACE)
+        # In a thread, like the claim. Once started it completes even if this await is cancelled
+        # again -- a shutdown -- because the thread runs on regardless.
+        await asyncio.to_thread(self.registry.cache_service.delete, key, namespace=IDEMPOTENCY_CACHE_NAMESPACE)
         logger.debug("Released the dedup marker for event '%s': the delivery was not settled as a success", event.id)
 
     @staticmethod
