@@ -1765,6 +1765,13 @@ class AppBuilder:
             # interpreter alive past the point the container was asked to stop.
             registry.shutdown_executors()
 
+            # Telemetry after everything that could still record, so the last spans and metrics
+            # are exported; the agents' providers first, the root's last (S22).
+            try:
+                await self._telemetry_manager.on_shutdown()
+            except Exception as e:
+                logger.warning("Failed to shut down OpenTelemetry: %s", e)
+
             logger.info("Application shutdown completed")
 
         return lifespan

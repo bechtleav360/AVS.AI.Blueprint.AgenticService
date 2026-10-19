@@ -12,6 +12,17 @@
   when it is acknowledged. Measured against JetStream with a 0.5 s limit: before, one run and the
   redelivery acknowledged unrun; now the redelivery runs to completion.
 
+- **A group's telemetry is no longer cut off at shutdown.** All agents share one span processor
+  and one metric exporter, and the first provider to shut down closed them for every other: the
+  remaining agents' final metrics were dropped ("Exporter already shutdown"). They are now closed by
+  the last provider, and the application's shutdown flushes every provider after its components
+  have stopped -- agents first, the root last. Measured against a collector: 2 of 4 final metric
+  points arrived before, 4 of 4 now.
+
+- **In a group, `OTEL_SERVICE_NAME` no longer names every agent alike.** The agents keep their own
+  name as `service.name`; the variable names the root's telemetry, as standalone. Startup logs a
+  WARNING naming the value. `OTEL_RESOURCE_ATTRIBUTES` is unchanged.
+
 - **Grouped Dapr: each agent gets its own copy of a delivery, and the answer has no stray reason.**
   The fan-out handed one `CloudEvent` object to every agent declaring the topic, so a change one
   handler made to it reached the next. A delivery one agent acknowledged and another terminated

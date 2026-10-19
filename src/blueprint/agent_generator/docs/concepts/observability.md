@@ -48,9 +48,11 @@ its own resource:
 
 **What the deployment declares wins.** A key set in `OTEL_RESOURCE_ATTRIBUTES` (or
 `service.name` in `OTEL_SERVICE_NAME`) is used exactly as declared; the framework sets only the
-attributes the deployment left out, and never replaces a declared one. In a group, declaring
-`service.name` this way gives every agent the same name -- the deployment's choice, not the
-framework's.
+attributes the deployment left out, and never replaces a declared one. **One exception:** in a
+group, `OTEL_SERVICE_NAME` names the root's telemetry only, and every agent keeps its own name as
+`service.name` -- one name for all of them would make their telemetry impossible to tell apart.
+Startup logs a WARNING naming the value. A `service.name` in `OTEL_RESOURCE_ATTRIBUTES` is left as
+declared, and gives every agent that name -- the deployment's choice, not the framework's.
 
 So an agent called `orders` reports `service.name = "orders"` whether it runs alone or beside
 nineteen others, and a dashboard keyed on it cannot tell which. A single-agent application keeps
@@ -60,6 +62,12 @@ All the providers share one exporter and one `BatchSpanProcessor` -- one queue a
 thread whatever the group size, since the resource travels on the span rather than on the
 processor. Metric readers cannot be shared (the SDK binds a reader to the provider that registered
 it), so each provider gets its own reader over the one shared exporter.
+
+**Shutdown.** The application's shutdown flushes and shuts down every provider after all
+components have stopped, the agents first and the root last, so what an agent records in its own
+`on_shutdown` is still exported. The shared exporter and span processor are closed by the last
+provider to shut down, not the first. A process that never runs the shutdown gets the same at
+interpreter exit.
 
 The root's provider is also installed as the global one, so every module-level
 `trace.get_tracer(...)` -- in this framework, and in any library -- resolves exactly as it did

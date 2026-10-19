@@ -11,9 +11,13 @@ then be reachable from the object graph, and C6 forbids that. A component asks f
 namespace's tracer" and gets one whether or not anything configured it.
 """
 
+import logging
+
 from opentelemetry import metrics, trace
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.trace import TracerProvider
+
+logger = logging.getLogger(__name__)
 
 _TRACER_PROVIDERS: dict[str, TracerProvider] = {}
 """The configured tracer provider per namespace, written once during startup."""
@@ -85,6 +89,29 @@ def agent_meter(namespace: str, instrumentation_name: str) -> metrics.Meter:
 def configured_namespaces() -> tuple[str, ...]:
     """The namespaces that have their own providers, for tests and diagnostics."""
     return tuple(_TRACER_PROVIDERS)
+
+
+def shutdown_providers() -> None:
+    """Flush and shut down every configured provider: the agents first, the root last (S22).
+
+    The providers are built without an ``atexit`` hook of their own, because the interpreter
+    runs those in reverse creation order and the root -- built first -- would not be last by
+    design but by accident. Run by the lifespan's shutdown, and by one ``atexit`` hook as the
+    fallback for a process that never reaches it; a second call finds nothing left to shut down.
+
+    The root goes last because it is the global provider: whatever an agent's shutdown still
+    records through a module-level tracer or meter lands there. A provider that fails to shut
+    down is logged and the rest still are.
+    """
+    for namespace in [ns for ns in _TRACER_PROVIDERS if ns] + [ns for ns in _TRACER_PROVIDERS if not ns]:
+        providers = (_TRACER_PROVIDERS.pop(namespace), _METER_PROVIDERS.pop(namespace, None))
+        for provider in providers:
+            if provider is None:
+                continue
+            try:
+                provider.shutdown()
+            except Exception as exc:
+                logger.warning("Shutting down the telemetry of agent '%s' failed: %s", namespace or "<root>", exc)
 
 
 def reset_providers() -> None:

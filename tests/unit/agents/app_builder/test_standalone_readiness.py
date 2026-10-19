@@ -12,6 +12,7 @@ import httpx
 import pytest
 
 from blueprint.agents.app_builder import AppBuilder
+from blueprint.agents.component.component import Component
 from blueprint.agents.component.namespace import namespace_scope
 from blueprint.agents.config import Config
 from blueprint.agents.io.api.actuators.health import HealthCheckerBase
@@ -87,3 +88,18 @@ async def test_status_env_has_no_namespaces_key_when_standalone(config: Config) 
             response = await client.get("/status/env")
     assert response.status_code == 200
     assert "namespaces" not in response.json()
+
+
+async def test_the_lifespan_shuts_telemetry_down_after_the_components(config: Config) -> None:
+    """S22 -- the providers were left to their atexit hooks, which closed the shared export early."""
+    from unittest.mock import AsyncMock
+
+    builder = AppBuilder(config)
+    app = builder.build()
+    order: list[str] = []
+    builder._telemetry_manager.on_shutdown = AsyncMock(side_effect=lambda: order.append("telemetry"))  # type: ignore[method-assign]
+    registry_shutdown = Component.shared_registry.shutdown_executors
+    Component.shared_registry.shutdown_executors = lambda: (order.append("executors"), registry_shutdown())  # type: ignore[method-assign]
+    async with app.router.lifespan_context(app):
+        pass
+    assert order == ["executors", "telemetry"]

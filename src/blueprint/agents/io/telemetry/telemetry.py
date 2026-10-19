@@ -14,7 +14,9 @@ configures **one provider per namespace**, each with its own ``Resource``:
 ======================== ======================================================================
 
 A key the deployment declares in ``OTEL_RESOURCE_ATTRIBUTES`` or ``OTEL_SERVICE_NAME`` is never
-replaced -- see :func:`_framework_attributes`.
+replaced -- see :func:`_framework_attributes` -- with one exception: in a group, an agent keeps its
+own ``service.name`` although ``OTEL_SERVICE_NAME`` is set (W1, plan D17). That variable names one
+service, and taken for every agent it would make the group's agents indistinguishable.
 
 **The empty namespace is the one that must not regress.** Implemented naively -- one provider,
 ``service.name`` set to the group -- every existing dashboard would go dark on the day the
@@ -27,10 +29,16 @@ queue and a background thread, so a processor per agent would multiply both by t
 for no gain -- the resource is attached to the span at creation, not at export. The same
 processor object is therefore added to every provider. Metric readers cannot be shared the same
 way: the SDK binds a reader to the provider that registered it, so each provider gets its own
-reader over the one shared exporter.
+reader over the one shared exporter. Both shared objects count their providers and are shut down
+by the last one (S22): a provider's shutdown shuts down what it holds, and the first agent to
+stop would otherwise have closed the export for every other one.
 """
 
+import asyncio
+import atexit
 import logging
+import os
+import threading
 from collections.abc import Sequence
 from typing import Any
 
@@ -39,20 +47,93 @@ from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExp
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 from opentelemetry.sdk.metrics import MeterProvider
-from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+from opentelemetry.sdk.metrics.export import MetricExporter, MetricExportResult, MetricsData, PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import OTELResourceDetector, Resource
-from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor, TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.context import Context
 
 from ...component.namespace import ROOT_NAMESPACE
 from ...deployment import UNGROUPED_LABEL, UNKNOWN_POD_LABEL, deployment_group, pod_identity
 from ..io_base import IOBase
-from .providers import has_providers, meter_provider, register_providers, tracer_provider
+from .providers import has_providers, meter_provider, register_providers, shutdown_providers, tracer_provider
 
 logger = logging.getLogger(__name__)
 
+_exit_hook_registered = False
+"""Whether :func:`shutdown_providers` is registered with ``atexit`` -- once per process."""
 
-def _framework_attributes(service_name: str, group: str, pod: str) -> dict[str, str]:
+
+class _Users:
+    """How many providers hold a shared export object; the last to let go closes it (S22)."""
+
+    def __init__(self) -> None:
+        self._count = 0
+        self._lock = threading.Lock()
+
+    def acquire(self) -> None:
+        with self._lock:
+            self._count += 1
+
+    def release(self) -> bool:
+        """Let go of it; ``True`` for the last holder, who closes it."""
+        with self._lock:
+            self._count -= 1
+            return self._count == 0
+
+
+class _SharedSpanProcessor(SpanProcessor):
+    """The process's one span processor, added to every provider and shut down by the last."""
+
+    def __init__(self, processor: SpanProcessor) -> None:
+        self._processor = processor
+        self._users = _Users()
+
+    def acquire(self) -> "_SharedSpanProcessor":
+        self._users.acquire()
+        return self
+
+    def on_start(self, span: Span, parent_context: Context | None = None) -> None:
+        self._processor.on_start(span, parent_context=parent_context)
+
+    def _on_ending(self, span: Span) -> None:
+        self._processor._on_ending(span)
+
+    def on_end(self, span: ReadableSpan) -> None:
+        self._processor.on_end(span)
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        return self._processor.force_flush(timeout_millis)
+
+    def shutdown(self) -> None:
+        if self._users.release():
+            self._processor.shutdown()
+
+
+class _SharedMetricExporter(MetricExporter):
+    """The process's one metric exporter, behind every provider's reader and shut down by the last."""
+
+    def __init__(self, exporter: MetricExporter) -> None:
+        super().__init__(preferred_temporality=exporter._preferred_temporality, preferred_aggregation=exporter._preferred_aggregation)
+        self._exporter = exporter
+        self._users = _Users()
+
+    def acquire(self) -> "_SharedMetricExporter":
+        self._users.acquire()
+        return self
+
+    def export(self, metrics_data: MetricsData, timeout_millis: float = 10_000, **kwargs: Any) -> MetricExportResult:
+        return self._exporter.export(metrics_data, timeout_millis=timeout_millis, **kwargs)
+
+    def force_flush(self, timeout_millis: float = 10_000) -> bool:
+        return self._exporter.force_flush(timeout_millis=timeout_millis)
+
+    def shutdown(self, timeout_millis: float = 30_000, **kwargs: Any) -> None:
+        if self._users.release():
+            self._exporter.shutdown(timeout_millis=timeout_millis, **kwargs)
+
+
+def _framework_attributes(service_name: str, group: str, pod: str, own_service_name: bool = False) -> dict[str, str]:
     """The resource attributes the framework sets, minus every key the deployment declared.
 
     **What the deployment declares is used as it is.** ``OTEL_RESOURCE_ATTRIBUTES`` (and
@@ -64,6 +145,10 @@ def _framework_attributes(service_name: str, group: str, pod: str) -> dict[str, 
     **Only attributes that exist.** A group that is not set and a pod that cannot be told are not
     written as placeholders: a standalone agent's resource carries no ``deployment.group``, since it
     belongs to no group.
+
+    **The one exception** is ``own_service_name``: an agent of a group keeps its own
+    ``service.name`` although ``OTEL_SERVICE_NAME`` is set (W1, plan D17). Every other declared key,
+    and all of ``OTEL_RESOURCE_ATTRIBUTES``, is left as it is.
     """
     attributes = {"service.name": service_name}
     if group != UNGROUPED_LABEL:
@@ -71,7 +156,7 @@ def _framework_attributes(service_name: str, group: str, pod: str) -> dict[str, 
     if pod != UNKNOWN_POD_LABEL:
         attributes["service.instance.id"] = pod
     declared = OTELResourceDetector().detect().attributes
-    return {key: value for key, value in attributes.items() if key not in declared}
+    return {key: value for key, value in attributes.items() if key not in declared or (own_service_name and key == "service.name")}
 
 
 class TelemetryManager(IOBase):
@@ -101,20 +186,34 @@ class TelemetryManager(IOBase):
                 logger.info("OpenTelemetry tracing is disabled")
                 return
 
-            span_processors = [BatchSpanProcessor(exporter) for exporter in self._build_exporters(observability)]
+            span_processors = [_SharedSpanProcessor(BatchSpanProcessor(exporter)) for exporter in self._build_exporters(observability)]
             if not span_processors:
                 logger.warning("No trace exporters configured")
                 return
-            metric_exporters = self._build_metric_exporters(observability)
+            metric_exporters = [_SharedMetricExporter(exporter) for exporter in self._build_metric_exporters(observability)]
 
             group = deployment_group()
             pod = pod_identity()
+            # In a group, OTEL_SERVICE_NAME names the root only (W1, plan D17): one name for
+            # every agent would make their telemetry impossible to tell apart.
+            grouped = any(namespace != ROOT_NAMESPACE for namespace in namespaces)
+            declared_service_name = os.environ.get("OTEL_SERVICE_NAME", "").strip()
+            if grouped and declared_service_name:
+                logger.warning(
+                    "OTEL_SERVICE_NAME is set to '%s', which names the root's telemetry only: in a group every agent "
+                    "keeps its own name as service.name, so its telemetry stays apart from the other agents'.",
+                    declared_service_name,
+                )
             # The root first and always: it is the provider that becomes global, and every
             # module-level trace.get_tracer() in the framework resolves through it.
             for namespace in (ROOT_NAMESPACE, *namespaces):
                 if has_providers(namespace):
                     continue
-                self._configure_namespace(namespace, observability.otel_service_name, group, pod, span_processors, metric_exporters)
+                own_service_name = bool(declared_service_name) and namespace != ROOT_NAMESPACE
+                self._configure_namespace(
+                    namespace, observability.otel_service_name, group, pod, span_processors, metric_exporters, own_service_name
+                )
+            _register_exit_hook()
 
             # The root's provider becomes the global one, so every module-level
             # trace.get_tracer() and metrics.get_meter() -- in this framework and in any
@@ -135,8 +234,9 @@ class TelemetryManager(IOBase):
         root_service_name: str,
         group: str,
         pod: str,
-        span_processors: Sequence[BatchSpanProcessor],
-        metric_exporters: Sequence[Any],
+        span_processors: Sequence[_SharedSpanProcessor],
+        metric_exporters: Sequence[_SharedMetricExporter],
+        own_service_name: bool = False,
     ) -> None:
         """Build and record the two providers for one namespace.
 
@@ -153,21 +253,24 @@ class TelemetryManager(IOBase):
             span_processors: The process's span processors, shared by every provider.
             metric_exporters: The process's metric exporters, each wrapped in a reader of this
                 provider's own.
+            own_service_name: Keep ``service.name`` although ``OTEL_SERVICE_NAME`` declares one --
+                an agent of a group (D17).
         """
         service_name = root_service_name if namespace == ROOT_NAMESPACE else namespace
-        resource = Resource.create(_framework_attributes(service_name, group, pod))
+        resource = Resource.create(_framework_attributes(service_name, group, pod, own_service_name))
 
-        provider = TracerProvider(resource=resource)
+        # No atexit hook per provider: shutdown_providers() closes them in order, the root last.
+        provider = TracerProvider(resource=resource, shutdown_on_exit=False)
         for processor in span_processors:
             # The same processor object on every provider: one queue and one export thread,
             # whatever the group size. The resource travels on the span, not on the processor.
-            provider.add_span_processor(processor)
+            provider.add_span_processor(processor.acquire())
 
         # A reader cannot be shared -- the SDK binds its collect callback to the provider that
         # registered it, so a shared one would only ever collect from the last provider built --
         # but the exporter behind it can be.
-        readers = [PeriodicExportingMetricReader(exporter) for exporter in metric_exporters]
-        register_providers(namespace, provider, MeterProvider(resource=resource, metric_readers=readers))
+        readers = [PeriodicExportingMetricReader(exporter.acquire()) for exporter in metric_exporters]
+        register_providers(namespace, provider, MeterProvider(resource=resource, metric_readers=readers, shutdown_on_exit=False))
 
         if group == UNGROUPED_LABEL:
             logger.info("OpenTelemetry configured for service '%s'", service_name)
@@ -229,10 +332,20 @@ class TelemetryManager(IOBase):
         pass
 
     async def on_shutdown(self) -> None:
-        """Shutdown OpenTelemetry."""
+        """Flush and shut down every provider, the root last (S22).
 
-        # OpenTelemetry does not have a shutdown method
-        pass
+        In a worker thread: each provider exports what it still holds, and against a collector
+        that does not answer that waits for the exporter's timeout.
+        """
+        await asyncio.to_thread(shutdown_providers)
+
+
+def _register_exit_hook() -> None:
+    """Register :func:`shutdown_providers` with ``atexit`` once, for a process that skips the lifespan."""
+    global _exit_hook_registered
+    if not _exit_hook_registered:
+        atexit.register(shutdown_providers)
+        _exit_hook_registered = True
 
 
 class TracingContext:

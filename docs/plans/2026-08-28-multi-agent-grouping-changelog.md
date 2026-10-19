@@ -146,6 +146,14 @@ framework endpoints (`nats`, `cache`, `scheduler`), one Swagger tag per agent, a
   per-data-source state is keyed by that context key. Broker test on the accounts broker: the same
   `(source, id)` on connections A and B runs on both, a repeat on A is skipped; without the change B
   was skipped.
+- Step 17, telemetry (S22, W1, D17): `_SharedSpanProcessor` and `_SharedMetricExporter` count their
+  providers and are closed by the last; providers built with `shutdown_on_exit=False`;
+  `providers.shutdown_providers()` (agents first, root last) from `TelemetryManager.on_shutdown` at the
+  end of the lifespan and once from atexit; in a group an agent keeps `service.name` although
+  `OTEL_SERVICE_NAME` is set, with one WARNING. Live (group 'orders' + 'billing', OTLP collector with a
+  file exporter, OTEL_SERVICE_NAME set, a span and a counter in each handler's on_startup and
+  on_shutdown): 4 of 4 metric points and 4 spans under 'orders'/'billing'. Control: everything under
+  'platform-wide', 2 of 4 metric points, four 'Exporter already shutdown' warnings.
 - Step 16, Dapr hardening (S5, S9, N5, D6): a deep copy of the CloudEvent per agent when a delivery fans
   out to more than one; a startup WARNING for a shared topic with an agent's `idempotency_enabled` off;
   `EventHandlingBase._metric_topic` hook, Dapr labels an undeclared topic `<undeclared>`; an ACK combined

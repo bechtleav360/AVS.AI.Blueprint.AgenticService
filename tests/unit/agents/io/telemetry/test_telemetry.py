@@ -294,3 +294,198 @@ class TestTheDeploymentDeclaresTheResource:
         monkeypatch.setattr("blueprint.agents.deployment.socket.gethostname", _raise)
         configure()
         assert self._attributes("").get("service.instance.id") != "<unknown-pod>"
+
+
+class _RecordingMetricExporter:
+    """A metric exporter that remembers what it exported, and what arrived after its shutdown."""
+
+    def __init__(self) -> None:
+        from opentelemetry.sdk.metrics.export import MetricExporter
+
+        class _Exporter(MetricExporter):
+            def __init__(inner) -> None:
+                super().__init__()
+                inner.exported = 0
+                inner.after_shutdown = 0
+                inner.shutdowns = 0
+
+            def export(inner, metrics_data, timeout_millis: float = 10_000, **kwargs):  # type: ignore[no-untyped-def]
+                from opentelemetry.sdk.metrics.export import MetricExportResult
+
+                if inner.shutdowns:
+                    inner.after_shutdown += 1
+                    return MetricExportResult.FAILURE
+                inner.exported += 1
+                return MetricExportResult.SUCCESS
+
+            def force_flush(inner, timeout_millis: float = 10_000) -> bool:
+                return True
+
+            def shutdown(inner, timeout_millis: float = 30_000, **kwargs) -> None:  # type: ignore[no-untyped-def]
+                inner.shutdowns += 1
+
+        self.exporter = _Exporter()
+
+
+class TestTheSharedExportOutlivesOneProvider:
+    """S22 -- the shared exporter and span processor were closed by the first provider that shut down."""
+
+    @pytest.fixture
+    def configure(self, telemetry_manager: TelemetryManager, mock_config: MagicMock, enabled_observability: ObservabilityConfig):
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+        spans = InMemorySpanExporter()
+        metrics = _RecordingMetricExporter().exporter
+
+        def _configure(*namespaces: str):  # type: ignore[no-untyped-def]
+            mock_config.get_observability_config.return_value = enabled_observability
+            with (
+                patch.object(telemetry_manager, "_build_exporters", return_value=[spans]),
+                patch.object(telemetry_manager, "_build_metric_exporters", return_value=[metrics]),
+                patch.object(telemetry_manager, "_setup_instrumentation"),
+            ):
+                telemetry_manager.configure_tracing(namespaces)
+            return spans, metrics
+
+        return _configure
+
+    def test_a_span_ended_after_one_agent_shut_down_is_still_exported(self, configure) -> None:
+        spans, _ = configure("orders", "billing")
+        tracer_provider("orders").shutdown()
+
+        tracer_provider("billing").get_tracer("probe").start_span("after-orders-stopped").end()
+        tracer_provider("billing").force_flush()
+
+        assert [span.name for span in spans.get_finished_spans()] == ["after-orders-stopped"]
+
+    def test_the_metric_exporter_survives_until_the_last_provider(self, configure) -> None:
+        from blueprint.agents.io.telemetry.providers import meter_provider
+
+        _, metrics = configure("orders", "billing")
+        meter_provider("orders").shutdown()
+        assert metrics.shutdowns == 0
+
+        meter_provider("billing").get_meter("probe").create_counter("probe.count").add(1)
+        meter_provider("billing").force_flush()
+        assert metrics.after_shutdown == 0
+
+        meter_provider("billing").shutdown()
+        meter_provider("").shutdown()
+        assert metrics.shutdowns == 1
+
+    def test_no_provider_shuts_itself_down_at_exit(self, configure) -> None:
+        """The framework shuts them down in order (agents, then the root); an atexit hook each would not."""
+        from blueprint.agents.io.telemetry.providers import meter_provider
+
+        configure("orders")
+        for namespace in ("", "orders"):
+            assert tracer_provider(namespace)._atexit_handler is None
+            assert meter_provider(namespace)._atexit_handler is None
+
+
+class TestShutdownProviders:
+    """S22 -- every provider is flushed and shut down by the framework, the root last."""
+
+    @staticmethod
+    def _register(*namespaces: str) -> list[str]:
+        from opentelemetry.sdk.metrics import MeterProvider
+        from opentelemetry.sdk.trace import TracerProvider
+
+        from blueprint.agents.io.telemetry.providers import register_providers
+
+        order: list[str] = []
+        for namespace in namespaces:
+            tracers, meters = TracerProvider(shutdown_on_exit=False), MeterProvider(shutdown_on_exit=False)
+            tracers.shutdown = lambda ns=namespace: order.append(f"traces:{ns}")  # type: ignore[method-assign]
+            meters.shutdown = lambda ns=namespace, **_: order.append(f"metrics:{ns}")  # type: ignore[method-assign]
+            register_providers(namespace, tracers, meters)
+        return order
+
+    def test_the_root_is_shut_down_last(self) -> None:
+        from blueprint.agents.io.telemetry.providers import shutdown_providers
+
+        order = self._register("", "orders", "billing")
+        shutdown_providers()
+        assert order[-2:] == ["traces:", "metrics:"]
+        assert sorted(order[:-2]) == ["metrics:billing", "metrics:orders", "traces:billing", "traces:orders"]
+
+    def test_it_runs_once(self) -> None:
+        from blueprint.agents.io.telemetry.providers import shutdown_providers
+
+        order = self._register("", "orders")
+        shutdown_providers()
+        shutdown_providers()
+        assert len(order) == 4
+        assert configured_namespaces() == ()
+
+    def test_one_failing_provider_does_not_stop_the_rest(self, caplog: pytest.LogCaptureFixture) -> None:
+        from blueprint.agents.io.telemetry.providers import shutdown_providers, tracer_provider as provider_of
+
+        order = self._register("", "orders")
+
+        def _fail() -> None:
+            raise RuntimeError("collector gone")
+
+        provider_of("orders").shutdown = _fail  # type: ignore[method-assign]
+        with caplog.at_level("WARNING"):
+            shutdown_providers()
+        assert order == ["metrics:orders", "traces:", "metrics:"]
+        assert "collector gone" in caplog.text
+
+    async def test_the_manager_shuts_them_down_off_the_event_loop(self, telemetry_manager: TelemetryManager) -> None:
+        import threading
+
+        threads: list[int] = []
+        with patch("blueprint.agents.io.telemetry.telemetry.shutdown_providers", lambda: threads.append(threading.get_ident())):
+            await telemetry_manager.on_shutdown()
+        assert len(threads) == 1
+        assert threads[0] != threading.get_ident()
+
+
+class TestOtelServiceNameInAGroup:
+    """W1, plan D17 -- OTEL_SERVICE_NAME named every agent of a group alike; the agents keep their own names."""
+
+    @pytest.fixture
+    def configure(self, telemetry_manager: TelemetryManager, mock_config: MagicMock, enabled_observability: ObservabilityConfig):
+        def _configure(*namespaces: str) -> None:
+            mock_config.get_observability_config.return_value = enabled_observability
+            with (
+                patch.object(telemetry_manager, "_build_exporters", return_value=[MagicMock()]),
+                patch.object(telemetry_manager, "_build_metric_exporters", return_value=[]),
+                patch.object(telemetry_manager, "_setup_instrumentation"),
+            ):
+                telemetry_manager.configure_tracing(namespaces)
+
+        return _configure
+
+    @staticmethod
+    def _name(namespace: str) -> object:
+        provider = tracer_provider(namespace)
+        assert provider is not None
+        return provider.resource.attributes["service.name"]
+
+    def test_the_agents_keep_their_names_and_the_root_takes_it(
+        self, configure, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        monkeypatch.setenv("OTEL_SERVICE_NAME", "platform-wide")
+        with caplog.at_level("WARNING"):
+            configure("orders", "billing")
+        assert [self._name(ns) for ns in ("", "orders", "billing")] == ["platform-wide", "orders", "billing"]
+        warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING" and r.name.startswith("blueprint")]
+        assert len(warnings) == 1
+        assert "'platform-wide'" in warnings[0]
+
+    def test_other_declared_attributes_still_reach_the_agents(self, configure, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OTEL_SERVICE_NAME", "platform-wide")
+        monkeypatch.setenv("OTEL_RESOURCE_ATTRIBUTES", "deployment.environment=prod")
+        configure("orders")
+        provider = tracer_provider("orders")
+        assert provider is not None
+        assert provider.resource.attributes["deployment.environment"] == "prod"
+
+    def test_standalone_is_unchanged(self, configure, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+        monkeypatch.setenv("OTEL_SERVICE_NAME", "platform-wide")
+        with caplog.at_level("WARNING"):
+            configure()
+        assert self._name("") == "platform-wide"
+        assert [r for r in caplog.records if r.levelname == "WARNING" and r.name.startswith("blueprint")] == []
