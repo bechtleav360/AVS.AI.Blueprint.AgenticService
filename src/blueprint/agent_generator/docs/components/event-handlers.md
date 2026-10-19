@@ -165,6 +165,14 @@ under subject-scoped publish permissions, what the broker checked the publisher 
 Nothing in the payload can overwrite a context key. Which deployment-level scope a connection stands
 for is decided by the connection source (its `validate` and `run_scope` hooks), not by handlers.
 
+**Keep per-data-source state per connection.** Each named connection stands for a data source of its
+own, and the same producer behind two of them may emit the same `source` and `id` for different
+data. Anything a handler or its service keeps across deliveries -- a cache entry, an "already
+ingested" marker, a cursor -- is keyed by `context.get("nats_connection")` as well, or one data
+source's event suppresses or overwrites another's. The framework does so for its own state:
+deduplication keys on the connection too, results are not published from named connections, dead
+letters go out on the connection the event arrived on, and each run has a context of its own.
+
 **The last attempt.** When `nats_delivery_attempt == nats_max_deliver`, a failure of this run is not
 redelivered -- it is dead-lettered or dropped. A service that keeps work open across attempts (a
 claimed job, a pending record) can close or hand it off on that attempt instead of leaving it open.

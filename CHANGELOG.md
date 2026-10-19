@@ -12,6 +12,14 @@
   when it is acknowledged. Measured against JetStream with a 0.5 s limit: before, one run and the
   redelivery acknowledged unrun; now the redelivery runs to completion.
 
+- **With deduplication on, one named connection's event no longer suppresses another's.** The dedup
+  key was the event's `source` and `id` only, so the same producer behind two connections -- two data
+  sources emitting the same ids for different data -- had the second connection's event skipped as a
+  duplicate and acknowledged. A delivery from a named connection now adds the connection's name to
+  the key; the default connection keeps the old key, so existing markers still match. Measured on a
+  broker with one account per connection: before, the second connection's event was skipped; now
+  both run, and a repeat on the same connection is still skipped.
+
 - **Logs and Dapr answers no longer carry payload values or credentials.** A delivery that is not a
   valid CloudEvent was logged with pydantic's rendering of the error, which quotes every offending
   input value: under Dapr (`Discarding unparseable delivery`), under NATS (`Discarding unparseable

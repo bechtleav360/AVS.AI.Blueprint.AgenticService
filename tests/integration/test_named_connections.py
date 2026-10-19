@@ -93,10 +93,12 @@ async def operator(accounts_url: str, subject_prefix: str) -> AsyncIterator[Oper
             await admin.close()
 
 
-async def publish(accounts_url: str, prefix: str, tenant: str, subject: str, *, claimed_tenant: str | None = None) -> str:
+async def publish(
+    accounts_url: str, prefix: str, tenant: str, subject: str, *, claimed_tenant: str | None = None, event_id: str | None = None
+) -> str:
     user, password = ADMINS[tenant]
     admin = await nats.connect(accounts_url, user=user, password=password)
-    event_id = str(uuid.uuid4())
+    event_id = event_id or str(uuid.uuid4())
     body = {"specversion": "1.0", "id": event_id, "type": subject, "source": "integration-test", "tenantid": claimed_tenant or tenant}
     await admin.jetstream().publish(f"{subject_prefix_for(prefix, tenant)}{subject}", json.dumps(body).encode())
     await admin.close()
@@ -195,6 +197,37 @@ class TestTenantsAreKeptApart:
                 return info.delivered.stream_seq == 2 and info.num_ack_pending == 0 and info.num_redelivered == 0
 
             await poll_until(termed, timeout=10, description="the rejected delivery to be settled for good")
+
+    async def test_dedup_keeps_the_connections_apart(
+        self, settings_group: Any, operator: Operator, accounts_url: str, subject_prefix: str, tmp_path: Any
+    ) -> None:
+        """T1 -- the same producer's (source, id) on two connections is two events; a repeat on one is a duplicate."""
+        agent = f"risk_{subject_prefix}"
+        await operator(["A", "B"], {agent: ["risk.>"]})
+        runs: list[dict[str, Any]] = []
+        # The agent's own section: the group's root has no cache to claim in.
+        extra = (
+            f"[default.{agent}]\n"
+            "idempotency_enabled = true\n"
+            "idempotency_ttl = 600\n"
+            f"[default.{agent}.cache]\n"
+            f'cache_dir = "{(tmp_path / "cache").as_posix()}"\n'
+        )
+        async with settings_group(
+            settings(accounts_url, subject_prefix, ["A", "B"], extra), {agent: recording_handler(["risk.>"], runs)}, named=2, cache=True
+        ):
+            shared_id = str(uuid.uuid4())
+            for tenant in ("A", "B", "A"):
+                await publish(accounts_url, subject_prefix, tenant, "risk.created", event_id=shared_id)
+            await wait_until(lambda: len(runs) == 2, timeout=10, description="one run per connection")
+
+            async def settled() -> bool:
+                infos = [await consumer_info(accounts_url, subject_prefix, tenant, agent) for tenant in ("A", "B")]
+                return [info.delivered.stream_seq for info in infos] == [2, 1] and all(info.num_ack_pending == 0 for info in infos)
+
+            await poll_until(settled, timeout=10, description="every delivery acked, the repeat on A included")
+
+        assert sorted(run["connection"] for run in runs) == ["A", "B"]
 
 
 class TestTheAttemptOnANamedConnection:

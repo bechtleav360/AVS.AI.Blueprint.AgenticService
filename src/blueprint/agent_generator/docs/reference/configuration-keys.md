@@ -141,7 +141,7 @@ effects is acceptable is a property of the product, not of the framework.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `idempotency_enabled` | `bool` | `false` | Skip an event whose `id` and `source` were already dispatched within the window. Requires `idempotency_ttl` and a registered cache (`.with_cache()`); startup fails if either is missing, rather than leaving deduplication silently off. The claim is the cache's atomic set-if-absent, so replicas sharing a cache (Redis, or a disk cache on a shared volume) cannot both dispatch the same event; a per-pod cache deduplicates within that pod only, and a cache error fails open. |
+| `idempotency_enabled` | `bool` | `false` | Skip an event whose `id` and `source` were already dispatched within the window -- on the same named connection, when it came from one (each connection is a data source of its own). Requires `idempotency_ttl` and a registered cache (`.with_cache()`); startup fails if either is missing, rather than leaving deduplication silently off. The claim is the cache's atomic set-if-absent, so replicas sharing a cache (Redis, or a disk cache on a shared volume) cannot both dispatch the same event; a per-pod cache deduplicates within that pod only, and a cache error fails open. |
 | `idempotency_ttl` | `int` | -- | Seconds a processed event is remembered. No default on purpose -- it must outlast the broker's redelivery window (`nats_ack_wait` * `nats_max_deliver` on JetStream, the component's retry policy under Dapr), and a window that expires before the last redelivery looks exactly like deduplication not working. |
 
 ---

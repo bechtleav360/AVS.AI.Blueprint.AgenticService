@@ -38,6 +38,15 @@ reason the duplicate flag is: ``context`` is the one object that belongs to exac
 IDEMPOTENCY_CACHE_NAMESPACE = "idempotency"
 """Cache namespace holding the seen-event markers, kept away from application data."""
 
+CONNECTION_CONTEXT_KEY = "nats_connection"
+"""Context key naming the named connection a delivery arrived on; absent on the default connection.
+
+Set by the NATS eventing endpoint, and the same value as ``nats_connections.NATS_CONNECTION_CONTEXT_KEY``
+(a test keeps the two equal): the chain reads it without depending on the transport package. A
+named connection stands for a data source of its own, so it is part of the dedup key -- two
+sources delivering the same producer's ``(source, id)`` are two events, not one (T1).
+"""
+
 RUNTIME_CONTEXT_KEY = "runtime"
 """Context key carrying the ``AgentRuntime`` chosen for this event, when one was.
 
@@ -503,7 +512,7 @@ class HandlerChain(Component):
         if not policy.enabled:
             return True
 
-        key = self._idempotency_key(event)
+        key = self._idempotency_key(event, context)
         if key is None:
             return True
 
@@ -543,7 +552,7 @@ class HandlerChain(Component):
         if not context.pop(CLAIMED_CONTEXT_KEY, False):
             return
 
-        key = self._idempotency_key(event)
+        key = self._idempotency_key(event, context)
         if key is None:
             return
 
@@ -551,7 +560,7 @@ class HandlerChain(Component):
         logger.debug("Released the dedup marker for event '%s': the delivery was not settled as a success", event.id)
 
     @staticmethod
-    def _idempotency_key(event: CloudEvent[Any]) -> dict[str, str] | None:
+    def _idempotency_key(event: CloudEvent[Any], context: dict[str, Any]) -> dict[str, str] | None:
         """Build the dedup key, or ``None`` if the event cannot be identified.
 
         Keyed on ``source`` as well as ``id``. The CloudEvents specification requires an
@@ -559,6 +568,11 @@ class HandlerChain(Component):
         emit id ``"1"``, and keying on the id alone would let one agent's event suppress
         another's. Sent as a dict because the cache sorts a dict by key before hashing it,
         which a list of the two values would not preserve.
+
+        A delivery from a named connection adds the connection's name
+        (:data:`CONNECTION_CONTEXT_KEY`): each connection is a data source of its own, and the
+        same producer behind two of them emits the same ids for different data (T1). The default
+        connection keeps the two-part key, so markers written before this change still match.
         """
         event_id = str(getattr(event, "id", "") or "").strip()
         source = str(getattr(event, "source", "") or "").strip()
@@ -569,6 +583,9 @@ class HandlerChain(Component):
                 source,
             )
             return None
+        connection = context.get(CONNECTION_CONTEXT_KEY)
+        if connection:
+            return {"id": event_id, "source": source, "connection": str(connection)}
         return {"id": event_id, "source": source}
 
     def _resolve_idempotency_policy(self) -> IdempotencyPolicy:

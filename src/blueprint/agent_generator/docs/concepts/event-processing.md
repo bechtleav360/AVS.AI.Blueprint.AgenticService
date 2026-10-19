@@ -170,7 +170,9 @@ deduplication on, a delivery keeps its marker only when it ends in an `ack`.** A
 raises, a run cut off by `nats_handler_timeout` or by a shutdown -- including a handler that
 catches the cancellation and returns anyway -- and a return value that cannot be turned into
 results all release the marker before the delivery is nak'd. A duplicate never releases the marker
-it ran into: that marker belongs to the first delivery.
+it ran into: that marker belongs to the first delivery. The marker is keyed on the event's `source`
+and `id`, and on the named connection the event came from, if any: two connections delivering the
+same `source` and `id` are two events.
 
 **A result's event id is derived, not random:** a UUIDv5 over the agent, the inbound event's
 `source` and `id`, the result's `event_type` and its position in the list. A redelivery therefore

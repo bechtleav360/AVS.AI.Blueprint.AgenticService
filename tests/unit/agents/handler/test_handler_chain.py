@@ -6,8 +6,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from blueprint.agents.clients.io.nats_connections import NATS_CONNECTION_CONTEXT_KEY
 from blueprint.agents.handler.handler_chain import (
     CLAIMED_CONTEXT_KEY,
+    CONNECTION_CONTEXT_KEY,
     DUPLICATE_CONTEXT_KEY,
     IDEMPOTENCY_CACHE_NAMESPACE,
     HandlerChain,
@@ -406,6 +408,53 @@ class TestIdempotencyEnabled:
         await chain.process(other, {})
 
         assert seen == ["test-source", "other-source"]
+
+    async def test_the_same_event_on_two_named_connections_is_not_a_duplicate(
+        self, chain: HandlerChain, mock_registry: MagicMock, mock_config: MagicMock, cloud_event: GenericCloudEvent
+    ) -> None:
+        """T1 -- each connection is a data source of its own; one must not suppress another's event."""
+        _enable_dedup(mock_config, mock_registry)
+        seen: list[str] = []
+
+        class Counting(StubHandler):
+            async def can_handle_event(self, event, context):
+                seen.append(context[CONNECTION_CONTEXT_KEY])
+                return False
+
+        _wire_handlers(mock_registry, [Counting()])
+
+        await chain.process(cloud_event, {CONNECTION_CONTEXT_KEY: "A"})
+        await chain.process(cloud_event, {CONNECTION_CONTEXT_KEY: "B"})
+        await chain.process(cloud_event, {CONNECTION_CONTEXT_KEY: "A"})
+
+        assert seen == ["A", "B"]
+
+    async def test_a_named_connections_claim_is_released_under_its_own_key(
+        self, chain: HandlerChain, mock_registry: MagicMock, mock_config: MagicMock, cloud_event: GenericCloudEvent
+    ) -> None:
+        cache = _enable_dedup(mock_config, mock_registry)
+        _wire_handlers(mock_registry, [StubHandler(result=None)])
+        on_a: dict[str, Any] = {CONNECTION_CONTEXT_KEY: "A"}
+        await chain.process(cloud_event, on_a)
+        await chain.process(cloud_event, {CONNECTION_CONTEXT_KEY: "B"})
+
+        chain.release(cloud_event, on_a)
+
+        assert list(cache.store) == [_StubCache._key({"id": "evt-001", "source": "test-source", "connection": "B"})]
+
+    async def test_the_default_connection_keeps_the_two_part_key(
+        self, chain: HandlerChain, mock_registry: MagicMock, mock_config: MagicMock, cloud_event: GenericCloudEvent
+    ) -> None:
+        """Markers written before connections were part of the key still match after an upgrade."""
+        cache = _enable_dedup(mock_config, mock_registry)
+        _wire_handlers(mock_registry, [StubHandler(result=None)])
+
+        await chain.process(cloud_event, {})
+
+        assert list(cache.store) == [_StubCache._key({"id": "evt-001", "source": "test-source"})]
+
+    def test_the_context_key_is_the_one_the_nats_endpoint_sets(self) -> None:
+        assert CONNECTION_CONTEXT_KEY == NATS_CONNECTION_CONTEXT_KEY
 
     async def test_failed_dispatch_releases_the_claim(
         self, chain: HandlerChain, mock_registry: MagicMock, mock_config: MagicMock, cloud_event: GenericCloudEvent

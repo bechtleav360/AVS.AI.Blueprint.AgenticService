@@ -141,6 +141,11 @@ framework endpoints (`nats`, `cache`, `scheduler`), one Swagger tag per agent, a
   `repr`; the default and named connection lines go through `_describe_error`. Measured with a
   placeholder secret (JetStream, Dapr endpoint with the sidecar mock): in the logs and the answer
   before, in neither now. A handler's own exception text is still logged as it is, by design.
+- Step 1a, connection isolation (T1): the dedup key adds `nats_connection` for a delivery from a named
+  connection (the default connection keeps `(source, id)`, no migration); handler-author docs say that
+  per-data-source state is keyed by that context key. Broker test on the accounts broker: the same
+  `(source, id)` on connections A and B runs on both, a repeat on A is skipped; without the change B
+  was skipped.
 - Step 3, internal naming (B3): the first consumer's product name, subject prefix and module names are
   replaced by generic ones (`acme.agent.<tenant>.<agent>`, "the first consumer") in the named-connections
   plan, the accounts broker config, its connection source and three unit tests. Tree only; the
