@@ -12,6 +12,23 @@
   when it is acknowledged. Measured against JetStream with a 0.5 s limit: before, one run and the
   redelivery acknowledged unrun; now the redelivery runs to completion.
 
+- **Named connections changed at runtime no longer leave an old link consuming.** A connection changed
+  twice before its new binding was bound, or changed and then removed, kept its original link
+  subscribed for good: only the not-yet-bound binding in between was retired. Measured on a broker
+  with one account per connection: the original link is now closed in both cases (before: still
+  open after 15 s).
+
+- **A named connection whose subscription the broker refuses is no longer reported as bound.** The
+  broker refuses a subscription asynchronously, so `subscribe()` returned and the connection read as
+  bound and was never retried. A bind now waits for the broker's round trip and retries a refusal as a
+  permission violation. Measured: `retrying` with `permission_denied` (before: `bound`).
+
+- **An operator's consumer with `idle_heartbeat` or `flow_control` works in binding mode.** Its status
+  messages reached the handler, were terminated as matching no subject, and an unanswered flow control
+  request stalls the consumer. Heartbeats are now dropped and flow control requests answered. A new
+  `tls` context alone no longer counts as a changed connection, which rebound every `tls://`
+  connection on every notify.
+
 - **A degraded agent whose resume fails is no longer left off its topics for good.** The supervisor
   resumes an agent once, on the transition back to healthy, and a paused NATS client reports
   healthy; a failed re-subscribe therefore left the agent paused with every check green, and nothing

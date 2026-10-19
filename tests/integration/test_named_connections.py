@@ -12,6 +12,7 @@ What a tenant deployment depends on, observed rather than asserted on the client
   and never pauses the agent: its other connection keeps delivering.
 """
 
+import asyncio
 import json
 import logging
 import uuid
@@ -341,6 +342,107 @@ class TestConnectionsChangeAtRuntime:
         info = await consumer_info(accounts_url, subject_prefix, "A", agent)
         assert info.num_ack_pending == 0 and info.num_redelivered == 0
         assert permission_violations(caplog) == []
+
+
+class TestAChangeThatHasNotBoundYet:
+    """M3 -- a binding superseded before it bound must not strand the one still delivering."""
+
+    async def test_a_second_change_retires_the_link_that_was_still_delivering(
+        self, settings_group: Any, operator: Operator, accounts_url: str, subject_prefix: str
+    ) -> None:
+        agent = f"risk_{subject_prefix}"
+        await operator(["A"], {agent: ["risk.>"]})
+        runs: list[dict[str, Any]] = []
+        async with settings_group(
+            settings(accounts_url, subject_prefix, ["A"]), {agent: recording_handler(["risk.>"], runs)}, named=1
+        ) as clients:
+            client, source = clients[agent], SOURCES[-1]
+            first = client._named[0].link.nats_client
+
+            source.set_users({"A": "agent-a2"}, wrong_password={"A"})  # changed, and it cannot log in
+            await wait_until(lambda: len(client._named) == 2, timeout=10, description="the changed binding to be added")
+            assert not first.is_closed, "the old link serves while the new one cannot bind"
+
+            source.set_users({"A": "agent-a2"}, wrong_password=set())  # changed again, now it can
+            await wait_until(lambda: first.is_closed, timeout=15, description="the first link to be retired")
+            await wait_until(
+                lambda: len(client._named) == 1 and client._named[0].subscriptions_ready, timeout=10, description="one bound binding"
+            )
+            sent = [await publish(accounts_url, subject_prefix, "A", "risk.created") for _ in range(5)]
+            await wait_until(lambda: all(e in [run["id"] for run in runs] for e in sent), timeout=10, description="5 events")
+
+        assert sorted(run["id"] for run in runs) == sorted(sent), "each once"
+
+    async def test_removing_it_retires_the_link_that_was_still_delivering(
+        self, settings_group: Any, operator: Operator, accounts_url: str, subject_prefix: str
+    ) -> None:
+        agent = f"risk_{subject_prefix}"
+        await operator(["A"], {agent: ["risk.>"]})
+        async with settings_group(
+            settings(accounts_url, subject_prefix, ["A"]), {agent: recording_handler(["risk.>"], [])}, named=1
+        ) as clients:
+            client, source = clients[agent], SOURCES[-1]
+            first = client._named[0].link.nats_client
+            source.set_users({"A": "agent-a2"}, wrong_password={"A"})
+            await wait_until(lambda: len(client._named) == 2, timeout=10, description="the changed binding to be added")
+
+            source.set_users({})
+            await wait_until(lambda: client._named == [], timeout=15, description="both bindings to be retired")
+            assert first.is_closed
+
+
+class TestARefusedSubscriptionIsNotBound:
+    """M4 -- the broker refuses a subscription through error_cb only; subscribe() returned and it read as bound."""
+
+    async def test_it_reads_retrying_with_a_permission_violation(
+        self, settings_group: Any, operator: Operator, accounts_url: str, subject_prefix: str
+    ) -> None:
+        agent = f"risk_{subject_prefix}"
+        await operator(["A"], {agent: ["risk.>"]})
+        extra = 'test_source_foreign_deliver = ["A"]\n'
+        async with settings_group(
+            settings(accounts_url, subject_prefix, ["A"], extra), {agent: recording_handler(["risk.>"], [])}, named=0
+        ) as clients:
+            client = clients[agent]
+            await wait_until(lambda: client._named[0].last_error != "", timeout=10, description="the bind attempt to fail")
+            # error_cb reports the refusal while the bind still waits on its round trip: read the state
+            # once that bind has finished, or a binding that goes on to read as bound passes too.
+            await asyncio.sleep(1.0)
+            state = client._state_of(client._named[0])
+            assert (state.state, state.permission_denied) == ("retrying", True)
+            assert client._named[0].subscriptions_ready is False
+
+
+class TestStatusMessagesOfAnOperatorsConsumer:
+    """S2 -- binding mode subscribes plainly, so the consumer's heartbeats and flow control reach the handler."""
+
+    async def test_heartbeats_and_flow_control_never_reach_a_handler(
+        self, settings_group: Any, operator: Operator, accounts_url: str, subject_prefix: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.WARNING)
+        agent = f"risk_{subject_prefix}"
+        await operator(["A"], {})
+        user, password = ADMINS["A"]
+        admin = await nats.connect(accounts_url, user=user, password=password)
+        config = binding_for(subject_prefix, agent, ("risk.>",), "A").consumer_config()
+        config.idle_heartbeat = 0.5
+        config.flow_control = True
+        await admin.jsm().add_consumer(stream_for(subject_prefix, "A"), config=config)
+        await admin.close()
+        runs: list[dict[str, Any]] = []
+        async with settings_group(settings(accounts_url, subject_prefix, ["A"]), {agent: recording_handler(["risk.>"], runs)}, named=1):
+            sent = [await publish(accounts_url, subject_prefix, "A", "risk.created") for _ in range(20)]
+            await wait_until(lambda: len(runs) == 20, timeout=15, description="20 runs")
+            await asyncio.sleep(2.0)  # several idle heartbeats
+
+            async def settled() -> bool:
+                info = await consumer_info(accounts_url, subject_prefix, "A", agent)
+                return info.num_ack_pending == 0 and info.num_redelivered == 0
+
+            await poll_until(settled, timeout=10, description="every delivery acked once")
+
+        assert sorted(run["id"] for run in runs) == sorted(sent)
+        assert [r.getMessage() for r in caplog.records if "unparseable" in r.getMessage() or "matches none" in r.getMessage()] == []
 
 
 class TestADeadConnectionCountsForReadinessOnly:

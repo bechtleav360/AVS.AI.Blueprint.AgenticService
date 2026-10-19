@@ -84,8 +84,12 @@ class ConnectionSpec:
     creds_file: str | None = None
     nkey_seed: str | None = field(default=None, repr=False)
     inbox_prefix: str | None = None
-    tls: Any = field(default=None, repr=False)
-    """An ``ssl.SSLContext`` for ``tls://`` brokers with a private CA; ``None`` uses the default."""
+    tls: Any = field(default=None, repr=False, compare=False)
+    """An ``ssl.SSLContext`` for ``tls://`` brokers with a private CA; ``None`` uses the default.
+
+    Not compared: an ``SSLContext`` equals only itself, so a source that builds one per call made
+    every notify rebind every ``tls://`` connection (S3). A change of the TLS settings alone is
+    therefore not applied at runtime; change the connection's name or URL with it, or restart."""
 
     def __post_init__(self) -> None:
         if not self.name or any(char.isspace() for char in self.name):

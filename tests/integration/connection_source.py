@@ -3,10 +3,13 @@
 One named connection per tenant, each logging in as that tenant's agent user on the accounts broker
 (nats-accounts.conf). Everything per test comes from the process config the factory is called with,
 because that is all the framework hands it: ``test_source_url``, ``test_source_prefix`` (keeps
-streams and subjects apart between tests), ``test_source_tenants``, ``test_source_unclaimed`` and
-``test_source_wrong_password`` (tenants whose connection logs in with a password the broker refuses).
+streams and subjects apart between tests), ``test_source_tenants``, ``test_source_unclaimed``,
+``test_source_wrong_password`` (tenants whose connection logs in with a password the broker refuses)
+and ``test_source_foreign_deliver`` (tenants whose binding names another tenant's deliver subject,
+which their agent user may not subscribe to).
 """
 
+import dataclasses
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -61,6 +64,7 @@ class TenantSource:
         self.users = {tenant: f"agent-{tenant.lower()}" for tenant in config.get("test_source_tenants") or []}
         self.unclaimed = tuple(config.get("test_source_unclaimed") or ())
         self.wrong_password = set(config.get("test_source_wrong_password") or ())
+        self.foreign_deliver = set(config.get("test_source_foreign_deliver") or ())
         self.notifiers: list[Callable[[], None]] = []
         SOURCES.append(self)
 
@@ -70,9 +74,11 @@ class TenantSource:
     def watch(self, notify: Callable[[], None]) -> None:
         self.notifiers.append(notify)
 
-    def set_users(self, users: dict[str, str]) -> None:
-        """Replace the tenants and their users, and tell every client."""
+    def set_users(self, users: dict[str, str], *, wrong_password: set[str] | None = None) -> None:
+        """Replace the tenants and their users (and which of them log in wrongly), and tell every client."""
         self.users = dict(users)
+        if wrong_password is not None:
+            self.wrong_password = set(wrong_password)
         for notify in self.notifiers:
             notify()
 
@@ -85,7 +91,11 @@ class TenantSource:
         }
 
     def binding(self, agent: str, subjects: tuple[str, ...], connection: ConnectionSpec) -> JetStreamBinding:
-        return binding_for(self.prefix, agent, self.claims(agent, subjects), connection.name)
+        binding = binding_for(self.prefix, agent, self.claims(agent, subjects), connection.name)
+        if connection.name in self.foreign_deliver:
+            other = "B" if connection.name == "A" else "A"
+            binding = dataclasses.replace(binding, deliver_subject=f"acme.agent.{other}.{agent}")
+        return binding
 
     def validate(self, connection: str, subject: str, event: Any) -> str | None:
         """W17.2 in miniature: connection, subject token and the event's tenantid must agree."""

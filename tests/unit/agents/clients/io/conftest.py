@@ -85,6 +85,7 @@ def mock_nats_core() -> MagicMock:
     mock.publish = AsyncMock()
     mock.subscribe = AsyncMock(return_value=MagicMock(unsubscribe=AsyncMock()))
     mock.close = AsyncMock()
+    mock.flush = AsyncMock()
     mock.jetstream = MagicMock(return_value=None)
     return mock
 

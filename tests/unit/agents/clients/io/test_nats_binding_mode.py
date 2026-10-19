@@ -206,3 +206,70 @@ class TestDelivery:
         msg = _delivery(cloud_event, delivered=1)
         await _settled(binding, handler, msg)
         msg.nak.assert_awaited_once()
+
+
+class TestARefusedSubscription:
+    """M4 -- the broker refuses a subscription asynchronously; subscribe() alone made it read as bound."""
+
+    async def test_a_refusal_reported_before_the_round_trip_fails_the_bind(
+        self, nats_client: NATSClient, mock_nats_core: MagicMock, jsm: MagicMock
+    ) -> None:
+        async def refuse() -> None:
+            # Lowercased, subject included, as nats-py's parser hands the -ERR line on.
+            nats_client._link.permission_errors.append('nats: permissions violation for subscription to "acme.agent.a.risk"')
+
+        mock_nats_core.flush = AsyncMock(side_effect=refuse)
+        spec = _spec()
+        binding = _Binding(link=nats_client._link, jetstream=spec, topic_callbacks=dict.fromkeys(spec.subjects, AsyncMock()))
+        mock_nats_core.jsm = MagicMock(return_value=jsm)
+        nats_client._link.nats_client = mock_nats_core
+
+        with pytest.raises(PermissionError, match="acme.agent.A.risk"):
+            await nats_client._subscribe_all(binding)
+
+        mock_nats_core.subscribe.return_value.unsubscribe.assert_awaited_once()
+        assert binding.subscriptions == []
+
+    async def test_a_refusal_for_another_subject_does_not(self, nats_client: NATSClient, mock_nats_core: MagicMock, jsm: MagicMock) -> None:
+        async def refuse_other() -> None:
+            nats_client._link.permission_errors.append('nats: permissions violation for publish to "elsewhere"')
+
+        mock_nats_core.flush = AsyncMock(side_effect=refuse_other)
+        binding, _ = await _bound(nats_client, mock_nats_core, jsm, AsyncMock())
+        assert len(binding.subscriptions) == 1
+
+
+class TestStatusMessagesInBindingMode:
+    """S2 -- a plain subscription receives the consumer's heartbeats and flow control requests."""
+
+    @staticmethod
+    def _status(reply: str = "") -> MagicMock:
+        msg = MagicMock(data=b"", reply=reply, subject="acme.agent.A.risk", headers={"Status": "100", "Description": "Idle Heartbeat"})
+        msg.respond = AsyncMock()
+        for name in ("ack", "nak", "term"):
+            setattr(msg, name, AsyncMock())
+        return msg
+
+    async def test_a_flow_control_request_is_answered_and_never_run(
+        self, nats_client: NATSClient, mock_nats_core: MagicMock, jsm: MagicMock
+    ) -> None:
+        callback = AsyncMock()
+        binding, handler = await _bound(nats_client, mock_nats_core, jsm, callback)
+        msg = self._status(reply="$JS.FC.NOTIFICATIONS_A.x")
+
+        await _settled(binding, handler, msg)
+
+        msg.respond.assert_awaited_once_with(b"")
+        callback.assert_not_awaited()
+        msg.term.assert_not_awaited()
+
+    async def test_an_idle_heartbeat_is_dropped(self, nats_client: NATSClient, mock_nats_core: MagicMock, jsm: MagicMock) -> None:
+        callback = AsyncMock()
+        binding, handler = await _bound(nats_client, mock_nats_core, jsm, callback)
+        msg = self._status()
+
+        await _settled(binding, handler, msg)
+
+        msg.respond.assert_not_awaited()
+        callback.assert_not_awaited()
+        msg.term.assert_not_awaited()

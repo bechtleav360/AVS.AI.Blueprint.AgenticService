@@ -146,6 +146,15 @@ framework endpoints (`nats`, `cache`, `scheduler`), one Swagger tag per agent, a
   per-data-source state is keyed by that context key. Broker test on the accounts broker: the same
   `(source, id)` on connections A and B runs on both, a repeat on A is skipped; without the change B
   was skipped.
+- Step 6, named bindings (M3, M4, S2, S3): a binding superseded before it bound is retired at once and
+  hands over the binding still delivering, and a removal retires that one too; `_bind` flushes and fails
+  on a refusal naming its deliver subject (compared lowercased -- nats-py lowercases the -ERR line, found
+  live); a reconnect restores readiness only for `bound` bindings; binding mode answers flow control and
+  drops heartbeats; `ConnectionSpec.tls` is not compared. Accounts broker: change-change and change-remove
+  close the original link (control: open after 15 s), a refused deliver subject reads `retrying` with a
+  permission violation (control: `bound`), an operator consumer with heartbeat and flow control delivers
+  20 of 20 once with no termination (control: status messages termed). Integration suite 64 passed,
+  3 skipped (Redis).
 - Step 5, resume retry and C4 for sessions (M2, S18): a failed `resume_consumption` drops the partial
   subscriptions, stays paused and retries in a backoff task (cancelled by a pause and by close), a
   WARNING per attempt; `SessionsBus` gains `pause_consumption`/`resume_consumption` (stream closed,

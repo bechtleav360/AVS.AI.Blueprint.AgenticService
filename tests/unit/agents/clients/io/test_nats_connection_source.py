@@ -3,6 +3,7 @@
 import asyncio
 import contextvars
 import json
+import ssl
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -107,7 +108,10 @@ async def _bound_handler(nats_client: NATSClient, mock_nats_core: MagicMock, nam
     """Bind the named binding ``name`` on a mocked link and return it with its broker callback."""
     binding = next(binding for binding in nats_client._named if binding.link.name == name)
     core = MagicMock(
-        subscribe=AsyncMock(return_value=MagicMock(drain=AsyncMock(), unsubscribe=AsyncMock())), close=AsyncMock(), is_closed=False
+        subscribe=AsyncMock(return_value=MagicMock(drain=AsyncMock(), unsubscribe=AsyncMock())),
+        close=AsyncMock(),
+        flush=AsyncMock(),
+        is_closed=False,
     )
     binding.link.nats_client = core
     await nats_client._bind(binding)
@@ -152,6 +156,12 @@ class TestConnectionSpec:
     def test_an_unusable_spec_is_refused(self, kwargs: dict) -> None:
         with pytest.raises(ValueError):
             ConnectionSpec(**{"name": "A", "url": "nats://h:4222", **kwargs})
+
+    def test_a_new_tls_context_alone_is_no_change(self) -> None:
+        """S3 -- an SSLContext equals only itself; a source building one per call rebound every tls:// link on every notify."""
+        first = ConnectionSpec(name="A", url="tls://h:4222", tls=ssl.create_default_context())
+        second = ConnectionSpec(name="A", url="tls://h:4222", tls=ssl.create_default_context())
+        assert first == second
 
 
 class TestPlanningTheBindings:

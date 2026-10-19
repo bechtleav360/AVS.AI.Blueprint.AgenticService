@@ -88,6 +88,9 @@ PERMISSION_RETRY_SECONDS = 60.0
 """How often a named connection retries after the broker refused it a permission: a missing grant does
 not heal in seconds, so retrying at the normal pace would only fill the log (spec 7.9)."""
 
+CONTROL_MESSAGE_STATUS = "100"
+"""The status a JetStream idle heartbeat and flow control request carry (``nats.js.api.StatusCode.CONTROL_MESSAGE``)."""
+
 RESUME_RETRY_MAX_DELAY = 60.0
 """The longest wait between two attempts of a resume that keeps failing (M2): the delay doubles from
 ``event_client_retry_delay`` up to this."""
@@ -237,7 +240,13 @@ class _Binding:
     spec: ConnectionSpec | None = None
     """The connection as the source last described it; a named binding is replaced when it differs."""
     replaces: "_Binding | None" = None
-    """The binding this one replaces; retired as soon as this one is bound (new before old, spec 7.4)."""
+    """The bound binding this one replaces; retired as soon as this one is bound (new before old, spec 7.4).
+
+    Always one that delivers, never a chain: a change that supersedes a binding not yet bound retires
+    that one at once and takes over what it was replacing (M3)."""
+    bound: bool = False
+    """The subscription is on the link: set when a bind succeeds, cleared at each attempt. A reconnect
+    restores readiness only for a bound binding -- nats-py replays only the subscriptions it holds."""
     superseded: bool = False
     """A newer binding of the same connection exists; this one serves until that one is bound."""
     revoked: bool = False
@@ -861,12 +870,14 @@ class NATSClient(IOClientBase):
         attempt = 0
         while True:
             binding.link.permission_errors.clear()
+            binding.bound = False
             try:
                 await self._open_named_link(binding.link)
                 if self._consumption_paused:
                     return
                 binding.subscriptions.clear()
                 await self._bind(binding)
+                binding.bound = True
                 binding.subscriptions_ready = True
                 binding.last_error = ""
                 binding.permission_denied = False
@@ -937,9 +948,11 @@ class NATSClient(IOClientBase):
 
         async def on_reconnected() -> None:
             # A plain subscription is restored by nats-py itself, and a push consumer delivers to
-            # it again as soon as there is interest: nothing to re-bind, no JetStream request.
+            # it again as soon as there is interest: nothing to re-bind, no JetStream request. Only
+            # for a binding that had bound, though: one whose bind failed has no subscription to
+            # restore, and reading it as bound left it never retried.
             for binding in self._named:
-                if binding.link is link and not self._consumption_paused:
+                if binding.link is link and binding.bound and not self._consumption_paused:
                     binding.subscriptions_ready = True
                     self._named_bound_changed(binding)
             logger.info("Agent '%s': named connection '%s' is back", agent, link.name)
@@ -1085,7 +1098,14 @@ class NATSClient(IOClientBase):
             binding = self._new_named_binding(spec, jetstream)
             if existing is not None:
                 existing.superseded = True
-                binding.replaces = existing
+                if existing.bound:
+                    binding.replaces = existing
+                else:
+                    # Never bound, so it serves nothing to keep: retired now, and what it was to
+                    # replace -- the binding still delivering -- passes to the new one. Chaining
+                    # instead left that one consuming for good once the middle one was retired (M3).
+                    binding.replaces, existing.replaces = existing.replaces, None
+                    await self._retire(existing, "changed again before it was bound")
             self._named.append(binding)
             created.append(binding)
             logger.info("Agent '%s': connection '%s' %s", agent, name, "changed; binding the new one" if existing else "added")
@@ -1097,7 +1117,11 @@ class NATSClient(IOClientBase):
 
         for name, binding in current.items():
             if name not in wanted:
+                # The binding it was to replace goes too: it is the one still delivering (M3).
+                replaced, binding.replaces = binding.replaces, None
                 await self._retire(binding, "removed")
+                if replaced is not None:
+                    await self._retire(replaced, "removed")
 
     def _start_retirement(self, binding: _Binding, reason: str) -> None:
         """Retire ``binding`` in the background, under the change lock (a replacement that just bound)."""
@@ -1137,6 +1161,7 @@ class NATSClient(IOClientBase):
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
         binding.subscriptions_ready = False
+        binding.bound = False
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self._change_grace
         await self._drain_subscriptions(deadline, binding)
@@ -2477,6 +2502,18 @@ class NATSClient(IOClientBase):
             binding.ack_waits[topic] = spec.ack_wait
         handler = self._message_handler(binding, spec.deliver_subject, None)
         sub = await client.subscribe(spec.deliver_subject, queue=spec.deliver_group, cb=handler)
+        # The broker refuses a subscription the account may not make asynchronously, through
+        # error_cb, so subscribe() returned and the binding read as bound for good (M4). The round
+        # trip makes any refusal arrive first; one naming this subject fails the attempt, and the
+        # connect loop retries it as a permission error. Compared lowercased: nats-py lowercases the
+        # whole -ERR line, the subject in it included.
+        await client.flush()
+        subject = spec.deliver_subject.lower()
+        refused = [error for error in binding.link.permission_errors if subject in error.lower()]
+        if refused:
+            with contextlib.suppress(Exception):
+                await sub.unsubscribe()
+            raise PermissionError(f"the broker refused the subscription to '{spec.deliver_subject}': {refused[0]}")
         binding.subscriptions.append(sub)
         logger.info(
             "Agent '%s' bound to consumer '%s' on stream '%s' (deliver subject '%s', group '%s', subjects %s)",
@@ -2533,6 +2570,8 @@ class NATSClient(IOClientBase):
         """
 
         async def message_handler(msg: Any) -> None:
+            if binding.jetstream is not None and await self._answer_control_message(msg):
+                return
             if self._consumption_paused and self._settles(binding):
                 # A degraded agent runs nothing (C4). What reaches it anyway -- a delivery still in
                 # the buffer while the pause waits for a connection change to finish, before it
@@ -2560,6 +2599,24 @@ class NATSClient(IOClientBase):
             run.add_done_callback(functools.partial(self._run_finished, binding, release))
 
         return message_handler
+
+    @staticmethod
+    async def _answer_control_message(msg: Any) -> bool:
+        """Answer or drop a JetStream status message; ``True`` if ``msg`` was one (S2).
+
+        Binding mode consumes through a plain subscription, so what nats-py's JetStream
+        subscription would handle itself reaches this handler: an idle heartbeat, and a flow
+        control request, after which the consumer delivers nothing until it is answered. Both
+        carry status ``100`` and no event; run as a delivery, they were termed as unparseable.
+        Only an operator-made consumer with ``idle_heartbeat`` or ``flow_control`` sends them.
+        """
+        headers = getattr(msg, "headers", None)
+        if not headers or headers.get(js_api.Header.STATUS) != CONTROL_MESSAGE_STATUS:
+            return False
+        if msg.reply:  # a flow control request; a heartbeat has no reply subject
+            with contextlib.suppress(Exception):
+                await msg.respond(b"")
+        return True
 
     @staticmethod
     def _peek_event_id(msg: Any) -> str | None:

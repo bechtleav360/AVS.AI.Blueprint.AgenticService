@@ -75,6 +75,7 @@ class Broker:
         core = MagicMock(is_closed=False, is_reconnecting=False)
         core.subscribe = AsyncMock(return_value=MagicMock(drain=AsyncMock(), unsubscribe=AsyncMock()))
         core.close = AsyncMock()
+        core.flush = AsyncMock()
         self.cores[link.name] = core
         link.nats_client = core
 

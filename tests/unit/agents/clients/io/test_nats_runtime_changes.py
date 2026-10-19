@@ -84,7 +84,7 @@ class Broker:
         if self.fail_next.get(link.name, 0):
             self.fail_next[link.name] -= 1
             raise ConnectionError(f"{link.name} not reachable yet")
-        core = MagicMock(is_closed=False)
+        core = MagicMock(is_closed=False, flush=AsyncMock())
         sub = MagicMock(drain=AsyncMock(), unsubscribe=AsyncMock())
 
         async def subscribe(*args: Any, **kwargs: Any) -> MagicMock:
@@ -224,6 +224,56 @@ class TestAddRemoveChange:
         assert "close A#1" not in broker.events, "nothing closed while the new link cannot bind"
         await _settled(nats_client)
         assert broker.events[-2:] == ["bind A#2", "close A#1"]
+
+    async def test_a_second_change_before_the_first_bound_still_retires_the_old_link(self, nats_client: NATSClient, broker: Broker) -> None:
+        """M3 -- the middle binding never bound; chaining it left the first one consuming for good."""
+        source = WatchedSource(A=_binding("A"))
+        await _started(nats_client, source, broker)
+        broker.fail_next["A"] = 10_000
+        source.passwords["A"] = "PLACEHOLDER-2"
+        source.notify()
+        await asyncio.sleep(0.05)
+        source.passwords["A"] = "PLACEHOLDER-3"
+        source.notify()
+        await asyncio.sleep(0.05)
+        assert "close A#1" not in broker.events, "the old link serves until the newest one binds"
+
+        broker.fail_next["A"] = 0
+        await _settled(nats_client)
+
+        assert broker.events == ["bind A#1", "bind A#2", "close A#1"]
+        assert [binding.link.nats_client for binding in nats_client._named] == [broker.links["A"][1]]
+
+    async def test_a_removal_before_the_change_bound_retires_both(self, nats_client: NATSClient, broker: Broker) -> None:
+        """M3 -- removing retired the pending binding only; the bound one it was to replace kept consuming."""
+        source = WatchedSource(A=_binding("A"))
+        await _started(nats_client, source, broker)
+        broker.fail_next["A"] = 10_000
+        source.passwords["A"] = "PLACEHOLDER-2"
+        source.notify()
+        await asyncio.sleep(0.05)
+
+        source.change()
+        await _settled(nats_client)
+
+        assert "close A#1" in broker.events
+        assert nats_client._named == []
+
+    async def test_a_reconnect_restores_readiness_only_for_a_bound_binding(self, nats_client: NATSClient, broker: Broker) -> None:
+        """A binding whose bind failed has no subscription for nats-py to replay."""
+        source = WatchedSource(A=_binding("A"))
+        await _started(nats_client, source, broker)
+        binding = nats_client._named[0]
+        binding.bound = False
+        binding.subscriptions_ready = False
+        assert binding.link.nats_client is not None
+
+        with patch.object(nats_client_module.nats, "connect", new_callable=AsyncMock, return_value=MagicMock(is_closed=False)) as connect:
+            binding.link.nats_client = None
+            await NATSClient._open_named_link(nats_client, binding.link)
+            await connect.call_args.kwargs["reconnected_cb"]()
+
+        assert binding.subscriptions_ready is False
 
     async def test_an_unchanged_connection_is_left_alone(self, nats_client: NATSClient, broker: Broker) -> None:
         source = WatchedSource(A=_binding("A"))
