@@ -12,6 +12,13 @@
   when it is acknowledged. Measured against JetStream with a 0.5 s limit: before, one run and the
   redelivery acknowledged unrun; now the redelivery runs to completion.
 
+- **`/status/env` no longer leaks what its masking missed, and no longer fails on `${PORT}`.** A URL
+  password holding `/`, `?` or `#` was partly returned, a token in a query string, an `AccountKey=` in
+  a connection string and every value of a section under a secret-named key (`credentials`) were
+  returned in clear, and keys such as `sentry_dsn` or `db_pass` were not recognised; a URL with a
+  non-numeric port answered 500. Measured over HTTP: seven placeholder secrets in the response
+  before, none now; status 200 with `${PORT}` (before: 500).
+
 - **Clearing the root Redis cache no longer clears every agent's.** Every named and agent cache nests
   under the default store's key prefix, and its `clear()` deleted everything under it -- with
   `key_prefix = ""`, the whole database. Its `list_namespaces()` listed the nested stores as its own

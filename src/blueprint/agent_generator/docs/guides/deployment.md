@@ -526,7 +526,11 @@ probe, Kubernetes would restart every agent in the group, reintroducing exactly 
 grouping was paid to remove.
 
 Also served, and useful when debugging rather than as probes: `GET /info`, `/status/env`,
-`/status/llm`, `/status/build`. There is no `/health/detailed`.
+`/status/llm`, `/status/build`. There is no `/health/detailed`. `/status/env` masks every key that
+names a secret (`key`, `token`, `password`, `secret`, ... and `pass`, `dsn`, `conn` as words) together
+with any section under it, a URL's userinfo, secret query parameters (`token=`, `sig=`) and
+`Name=value` segments of connection strings (`AccountKey=`); a URL whose userinfo cannot be told
+from the rest is masked whole. Treat it as an operator endpoint all the same.
 
 ### `readiness_policy`
 

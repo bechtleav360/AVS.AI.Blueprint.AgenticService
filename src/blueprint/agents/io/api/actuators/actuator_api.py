@@ -3,11 +3,12 @@
 import logging
 import os
 import platform
+import re
 from collections.abc import Sequence
 from importlib import metadata
 from importlib.metadata import PackageNotFoundError
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 from fastapi import HTTPException, status
@@ -38,6 +39,14 @@ whole-key match sees none of them.
 Deliberately over-broad. A key such as ``api_key_header`` or ``cache_key_prefix`` is masked
 although it holds nothing sensitive, which costs a line of diagnostics; the opposite error
 publishes a credential to anything that can reach the actuator.
+"""
+
+SECRET_KEY_WORDS = frozenset({"pass", "dsn", "conn", "sig", "signature"})
+"""Words that mark a key only as a whole ``_``/``.``/``-``-delimited word (M12).
+
+As substrings they would mask half the configuration -- ``passthrough_mode``,
+``connection_timeout`` -- so they count only where they stand alone: ``db_pass``,
+``sentry_dsn``, ``db_conn``, a query string's ``sig``.
 """
 
 CONFIG_MASK = "***"
@@ -328,9 +337,7 @@ class ActuatorApi(RestApiBase):
         ai_config_dict = (
             ai_config_model.model_dump()
             if hasattr(ai_config_model, "model_dump")
-            else ai_config_model.dict()
-            if hasattr(ai_config_model, "dict")
-            else {}
+            else ai_config_model.dict() if hasattr(ai_config_model, "dict") else {}
         )
         ai_config = self._sanitize_config(ai_config_dict)
 
@@ -405,12 +412,17 @@ class ActuatorApi(RestApiBase):
         This endpoint publishes configuration over HTTP, so the bias is towards masking: a
         false positive loses a line of diagnostics, a false negative publishes a secret.
 
-        Three rules, in order:
+        The rules, in order:
 
-        1. A key containing any of :data:`SECRET_KEY_MARKERS` is masked, whatever its value.
-        2. A string value that parses as a URL carrying userinfo has that userinfo stripped,
-           whatever its key -- ``redis://user:pass@host`` under a key called ``nats_url``
-           names nothing sensitive but carries a password.
+        1. A key containing any of :data:`SECRET_KEY_MARKERS`, or one of
+           :data:`SECRET_KEY_WORDS` as a whole word, is masked, whatever its value -- a section
+           or a list under it included, whole (M12: ``credentials = {user, value}`` named
+           nothing below it and came back in clear).
+        2. A string value is cleaned whatever its key: a URL loses its userinfo, failing
+           closed -- the whole value masked -- when the userinfo cannot be told from the rest
+           (a password containing ``/``, ``?`` or ``#``) or the URL does not parse; a query
+           parameter or a ``Name=value;`` segment with a secret name loses its value
+           (``?token=``, ``&sig=``, ``AccountKey=``).
         3. Booleans pass through even under a matching key. A flag cannot carry a credential,
            and ``auth_enabled`` is exactly the kind of value someone reads this endpoint for.
 
@@ -421,23 +433,69 @@ class ActuatorApi(RestApiBase):
 
     def _sanitize_value(self, key: str, value: Any) -> Any:
         """Apply the rules in :meth:`_sanitize_config` to one key/value pair."""
-        if isinstance(value, dict):
-            return self._sanitize_config(value)
-        if isinstance(value, (list, tuple)):
-            return [self._sanitize_value(key, item) for item in value]
         if isinstance(value, bool):
             return value
+        if isinstance(value, dict):
+            return CONFIG_MASK if self._is_secret_key(key) and value else self._sanitize_config(value)
+        if isinstance(value, (list, tuple)):
+            if self._is_secret_key(key) and any(isinstance(item, (dict, list, tuple)) for item in value):
+                return CONFIG_MASK
+            return [self._sanitize_value(key, item) for item in value]
         if self._is_secret_key(key):
             return CONFIG_MASK
         if isinstance(value, str):
-            return self._strip_url_userinfo(value)
+            return self._sanitize_string(value)
         return value
 
     @staticmethod
     def _is_secret_key(key: str) -> bool:
         """Return whether a configuration key may carry a credential."""
         lowered = key.lower()
-        return any(marker in lowered for marker in SECRET_KEY_MARKERS)
+        if any(marker in lowered for marker in SECRET_KEY_MARKERS):
+            return True
+        return any(word in SECRET_KEY_WORDS for word in re.split(r"[_.\-]+", lowered))
+
+    def _sanitize_string(self, value: str) -> str:
+        """Clean one string value: URL userinfo, secret query parameters, secret ``Name=value;`` segments."""
+        value = self._strip_url_userinfo(value)
+        if value == CONFIG_MASK:
+            return value
+        value = self._mask_secret_query(value)
+        return self._mask_secret_segments(value)
+
+    def _mask_secret_query(self, value: str) -> str:
+        """Mask the value of each query parameter with a secret name (``?token=``, ``&sig=``)."""
+        if "://" not in value or "?" not in value:
+            return value
+        try:
+            parts = urlsplit(value)
+        except ValueError:
+            return CONFIG_MASK
+        if not parts.query:
+            return value
+        pairs = parse_qsl(parts.query, keep_blank_values=True)
+        if not any(self._is_secret_key(name) for name, _ in pairs):
+            return value
+        masked = [(name, CONFIG_MASK if self._is_secret_key(name) else item) for name, item in pairs]
+        query = urlencode(masked, safe="*")
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))
+
+    def _mask_secret_segments(self, value: str) -> str:
+        """Mask the value of each ``Name=value`` segment with a secret name, in a ``;``-separated string.
+
+        The shape of a connection string -- ``AccountName=x;AccountKey=...`` -- whose own key
+        (``storage``, ``connection``) names nothing a marker would catch.
+        """
+        if "=" not in value or ";" not in value:
+            return value
+        segments = value.split(";")
+        changed = False
+        for index, segment in enumerate(segments):
+            name, sep, _ = segment.partition("=")
+            if sep and self._is_secret_key(name.strip()):
+                segments[index] = f"{name}={CONFIG_MASK}"
+                changed = True
+        return ";".join(segments) if changed else value
 
     @staticmethod
     def _strip_url_userinfo(value: str) -> str:
@@ -449,19 +507,26 @@ class ActuatorApi(RestApiBase):
         returned unchanged -- most configuration values are not URLs, and replacing them with
         a placeholder would empty the endpoint.
         """
-        if "@" not in value or "//" not in value:
+        scheme_end = value.find("://")
+        if scheme_end < 0 or "@" not in value[scheme_end + 3 :]:
             return value
         try:
             parts = urlsplit(value)
+            port = parts.port  # raises for a non-numeric port, '${PORT}' among them (M12)
         except ValueError:
             return CONFIG_MASK
         if not parts.username and not parts.password:
-            return value
+            # An '@' after '://' that is not userinfo: a password holding '/', '?' or '#' ends
+            # the authority early, and the rest of it sits in the path, query or fragment.
+            return CONFIG_MASK
         host = parts.hostname or ""
         if ":" in host:
             host = f"[{host}]"
-        netloc = f"{host}:{parts.port}" if parts.port is not None else host
-        return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+        netloc = f"{host}:{port}" if port is not None else host
+        stripped = urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+        # Fail closed (M12): an '@' left after '://' means the userinfo did not end where the
+        # parser thought, and part of a password is still in the value.
+        return CONFIG_MASK if "@" in stripped[scheme_end + 3 :] else stripped
 
     def _ensure_config(self) -> Config:
         if not self.config:

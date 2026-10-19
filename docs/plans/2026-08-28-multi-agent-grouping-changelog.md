@@ -146,6 +146,11 @@ framework endpoints (`nats`, `cache`, `scheduler`), one Swagger tag per agent, a
   per-data-source state is keyed by that context key. Broker test on the accounts broker: the same
   `(source, id)` on connections A and B runs on both, a repeat on A is skipped; without the change B
   was skipped.
+- Step 13, `/status/env` masker (M12): URL userinfo fails closed (an `@` left after `://`, an
+  unparseable port), secret query parameters and `Name=value;` segments are masked, a section under a
+  secret key is masked whole, `pass`/`dsn`/`conn`/`sig`/`signature` count as whole words. Live (a built
+  app under uvicorn, `GET /status/env`): 200 and no placeholder in the body; control: 500 with
+  `${PORT}`, and without it seven placeholders returned.
 - Step 12, Redis cache isolation (M6): the default store's `clear`, `list_namespaces` and `list_values`
   take only keys of its own form (`<prefix>:<namespace>:<sha256>`); a clear without `key_prefix` warns;
   no key-layout change. Live (Redis 7 in WSL, stores from `CacheBackendFactory` for root, `orders`,

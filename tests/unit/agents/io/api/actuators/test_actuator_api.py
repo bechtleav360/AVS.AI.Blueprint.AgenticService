@@ -109,6 +109,51 @@ class TestSanitizeConfig:
     def test_a_plain_string_that_merely_contains_an_at_sign_is_untouched(self, actuator_api: ActuatorApi) -> None:
         assert actuator_api._sanitize_config({"contact": "team@example.com"})["contact"] == "team@example.com"
 
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "redis://admin:p@ss/word@cache.internal:6379/0",
+            "redis://admin:pa#ss@cache.internal:6379/0",
+            "redis://admin:pa?ss@cache.internal:6379/0",
+        ],
+    )
+    def test_a_password_with_a_url_delimiter_is_not_leaked(self, actuator_api: ActuatorApi, url: str) -> None:
+        """M12 -- urlsplit ends the authority at '/', '?' or '#', so the rest of the password stayed in the value."""
+        result = actuator_api._sanitize_config({"redis_url": url})["redis_url"]
+        assert not any(part in result for part in ("ss/word", "pa#ss", "pa?ss", "word@", "#ss", "?ss"))
+
+    def test_a_port_placeholder_does_not_fail_the_endpoint(self, actuator_api: ActuatorApi) -> None:
+        """M12 -- parts.port raised for 'redis://u:pw@host:${PORT}', which answered 500."""
+        result = actuator_api._sanitize_config({"redis_url": "redis://u:PLACEHOLDER@host:${PORT}/0"})["redis_url"]
+        assert "PLACEHOLDER" not in result
+
+    def test_a_token_in_the_query_string_is_masked(self, actuator_api: ActuatorApi) -> None:
+        result = actuator_api._sanitize_config({"webhook_url": "https://hooks.example.com/x?token=PLACEHOLDER&channel=ops"})
+        assert result["webhook_url"] == "https://hooks.example.com/x?token=***&channel=ops"
+
+    def test_a_signature_in_the_query_string_is_masked(self, actuator_api: ActuatorApi) -> None:
+        url = "https://acct.blob.core.windows.net/c?sv=2024-01-01&sig=PLACEHOLDER"
+        assert "PLACEHOLDER" not in actuator_api._sanitize_config({"blob_url": url})["blob_url"]
+
+    def test_a_key_segment_of_a_connection_string_is_masked(self, actuator_api: ActuatorApi) -> None:
+        """M12 -- 'AccountKey=' in a value whose own key names nothing sensitive."""
+        value = "DefaultEndpointsProtocol=https;AccountName=acct;AccountKey=PLACEHOLDER;EndpointSuffix=core.windows.net"
+        result = actuator_api._sanitize_config({"storage": value})["storage"]
+        assert result == "DefaultEndpointsProtocol=https;AccountName=acct;AccountKey=***;EndpointSuffix=core.windows.net"
+
+    def test_a_section_under_a_secret_key_is_masked_whole(self, actuator_api: ActuatorApi) -> None:
+        """M12 -- its own keys ('value', 'user') named nothing, so it came back in clear."""
+        result = actuator_api._sanitize_config({"credentials": {"user": "svc", "value": "PLACEHOLDER"}})
+        assert result["credentials"] == "***"
+
+    @pytest.mark.parametrize("key", ["db_pass", "sentry_dsn", "db_conn", "postgres_dsn"])
+    def test_pass_dsn_and_conn_as_words_are_markers(self, actuator_api: ActuatorApi, key: str) -> None:
+        assert actuator_api._sanitize_config({key: "PLACEHOLDER"})[key] == "***"
+
+    @pytest.mark.parametrize("key", ["passthrough_mode", "connection_timeout", "bypass_cache"])
+    def test_those_words_inside_others_are_not(self, actuator_api: ActuatorApi, key: str) -> None:
+        assert actuator_api._sanitize_config({key: "visible"})[key] == "visible"
+
 
 # ---------------------------------------------------------------------------
 # liveness_probe
