@@ -188,6 +188,22 @@ def _agent_findings(image_root: Path, name: str, entry: Any, claimed: dict[Path,
     else:
         print(f"[--] {name}: no settings.toml of its own; it reads the image's")
 
+    # The scheduler checks the single-agent command runs, on the group's terms (S27): the agent's
+    # scheduler_mode before the image's, and event_bus from the image, where a process key lives.
+    from .validate import scheduler_findings  # here, not at the top: validate imports this module
+
+    agent_settings = _load(settings)
+    image_settings = _load(image_root / "settings.toml")
+    scheduler_issues, scheduler_notices = scheduler_findings(
+        root,
+        mode_sources=[agent_settings, image_settings],
+        bus_sources=[image_settings],
+        where=f"{declared_root}/settings.toml or the image's settings.toml",
+        agent=name,
+    )
+    issues.extend(scheduler_issues)
+    notices.extend(scheduler_notices)
+
     if root != image_root and root.name != name:
         notices.append(
             f"Agent '{name}' lives in a directory named '{root.name}'. Nothing breaks, but 'asbs dev' in that "
@@ -196,6 +212,16 @@ def _agent_findings(image_root: Path, name: str, entry: Any, claimed: dict[Path,
         )
 
     return issues, warnings, notices
+
+
+def _load(settings: Path) -> dict[str, Any]:
+    """A parsed settings file, or ``{}`` when it is missing or unreadable (its own check reports that)."""
+    if not settings.is_file():
+        return {}
+    try:
+        return tomllib.loads(settings.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
 
 
 def _self_scoped_issues(name: str, settings: Path) -> list[str]:

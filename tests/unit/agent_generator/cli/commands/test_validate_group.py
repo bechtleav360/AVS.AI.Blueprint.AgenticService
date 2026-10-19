@@ -165,3 +165,35 @@ class TestAbsoluteSrcImports:
 
         found = [w for w in warnings if "imports its own code as 'src'" in w]
         assert "and 3 more" in found[0]
+
+
+class TestSchedulersInAGroup:
+    """S27 (d) -- '--group' ran no scheduler check at all."""
+
+    @staticmethod
+    def _image(tmp_path: Path, agent_settings: str, image_settings: str = "") -> Path:
+        _agent_dir(tmp_path / "agents" / "orders")
+        schedulers = tmp_path / "agents" / "orders" / "src" / "schedulers"
+        schedulers.mkdir(parents=True)
+        (schedulers / "nightly_scheduler.py").write_text("# scheduler\n", encoding="utf-8")
+        (tmp_path / "agents" / "orders" / "settings.toml").write_text(agent_settings, encoding="utf-8")
+        if image_settings:
+            (tmp_path / "settings.toml").write_text(image_settings, encoding="utf-8")
+        (tmp_path / "agents.toml").write_text(_map_text("agents/orders"), encoding="utf-8")
+        return tmp_path
+
+    def test_a_scheduler_without_a_mode_is_an_issue(self, tmp_path: Path) -> None:
+        image = self._image(tmp_path, '[default]\nmodel_name = "x"\n')
+
+        issues, _, _ = _findings(image, image / "agents.toml")
+
+        assert any("Agent 'orders'" in issue and "no 'scheduler_mode'" in issue for issue in issues)
+
+    def test_the_images_event_bus_serves_an_agents_event_mode(self, tmp_path: Path) -> None:
+        """scheduler_mode from the agent's file, event_bus from the image's -- where a process key lives."""
+        image = self._image(tmp_path, '[default]\nscheduler_mode = "event"\n', '[default]\nevent_bus = "nats"\n')
+
+        issues, _, notices = _findings(image, image / "agents.toml")
+
+        assert not [issue for issue in issues if "scheduler" in issue]
+        assert any("CronJob" in notice for notice in notices)

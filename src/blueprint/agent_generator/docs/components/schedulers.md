@@ -52,7 +52,7 @@ A cron expression consists of five fields separated by spaces:
 │ ┌───────────── hour (0-23)
 │ │ ┌───────────── day of month (1-31)
 │ │ │ ┌───────────── month (1-12)
-│ │ │ │ ┌───────────── day of week (0-6, 0 = Sunday)
+│ │ │ │ ┌───────────── day of week (mon-sun; 0-6 = Monday-Sunday)
 │ │ │ │ │
 * * * * *
 ```
@@ -64,10 +64,16 @@ A cron expression consists of five fields separated by spaces:
 | `0 * * * *` | Every hour, on the hour |
 | `0 */2 * * *` | Every 2 hours |
 | `30 9 * * *` | Daily at 09:30 |
-| `0 9 * * 1` | Every Monday at 09:00 |
+| `0 9 * * mon` | Every Monday at 09:00 |
 | `0 0 1 * *` | First day of each month at midnight |
 | `0 6,18 * * *` | At 06:00 and 18:00 daily |
-| `*/15 9-17 * * 1-5` | Every 15 minutes during business hours, weekdays only |
+| `*/15 9-17 * * mon-fri` | Every 15 minutes during business hours, weekdays only |
+
+**The day of the week counts from Monday:** `0` is Monday and `6` is Sunday, as in apscheduler, which
+runs the `in_process` timer. A standard cron -- the `CronJob` that fires an `event`-mode tick -- counts
+`0` as Sunday, so write days as names (`mon`, `mon-fri`, `sun`), which both read the same. `7` is
+refused, and in `event` mode so is any day given by number. The `in_process` timer runs in the
+host's local time unless `scheduler_timezone` names one (`"UTC"`, `"Europe/Berlin"`).
 
 ## Abstract Method: tick
 

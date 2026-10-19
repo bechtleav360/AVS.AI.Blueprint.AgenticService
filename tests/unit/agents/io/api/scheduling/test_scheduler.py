@@ -174,8 +174,8 @@ class TestValidateCrontab:
         with pytest.raises(ValueError, match="cron"):
             _BadCrontabScheduler().wire()
 
-    def test_in_process_wiring_does_not_reach_the_check(self, settings: dict[str, Any], mock_registry: MagicMock) -> None:
-        """apscheduler validates it there, at the point it builds the trigger."""
+    def test_in_process_wiring_checks_it_too(self, settings: dict[str, Any], mock_registry: MagicMock) -> None:
+        """S27 -- apscheduler parsed it only in on_startup, so a bad crontab passed wiring (and validate)."""
         settings["scheduler_mode"] = SCHEDULER_MODE_IN_PROCESS
 
         class _LooseCrontabScheduler(SchedulerBase):
@@ -185,7 +185,28 @@ class TestValidateCrontab:
             async def tick(self) -> None:
                 """Never called."""
 
-        assert _LooseCrontabScheduler().wire() is None
+        with pytest.raises(ValueError, match="not a valid cron expression"):
+            _LooseCrontabScheduler().wire()
+
+    @pytest.mark.parametrize("mode", [SCHEDULER_MODE_IN_PROCESS, SCHEDULER_MODE_EVENT])
+    def test_day_seven_is_refused_in_both_modes(self, mode: str) -> None:
+        """D14 -- 7 is Sunday to a standard cron and nothing to apscheduler."""
+        with pytest.raises(ValueError, match="names day 7.*Name the day instead: 'sun'"):
+            validate_crontab("0 3 * * 7", mode)
+
+    @pytest.mark.parametrize("crontab", ["0 3 * * 1", "0 3 * * 1-5", "0 3 * * */2", "0 3 * * mon,3"])
+    def test_a_weekday_by_number_is_refused_in_event_mode(self, crontab: str) -> None:
+        """D14 -- an external cron counts 0 as Sunday, the blueprint 0 as Monday."""
+        with pytest.raises(ValueError, match="names a different day depending on who reads it"):
+            validate_crontab(crontab, SCHEDULER_MODE_EVENT)
+
+    @pytest.mark.parametrize("crontab", ["0 3 * * mon-fri", "0 3 * * sun", "*/15 9-17 * * mon-fri", "0 3 * * *", "0 3 * * mon-fri/2"])
+    def test_named_weekdays_pass_in_event_mode(self, crontab: str) -> None:
+        assert validate_crontab(crontab, SCHEDULER_MODE_EVENT) == crontab
+
+    def test_a_weekday_by_number_still_runs_in_process(self) -> None:
+        """In in_process mode the blueprint itself reads it -- 0 is Monday -- so firing days do not move."""
+        assert validate_crontab("0 3 * * 1-5", SCHEDULER_MODE_IN_PROCESS) == "0 3 * * 1-5"
 
 
 class TestTickTopic:
@@ -669,3 +690,72 @@ class _CountingScheduler(SchedulerBase):
         self.ticks += 1
         if self.failure is not None:
             raise self.failure
+
+
+class TestStartupIsMarkedOnlyOnceItSucceeded:
+    """S25 -- a startup that raised left _started up; the retry then reported a recovery with no timer."""
+
+    async def test_a_failed_startup_can_be_retried(self, in_process_scheduler: _TestScheduler) -> None:
+        with (
+            patch(f"{_SCHEDULER_MODULE}.CronTrigger.from_crontab", side_effect=ValueError("refused")),
+            pytest.raises(ValueError, match="refused"),
+        ):
+            await in_process_scheduler.on_startup()
+        assert in_process_scheduler._started is False
+
+        with patch(f"{_SCHEDULER_MODULE}.AsyncIOScheduler") as timer:
+            await in_process_scheduler.on_startup()
+        timer.return_value.start.assert_called_once()
+        assert in_process_scheduler._started is True
+
+
+class TestEverySchedulerHasItsTickAge:
+    """S26 -- a second gauge of one name on one meter is dropped, so only the first scheduler was exported."""
+
+    def test_two_schedulers_of_one_agent_are_both_exported(self, settings: dict[str, Any], mock_registry: MagicMock) -> None:
+        from opentelemetry.sdk.metrics import MeterProvider
+        from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+
+        settings["scheduler_mode"] = SCHEDULER_MODE_IN_PROCESS
+        reader = InMemoryMetricReader()
+        meter = MeterProvider(metric_readers=[reader]).get_meter("test")
+        nightly, hourly = _TestScheduler(), _TestScheduler()
+        nightly.name, hourly.name = "nightly", "hourly"
+        with patch(f"{_SCHEDULER_MODULE}.agent_meter", return_value=meter):
+            nightly._register_tick_gauge()
+            hourly._register_tick_gauge()
+            nightly._register_tick_gauge()  # a retried startup registers nothing twice
+
+        data = reader.get_metrics_data()
+        points = [
+            point.attributes["scheduler"]
+            for resource in data.resource_metrics
+            for scope in resource.scope_metrics
+            for metric in scope.metrics
+            if metric.name == "blueprint.scheduler.tick_age_seconds"
+            for point in metric.data.data_points
+        ]
+        assert sorted(points) == ["hourly", "nightly"]
+
+
+class TestSchedulerTimezone:
+    """D15 -- host-local by default; scheduler_timezone opts into a named zone for the in-process timer."""
+
+    async def test_unset_keeps_the_host_local_timezone(self, in_process_scheduler: _TestScheduler) -> None:
+        with patch(f"{_SCHEDULER_MODULE}.AsyncIOScheduler"), patch(f"{_SCHEDULER_MODULE}.CronTrigger.from_crontab") as cron:
+            await in_process_scheduler.on_startup()
+        assert cron.call_args.kwargs["timezone"] is None
+
+    async def test_a_named_zone_reaches_the_trigger(self, in_process_scheduler: _TestScheduler, settings: dict[str, Any]) -> None:
+        from zoneinfo import ZoneInfo
+
+        settings["scheduler_timezone"] = "Europe/Berlin"
+        with patch(f"{_SCHEDULER_MODULE}.AsyncIOScheduler") as timer, patch(f"{_SCHEDULER_MODULE}.CronTrigger.from_crontab") as cron:
+            await in_process_scheduler.on_startup()
+        assert cron.call_args.kwargs["timezone"] == ZoneInfo("Europe/Berlin")
+        assert timer.call_args.kwargs["timezone"] == ZoneInfo("Europe/Berlin")
+
+    async def test_an_unknown_zone_fails_startup(self, in_process_scheduler: _TestScheduler, settings: dict[str, Any]) -> None:
+        settings["scheduler_timezone"] = "Mars/Olympus"
+        with pytest.raises(ValueError, match="not an IANA timezone name"):
+            await in_process_scheduler.on_startup()

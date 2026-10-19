@@ -426,7 +426,7 @@ Use standard 5-field cron syntax:
 │ ┌───────────── hour (0-23)
 │ │ ┌───────────── day of month (1-31)
 │ │ │ ┌───────────── month (1-12)
-│ │ │ │ ┌───────────── day of week (0-7, 0=Sunday)
+│ │ │ │ ┌───────────── day of week (mon-sun; 0-6 = Monday-Sunday)
 │ │ │ │ │
 │ │ │ │ │
 * * * * *
@@ -436,8 +436,14 @@ Common patterns:
 - `*/5 * * * *` - Every 5 minutes
 - `0 * * * *` - Every hour at minute 0
 - `0 2 * * *` - Daily at 2:00 AM
-- `0 8 * * 1-5` - Weekdays at 8:00 AM
+- `0 8 * * mon-fri` - Weekdays at 8:00 AM
 - `0 0 1 * *` - Monthly at midnight on the 1st
+
+**The day of the week counts from Monday:** `0` is Monday and `6` is Sunday, as in apscheduler, which
+runs the `in_process` timer. A standard cron -- the `CronJob` that fires an `event`-mode tick -- counts
+`0` as Sunday, so write days as names (`mon`, `mon-fri`, `sun`), which both read the same. `7` is
+refused, and in `event` mode so is any day given by number. The `in_process` timer runs in the
+host's local time unless `scheduler_timezone` names one (`"UTC"`, `"Europe/Berlin"`).
 
 ### Examples
 

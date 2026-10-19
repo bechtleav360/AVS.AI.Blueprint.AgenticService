@@ -12,6 +12,27 @@
   when it is acknowledged. Measured against JetStream with a 0.5 s limit: before, one run and the
   redelivery acknowledged unrun; now the redelivery runs to completion.
 
+- **Crontabs read the same in both scheduler modes, or fail startup.** The day of the week is
+  apscheduler's count -- `0` = Monday ... `6` = Sunday -- so `in_process` firing days do not move. `7` is
+  refused (it was accepted in `event` mode and failed only when the timer was built), and **an `event`-mode
+  scheduler whose crontab gives the day of the week by number (`1-5`, `*/2`) now fails startup**: the
+  external cron counts `0` as Sunday, so the number named a different day there. Write names
+  (`mon-fri`). The crontab is now checked when the scheduler is wired in both modes. New, opt-in:
+  `scheduler_timezone` for the `in_process` timer; unset keeps the host's local time.
+
+- **A scheduler whose startup failed is no longer reported as recovered.** It was marked started before
+  its timer existed, so the startup retry found it "already started" and cleared the agent's latch
+  with no timer running.
+
+- **Every scheduler's `blueprint.scheduler.tick_age_seconds` is exported.** A second scheduler of one
+  agent created a second gauge of the same name, which the SDK drops, so only the first was reported.
+  Measured with two in-process schedulers: two points (before: one).
+
+- **`asbs validate` checks schedulers as the runtime does.** It accepts `scheduler_mode` written as the
+  runtime reads it (`"Event"`), counts environment overrides, refuses an `event_bus` that cannot deliver
+  a tick, reports a missing `event_bus` as a notice (it is a process-wide key and may be set elsewhere),
+  and `--group` runs the scheduler checks per agent.
+
 - **A grouped scheduler's tick subject and trigger route name the agent once.** Both were built from the
   scheduler's qualified name, so the subject was `orders.scheduler.orders_nightly` and the route
   `/api/orders/scheduler/orders_nightly/trigger`; they are now `orders.scheduler.nightly` and

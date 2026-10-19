@@ -146,6 +146,12 @@ framework endpoints (`nats`, `cache`, `scheduler`), one Swagger tag per agent, a
   per-data-source state is keyed by that context key. Broker test on the accounts broker: the same
   `(source, id)` on connections A and B runs on both, a repeat on A is skipped; without the change B
   was skipped.
+- Step 11, scheduler robustness (S24-S27, D14, D15): `_started` is set only after the timer or the event
+  wiring stands; one tick-age gauge per meter reports every scheduler of it (weak registry); `validate_crontab`
+  runs in both modes, refuses day `7` and, in event mode, any numeric weekday; opt-in `scheduler_timezone`;
+  `asbs validate` and `--group` use the runtime's mode and transport checks and count environment
+  overrides. Live (real APScheduler timer, every-minute crontab, UTC, two schedulers): both ticked at the
+  next minute and the gauge reported both; control: one gauge point.
 - Step 10, grouped scheduler (M8, M9): the tick handler is built under `namespace_scope(self.namespace)`;
   tick subject, trigger route and handler name use `base_name`; docs agree. Live (Core NATS, a group
   with agent `orders`, scheduler `nightly`, event mode): subscribed `orders.scheduler.nightly`, handler

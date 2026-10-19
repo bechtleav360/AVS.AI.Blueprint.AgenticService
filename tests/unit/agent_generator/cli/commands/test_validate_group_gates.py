@@ -8,6 +8,8 @@ each thing it can name, it does.
 
 from pathlib import Path
 
+import pytest
+
 from blueprint.agent_generator.cli.commands.validate import _group_findings
 
 DECLARATION = "from blueprint.agents.app_builder import AppBuilder\n\nagent = AppBuilder()\n"
@@ -190,13 +192,43 @@ class TestSchedulers:
         assert len(notices) == 1
         assert "CronJob" in notices[0]
 
-    def test_event_mode_without_a_bus_is_an_issue(self, tmp_path: Path) -> None:
-        """The tick is an ordinary event, so with no transport there is nothing to subscribe to."""
+    def test_event_mode_without_a_bus_in_this_file_is_a_notice(self, tmp_path: Path) -> None:
+        """S27 -- event_bus is a process-scope key: the group's settings or the environment may set it."""
         project = self._with_scheduler(_project(tmp_path, agent_map=_agent(), settings='[default]\nscheduler_mode = "event"\n'))
+
+        issues, _, notices = _group_findings(project)
+
+        assert issues == []
+        assert any("no 'event_bus' is set" in notice for notice in notices)
+
+    def test_event_mode_on_a_bus_that_cannot_deliver_a_tick_is_an_issue(self, tmp_path: Path) -> None:
+        """S27 (a) -- the runtime needs a topic transport; 'sessions' is present but delivers no tick."""
+        settings = '[default]\nscheduler_mode = "event"\nevent_bus = "sessions"\n'
+        project = self._with_scheduler(_project(tmp_path, agent_map=_agent(), settings=settings))
 
         issues, _, _ = _group_findings(project)
 
-        assert any("no 'event_bus' is set" in issue for issue in issues)
+        assert any("'event_bus' is 'sessions', which cannot deliver a tick" in issue for issue in issues)
+
+    def test_the_mode_is_read_as_the_runtime_reads_it(self, tmp_path: Path) -> None:
+        """S27 (e) -- 'Event' runs; validate refused it."""
+        settings = '[default]\nscheduler_mode = " Event "\nevent_bus = "nats"\n'
+        project = self._with_scheduler(_project(tmp_path, agent_map=_agent(), settings=settings))
+
+        issues, _, _ = _group_findings(project)
+
+        assert issues == []
+
+    def test_an_environment_override_counts(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """S27 (c) -- a value the deployment supplies is not missing."""
+        monkeypatch.setenv("DYNACONF_SCHEDULER_MODE", "event")
+        monkeypatch.setenv("DYNACONF_EVENT_BUS", "nats")
+        project = self._with_scheduler(_project(tmp_path, agent_map=_agent(), settings='[default]\napp_name = "demo"\n'))
+
+        issues, _, notices = _group_findings(project)
+
+        assert issues == []
+        assert not any("no 'event_bus'" in notice for notice in notices)
 
     def test_in_process_mode_without_a_cache_says_every_replica_runs_every_tick(self, tmp_path: Path) -> None:
         settings = '[default]\nscheduler_mode = "in_process"\n'

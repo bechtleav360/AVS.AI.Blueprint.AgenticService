@@ -38,12 +38,15 @@ Example::
 
 from __future__ import annotations
 
+import functools
 import logging
 import time
+import weakref
 from abc import abstractmethod
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -91,22 +94,58 @@ clock skew plus scheduler jitter -- seconds. Five minutes is generous. It does n
 outlast the interval between ticks, because the next tick claims a different key.
 """
 
+_TICK_GAUGE_SCHEDULERS: weakref.WeakKeyDictionary[Any, weakref.WeakSet[SchedulerBase]] = weakref.WeakKeyDictionary()
+"""Per meter, the schedulers its one tick-age gauge reports (S26). Weak both ways: a meter replaced
+with its provider, or a scheduler gone with its application, drops out by itself."""
 
-def validate_crontab(crontab: str) -> str:
-    """Return the crontab if an external cron can read it, else raise.
 
-    In ``"in_process"`` mode ``CronTrigger.from_crontab`` parses the expression, so a typo
-    fails the pod. In ``"event"`` mode nothing parses it at all -- the tick arrives from
-    outside -- so without this a typo surfaces as a tick that never comes, long after the
-    process reported itself healthy.
+def _observe_tick_ages(schedulers: weakref.WeakSet[SchedulerBase], _options: CallbackOptions) -> Iterable[Observation]:
+    return [scheduler.tick_age_observation() for scheduler in list(schedulers)]
+
+
+def normalise_scheduler_mode(raw: object) -> str:
+    """``scheduler_mode`` as the runtime reads it: trimmed and lower-cased; ``""`` when unset.
+
+    Shared with ``asbs validate`` (S27), which compared the raw value and so refused ``"Event"``,
+    a value the runtime runs.
+    """
+    return str(raw or "").strip().lower()
+
+
+def delivers_ticks(event_bus: object) -> bool:
+    """Whether ``event_bus`` names a transport that can deliver an event-mode tick (a topic subscription).
+
+    Shared with ``asbs validate`` (S27), which only checked that the key was present.
+    """
+    return str(event_bus or "").strip().lower() in TOPIC_TRANSPORTS
+
+
+def validate_crontab(crontab: str, mode: str | None = None) -> str:
+    """Return the crontab if this scheduler and an external cron read it alike, else raise.
+
+    Run in both modes (S27). In ``"event"`` mode nothing else parses the expression -- the tick
+    arrives from outside -- so without this a typo surfaces as a tick that never comes, long
+    after the process reported itself healthy.
 
     ``croniter`` is used rather than apscheduler's parser because the consumer of this
-    expression is an external scheduler reading the five standard fields, and apscheduler
+    expression may be an external scheduler reading the five standard fields, and apscheduler
     accepts extensions such as a leading seconds field that no cron implementation does.
 
+    **The day of the week** (plan D14). The blueprint's dialect is apscheduler's, which runs the
+    ``"in_process"`` timer: ``0`` is Monday and ``6`` is Sunday. A standard cron counts ``0`` as
+    Sunday, so the two disagree on every number; names (``mon``, ``mon-fri``, ``sun``) read the
+    same in both. Hence ``7`` is refused everywhere (Sunday to cron, nothing to apscheduler), and
+    in ``"event"`` mode -- where an external cron fires the tick -- a day of the week given by
+    number is refused, because which day it names depends on who reads it.
+
+    Args:
+        crontab: The declared expression.
+        mode: ``"event"`` or ``"in_process"``; ``None`` leaves out the numeric-weekday check.
+
     Raises:
-        ValueError: if the expression is empty, is not a valid cron expression, or does not
-            have exactly the five standard fields.
+        ValueError: if the expression is empty, is not a valid cron expression, does not have
+            exactly the five standard fields, names day ``7``, or names a day by number in
+            ``"event"`` mode.
     """
     expression = crontab.strip()
     if not expression:
@@ -124,7 +163,49 @@ def validate_crontab(crontab: str) -> str:
             "ones (minute hour day-of-month month day-of-week); seconds and year are apscheduler extensions it will not "
             "understand."
         )
+    weekday = fields[4]
+    if _names_day_seven(weekday):
+        raise ValueError(
+            f"The declared crontab '{crontab}' names day 7 in its day-of-week field. In the blueprint 0 is Monday and 6 "
+            "is Sunday (apscheduler's count); 7 is Sunday to a standard cron and nothing to apscheduler. Name the day "
+            "instead: 'sun'."
+        )
+    if mode == SCHEDULER_MODE_EVENT and _names_a_day_by_number(weekday):
+        raise ValueError(
+            f"The declared crontab '{crontab}' gives the day of the week by number ('{weekday}'), and in event mode an "
+            "external cron fires the tick. A standard cron counts 0 as Sunday, the blueprint counts 0 as Monday, so the "
+            "number names a different day depending on who reads it. Use names, which both read the same: 'mon-fri', "
+            "'sun', 'mon,wed'."
+        )
     return expression
+
+
+def _weekday_terms(field: str) -> list[tuple[str, str]]:
+    """The ``(base, step)`` terms of a day-of-week field: ``"mon-fri/2,sun"`` -> ``[("mon-fri", "2"), ("sun", "")]``."""
+    terms = []
+    for term in field.split(","):
+        base, _, step = term.partition("/")
+        terms.append((base, step))
+    return terms
+
+
+def _names_day_seven(field: str) -> bool:
+    """Whether a day-of-week field uses ``7`` as a day (not as a step)."""
+    return any("7" in base.split("-") for base, _ in _weekday_terms(field))
+
+
+def _names_a_day_by_number(field: str) -> bool:
+    """Whether a day-of-week field depends on how days are numbered.
+
+    A number as a day or a range end does, and so does ``*/n``: it steps from day 0, which is a
+    different day in each count. ``*`` alone and names do not.
+    """
+    for base, step in _weekday_terms(field):
+        if any(character.isdigit() for character in base):
+            return True
+        if base == "*" and step:
+            return True
+    return False
 
 
 _TOPIC_CONTEXT_KEYS = ("nats_topic", "dapr_topic", "topic")
@@ -242,6 +323,7 @@ class SchedulerBase(RestApiBase):
         self._tick_handler: SchedulerTickHandler | None = None
         self._scheduler: AsyncIOScheduler | None = None
         self._started = False
+        self._gauge_registered = False
         self._trigger_route_registered = False
         # When this scheduler last ran its tick, for the freshness gauge. None until the first.
         self._last_tick: float | None = None
@@ -314,15 +396,14 @@ class SchedulerBase(RestApiBase):
                 transport that can deliver the tick, or if the tick topic is unusable.
         """
         self.register_trigger_route()
+        # Both modes (S27): in in_process mode apscheduler parses it too, but only in on_startup,
+        # and it neither refuses 7 with a reason nor reads a weekday as an external cron would.
+        validate_crontab(self._crontab, self.scheduler_mode)
 
         if self.scheduler_mode != SCHEDULER_MODE_EVENT:
             return None
 
         self._require_event_transport()
-        # Nothing else ever parses the crontab in event mode -- no CronTrigger is built -- so a
-        # typo would otherwise surface as a tick that never arrives, long after this process
-        # reported itself healthy.
-        validate_crontab(self._crontab)
         if self._tick_handler is None:
             # In the scheduler's own namespace (M8): build() calls this outside any scope, so the
             # handler -- a Component taking its namespace from the ambient scope -- landed at the
@@ -369,7 +450,7 @@ class SchedulerBase(RestApiBase):
                 not fall back to either mode.
         """
         raw = self.config.get("scheduler_mode", None)
-        mode = str(raw or "").strip().lower()
+        mode = normalise_scheduler_mode(raw)
         if not mode:
             raise ValueError(
                 f"Scheduler '{self.name}' is registered but 'scheduler_mode' is not set, and it has no default. "
@@ -381,6 +462,27 @@ class SchedulerBase(RestApiBase):
         if mode not in SCHEDULER_MODES:
             raise ValueError(f"Config key 'scheduler_mode' must be one of {', '.join(SCHEDULER_MODES)}, got {raw!r}.")
         return mode
+
+    def _resolve_timezone(self) -> Any:
+        """``scheduler_timezone`` as a ``ZoneInfo``, or ``None`` for the host's local time (plan D15).
+
+        Opt-in: unset keeps the host-local timezone every in-process scheduler has always used.
+        Only the in-process timer reads it; in event mode the external cron's own timezone
+        decides, and this key changes nothing.
+
+        Raises:
+            ValueError: if the value is not an IANA timezone name.
+        """
+        raw = str(self.config.get("scheduler_timezone", "") or "").strip()
+        if not raw:
+            return None
+        try:
+            return ZoneInfo(raw)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise ValueError(
+                f"'scheduler_timezone' of scheduler '{self.base_name}' is {raw!r}, which is not an IANA timezone name "
+                "(such as 'Europe/Berlin' or 'UTC')."
+            ) from None
 
     def _require_event_transport(self) -> None:
         """Fail unless a transport that can deliver a tick is configured.
@@ -394,7 +496,7 @@ class SchedulerBase(RestApiBase):
                 a topic subscription.
         """
         bus = str(self.config.get("event_bus", "") or "").strip().lower()
-        if bus not in TOPIC_TRANSPORTS:
+        if not delivers_ticks(bus):
             raise ValueError(
                 f"Scheduler '{self.name}' is in '{SCHEDULER_MODE_EVENT}' mode, which delivers its tick as an event on "
                 f"'{self.tick_topic}', but 'event_bus' is {bus or 'not set'!r}. Set 'event_bus' to one of "
@@ -472,7 +574,9 @@ class SchedulerBase(RestApiBase):
         if self._started:
             logger.warning("Scheduler '%s' is already started; ignoring the repeated startup", self.name)
             return
-        self._started = True
+        # Marked started only once it is (S25). Set first, a startup that raised -- a crontab the
+        # timer refuses -- left the flag up, and the startup retry then found it "already started",
+        # cleared the agent's latch and reported a recovery with no timer running.
         self._register_tick_gauge()
 
         # Normally already done by AppBuilder.build(); repeated here so a scheduler driven
@@ -480,6 +584,7 @@ class SchedulerBase(RestApiBase):
         self.wire()
 
         if self.scheduler_mode == SCHEDULER_MODE_EVENT:
+            self._started = True
             logger.info(
                 "Scheduler '%s' is in event mode: no in-process timer. Its tick arrives as an event on topic '%s', "
                 "on the declared crontab '%s'.",
@@ -489,11 +594,14 @@ class SchedulerBase(RestApiBase):
             )
             return
 
-        trigger = CronTrigger.from_crontab(self._crontab)
+        timezone = self._resolve_timezone()
+        trigger = CronTrigger.from_crontab(self._crontab, timezone=timezone)
 
-        self._scheduler = AsyncIOScheduler()
-        self._scheduler.add_job(self._claimed_tick, trigger, name=self.name)
-        self._scheduler.start()
+        scheduler = AsyncIOScheduler(timezone=timezone) if timezone is not None else AsyncIOScheduler()
+        scheduler.add_job(self._claimed_tick, trigger, name=self.name)
+        scheduler.start()
+        self._scheduler = scheduler
+        self._started = True
 
         if self.registry.has_cache():
             logger.info(
@@ -521,18 +629,29 @@ class SchedulerBase(RestApiBase):
         missing pod; event mode is where it is not, because a ``CronJob`` that stopped publishing
         leaves a perfectly healthy process ticking never.
         """
-        name = self.name
+        if self._gauge_registered:
+            return
+        # One instrument per meter, reporting every scheduler of it (S26): a second
+        # create_observable_gauge of the same name on one meter is dropped by the SDK, so only the
+        # first scheduler of an agent was ever exported.
+        meter = agent_meter(self.namespace, __name__)
+        schedulers = _TICK_GAUGE_SCHEDULERS.get(meter)
+        if schedulers is None:
+            schedulers = weakref.WeakSet()
+            _TICK_GAUGE_SCHEDULERS[meter] = schedulers
+            meter.create_observable_gauge(
+                TICK_AGE_GAUGE,
+                callbacks=[functools.partial(_observe_tick_ages, schedulers)],
+                description="Seconds since this scheduler last ticked; -1 before its first",
+                unit="s",
+            )
+        schedulers.add(self)
+        self._gauge_registered = True
 
-        def observe(_options: CallbackOptions) -> Iterable[Observation]:
-            age = -1.0 if self._last_tick is None else max(0.0, time.time() - self._last_tick)
-            return [Observation(age, {"scheduler": name, "agent": self.namespace or ROOT_LABEL, "mode": self.scheduler_mode})]
-
-        agent_meter(self.namespace, __name__).create_observable_gauge(
-            TICK_AGE_GAUGE,
-            callbacks=[observe],
-            description="Seconds since this scheduler last ticked; -1 before its first",
-            unit="s",
-        )
+    def tick_age_observation(self) -> Observation:
+        """This scheduler's point of the tick-age gauge."""
+        age = -1.0 if self._last_tick is None else max(0.0, time.time() - self._last_tick)
+        return Observation(age, {"scheduler": self.name, "agent": self.namespace or ROOT_LABEL, "mode": self.scheduler_mode})
 
     async def run_tick(self) -> None:
         """Run the tick and record that it happened.

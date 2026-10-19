@@ -2,6 +2,7 @@
 
 import importlib.util
 import logging
+import os
 import re
 import sys
 import tomllib
@@ -16,7 +17,13 @@ from blueprint.agents.config import PROCESS_SCOPE_KEYS
 
 from . import validate_group
 from ..utils.cancellation_check import swallowed_cancellation_warning, swallowed_cancellations
-from blueprint.agents.io.api.scheduling.scheduler import SCHEDULER_MODE_EVENT, SCHEDULER_MODE_IN_PROCESS, SCHEDULER_MODES
+from blueprint.agents.io.api.scheduling.scheduler import (
+    SCHEDULER_MODE_EVENT,
+    SCHEDULER_MODE_IN_PROCESS,
+    SCHEDULER_MODES,
+    delivers_ticks,
+    normalise_scheduler_mode,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -402,23 +409,49 @@ def _scheduler_findings(project_dir: Path) -> tuple[list[str], list[str]]:
     external ``CronJob`` must publish, and nothing in this repository generates one -- so a
     project can be correct in every mechanical respect and simply never run.
     """
-    schedulers = _scheduler_modules(project_dir)
+    settings = _load_settings(project_dir / SETTINGS_FILE) or {}
+    return scheduler_findings(project_dir, mode_sources=[settings], bus_sources=[settings], where=SETTINGS_FILE)
+
+
+def scheduler_findings(
+    agent_dir: Path, *, mode_sources: list[dict[str, Any]], bus_sources: list[dict[str, Any]], where: str, agent: str = ""
+) -> tuple[list[str], list[str]]:
+    """The scheduler checks, on the runtime's own terms (S27); shared by the single and the group command.
+
+    ``scheduler_mode`` is read from ``mode_sources`` in order (an agent's file before the image's)
+    and ``event_bus`` from ``bus_sources`` (the process's file: it is a process-scope key), each
+    with an environment override winning, as at runtime. The mode is normalised like the runtime
+    normalises it, and an event-mode transport must be one that delivers a tick.
+
+    Args:
+        agent_dir: The directory whose ``src/schedulers`` is looked at.
+        mode_sources: Parsed settings files to read ``scheduler_mode`` from, first wins.
+        bus_sources: Parsed settings files to read ``event_bus`` from, first wins.
+        where: The file(s) named in a message.
+        agent: The agent's name in a group, for its scoped environment override and the messages.
+    """
+    schedulers = _scheduler_modules(agent_dir)
     if not schedulers:
         return [], []
+    prefix = _envvar_prefix([*mode_sources, *bus_sources])
+    named = f"Agent '{agent}': " if agent else ""
 
-    settings = _load_settings(project_dir / SETTINGS_FILE)
-    mode = _value_of(settings, "scheduler_mode") if settings is not None else None
+    raw_mode = _env_value(prefix, "scheduler_mode", agent)
+    if raw_mode is None:
+        raw_mode = _first_value(mode_sources, "scheduler_mode")
+    mode = normalise_scheduler_mode(raw_mode)
 
-    if mode is None:
+    if not mode:
         return [
-            f"{len(schedulers)} scheduler(s) under src/schedulers/ and no 'scheduler_mode' in {SETTINGS_FILE}. It has "
-            f"no default, because neither value is safe to inherit, so build() fails: set '{SCHEDULER_MODE_IN_PROCESS}' "
-            f"to run a timer in the process (needs .with_cache(), or every replica runs every tick) or "
-            f"'{SCHEDULER_MODE_EVENT}' to take the tick as an event (needs 'event_bus', and something publishing it)"
+            f"{named}{len(schedulers)} scheduler(s) under src/schedulers/ and no 'scheduler_mode' in {where} or the "
+            f"environment. It has no default, because neither value is safe to inherit, so build() fails: set "
+            f"'{SCHEDULER_MODE_IN_PROCESS}' to run a timer in the process (needs .with_cache(), or every replica runs "
+            f"every tick) or '{SCHEDULER_MODE_EVENT}' to take the tick as an event (needs 'event_bus', and something "
+            "publishing it)"
         ], []
 
     if mode not in SCHEDULER_MODES:
-        return [f"'scheduler_mode' is {mode!r} in {SETTINGS_FILE}; it must be one of {', '.join(SCHEDULER_MODES)}"], []
+        return [f"{named}'scheduler_mode' is {raw_mode!r}; it must be one of {', '.join(SCHEDULER_MODES)}"], []
 
     issues: list[str] = []
     notices: list[str] = []
@@ -437,14 +470,26 @@ def _scheduler_findings(project_dir: Path) -> tuple[list[str], list[str]]:
                 ]
             )
         )
-        if not _declares(settings or {}, "event_bus"):
-            # This one *does* fail at startup -- the tick is an ordinary event, so without a
-            # transport there is nothing to subscribe to -- so it is an issue rather than advice.
-            issues.append(
-                f"'scheduler_mode' is '{SCHEDULER_MODE_EVENT}' and no 'event_bus' is set. The tick arrives as an event, "
-                "so there is nothing to subscribe to and wiring the scheduler fails at startup"
+        bus = _env_value(prefix, "event_bus")
+        if bus is None:
+            bus = _first_value(bus_sources, "event_bus")
+        if bus is None:
+            # A notice: event_bus is a process-scope key, so it may well be set where this command
+            # does not look -- the group's settings, the deployment's environment.
+            notices.append(
+                f"{named}'scheduler_mode' is '{SCHEDULER_MODE_EVENT}' and no 'event_bus' is set in {where} or the "
+                "environment. The tick arrives as an event, so startup fails unless the process sets one of "
+                "'dapr' or 'nats'."
             )
-    elif not _main_declares_a_cache(project_dir):
+        elif not delivers_ticks(bus):
+            # This one *does* fail at startup -- the tick is an ordinary event, so without a
+            # transport that carries topics there is nothing to subscribe to.
+            issues.append(
+                f"{named}'scheduler_mode' is '{SCHEDULER_MODE_EVENT}' and 'event_bus' is {bus!r}, which cannot deliver "
+                "a tick: the tick is an event on a topic, so it needs 'dapr' or 'nats'. Wiring the scheduler fails at "
+                "startup"
+            )
+    elif not _main_declares_a_cache(agent_dir):
         notices.append(
             "\n".join(
                 [
@@ -560,6 +605,34 @@ def _declares(settings: dict[str, Any], key: str) -> bool:
     if key in settings:
         return True
     return any(isinstance(value, dict) and key in value for value in settings.values())
+
+
+def _first_value(sources: list[dict[str, Any]], key: str) -> Any | None:
+    """``key``'s value from the first of ``sources`` that sets it (see :func:`_value_of`)."""
+    for settings in sources:
+        value = _value_of(settings, key)
+        if value is not None:
+            return value
+    return None
+
+
+def _envvar_prefix(sources: list[dict[str, Any]]) -> str:
+    """The environment prefix the process reads overrides through: ``envvar_prefix``, else ``DYNACONF``."""
+    configured = _first_value(sources, "envvar_prefix")
+    return str(configured).strip() if configured else "DYNACONF"
+
+
+def _env_value(prefix: str, key: str, agent: str = "") -> str | None:
+    """An environment override of ``key``, as the runtime reads it: the agent's scoped one first, then the root's.
+
+    Read so that a value the deployment supplies is not reported as missing (S27).
+    """
+    names = ([f"{prefix}_{agent.upper()}__{key.upper()}"] if agent else []) + [f"{prefix}_{key.upper()}"]
+    for name in names:
+        value = os.environ.get(name)
+        if value is not None and value.strip():
+            return value
+    return None
 
 
 def _value_of(settings: dict[str, Any], key: str) -> Any | None:
