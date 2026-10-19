@@ -12,6 +12,17 @@
   when it is acknowledged. Measured against JetStream with a 0.5 s limit: before, one run and the
   redelivery acknowledged unrun; now the redelivery runs to completion.
 
+- **A JetStream consumer that filters another subject is no longer bound.** Root topic
+  `orders-created` and agent `orders` on topic `created` derive the same durable name
+  (`orders-created-durable`). Whichever started second bound the other's consumer with only a
+  drift warning, and received that topic's messages in its own handler. It now refuses to bind:
+  the subscription fails with an error naming the consumer, its filter and the topic, and the
+  connection retries. Rename one of the topics.
+
+- **The "Created JetStream consumer" line is logged when `nats_ack_wait` is unset.** It formatted
+  the unset value with `%.1f`, so the line was lost to a logging error; it now reads
+  `ack_wait server default`. A delivery whose run could not be started no longer keeps its run slot.
+
 - **A group's telemetry is no longer cut off at shutdown.** All agents share one span processor
   and one metric exporter, and the first provider to shut down closed them for every other: the
   remaining agents' final metrics were dropped ("Exporter already shutdown"). They are now closed by

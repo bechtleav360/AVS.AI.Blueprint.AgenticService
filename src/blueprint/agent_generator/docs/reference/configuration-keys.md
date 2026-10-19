@@ -105,7 +105,7 @@ from, so it is validated once, where it enters the framework, and never rewritte
 | Rule | Reason |
 |-----|-------------|
 | `""` (root) or `[a-z][a-z0-9_]*` | The namespace becomes a registry key prefix, a NATS queue group, part of a JetStream durable name and a telemetry service name. The alphabet is the intersection of what those accept. |
-| No `-` | `-` separates the fields of the durable name `<namespace>-<topic>-durable`. Allowing it makes that name ambiguous: `orders-eu` on `created` and `orders` on `eu-created` would be one consumer, so two agents would consume each other's events. Use `_`. |
+| No `-` | `-` separates the fields of the durable name `<namespace>-<topic>-durable`. Allowing it makes that name ambiguous: `orders-eu` on `created` and `orders` on `eu-created` would be one consumer, so two agents would consume each other's events. Use `_`. The root has no namespace field, so root topic `orders-created` and agent `orders` on `created` still derive one name: the second to start finds a consumer filtering another subject and refuses to bind it (startup retries and logs why). Rename one of the topics. |
 | No `.`, `*`, `>` | Subject separator and wildcards; illegal in a NATS consumer name. |
 | No `<`, `>` | Reserved for the connection-name placeholders above. |
 | No surrounding whitespace | Not trimmed for you: the trimmed and untrimmed forms would be one agent registered under one name and subscribed under another. |

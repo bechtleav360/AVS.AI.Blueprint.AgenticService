@@ -1457,11 +1457,18 @@ class NATSClient(IOClientBase):
         A namespaced client puts its namespace in front, for the same reason its queue
         group is the namespace (C1): two co-hosted agents subscribing to one topic each
         need their own consumer, or the broker hands every message to whichever of them
-        binds first. The root namespace keeps the bare ``<topic>-durable``, so no existing
-        consumer is renamed and no deployment of this change becomes a consumer migration.
+        binds first. The root namespace keeps the bare ``<topic>-durable``, so a topic
+        without ``.``, ``*``, ``>`` or whitespace finds the consumer 0.8 created under the same
+        name. A dotted topic gets a name 0.8 did not use (``orders_created-durable``), but
+        0.8's ``orders.created-durable`` is one the broker refuses, so no consumer is orphaned.
 
-        The result -- ``orders-orders_created-durable`` for namespace ``orders`` on topic
-        ``orders.created`` -- reads back unambiguously because ``-`` is excluded from the
+        The namespace and the topic share no reserved separator: root topic ``orders-created``
+        and agent ``orders`` on ``created`` derive one name. :meth:`_ensure_consumer` refuses to
+        bind a durable whose filter is another subject (S1), so such a clash fails loudly
+        instead of delivering one subscription's messages to the other.
+
+        For two agents, ``orders-orders_created-durable`` for namespace ``orders`` on topic
+        ``orders.created`` reads back unambiguously because ``-`` is excluded from the
         namespace alphabet: the first ``-`` is always the boundary between the namespace and
         the topic. Were it allowed, ``orders-eu`` on ``created`` and ``orders`` on
         ``eu-created`` would name one consumer and two agents would share it.
@@ -2369,16 +2376,29 @@ class NATSClient(IOClientBase):
             await js.add_consumer(stream, config=desired)
             logger.info(
                 "Created JetStream consumer '%s' on stream '%s': filter '%s', deliver group '%s', "
-                "ack_wait %.1fs, max_ack_pending %s, max_deliver %s",
+                "ack_wait %s, max_ack_pending %s, max_deliver %s",
                 durable,
                 stream,
                 topic,
                 desired.deliver_group,
-                desired.ack_wait,
+                # Unset is None, which '%.1f' cannot render: the whole line was lost (N10).
+                "server default" if desired.ack_wait is None else f"{desired.ack_wait:.1f}s",
                 desired.max_ack_pending,
                 desired.max_deliver,
             )
             return desired
+
+        filters = [info.config.filter_subject] if info.config.filter_subject else list(info.config.filter_subjects or [])
+        if filters != [topic]:
+            # Another subscription's consumer under this name (S1): binding to it would deliver
+            # that subscription's messages here. Not renamed -- the durable's pending state is
+            # broker-side and belongs to the subscription that made it.
+            raise JetStreamBindingError(
+                f"JetStream consumer '{durable}' on stream '{stream}' filters {', '.join(repr(f) for f in filters) or 'nothing'}, "
+                f"not '{topic}', so it belongs to another subscription and is not bound. A root topic and an agent's "
+                f"topic can derive one durable name (root 'orders-created' and agent 'orders' on 'created'): rename one "
+                f"of the topics, or delete the consumer if it is stale."
+            )
 
         legacy = not info.config.deliver_group
         if legacy:
@@ -2399,7 +2419,7 @@ class NATSClient(IOClientBase):
         if drift:
             logger.warning(
                 "JetStream consumer '%s' on stream '%s' already exists with different settings (%s). "
-                "It is left unchanged: changing a durable's filter or deliver group is a migration, "
+                "It is left unchanged: changing a durable's deliver group is a migration, "
                 "not a restart. Delete the consumer during a maintenance window to apply the new values.",
                 durable,
                 stream,
@@ -2416,7 +2436,8 @@ class NATSClient(IOClientBase):
         """
         return [
             f"{field}: broker has {getattr(actual, field)!r}, config asks for {getattr(desired, field)!r}"
-            for field in ("filter_subject", "deliver_group", "ack_wait", "max_ack_pending", "max_deliver")
+            # Not filter_subject: a consumer filtering another subject is refused before this (S1).
+            for field in ("deliver_group", "ack_wait", "max_ack_pending", "max_deliver")
             if field not in ignore and getattr(desired, field) is not None and getattr(actual, field) != getattr(desired, field)
         ]
 
@@ -2585,18 +2606,24 @@ class NATSClient(IOClientBase):
                 return
             release = await self._acquire_run(binding, slot_key)
             binding.enter_run()
-            dispatch = callback if callback is not None else binding.topic_callbacks[resolved]
-            # A run from a named connection starts in an empty context: nothing of the subscription
-            # task or of another run reaches it (plan N1). The default connection keeps the copied
-            # context it always had (N6).
-            context = contextvars.Context() if binding.link.name else None
-            run = asyncio.create_task(
-                self._run_delivery(msg, resolved, dispatch, binding),
-                name=f"nats-run-{self.namespace or ROOT_LABEL}{'-' + binding.link.name if binding.link.name else ''}",
-                context=context,
-            )
-            binding.runs.add(run)
-            run.add_done_callback(functools.partial(self._run_finished, binding, release))
+            try:
+                dispatch = callback if callback is not None else binding.topic_callbacks[resolved]
+                # A run from a named connection starts in an empty context: nothing of the subscription
+                # task or of another run reaches it (plan N1). The default connection keeps the copied
+                # context it always had (N6).
+                context = contextvars.Context() if binding.link.name else None
+                run = asyncio.create_task(
+                    self._run_delivery(msg, resolved, dispatch, binding),
+                    name=f"nats-run-{self.namespace or ROOT_LABEL}{'-' + binding.link.name if binding.link.name else ''}",
+                    context=context,
+                )
+                binding.runs.add(run)
+                run.add_done_callback(functools.partial(self._run_finished, binding, release))
+            except BaseException:
+                # No run started, so no done callback will free the slot (W4).
+                release()
+                binding.exit_run()
+                raise
 
         return message_handler
 

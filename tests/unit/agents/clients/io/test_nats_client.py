@@ -2763,3 +2763,75 @@ class TestNoCredentialOrPayloadInLogs:
             await nats_client._run_named_link(binding)
         assert "named connection 'A' attempt 1 failed" in caplog.text
         assert _SECRET not in caplog.text
+
+
+class TestADurableOfAnotherTopicIsNotBound:
+    """S1 -- root topic 'orders-created' and agent 'orders' on 'created' name one durable; drift only warned."""
+
+    async def test_a_consumer_filtering_another_subject_is_refused(
+        self, nats_client: NATSClient, mock_config: MagicMock, mock_nats_jetstream: tuple
+    ) -> None:
+        from blueprint.agents.clients.io.nats_client import JetStreamBindingError
+
+        mock_js = await _prepare_js_client(nats_client, mock_config, mock_nats_jetstream, ["orders-created"])
+        theirs = js_api.ConsumerConfig(durable_name="orders-created-durable", filter_subject="created", deliver_group="orders")
+        mock_js.consumer_info = AsyncMock(return_value=MagicMock(config=theirs))
+
+        with pytest.raises(JetStreamBindingError) as refused:
+            await nats_client._subscribe_one("orders-created", AsyncMock())
+
+        mock_js.subscribe_bind.assert_not_awaited()
+        assert "'orders-created-durable'" in str(refused.value)
+        assert "'created'" in str(refused.value)
+        assert "'orders-created'" in str(refused.value)
+
+    async def test_a_consumer_listing_the_subject_in_filter_subjects_is_bound(
+        self, nats_client: NATSClient, mock_config: MagicMock, mock_nats_jetstream: tuple
+    ) -> None:
+        mock_js = await _prepare_js_client(nats_client, mock_config, mock_nats_jetstream, ["orders.created"])
+        existing = js_api.ConsumerConfig(durable_name="orders_created-durable", filter_subjects=["orders.created"], deliver_group="g")
+        mock_js.consumer_info = AsyncMock(return_value=MagicMock(config=existing))
+
+        await nats_client._subscribe_one("orders.created", AsyncMock())
+
+        assert mock_js.subscribe_bind.await_args.kwargs["config"] is existing
+
+
+class TestTheRunSlotIsNotLeaked:
+    """W4 -- a failure between taking the slot and starting the run held the slot for good."""
+
+    async def test_a_run_that_cannot_be_started_frees_its_slot(
+        self, nats_client: NATSClient, mock_config: MagicMock, mock_nats_jetstream: tuple, cloud_event: CloudEvent
+    ) -> None:
+        handler = await _js_delivery_handler(nats_client, mock_config, mock_nats_jetstream, AsyncMock())
+        with (
+            patch.object(nats_client, "_run_delivery", new=MagicMock(side_effect=RuntimeError("cannot start"))),
+            pytest.raises(RuntimeError),
+        ):
+            await handler(_delivery(cloud_event))
+
+        assert nats_client.inflight_handlers == 0
+        assert nats_client._binding.slots_for("orders.created").locked() is False
+
+
+class TestTheConsumerLineRendersAnUnsetAckWait:
+    """N10 -- '%.1f' on an unset ack_wait (None) lost the whole INFO line to a logging error."""
+
+    async def test_the_line_is_logged_with_the_server_default(
+        self, nats_client: NATSClient, mock_config: MagicMock, mock_nats_jetstream: tuple, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        await _prepare_js_client(nats_client, mock_config, mock_nats_jetstream, ["orders.created"])
+        assert nats_client._consumer_config("orders.created", "orders_created-durable").ack_wait is None
+        with caplog.at_level("INFO", logger="blueprint.agents.clients.io.nats_client"):
+            await nats_client._subscribe_one("orders.created", AsyncMock())
+        created = [message for message in caplog.messages if message.startswith("Created JetStream consumer")]
+        assert len(created) == 1
+        assert "ack_wait server default" in created[0]
+
+    async def test_a_configured_ack_wait_is_shown_in_seconds(
+        self, nats_client: NATSClient, mock_config: MagicMock, mock_nats_jetstream: tuple, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        await _prepare_js_client(nats_client, mock_config, mock_nats_jetstream, ["orders.created"], nats_ack_wait=45.0)
+        with caplog.at_level("INFO", logger="blueprint.agents.clients.io.nats_client"):
+            await nats_client._subscribe_one("orders.created", AsyncMock())
+        assert any("ack_wait 45.0s" in message for message in caplog.messages)

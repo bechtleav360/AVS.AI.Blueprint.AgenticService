@@ -146,6 +146,14 @@ framework endpoints (`nats`, `cache`, `scheduler`), one Swagger tag per agent, a
   per-data-source state is keyed by that context key. Broker test on the accounts broker: the same
   `(source, id)` on connections A and B runs on both, a repeat on A is skipped; without the change B
   was skipped.
+- Step 18, NATS leftovers (S1, W4, W5, N10): `_ensure_consumer` raises `JetStreamBindingError` for an existing
+  durable whose filter is not the topic (no rename); the run slot and in-flight count are given back when the
+  run cannot be started; `_durable_for` docstring corrected (dotted topics get a name 0.8 did not use); the
+  consumer INFO line renders an unset `ack_wait` as `server default`. Live (JetStream 2.10 in WSL): a consumer
+  'orders-created-durable' filtering 'created' was refused for root topic 'orders-created', and a message on
+  'created' did not reach its handler; the INFO line was logged. Control: bound, the 'created' message reached
+  the 'orders-created' handler, the INFO line was lost to `TypeError: must be real number, not NoneType`.
+  Found N12 (readiness UP while the agent is paused by its own failing subscription), left open as D21.
 - Step 17, telemetry (S22, W1, D17): `_SharedSpanProcessor` and `_SharedMetricExporter` count their
   providers and are closed by the last; providers built with `shutdown_on_exit=False`;
   `providers.shutdown_providers()` (agents first, root last) from `TelemetryManager.on_shutdown` at the
