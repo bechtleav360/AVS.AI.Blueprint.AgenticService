@@ -146,6 +146,12 @@ framework endpoints (`nats`, `cache`, `scheduler`), one Swagger tag per agent, a
   per-data-source state is keyed by that context key. Broker test on the accounts broker: the same
   `(source, id)` on connections A and B runs on both, a repeat on A is skipped; without the change B
   was skipped.
+- Step 10, grouped scheduler (M8, M9): the tick handler is built under `namespace_scope(self.namespace)`;
+  tick subject, trigger route and handler name use `base_name`; docs agree. Live (Core NATS, a group
+  with agent `orders`, scheduler `nightly`, event mode): subscribed `orders.scheduler.nightly`, handler
+  in `orders`, one tick from that subject and none from the doubled one, `POST
+  /api/orders/scheduler/nightly/trigger` 200 and ticks. Control: subscribed the doubled subject, handler
+  at the root, the documented route 404.
 - Step 9, registry and sharing guards (S15, S16, S17, W6, D11): the qualified hit in `_lookup` must
   belong to the asking namespace; `clear`, `clear_components`, `shutdown_executors` are refused on a view,
   `add_component`/`update_component_name` only for the view's own components, `get_or_create_executor`
@@ -227,7 +233,6 @@ Still open (the closed ones, and their history, are in `git log`):
   a real broker (referenced from `NATSClient`'s docstring).
 - **`test_three_replicas_run_one_tick` was flaky once** (2026-09-24); likely the disk cache's
   non-atomic takeover of an expired claim. Not investigated.
-- **A grouped scheduler's trigger path repeats the agent** (`/api/orders/scheduler/orders_nightly_scheduler/trigger`).
 - **Spec amendments owed:** C4 (a degraded transport is paused, not closed), C2 (the metric reader
   cannot be shared across providers), the root's role under `readiness_policy`, phase 7's ambiguity
   is a WARNING rather than an error. `readiness_policy = "any"` has no acceptance criterion.

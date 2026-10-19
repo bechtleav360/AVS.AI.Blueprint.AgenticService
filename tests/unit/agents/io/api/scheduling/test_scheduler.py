@@ -203,7 +203,40 @@ class TestTickTopic:
         with namespace_scope("orders"):
             namespaced = _TestScheduler()
 
-        assert namespaced.tick_topic == f"orders.scheduler.{namespaced.name}"
+        assert namespaced.tick_topic == f"orders.scheduler.{namespaced.base_name}"
+
+    def test_the_agent_appears_once_in_the_subject(self, settings: dict[str, Any], mock_registry: MagicMock) -> None:
+        """M9 -- the literal subject a CronJob publishes to; it was 'orders.scheduler.orders_nightly'."""
+        settings["scheduler_mode"] = SCHEDULER_MODE_EVENT
+        with namespace_scope("orders"):
+            nightly = _TestScheduler()
+            nightly.name = "nightly"
+
+        assert nightly.tick_topic == "orders.scheduler.nightly"
+
+    def test_a_grouped_trigger_route_names_the_agent_once(self, settings: dict[str, Any], mock_registry: MagicMock) -> None:
+        """M9 -- the router already sits under /api/<agent>/scheduler; the qualified name repeated the agent."""
+        settings["scheduler_mode"] = SCHEDULER_MODE_IN_PROCESS
+        with namespace_scope("orders"):
+            nightly = _TestScheduler()
+            nightly.name = "nightly"
+        nightly.register_trigger_route()
+
+        assert [route.path for route in nightly.router.routes] == ["/nightly/trigger"]
+
+    def test_a_grouped_tick_handler_belongs_to_the_schedulers_agent(self, settings: dict[str, Any], mock_registry: MagicMock) -> None:
+        """M8 -- build() wires outside any scope, and the handler landed at the root (C1)."""
+        settings["scheduler_mode"] = SCHEDULER_MODE_EVENT
+        settings["event_bus"] = "nats"
+        with namespace_scope("orders"):
+            nightly = _TestScheduler()
+            nightly.name = "nightly"
+
+        handler = nightly.wire()
+
+        assert handler is not None
+        assert handler.namespace == "orders"
+        assert handler.name == "orders_nightly_tick"
 
     def test_two_agents_schedulers_of_one_name_get_two_subjects(self, settings: dict[str, Any], mock_registry: MagicMock) -> None:
         """Derived from app_name they shared a subject and consumed each other's ticks."""

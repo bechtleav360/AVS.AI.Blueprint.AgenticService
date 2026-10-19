@@ -12,6 +12,14 @@
   when it is acknowledged. Measured against JetStream with a 0.5 s limit: before, one run and the
   redelivery acknowledged unrun; now the redelivery runs to completion.
 
+- **A grouped scheduler's tick subject and trigger route name the agent once.** Both were built from the
+  scheduler's qualified name, so the subject was `orders.scheduler.orders_nightly` and the route
+  `/api/orders/scheduler/orders_nightly/trigger`; they are now `orders.scheduler.nightly` and
+  `/api/orders/scheduler/nightly/trigger`, as the docs said. **Alpha users of grouped event-mode
+  schedulers: move the publishing `CronJob` to the new subject.** A standalone scheduler is unchanged.
+  An event-mode scheduler's tick handler now belongs to the scheduler's agent; it was registered at the
+  root, in the root's handler chain.
+
 - **The registry keeps agents apart where it did not.** A namespaced lookup's qualified key could be
   another agent's (`orders` + `eu_ledger` is `orders_eu` + `ledger`); it now has to belong to the asking
   agent. A view can no longer clear the registry, shut down the thread pools, rename or register

@@ -42,7 +42,7 @@ These fail at startup rather than guess, so they must be set deliberately:
 - **`scheduler_mode`** - required once any scheduler is registered. `"in_process"` runs an
   APScheduler timer in *every* replica and claims each tick through the cache, so it needs
   `.with_cache()` or every replica runs every tick. `"event"` starts no timer: the tick arrives as
-  an event on `<app_name>.scheduler.<scheduler_name>`, so it needs `event_bus` set.
+  an event on `<agent>.scheduler.<scheduler_name>` (`app_name` instead of the agent at the root), so it needs `event_bus` set.
 - **`idempotency_enabled` and `idempotency_ttl`** - both, or neither. Delivery is at-least-once;
   deduplication is off by default because only you know whether replaying your side effects is
   acceptable. The TTL must outlast the broker redelivery window.

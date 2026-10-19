@@ -51,7 +51,7 @@ from opentelemetry.metrics import CallbackOptions, Observation
 
 from ....clients.io.io_client_base import TOPIC_TRANSPORTS, validate_subject_segment
 from ....component.component import traced
-from ....component.namespace import ROOT_LABEL
+from ....component.namespace import ROOT_LABEL, namespace_scope
 from ....handler.event_handler_base import EventHandlerBase
 from ....models.events import GenericCloudEvent
 from ...telemetry.providers import agent_meter
@@ -166,7 +166,9 @@ class SchedulerTickHandler(EventHandlerBase):
         # registers under the class-derived name, so a second scheduler's handler would
         # collide with the first one on "scheduler_tick_handler". Renaming pops that key
         # out of the registry again, which is what leaves it free for the next instance.
-        self.name = f"{scheduler.name}_tick"
+        # The scheduler's base name: the setter qualifies with this handler's namespace, which
+        # is the scheduler's, so the qualified name would carry the agent twice.
+        self.name = f"{scheduler.base_name}_tick"
         self._scheduler = scheduler
         self._topic = topic
 
@@ -322,7 +324,11 @@ class SchedulerBase(RestApiBase):
         # reported itself healthy.
         validate_crontab(self._crontab)
         if self._tick_handler is None:
-            self._tick_handler = SchedulerTickHandler(self, self.tick_topic)
+            # In the scheduler's own namespace (M8): build() calls this outside any scope, so the
+            # handler -- a Component taking its namespace from the ambient scope -- landed at the
+            # root, in the root's chain, outside its agent's registry view and consumer (C1).
+            with namespace_scope(self.namespace):
+                self._tick_handler = SchedulerTickHandler(self, self.tick_topic)
         return self._tick_handler
 
     def register_trigger_route(self) -> None:
@@ -334,10 +340,12 @@ class SchedulerBase(RestApiBase):
         if self._trigger_route_registered:
             return
 
+        # The base name: in a group the router is already under /api/<agent>/scheduler, and the
+        # qualified name repeated the agent -- /api/orders/scheduler/orders_nightly/trigger (M9).
         self.router.post(
-            f"/{self.name}/trigger",
+            f"/{self.base_name}/trigger",
             tags=["Scheduler"],
-            summary=f"Manually trigger {self.name}",
+            summary=f"Manually trigger {self.base_name}",
         )(self._trigger_tick)
         self._trigger_route_registered = True
 
@@ -397,8 +405,9 @@ class SchedulerBase(RestApiBase):
     def _resolve_topic(self) -> str:
         """Derive the tick topic from the agent's own identity, or take the override.
 
-        ``f"{namespace}.scheduler.{name}"``, falling back to ``app_name`` only for a scheduler
-        at the root -- the same identity the queue group derives from, so moving the scheduler
+        ``f"{namespace}.scheduler.{name}"`` with the scheduler's own name, not the qualified one
+        that already carries the namespace (M9: ``orders.scheduler.orders_nightly``), falling
+        back to ``app_name`` only for a scheduler at the root -- the same identity the queue group derives from, so moving the scheduler
         between deployment groups does not change the subject a ``CronJob`` has to publish to
         (C1). An agent's name is the agent's own; ``app_name`` is a display string belonging to
         the whole process, so deriving a namespaced scheduler's subject from it would give two
@@ -438,10 +447,10 @@ class SchedulerBase(RestApiBase):
                 "set 'app_name', or pass topic=... to SchedulerBase.__init__."
             )
 
-        topic = f"{identity}.scheduler.{self.name}"
+        topic = f"{identity}.scheduler.{self.base_name}"
         source = "The scheduler's namespace" if self.namespace else "'app_name'"
         validate_subject_segment(identity, source=source, subject=topic)
-        validate_subject_segment(self.name, source=f"The name of scheduler '{self.name}'", subject=topic)
+        validate_subject_segment(self.base_name, source=f"The name of scheduler '{self.base_name}'", subject=topic)
         return topic
 
     # ------------------------------------------------------------------

@@ -466,7 +466,8 @@ No timer runs in the process at all. The tick arrives as an ordinary event on
 <agent>.scheduler.<scheduler name>
 ```
 
--- the agent's namespace, or `app_name` for a scheduler at the root. It is the queue group that
+-- the agent's namespace, or `app_name` for a scheduler at the root, then the scheduler's own name
+without the agent (`order.scheduler.nightly`). It is the queue group that
 delivers it, so exactly one replica runs it however many there are. It needs `event_bus` set.
 
 **Nothing in this repository generates the `CronJob`.** The schedule stays declared in agent code,

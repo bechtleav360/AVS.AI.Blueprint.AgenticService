@@ -112,8 +112,9 @@ POST /api/data_sync_scheduler/trigger
 ```
 
 In a group, the trigger moves under the agent's reserved `scheduler` segment:
-`POST /api/<agent>/scheduler/<name>/trigger`. The name there is the scheduler's registry name,
-which a group qualifies with the agent -- `/api/order/scheduler/order_data_sync_scheduler/trigger`.
+`POST /api/<agent>/scheduler/<name>/trigger`. The name there is the scheduler's own name, without
+the agent -- `/api/order/scheduler/data_sync_scheduler/trigger` -- because the path names the agent
+already.
 
 This is useful for testing, debugging, and on-demand execution without waiting for the next cron interval.
 

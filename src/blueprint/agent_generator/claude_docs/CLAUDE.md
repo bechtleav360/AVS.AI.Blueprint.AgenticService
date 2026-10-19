@@ -215,7 +215,7 @@ class CleanupScheduler(SchedulerBase):
 - **`scheduler_mode` decides what calls `tick()`, and it is required.** It has no default:
   registering a scheduler without setting it fails at startup, because neither value is safe to
   inherit silently. `"event"` starts no timer in the process -- the tick arrives as an ordinary
-  event on `<app_name>.scheduler.<scheduler_name>`, published by an external `CronJob`, so the
+  event on `<agent>.scheduler.<scheduler_name>` (`app_name` instead of the agent at the root), published by an external `CronJob`, so the
   queue group already guarantees that exactly one replica runs it; it needs `event_bus` set to
   `"dapr"` or `"nats"`. `"in_process"` runs an APScheduler timer in **every** replica and
   claims each tick in the cache so one replica runs it -- so it needs `.with_cache()` to fire a
