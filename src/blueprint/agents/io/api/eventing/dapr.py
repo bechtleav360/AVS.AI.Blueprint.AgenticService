@@ -22,7 +22,7 @@ from ....models.errors import (
 from ....models.events import CloudEvent
 from ..rest_api_base import RestApiBase
 from .dapr_response import dapr_status
-from .event_handling_base import EventHandlingBase
+from .event_handling_base import UNDECLARED_TOPIC_LABEL, EventHandlingBase
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +44,10 @@ class DaprDeliveryRoute(APIRoute):
 
     def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
         handle = super().get_route_handler()
+        # Only the delivery route (N5): route_class applies to every route of the router, and a
+        # malformed request to anything else -- /dapr/subscribe -- is a client error, not a delivery.
+        if not self.path.endswith("/events/{topic}"):
+            return handle
 
         async def drop_unparseable_delivery(request: Request) -> Response:
             try:
@@ -126,6 +130,9 @@ class DaprEventing(EventHandlingBase):
         # The client per agent, not one client: this endpoint is shared by the process, and
         # the clients are not. Populated in on_startup; empty when no agent declared a topic.
         self._clients: dict[str, DaprClient] = {}
+        # Each agent's declared topics, read once in on_startup for the metric label (S9);
+        # None until then, when the handlers are read on demand.
+        self._declared_by_agent: dict[str, frozenset[str]] | None = None
 
     async def on_startup(self) -> None:
         """Hand each agent's topics to that agent's client, for readiness reporting.
@@ -139,9 +146,11 @@ class DaprEventing(EventHandlingBase):
         what makes ``readiness_policy = "critical"`` unusable.
         """
         topics_by_agent = self._topics_by_agent()
+        self._declared_by_agent = {namespace: frozenset(topics) for namespace, topics in topics_by_agent.items()}
         if not topics_by_agent:
             logger.debug("DaprEventing: no handler declared a topic; nothing to report as ready")
             return
+        self._warn_about_shared_topics(topics_by_agent)
 
         for namespace, topics in topics_by_agent.items():
             client = self.registry.get_component(DaprClient, namespace=namespace)
@@ -157,6 +166,43 @@ class DaprEventing(EventHandlingBase):
 
     async def on_shutdown(self) -> None:
         pass
+
+    def _warn_about_shared_topics(self, topics_by_agent: dict[str, list[str]]) -> None:
+        """Warn about a topic two agents declare while one of them does not deduplicate (S5).
+
+        There is one delivery for both, and so one answer: a retry asked for by one agent
+        redelivers the event to every agent of the topic, and one that does not deduplicate runs
+        it again.
+        """
+        sharing: dict[str, list[str]] = {}
+        for namespace, topics in topics_by_agent.items():
+            for topic in topics:
+                sharing.setdefault(topic, []).append(namespace)
+        for topic, namespaces in sharing.items():
+            if len(namespaces) < 2:
+                continue
+            repeating = [ns or ROOT_LABEL for ns in namespaces if not self.config.for_namespace(ns).get("idempotency_enabled", False)]
+            if repeating:
+                logger.warning(
+                    "Topic '%s' is declared by agents %s, and Dapr delivers it once for all of them: a retry asked for "
+                    "by one redelivers it to every one, and %s run it again because 'idempotency_enabled' is off.",
+                    topic,
+                    ", ".join(ns or ROOT_LABEL for ns in namespaces),
+                    ", ".join(repeating),
+                )
+
+    def _metric_topic(self, namespace: str, topic: str) -> str:
+        """The topic for a declared one, :data:`UNDECLARED_TOPIC_LABEL` otherwise (S9, plan D6).
+
+        With ``dapr_declarative_subscriptions`` the framework knows no topic list, so every topic
+        counts as undeclared.
+        """
+        if self.config.get("dapr_declarative_subscriptions", False):
+            return UNDECLARED_TOPIC_LABEL
+        declared = self._declared_by_agent
+        if declared is None:
+            declared = {ns: frozenset(topics) for ns, topics in self._topics_by_agent().items()}
+        return topic if topic in declared.get(namespace, frozenset()) else UNDECLARED_TOPIC_LABEL
 
     def _make_event_callback(self, topic: str) -> DeliveryCallback:
         """Return an async callback that routes an incoming Dapr event through the handler chain.
@@ -316,8 +362,11 @@ class DaprEventing(EventHandlingBase):
                     namespace or ROOT_LABEL,
                 )
                 continue
+            # Each agent its own copy (S5): handlers receive the object itself, so one that
+            # annotated or trimmed the event changed what the next agent read.
+            delivered = cloud_event.model_copy(deep=True) if len(agents) > 1 else cloud_event
             try:
-                await self._process_cloud_event(cloud_event, {"dapr_topic": topic}, topic, namespace=namespace)
+                await self._process_cloud_event(delivered, {"dapr_topic": topic}, topic, namespace=namespace)
                 dispositions.append(DeliveryDisposition.ACK)
             except Exception as exc:
                 disposition = disposition_for(exc)
@@ -348,7 +397,9 @@ class DaprEventing(EventHandlingBase):
                 dapr_status(combined),
             )
         # An unmatched event acknowledges like any other completed dispatch; the accounting
-        # that keeps it visible lives in _process_cloud_event, shared with the NATS edge.
-        if reason is None:
+        # that keeps it visible lives in _process_cloud_event, shared with the NATS edge. A
+        # SUCCESS carries no reason (N5): one agent's TERM is not the delivery's outcome when
+        # another acknowledged it.
+        if reason is None or combined is DeliveryDisposition.ACK:
             return {"status": dapr_status(combined)}
         return {"status": dapr_status(combined), "reason": reason}

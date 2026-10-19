@@ -146,6 +146,14 @@ framework endpoints (`nats`, `cache`, `scheduler`), one Swagger tag per agent, a
   per-data-source state is keyed by that context key. Broker test on the accounts broker: the same
   `(source, id)` on connections A and B runs on both, a repeat on A is skipped; without the change B
   was skipped.
+- Step 16, Dapr hardening (S5, S9, N5, D6): a deep copy of the CloudEvent per agent when a delivery fans
+  out to more than one; a startup WARNING for a shared topic with an agent's `idempotency_enabled` off;
+  `EventHandlingBase._metric_topic` hook, Dapr labels an undeclared topic `<undeclared>`; an ACK combined
+  with a TERM answers SUCCESS without a reason; `DaprDeliveryRoute` wraps only `/events/{topic}`. Live (a
+  group served by uvicorn, Dapr sidecar mock, agents 'orders' and 'billing' on 'orders.created'):
+  'billing' read `{"order": 1}` after 'orders' changed it, the answer was `{"status": "SUCCESS"}`, 5
+  random topics gave one `<undeclared>` series per agent, the WARNING named both agents. Control: no
+  WARNING, reason attached, 'billing' saw the change, one series per random topic.
 - Step 15, dedup without a heartbeat and Redis calls (S6, S7, D4): `HandlerChain._claim`/`release` and the
   scheduler's `_claim_tick_slot` run the cache call in `asyncio.to_thread`; a startup WARNING for dedup with
   the NATS heartbeat off and for dedup under Dapr; `cache.redis_socket_timeout` (opt-in); redis-py floor

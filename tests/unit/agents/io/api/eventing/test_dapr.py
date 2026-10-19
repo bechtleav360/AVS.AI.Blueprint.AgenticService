@@ -376,6 +376,29 @@ class TestRestApiBaseRouteClass:
 
         assert response.status_code == 422
 
+    async def test_another_route_of_the_dapr_router_still_answers_422(self, mock_config: MagicMock) -> None:
+        """N5 -- route_class covers every route of the router, so a developer's own POST answered DROP."""
+        from pydantic import BaseModel
+
+        from blueprint.agents.io.api.rest_api_base import RestApiBase
+
+        class Item(BaseModel):
+            name: str
+
+        class WithAnEndpoint(DaprEventing):
+            @RestApiBase.post("/items")
+            async def create_item(self, item: Item) -> dict[str, str]:
+                return {"name": item.name}
+
+        mock_config.get.side_effect = lambda key, default=None: default
+        app = FastAPI()
+        app.include_router(WithAnEndpoint().router)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://caller") as client:
+            response = await client.post("/items", json={"not": "an item"})
+
+        assert response.status_code == 422
+
 
 class TestDaprEventingOnStartup:
     async def test_fetches_the_client_of_each_declaring_agent(self, dapr_eventing: DaprEventing, mock_registry: MagicMock) -> None:

@@ -12,6 +12,20 @@
   when it is acknowledged. Measured against JetStream with a 0.5 s limit: before, one run and the
   redelivery acknowledged unrun; now the redelivery runs to completion.
 
+- **Grouped Dapr: each agent gets its own copy of a delivery, and the answer has no stray reason.**
+  The fan-out handed one `CloudEvent` object to every agent declaring the topic, so a change one
+  handler made to it reached the next. A delivery one agent acknowledged and another terminated
+  answered `SUCCESS` with the terminating agent's reason. Startup now warns about a topic two agents
+  declare while one of them runs without `idempotency_enabled`, since a retry asked for by one
+  redelivers to all of them.
+
+- **The `topic` label of the event counters is bounded under Dapr.** `blueprint.events.unhandled`,
+  `.duplicate` and `.skipped` took the topic from the request path, so posts to `/events/<random>`
+  minted one time series each. A topic the agent did not declare is now counted as `<undeclared>`
+  (every topic, with `dapr_declarative_subscriptions = true`); the real one stays in the log line.
+  The DROP answer for an unparseable body is limited to the delivery route `/events/{topic}`: another
+  route of a `DaprEventing` subclass answers a malformed body with 422 again.
+
 - **A slow cache no longer holds up every delivery of the process.** The dedup claim and release, and
   the in-process scheduler's tick claim, ran on the event loop, so a Redis that stopped answering
   stalled every agent for as long as the call blocked. They now run in a worker thread. **The minimum

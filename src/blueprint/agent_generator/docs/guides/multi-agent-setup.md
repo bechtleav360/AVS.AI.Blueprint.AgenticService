@@ -464,7 +464,10 @@ group's to set.
 **Dapr.** A group has one Dapr endpoint, which publishes the union of every agent's topics and fans
 each delivery out to the agents that declared it; the single acknowledgement is their combination.
 So a retry asked for by one agent redelivers to every agent in the group, and grouped Dapr therefore
-wants `idempotency_enabled`. NATS has no such coupling -- each agent has its own subscription.
+wants `idempotency_enabled`; startup warns about a shared topic while an agent declaring it has it off.
+Each agent receives its own copy of the event, so what one handler changes on it the next does not
+see. When one agent acknowledges and another terminates, the answer is `SUCCESS` without a reason.
+NATS has no such coupling -- each agent has its own subscription.
 
 ---
 

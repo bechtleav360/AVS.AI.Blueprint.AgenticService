@@ -12,7 +12,7 @@ to collapse to.
 
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -326,3 +326,59 @@ class TestADegradedAgentIsNotOffered:
 
         assert answer == {"status": "SUCCESS"}
         assert calls == ["orders"]
+
+
+class TestEachAgentGetsItsOwnEvent:
+    """S5 -- the fan-out handed one CloudEvent object to every agent, so one agent's change reached the next."""
+
+    async def test_a_change_by_one_agent_is_not_seen_by_the_next(self, mock_registry: MagicMock, mock_config: MagicMock) -> None:
+        from blueprint.agents.io.api.eventing.dapr import DaprEventing
+        from blueprint.agents.models.events import CloudEvent
+
+        mock_config.get.side_effect = lambda key, default=None: default
+        endpoint = DaprEventing()
+        endpoint._agents_for = lambda topic: ("orders", "billing")  # type: ignore[method-assign]
+        endpoint._is_paused = lambda namespace: False  # type: ignore[method-assign]
+        seen: list[dict] = []
+
+        async def process(event, context, topic, namespace=None):
+            seen.append(dict(event.data))
+            event.data["touched_by"] = namespace
+
+        endpoint._process_cloud_event = process  # type: ignore[method-assign]
+        event = CloudEvent(id="e1", type="t", source="s", data={"order": 1})
+
+        await endpoint.publish("orders.created", event)
+
+        assert seen == [{"order": 1}, {"order": 1}]
+        assert event.data == {"order": 1}
+
+    async def test_a_term_beside_an_ack_answers_success_without_a_reason(self, mock_registry: MagicMock, mock_config: MagicMock) -> None:
+        """N5 -- the combined answer was SUCCESS, with the terming agent's reason attached."""
+        from blueprint.agents.io.api.eventing.dapr import DaprEventing
+        from blueprint.agents.models.errors import InvalidEventError
+        from blueprint.agents.models.events import CloudEvent
+
+        mock_config.get.side_effect = lambda key, default=None: default
+        endpoint = DaprEventing()
+        endpoint._agents_for = lambda topic: ("orders", "billing")  # type: ignore[method-assign]
+        endpoint._is_paused = lambda namespace: False  # type: ignore[method-assign]
+
+        async def process(event, context, topic, namespace=None):
+            if namespace == "orders":
+                raise InvalidEventError(status="invalid", reason="not for orders")
+
+        endpoint._process_cloud_event = process  # type: ignore[method-assign]
+
+        answer = await endpoint.publish("orders.created", CloudEvent(id="e1", type="t", source="s", data={}))
+
+        assert answer == {"status": "SUCCESS"}
+
+    def test_a_shared_topic_without_dedup_warns(self, mock_registry: MagicMock, mock_config: MagicMock, caplog) -> None:
+        from blueprint.agents.io.api.eventing.dapr import DaprEventing
+
+        mock_config.get.side_effect = lambda key, default=None: default
+        with caplog.at_level("WARNING"):
+            DaprEventing()._warn_about_shared_topics({"orders": ["orders.created"], "billing": ["orders.created", "x"]})
+        assert "declared by agents orders, billing" in caplog.text
+        assert "'idempotency_enabled' is off" in caplog.text

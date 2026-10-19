@@ -117,6 +117,12 @@ An exception propagating out of the method sets the span status to `ERROR` befor
 | `llm.tokens.count` | counter | Tokens consumed, by an agent's model calls. |
 | `llm.response.latency` | histogram | Model call duration. |
 
+**The `topic` label is bounded.** Under Dapr the topic of a delivery is a segment of the request
+path, which any caller of `/events/<topic>` chooses. A topic the agent did not declare is therefore
+counted as `<undeclared>`; a declared one keeps its name. With `dapr_declarative_subscriptions = true`
+the framework knows no topic list, and every topic counts as `<undeclared>`. The real topic stays in
+the log line. Under NATS every topic is one the agent subscribed, so the label is always the name.
+
 The first two are recorded on the agent's own meter provider, so they arrive with that agent's
 `service.name` as well as with the `agent` attribute -- a dashboard can group on either, and one
 of them survives a collector that drops resource attributes.

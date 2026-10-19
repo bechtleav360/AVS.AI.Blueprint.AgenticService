@@ -25,6 +25,12 @@ def _counters() -> Iterator[dict[str, MagicMock]]:
         yield counters
 
 
+@pytest.fixture(autouse=True)
+def _orders_created_is_declared(dapr_eventing: DaprEventing) -> None:
+    """The accounting tests count on topics their agent declared, as a real subscription has."""
+    dapr_eventing._declared_by_agent = {"": frozenset({"orders.created", "orders"}), "orders": frozenset({"orders.created"})}
+
+
 # ---------------------------------------------------------------------------
 # _unwrap_nested_cloud_event
 # ---------------------------------------------------------------------------
@@ -355,3 +361,24 @@ class TestSkippedAccounting:
             result = await dapr_eventing.handle_event("orders", cloud_event)
         assert result == {"status": "SUCCESS"}
         assert [r for r in caplog.records if r.levelname in {"WARNING", "ERROR", "CRITICAL"}] == []
+
+
+class TestTheTopicLabelIsBounded:
+    """S9, plan D6 -- under Dapr the topic is a path segment; one label per random path is one series per request."""
+
+    async def test_an_undeclared_topic_is_labelled_undeclared(
+        self, dapr_eventing: DaprEventing, cloud_event: CloudEvent, unhandled_result: ProcessingResult
+    ) -> None:
+        dapr_eventing._dispatch_cloud_event = AsyncMock(return_value=unhandled_result)  # type: ignore[method-assign]
+        with _counters() as counters:
+            await dapr_eventing._process_cloud_event(cloud_event, {}, "random-a8f3")
+        counters[UNHANDLED_EVENTS_COUNTER].add.assert_called_once_with(1, {"agent": "<root>", "topic": "<undeclared>"})
+
+    async def test_with_declarative_subscriptions_every_topic_is_undeclared(
+        self, dapr_eventing: DaprEventing, mock_config: MagicMock, cloud_event: CloudEvent, unhandled_result: ProcessingResult
+    ) -> None:
+        mock_config.get.side_effect = lambda key, default=None: True if key == "dapr_declarative_subscriptions" else default
+        dapr_eventing._dispatch_cloud_event = AsyncMock(return_value=unhandled_result)  # type: ignore[method-assign]
+        with _counters() as counters:
+            await dapr_eventing._process_cloud_event(cloud_event, {}, "orders.created")
+        counters[UNHANDLED_EVENTS_COUNTER].add.assert_called_once_with(1, {"agent": "<root>", "topic": "<undeclared>"})

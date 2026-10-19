@@ -25,6 +25,13 @@ UNHANDLED_EVENTS_COUNTER = "blueprint.events.unhandled"
 DUPLICATE_EVENTS_COUNTER = "blueprint.events.duplicate"
 SKIPPED_EVENTS_COUNTER = "blueprint.events.skipped"
 
+UNDECLARED_TOPIC_LABEL = "<undeclared>"
+"""The ``topic`` label of a delivery on a topic its agent did not declare (S9, plan D6).
+
+Under Dapr the topic is a URL path segment, so a caller choosing one per request would mint one
+time series per request. Declared topics keep their name; the real one stays in the log line.
+"""
+
 _COUNTER_DESCRIPTIONS = {
     UNHANDLED_EVENTS_COUNTER: "Events an agent received and found nothing to do with",
     DUPLICATE_EVENTS_COUNTER: "Events an agent recognised as already processed and did not dispatch",
@@ -138,4 +145,12 @@ class EventHandlingBase(RestApiBase, CloudEventProcessorMixin, ABC):
         if counter is None:
             counter = agent_meter(namespace, __name__).create_counter(name=name, description=_COUNTER_DESCRIPTIONS[name], unit="{event}")
             counters[(name, namespace)] = counter
-        counter.add(1, {"agent": namespace or ROOT_LABEL, "topic": topic})
+        counter.add(1, {"agent": namespace or ROOT_LABEL, "topic": self._metric_topic(namespace, topic)})
+
+    def _metric_topic(self, namespace: str, topic: str) -> str:
+        """The ``topic`` label for a delivery: the topic itself, which a transport may narrow (S9).
+
+        NATS delivers only on subscriptions its agents declared, so every value is bounded. Dapr
+        overrides this, because its topic comes from the request path.
+        """
+        return topic
