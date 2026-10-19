@@ -95,6 +95,59 @@ class SessionsBus(Component, CloudEventProcessorMixin):
         self._reconnect_delay: int = 5
         self._max_reconnect_attempts: int = -1
 
+        # C4: while the agent is degraded the job stream is closed (see pause_consumption).
+        self._consumption_paused = False
+
+    @property
+    def consumption_paused(self) -> bool:
+        """Whether this agent's job stream is closed because the agent is degraded (C4)."""
+        return self._consumption_paused
+
+    async def pause_consumption(self) -> None:
+        """Close the job stream while this agent is degraded, so its jobs stay pending for a healthy replica (C4).
+
+        The same consequence the topic transports draw, in this transport's terms: the sessions
+        service pushes jobs to the agents connected to its stream, so a closed stream takes no new
+        jobs, and a job not yet started is left pending rather than run here. Jobs already running
+        finish. The registration is kept -- it is per agent id, not per replica.
+        """
+        if self._consumption_paused:
+            return
+        self._consumption_paused = True
+        await self._stop_stream()
+        logger.error(
+            "Agent '%s' stopped consuming: its job stream is closed while it is degraded, so its jobs stay pending "
+            "for a healthy replica",
+            self.namespace or ROOT_LABEL,
+        )
+
+    async def resume_consumption(self) -> None:
+        """Reopen the job stream once the agent's health checks pass again; its catch-up collects what is pending."""
+        if not self._consumption_paused:
+            return
+        self._consumption_paused = False
+        if self._semaphore is None or self._shutdown_event.is_set():
+            return  # not started, or shutting down: on_startup opens the stream, and nothing reopens it
+        self._start_stream()
+        logger.info("Agent '%s' resumed consuming: its job stream is reopened", self.namespace or ROOT_LABEL)
+
+    def _start_stream(self) -> None:
+        """Run the stream loop in a task of its own, unless one is running."""
+        if self._sse_task is not None and not self._sse_task.done():
+            return
+        self._sse_task = asyncio.create_task(self._consume_sse_stream())
+        self._sse_task.add_done_callback(self._report_task_failure)
+
+    async def _stop_stream(self) -> None:
+        """Cancel the stream loop and wait for it, leaving in-flight jobs running."""
+        task = self._sse_task
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                logger.info("SSE task cancelled")
+
     async def on_startup(self) -> None:
         """Connect to the sessions service SSE endpoint and start consuming events."""
         if self._sse_task is not None and not self._sse_task.done():
@@ -131,8 +184,11 @@ class SessionsBus(Component, CloudEventProcessorMixin):
 
         self._semaphore = asyncio.Semaphore(self._max_concurrent_jobs)
         self._shutdown_event.clear()
-        self._sse_task = asyncio.create_task(self._consume_sse_stream())
-        self._sse_task.add_done_callback(self._report_task_failure)
+        if self._consumption_paused:
+            # Marked down before its endpoint started (spec sec. 9.1): resume_consumption opens the stream.
+            logger.info("Agent '%s' is degraded, so its job stream is not opened", self.namespace or ROOT_LABEL)
+            return
+        self._start_stream()
 
         logger.info(
             "SessionsBus connected: agent_id=%s, capabilities=%s, max_concurrent=%d",
@@ -153,12 +209,7 @@ class SessionsBus(Component, CloudEventProcessorMixin):
 
         self._shutdown_event.set()
 
-        if self._sse_task and not self._sse_task.done():
-            self._sse_task.cancel()
-            try:
-                await self._sse_task
-            except asyncio.CancelledError:
-                logger.info("SSE task cancelled")
+        await self._stop_stream()
 
         await self._drain_inflight_jobs()
 
@@ -403,6 +454,11 @@ class SessionsBus(Component, CloudEventProcessorMixin):
         """
         if self._semaphore is None:
             raise RuntimeError("Semaphore not initialized")
+        if self._consumption_paused:
+            # A job that reached a degraded agent anyway -- buffered, or listed by a catch-up that
+            # began before the pause -- is not started, so it stays pending for a healthy replica.
+            logger.info("Job %s left pending: agent '%s' is degraded", notification.job_id, self.namespace or ROOT_LABEL)
+            return
         async with self._semaphore:
             try:
                 await asyncio.wait_for(

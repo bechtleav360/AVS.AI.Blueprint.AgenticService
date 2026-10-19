@@ -2052,13 +2052,91 @@ class TestPausingADegradedAgent:
             await subscribed.resume_consumption()
         subscribe_all.assert_not_awaited()
 
-    async def test_a_failed_resume_stays_paused(self, subscribed: NATSClient) -> None:
-        """The next health poll finds the agent healthy and calls this again; that is the retry."""
+    async def test_a_failed_resume_stays_paused_and_retries(self, subscribed: NATSClient) -> None:
+        """M2 -- nothing else calls resume again: a paused client is healthy, so the supervisor sees no transition."""
         await subscribed.pause_consumption()
         with patch.object(subscribed, "_subscribe_all", new=AsyncMock(side_effect=RuntimeError("no"))):
             await subscribed.resume_consumption()
         assert subscribed.consumption_paused is True
         assert subscribed.subscriptions_ready is False
+        assert subscribed._resume_retry is not None and not subscribed._resume_retry.done()
+        await subscribed.close()
+
+    @staticmethod
+    def _fast_retries(mock_config: MagicMock) -> None:
+        base = mock_config.get.side_effect
+        mock_config.get.side_effect = lambda key, default=None: 0.01 if key == "event_client_retry_delay" else base(key, default)
+
+    async def test_the_retry_resumes_once_subscribing_works(
+        self, subscribed: NATSClient, mock_config: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        self._fast_retries(mock_config)
+        await subscribed.pause_consumption()
+        partial = MagicMock(unsubscribe=AsyncMock())
+
+        async def fail_after_one_subscription() -> None:
+            subscribed._subscriptions.append(partial)
+            raise RuntimeError("stream not there yet")
+
+        outcomes = [fail_after_one_subscription, fail_after_one_subscription]
+
+        async def subscribe_all() -> None:
+            if outcomes:
+                await outcomes.pop(0)()
+
+        with patch.object(subscribed, "_subscribe_all", new=subscribe_all), caplog.at_level(logging.WARNING):
+            await subscribed.resume_consumption()
+            await asyncio.wait_for(subscribed._resume_retry, timeout=5)  # type: ignore[arg-type]
+
+        assert subscribed.consumption_paused is False
+        assert subscribed.subscriptions_ready is True
+        assert partial.unsubscribe.await_count == 2, "each failed attempt drops what it subscribed"
+        assert subscribed._subscriptions == []
+        assert "attempt 1" in caplog.text and "attempt 2" in caplog.text
+
+    async def test_a_pause_stops_the_retry(self, subscribed: NATSClient, mock_config: MagicMock) -> None:
+        await subscribed.pause_consumption()
+        with patch.object(subscribed, "_subscribe_all", new=AsyncMock(side_effect=RuntimeError("no"))):
+            await subscribed.resume_consumption()
+            retry = subscribed._resume_retry
+            await subscribed.pause_consumption()
+        assert retry is not None and retry.cancelled()
+        assert subscribed._resume_retry is None
+        assert subscribed.consumption_paused is True
+
+    async def test_close_stops_the_retry(self, subscribed: NATSClient) -> None:
+        await subscribed.pause_consumption()
+        with patch.object(subscribed, "_subscribe_all", new=AsyncMock(side_effect=RuntimeError("no"))):
+            await subscribed.resume_consumption()
+            retry = subscribed._resume_retry
+        await subscribed.close()
+        assert retry is not None and retry.cancelled()
+
+    async def test_the_supervisor_and_the_client_recover_together(self, subscribed: NATSClient, mock_config: MagicMock) -> None:
+        """M2 end to end in the process: one health transition, a failed resume, and the agent consumes again."""
+        from blueprint.agents.io.api.actuators.health.namespace_supervisor import NamespaceSupervisor
+
+        self._fast_retries(mock_config)
+        registry = MagicMock()
+        registry.get_io_clients.side_effect = lambda namespace=None: [subscribed]
+        registry.get_components_by_type.return_value = []
+        supervisor = NamespaceSupervisor(registry, [""])
+        failures = [RuntimeError("stream not there yet")]
+
+        async def subscribe_all() -> None:
+            if failures:
+                raise failures.pop(0)
+
+        with patch.object(subscribed, "_subscribe_all", new=subscribe_all):
+            await supervisor.observe({"": False})
+            assert subscribed.consumption_paused is True
+            await supervisor.observe({"": True})
+            assert (await subscribed.health_check()).status == "healthy", "green while it retries: the bug's disguise"
+            await asyncio.wait_for(subscribed._resume_retry, timeout=5)  # type: ignore[arg-type]
+            await supervisor.observe({"": True})  # no transition, so the supervisor itself does nothing more
+
+        assert subscribed.consumption_paused is False
+        assert subscribed.subscriptions_ready is True
 
     async def test_a_reconnect_does_not_undo_a_pause(self, subscribed: NATSClient) -> None:
         """Otherwise C4 would hold only until the next network blip."""

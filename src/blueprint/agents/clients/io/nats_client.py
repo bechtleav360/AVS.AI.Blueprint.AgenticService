@@ -88,6 +88,10 @@ PERMISSION_RETRY_SECONDS = 60.0
 """How often a named connection retries after the broker refused it a permission: a missing grant does
 not heal in seconds, so retrying at the normal pace would only fill the log (spec 7.9)."""
 
+RESUME_RETRY_MAX_DELAY = 60.0
+"""The longest wait between two attempts of a resume that keeps failing (M2): the delay doubles from
+``event_client_retry_delay`` up to this."""
+
 _CURRENT_BINDING: contextvars.ContextVar["_Binding | None"] = contextvars.ContextVar("blueprint_nats_binding", default=None)
 """The named binding a run's delivery arrived on; set inside that run's own task only, so ``publish``
 can refuse a revoked run (dynamic-subscriptions spec 7.5)."""
@@ -387,6 +391,7 @@ class NATSClient(IOClientBase):
         self._queue_group: str = ""
         self._subscriptions_managed: bool = False
         self._retry_task: asyncio.Task[None] | None = None
+        self._resume_retry: asyncio.Task[None] | None = None
         self._max_concurrent_runs: RunLimit | None = None
         self._pool = RunPool()
         self._pairs_registered = 0
@@ -1842,6 +1847,8 @@ class NATSClient(IOClientBase):
         The connection stays open. See :meth:`IOClientBase.pause_consumption` for why closing
         it would make the pause permanent, and :meth:`health_check` for the other half of that.
         """
+        # A resume still retrying is given up: the agent is degraded again, and the next resume starts afresh.
+        await self._cancel_resume_retry()
         if self._consumption_paused:
             return
         self._consumption_paused = True
@@ -1867,9 +1874,13 @@ class NATSClient(IOClientBase):
     async def resume_consumption(self) -> None:
         """Re-subscribe this agent's topics after its health checks pass again.
 
-        Nothing is retried here: a failure to re-subscribe leaves the client paused, and the
-        next health poll finds the agent healthy again and calls this again. That is the whole
-        retry, and it is bounded by the poll interval rather than by a loop of its own.
+        **A failed re-subscribe is retried here, in the background** (M2, plan D2). The
+        supervisor resumes on the transition to healthy only, and a paused client reports
+        healthy, so nothing would ever call this again: the agent stayed off its topics with
+        every check green. The retry backs off from ``event_client_retry_delay`` up to
+        :data:`RESUME_RETRY_MAX_DELAY` with a WARNING per failed attempt, leaves readiness as it
+        is, and is cancelled by a pause and by :meth:`close`. Subscriptions a failed attempt
+        made are dropped first, so a retry never leaves duplicates.
         """
         if not self._consumption_paused:
             return
@@ -1885,14 +1896,67 @@ class NATSClient(IOClientBase):
             # cleared flag by itself.
             self._start_retry_task()
             return
+        delay = float(self.config.get("event_client_retry_delay", 5.0))
+        if not await self._try_resume(1, delay):
+            self._resume_retry = asyncio.ensure_future(self._retry_resume(delay))
+            self._resume_retry.add_done_callback(self._on_resume_retry_done)
+
+    async def _try_resume(self, attempt: int, next_delay: float) -> bool:
+        """Subscribe the default connection's topics once; on failure drop what was made and stay paused."""
         try:
             await self._subscribe_all()
         except Exception as exc:
+            await self._drop_subscriptions()
             self._consumption_paused = True
-            logger.error("Agent '%s' could not resume consuming: %s", self.namespace or ROOT_LABEL, exc, exc_info=True)
-            return
+            logger.warning(
+                "Agent '%s' could not resume consuming (attempt %d), retrying in %.1fs: %s",
+                self.namespace or ROOT_LABEL,
+                attempt,
+                next_delay,
+                self._describe_error(self._link, exc),
+            )
+            return False
+        self._consumption_paused = False
         self._subscriptions_ready = True
         logger.info("Agent '%s' resumed consuming: %d subscription(s) restored", self.namespace or ROOT_LABEL, len(self._subscriptions))
+        return True
+
+    async def _retry_resume(self, delay: float) -> None:
+        """Retry :meth:`_try_resume` with a doubling delay until it succeeds; cancelled by a pause or close."""
+        attempt = 1
+        while not self._closing:
+            await asyncio.sleep(delay)
+            attempt += 1
+            delay = min(delay * 2, RESUME_RETRY_MAX_DELAY)
+            if await self._try_resume(attempt, delay):
+                # The named connections' loops saw the flag back up after the first failure and stopped.
+                async with self._change_lock:
+                    self._start_named_links()
+                return
+
+    async def _cancel_resume_retry(self) -> None:
+        """Stop a resume still retrying, if one is."""
+        retry, self._resume_retry = self._resume_retry, None
+        if retry is not None and not retry.done():
+            retry.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await retry
+
+    def _on_resume_retry_done(self, task: asyncio.Task[None]) -> None:
+        """Report a resume retry that died of anything but its cancellation, naming the agent."""
+        if not task.cancelled() and task.exception() is not None:
+            logger.error(
+                "Agent '%s': retrying the resume failed: %s",
+                self.namespace or ROOT_LABEL,
+                self._describe_error(self._link, task.exception()),  # type: ignore[arg-type]
+            )
+
+    async def _drop_subscriptions(self) -> None:
+        """Unsubscribe whatever the default connection holds, so the next attempt starts from none."""
+        for sub in self._subscriptions:
+            with contextlib.suppress(Exception):
+                await sub.unsubscribe()
+        self._subscriptions.clear()
 
     async def close(self) -> None:
         """Stop consuming, let in-flight handlers finish, then close the connection.
@@ -1918,6 +1982,7 @@ class NATSClient(IOClientBase):
             self._retry_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._retry_task
+        await self._cancel_resume_retry()
         for task in list(self._named_tasks.values()):
             if not task.done():
                 task.cancel()
@@ -2132,10 +2197,7 @@ class NATSClient(IOClientBase):
     async def _connect_and_subscribe(self) -> None:
         await self.connect()
         # Clean up any partial subscriptions from a previous failed attempt
-        for sub in self._subscriptions:
-            with contextlib.suppress(Exception):
-                await sub.unsubscribe()
-        self._subscriptions.clear()
+        await self._drop_subscriptions()
         if self._consumption_paused:
             # Paused while this loop was still connecting: stay connected, subscribe nothing.
             # resume_consumption() subscribes over this connection if the agent is released.

@@ -29,16 +29,26 @@ discover that it was wrong.
 
 import logging
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
+from typing import Protocol
 
 from opentelemetry.metrics import CallbackOptions, Observation
 
-from .....clients.io.io_client_base import IOClientBase
 from .....component.namespace import ROOT_LABEL, ROOT_NAMESPACE
 from .....component.registry import Registry
 from .....deployment import deployment_group, pod_identity
 from .....io.telemetry.providers import agent_meter
+from ...eventing.sessions_bus import SessionsBus
 
 logger = logging.getLogger(__name__)
+
+
+class Consumer(Protocol):
+    """What the supervisor pauses and resumes: a transport client, or the sessions job stream."""
+
+    async def pause_consumption(self) -> None: ...
+
+    async def resume_consumption(self) -> None: ...
+
 
 NAMESPACE_UP_GAUGE = "blueprint.namespace.up"
 """``1`` while an agent is serving, ``0`` once it is not. The C7 signal.
@@ -205,7 +215,7 @@ class NamespaceSupervisor:
 
     async def _pause_consumption(self, namespace: str) -> None:
         """Stop this agent taking events, so they redeliver to a replica that can serve them."""
-        for client in self._clients(namespace):
+        for client in self._consumers(namespace):
             try:
                 await client.pause_consumption()
             except Exception as exc:  # pragma: no cover - defensive
@@ -213,17 +223,23 @@ class NamespaceSupervisor:
 
     async def _resume_consumption(self, namespace: str) -> None:
         """Let this agent take events again."""
-        for client in self._clients(namespace):
+        for client in self._consumers(namespace):
             try:
                 await client.resume_consumption()
             except Exception as exc:  # pragma: no cover - defensive
                 logger.error("Agent '%s' could not resume consuming: %s", namespace or ROOT_LABEL, exc, exc_info=True)
 
-    def _clients(self, namespace: str) -> list[IOClientBase]:
-        """This agent's transport clients, and nobody else's.
+    def _consumers(self, namespace: str) -> list[Consumer]:
+        """What takes this agent's events -- its transport clients and its sessions job stream -- and nobody else's.
+
+        The sessions stream is no transport client (``event_bus = "sessions"`` wires no
+        ``IOClientBase``), and left out it was the one consumer C4 never stopped (S18).
 
         The namespace is passed explicitly even for the root, where it looks redundant: on the
         application's registry an *omitted* namespace means every namespace, so leaving it out
         would pause every agent in the process the moment the root was degraded.
         """
-        return self._registry.get_io_clients(namespace=namespace or ROOT_NAMESPACE)
+        namespace = namespace or ROOT_NAMESPACE
+        consumers: list[Consumer] = list(self._registry.get_io_clients(namespace=namespace))
+        consumers.extend(self._registry.get_components_by_type(SessionsBus, namespace=namespace))
+        return consumers

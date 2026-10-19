@@ -12,6 +12,19 @@
   when it is acknowledged. Measured against JetStream with a 0.5 s limit: before, one run and the
   redelivery acknowledged unrun; now the redelivery runs to completion.
 
+- **A degraded agent whose resume fails is no longer left off its topics for good.** The supervisor
+  resumes an agent once, on the transition back to healthy, and a paused NATS client reports
+  healthy; a failed re-subscribe therefore left the agent paused with every check green, and nothing
+  tried again. The client now retries in the background -- from `event_client_retry_delay`, doubling
+  to 60 s, a WARNING per attempt -- drops what a failed attempt subscribed, and stops when the agent
+  is degraded again or shuts down. Measured: a resume failing on a stream that could not be recreated
+  consumed again 7 s after the obstacle was removed (before: still paused 36 s later).
+
+- **`event_bus = "sessions"` agents now stop consuming while degraded (C4).** The sessions job stream
+  is no transport client, so the supervisor never paused it: a degraded agent kept taking jobs. Its
+  stream is now closed while it is degraded and reopened when it recovers; a job that reaches it in
+  between is left pending for a healthy replica.
+
 - **A JetStream agent no longer gains a second subscription per topic on every reconnect.** nats-py
   restores every subscription itself after a reconnect, the JetStream ones included; the client
   subscribed again on top, and the extra subscriptions were unknown to pause, drain and shutdown. A

@@ -282,12 +282,16 @@ mechanisms.
    NATS the agent's subscriptions are drained, which lets already-queued messages finish and
    acknowledge while new ones go to a healthy replica. Under Dapr the sidecar delivers whatever
    the application thinks, so the fan-out answers `RETRY` for that agent without dispatching.
-   The connection is kept open, because a closed client reports itself unhealthy for ever and the
+   Under `event_bus = "sessions"` the job stream is closed, so the agent's jobs stay pending for a
+   healthy replica; jobs already running finish. The connection is kept open, because a closed client reports itself unhealthy for ever and the
    pause could then never lift.
 3. **It may take the pod out of rotation**, according to `readiness_policy`.
 
 Recovery is the reverse and needs no operator: when the agent's checks pass again, it resumes
-consuming and the gauge returns to `1`.
+consuming and the gauge returns to `1`. If resuming fails -- under NATS, a stream the broker no
+longer has and cannot recreate -- the client retries in the background, backing off from
+`event_client_retry_delay` to 60 s, with a WARNING per attempt, until it consumes again or the agent
+is degraded once more.
 
 The one exception is a startup failure. If a non-critical agent's `on_startup` raises, the process
 starts without it and that agent is **latched** down -- its components can often still answer a

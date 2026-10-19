@@ -955,3 +955,76 @@ class TestLastEventIdResume:
 
         params = mock_sse.call_args[1]["params"]
         assert "last_event_id" not in params
+
+
+# ---------------------------------------------------------------------------
+# C4 -- a degraded agent's job stream is closed (S18)
+# ---------------------------------------------------------------------------
+
+
+class TestPausingADegradedAgent:
+    """The sessions stream was the one consumer C4 never stopped: no IOClientBase, so the supervisor never saw it."""
+
+    @staticmethod
+    async def _started(sessions_bus: SessionsBus, mock_config: MagicMock) -> asyncio.Event:
+        """Start the bus with a stream loop that runs until cancelled; return the event set while it runs."""
+        mock_config.get.return_value = _make_sessions_config()
+        running = asyncio.Event()
+
+        async def stream() -> None:
+            running.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                running.clear()
+
+        sessions_bus._consume_sse_stream = stream  # type: ignore[method-assign]
+        await sessions_bus.on_startup()
+        await asyncio.wait_for(running.wait(), timeout=1)
+        return running
+
+    async def test_pausing_closes_the_stream(self, sessions_bus: SessionsBus, mock_config: MagicMock) -> None:
+        running = await self._started(sessions_bus, mock_config)
+        await sessions_bus.pause_consumption()
+        assert sessions_bus.consumption_paused is True
+        assert not running.is_set()
+        await sessions_bus.on_shutdown()
+
+    async def test_resuming_reopens_it(self, sessions_bus: SessionsBus, mock_config: MagicMock) -> None:
+        running = await self._started(sessions_bus, mock_config)
+        await sessions_bus.pause_consumption()
+        await sessions_bus.resume_consumption()
+        await asyncio.wait_for(running.wait(), timeout=1)
+        assert sessions_bus.consumption_paused is False
+        await sessions_bus.on_shutdown()
+
+    async def test_a_job_reaching_a_paused_agent_is_left_pending(
+        self, started_sessions_bus: SessionsBus, notification: JobNotification
+    ) -> None:
+        """Buffered, or listed by a catch-up begun before the pause: not started, so another replica takes it."""
+        started_sessions_bus._semaphore = asyncio.Semaphore(1)
+        started_sessions_bus._consumption_paused = True
+        with patch.object(started_sessions_bus, "_process_job_notification", new=AsyncMock()) as process:
+            await started_sessions_bus._handle_job_notification(notification)
+        process.assert_not_awaited()
+
+    async def test_an_agent_paused_before_startup_opens_no_stream(self, sessions_bus: SessionsBus, mock_config: MagicMock) -> None:
+        mock_config.get.return_value = _make_sessions_config()
+        await sessions_bus.pause_consumption()
+        await sessions_bus.on_startup()
+        assert sessions_bus._sse_task is None
+
+    async def test_the_supervisor_pauses_it(self, sessions_bus: SessionsBus, mock_config: MagicMock) -> None:
+        from blueprint.agents.io.api.actuators.health.namespace_supervisor import NamespaceSupervisor
+
+        running = await self._started(sessions_bus, mock_config)
+        registry = MagicMock()
+        registry.get_io_clients.return_value = []
+        registry.get_components_by_type.side_effect = lambda kind, namespace=None: [sessions_bus] if kind is SessionsBus else []
+        supervisor = NamespaceSupervisor(registry, [""])
+
+        await supervisor.observe({"": False})
+        assert sessions_bus.consumption_paused is True and not running.is_set()
+        await supervisor.observe({"": True})
+        await asyncio.wait_for(running.wait(), timeout=1)
+        await sessions_bus.on_shutdown()

@@ -146,6 +146,14 @@ framework endpoints (`nats`, `cache`, `scheduler`), one Swagger tag per agent, a
   per-data-source state is keyed by that context key. Broker test on the accounts broker: the same
   `(source, id)` on connections A and B runs on both, a repeat on A is skipped; without the change B
   was skipped.
+- Step 5, resume retry and C4 for sessions (M2, S18): a failed `resume_consumption` drops the partial
+  subscriptions, stays paused and retries in a backoff task (cancelled by a pause and by close), a
+  WARNING per attempt; `SessionsBus` gains `pause_consumption`/`resume_consumption` (stream closed,
+  a job reaching it left pending) and the supervisor pauses it with the IO clients. Live (JetStream,
+  health interval 2 s, a switchable check): the agent paused, its stream replaced by one blocking its
+  subjects, then healthy -- attempts 1-3 failed (1, 2, 4 s apart), resumed 7 s after the blocker was
+  removed, 5 of 5 events run. Control: one failed resume, still paused 36 s later. Sessions: unit
+  tests only, no sessions service to run against.
 - Step 4, JetStream reconnect (M1, N4, N11): `_on_reconnected` re-checks stream and consumers
   (`_ensure_broker_state`) instead of subscribing again; the message handler naks a JetStream delivery
   while paused; the first `nats.connect()` is bounded (`_first_connect_attempts`) and the configured
