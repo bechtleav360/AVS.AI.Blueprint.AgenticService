@@ -11,21 +11,21 @@ stated in data rather than in structure: a distinctive value is planted in one a
 other agent is asked for it through every API a component actually has. `namespace_of` and
 `agent_scope` say what something *is*; these say what can be *read*, which is the claim.
 
-**Five of these tests fail, on four distinct mechanisms.** They are marked `xfail(strict=True)`
-rather than deleted or softened, each naming the mechanism that lets the value through. Strict, so
-that closing a hole turns the test red until the marker is removed -- a silently-passing xfail is
-how a fix gets made and never noticed. All four are in the changelog's *Open points*:
+**Five of these tests failed when they were written, on four distinct mechanisms.** They were
+kept as `xfail(strict=True)` rather than deleted or softened -- strict, so that closing a hole
+turned the test red until the marker came off. All four are closed and no test here is marked any
+more; they are listed so that a regression is recognised for what it is:
 
-1. the registry's fallback from a qualified name to a bare one reaches a *neighbour's* key, not
+1. the registry's fallback from a qualified name to a bare one reached a *neighbour's* key, not
    only the root's;
-2. an explicit ``namespace=`` argument wins on a view as well as on the application registry, so
-   an agent can address any other by naming it -- which costs two tests, because it opens both
+2. an explicit ``namespace=`` argument won on a view as well as on the application registry, so
+   an agent could address any other by naming it -- which cost two tests, because it opened both
    the component lookup and the cache;
-3. a scoped ``get()`` resolves a dotted key against the whole configuration tree;
-4. one declaration serving two agents constructs both with the *same* mutable argument object.
+3. a scoped ``get()`` resolved a dotted key against the whole configuration tree;
+4. one declaration serving two agents constructed both with the *same* mutable argument object.
 
-None of them is reachable by accident, and none of them requires anything but the framework's own
-public API and a neighbour's name -- which an agent knows, because it is in the group.
+None of them was reachable by accident, and none required anything but the framework's own public
+API and a neighbour's name -- which an agent knows, because it is in the group.
 
 The root namespace is not a neighbour. It holds what the process genuinely shares -- one transport
 connection, one health cache -- so an agent resolving a root component is the design working, and

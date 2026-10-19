@@ -146,6 +146,11 @@ framework endpoints (`nats`, `cache`, `scheduler`), one Swagger tag per agent, a
   per-data-source state is keyed by that context key. Broker test on the accounts broker: the same
   `(source, id)` on connections A and B runs on both, a repeat on A is skipped; without the change B
   was skipped.
+- Step 21, docs and PR hygiene (W7, W8/D19, W9, D20): the isolation tests' xfail paragraph in the past tense;
+  `[0.9.0] - 2026-09-14` folded into `[Unreleased]`, one section per heading; `pyproject.toml` back to `0.8.2`
+  with no licence fields, `LICENSE` and its CHANGELOG entry removed (D20: no approval yet); a "Rolling back
+  to 0.8" section (durables, cache keys, grouped REST paths, metric labels). PR description drafted, not
+  posted.
 - Step 20, smaller items (S19, S23/D16, W2, W3/D7): `deployment.publish_deployment_group` from
   `AgentGroup.resolve`, read first by `deployment_group()`; the in-process tick slot is the trigger's latest
   fire time at or before now (`_arm_trigger`, `_tick_slot`); `diskcache-rs>=0.4.10`; the disk claim documented
