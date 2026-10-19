@@ -141,6 +141,10 @@ framework endpoints (`nats`, `cache`, `scheduler`), one Swagger tag per agent, a
   `repr`; the default and named connection lines go through `_describe_error`. Measured with a
   placeholder secret (JetStream, Dapr endpoint with the sidecar mock): in the logs and the answer
   before, in neither now. A handler's own exception text is still logged as it is, by design.
+- Step 3, internal naming (B3): the first consumer's product name, subject prefix and module names are
+  replaced by generic ones (`acme.agent.<tenant>.<agent>`, "the first consumer") in the named-connections
+  plan, the accounts broker config, its connection source and three unit tests. Tree only; the
+  published history keeps them (D1). The named-connection broker tests pass with the new subjects.
 
 **Measured against a real broker** (`tests/integration`, NATS 2.10 with JetStream, plus an
 accounts broker): acknowledgement exactly once, redelivery after `ack_wait`, concurrent runs,
