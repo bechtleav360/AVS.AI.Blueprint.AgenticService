@@ -22,12 +22,13 @@ from nats.js.client import JetStreamContext
 from nats.errors import NoRespondersError
 from nats.js.errors import APIError, NotFoundError
 from opentelemetry.metrics import CallbackOptions, Counter, Observation
+from pydantic import ValidationError
 
 from ...component.namespace import ROOT_LABEL, ROOT_NAMESPACE
 from ...deployment import UNGROUPED_LABEL, UNKNOWN_POD_LABEL, deployment_group, pod_identity
 from ...io.telemetry.providers import agent_meter
 from ...models.api import ComponentHealth
-from ...models.errors import DeliveryDisposition, DeliveryRevokedError, disposition_for
+from ...models.errors import DeliveryDisposition, DeliveryRevokedError, describe_validation_errors, disposition_for
 from ...models.events import CloudEvent
 from ..client_base import DeliveryCallback
 from .io_client_base import IOClientBase, subject_is_covered_by, validate_publish_subject, validate_subject_segment
@@ -187,8 +188,10 @@ class _Link:
 
     name: str = ""
     """``""`` for the agent's default connection, configured through ``nats_url`` and friends."""
-    url: str = ""
-    connect_options: dict[str, Any] = field(default_factory=dict)
+    # Neither is rendered by repr (S4): connect_options holds password, token and nkey seed, and
+    # a nats_url may carry user:pass@. A traceback or debugger printing a link prints its repr.
+    url: str = field(default="", repr=False)
+    connect_options: dict[str, Any] = field(default_factory=dict, repr=False)
     connection_name: str = ""
     nats_client: NatsClient | None = None
     js: JetStreamContext | None = None
@@ -656,7 +659,7 @@ class NATSClient(IOClientBase):
 
     @staticmethod
     def _describe_error(link: _Link, exc: BaseException) -> str:
-        """``exc`` as one short line for the readiness payload: the URL redacted, no credential of the link in it."""
+        """``exc`` as one short line for the readiness payload and the link's log lines: the URL redacted, no credential of the link in it."""
         text = f"{type(exc).__name__}: {exc}"
         if link.url:
             text = text.replace(link.url, redact_url(link.url))
@@ -894,7 +897,7 @@ class NATSClient(IOClientBase):
                     binding.link.name,
                     attempt,
                     delay,
-                    exc,
+                    binding.last_error,
                 )
                 await asyncio.sleep(delay)
 
@@ -946,7 +949,7 @@ class NATSClient(IOClientBase):
             for binding in self._named:
                 if binding.link is link and not binding.subscriptions_ready:
                     binding.last_error = self._describe_error(link, error)
-            logger.error("Agent '%s': error on named connection '%s': %s", agent, link.name, error)
+            logger.error("Agent '%s': error on named connection '%s': %s", agent, link.name, self._describe_error(link, error))
 
         link.nats_client = await nats.connect(
             link.url,
@@ -1967,8 +1970,13 @@ class NATSClient(IOClientBase):
         try:
             event_data = json.loads(msg.data.decode())
             return CloudEvent(**event_data)
+        except ValidationError as ex:
+            # Where and how it failed, not str(ex): that embeds the payload's values (B2).
+            logger.error("Discarding unparseable message on topic '%s': %s", topic, describe_validation_errors(ex.errors()))
+            return None
         except Exception as ex:
-            logger.error("Discarding unparseable message on topic '%s': %s", topic, ex)
+            # JSON, UTF-8 and mapping errors name a position, a byte or a type, not the payload.
+            logger.error("Discarding unparseable message on topic '%s': %s: %s", topic, type(ex).__name__, ex)
             return None
 
     @staticmethod
@@ -2083,7 +2091,7 @@ class NATSClient(IOClientBase):
                 self._subscriptions_ready = False
                 if max_retries != -1 and attempt > max_retries:
                     raise
-                logger.warning("NATSClient attempt %d failed, retrying in %.1fs: %s", attempt, delay, e)
+                logger.warning("NATSClient attempt %d failed, retrying in %.1fs: %s", attempt, delay, self._describe_error(self._link, e))
                 await asyncio.sleep(delay)
 
     def _on_retry_done(self, task: asyncio.Task[None]) -> None:
@@ -2097,11 +2105,11 @@ class NATSClient(IOClientBase):
             return
         exc = task.exception()
         if exc is not None:
+            # No traceback: its last line is str(exc) again, unredacted (N3).
             logger.error(
                 "Agent '%s' permanently failed to connect to NATS after exhausting retries: %s",
                 self.namespace or ROOT_LABEL,
-                exc,
-                exc_info=exc,
+                self._describe_error(self._link, exc),
             )
 
     async def _connect_and_subscribe(self) -> None:

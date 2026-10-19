@@ -165,6 +165,13 @@ at-least-once contract as a handler that raises; the alternative is an event mar
 whose output was never sent. If deduplication is enabled, the marker for the inbound event is
 released, so the redelivery is not skipped as a duplicate.
 
+That holds for every delivery that is not acknowledged, not only for a failed publish: **with
+deduplication on, a delivery keeps its marker only when it ends in an `ack`.** A handler that
+raises, a run cut off by `nats_handler_timeout` or by a shutdown -- including a handler that
+catches the cancellation and returns anyway -- and a return value that cannot be turned into
+results all release the marker before the delivery is nak'd. A duplicate never releases the marker
+it ran into: that marker belongs to the first delivery.
+
 **A result's event id is derived, not random:** a UUIDv5 over the agent, the inbound event's
 `source` and `id`, the result's `event_type` and its position in the list. A redelivery therefore
 republishes each result under the same id -- including results an earlier attempt had already sent

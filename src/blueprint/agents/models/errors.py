@@ -1,7 +1,29 @@
 """Handler exceptions, and the delivery disposition each one implies."""
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping, Sequence
 from enum import Enum
+from typing import Any
+
+_DESCRIBED_ERRORS_LIMIT = 10
+
+
+def describe_validation_errors(errors: Sequence[Mapping[str, Any]]) -> str:
+    """One line naming where a payload failed validation and how, never what it contained.
+
+    ``errors`` is what pydantic's ``ValidationError.errors()`` or FastAPI's
+    ``RequestValidationError.errors()`` returns. Their own rendering, ``str(exc)``, embeds
+    each offending ``input_value``, and a delivery's payload is customer data that may carry
+    a credential, so only each entry's ``loc`` and ``type`` are used. The ``msg`` is left out
+    too: a custom validator's message can quote the value.
+
+    The first ten entries are listed, the rest counted.
+    """
+    described = [
+        f"{'.'.join(str(part) for part in error.get('loc', ())) or '<root>'}: {error.get('type', 'unknown')}"
+        for error in errors[:_DESCRIBED_ERRORS_LIMIT]
+    ]
+    remaining = len(errors) - len(described)
+    return "; ".join(described) + (f" (+{remaining} more)" if remaining > 0 else "")
 
 
 class HandlerError(Exception):

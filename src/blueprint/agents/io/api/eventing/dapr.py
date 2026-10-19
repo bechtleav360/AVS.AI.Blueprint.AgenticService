@@ -12,7 +12,13 @@ from fastapi.routing import APIRoute
 from ....clients.client_base import DeliveryCallback
 from ....clients.io.dapr_client import DaprClient
 from ....component.namespace import ROOT_LABEL, ROOT_NAMESPACE, namespace_of
-from ....models.errors import DeliveryDisposition, HandlerError, combined_disposition, disposition_for
+from ....models.errors import (
+    DeliveryDisposition,
+    HandlerError,
+    combined_disposition,
+    describe_validation_errors,
+    disposition_for,
+)
 from ....models.events import CloudEvent
 from ..rest_api_base import RestApiBase
 from .dapr_response import dapr_status
@@ -43,7 +49,8 @@ class DaprDeliveryRoute(APIRoute):
             try:
                 return await handle(request)
             except RequestValidationError as exc:
-                logger.error("Discarding unparseable delivery on '%s': %s", request.url.path, exc)
+                # Where and how it failed, not str(exc): that embeds the payload's values (B2).
+                logger.error("Discarding unparseable delivery on '%s': %s", request.url.path, describe_validation_errors(exc.errors()))
                 return JSONResponse({"status": dapr_status(DeliveryDisposition.TERM), "reason": "payload is not a CloudEvent"})
 
         return drop_unparseable_delivery
@@ -285,7 +292,8 @@ class DaprEventing(EventHandlingBase):
 
         The reason string reports the first failure. There is one field for it and no way to
         return several, so it names the first agent that failed rather than concatenating; the
-        per-agent errors are logged individually above it, each with its agent.
+        per-agent errors are logged individually above it, each with its agent. It is a
+        ``HandlerError``'s ``reason``, or for any other exception only its type name.
         """
         agents = self._agents_for(topic)
         dispositions: list[DeliveryDisposition] = []
@@ -315,7 +323,10 @@ class DaprEventing(EventHandlingBase):
                 disposition = disposition_for(exc)
                 dispositions.append(disposition)
                 if reason is None:
-                    reason = exc.reason if isinstance(exc, HandlerError) else str(exc)
+                    # A HandlerError's reason is written for this answer; any other exception's
+                    # text is not, and the sidecar logs the body (S8). Its type is enough there,
+                    # and the full error is in the log line below.
+                    reason = exc.reason if isinstance(exc, HandlerError) else type(exc).__name__
                 logger.error(
                     "Handler in namespace '%s' failed for event %s on topic '%s', answering %s: %s",
                     namespace or ROOT_LABEL,

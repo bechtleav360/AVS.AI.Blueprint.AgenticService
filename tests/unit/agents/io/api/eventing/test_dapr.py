@@ -116,7 +116,21 @@ class TestDaprEventingPublish:
         mock_registry.correlation_context.set.return_value = MagicMock()
         result = await dapr_eventing.publish("topic", cloud_event)
         assert result["status"] == "RETRY"
-        assert result["reason"] == "boom"
+        assert result["reason"] == "RuntimeError"
+
+    async def test_an_unexpected_exceptions_text_never_reaches_the_sidecar(
+        self,
+        dapr_eventing: DaprEventing,
+        mock_registry: MagicMock,
+        cloud_event: CloudEvent,
+    ) -> None:
+        """S8 -- the reason is the type name; the text may carry anything, and the sidecar logs the body."""
+        mock_registry.get_service.return_value.process_event = AsyncMock(
+            side_effect=ValueError("connect failed for postgres://app:PLACEHOLDER-SECRET-VALUE@db")
+        )
+        mock_registry.correlation_context.set.return_value = MagicMock()
+        result = await dapr_eventing.publish("topic", cloud_event)
+        assert result == {"status": "RETRY", "reason": "ValueError"}
 
     @pytest.mark.parametrize(
         ("error", "expected"),
@@ -250,6 +264,19 @@ class TestDaprEventingUnparseableDelivery:
                 await client.post("/events/orders.created", json={"not": "a cloud event"})
 
         assert "unparseable delivery" in caplog.text
+
+    async def test_an_unparseable_delivery_logs_where_it_failed_but_not_the_values(
+        self, dapr_eventing: DaprEventing, mock_registry: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """B2 -- FastAPI's rendering of the error embeds every offending input value."""
+        body = {"specversion": "1.0", "id": {"token": "PLACEHOLDER-SECRET-VALUE"}, "source": "s", "type": "t"}
+        async with AsyncClient(transport=ASGITransport(app=self._app(dapr_eventing)), base_url="http://sidecar") as client:
+            with caplog.at_level("DEBUG"):
+                response = await client.post("/events/orders.created", json=body)
+
+        assert response.json()["status"] == "DROP"
+        assert "PLACEHOLDER-SECRET-VALUE" not in caplog.text
+        assert "body.id: string_type" in caplog.text
 
     async def test_a_valid_delivery_is_unaffected(
         self, dapr_eventing: DaprEventing, mock_registry: MagicMock, cloud_event: CloudEvent, processed_result: ProcessingResult

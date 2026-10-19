@@ -3,6 +3,28 @@
 
 ### Fixed
 
+- **With deduplication on, an event cut off by `nats_handler_timeout` is no longer lost.** The run
+  is cancelled and nak'd, but the dedup marker was released only for an `Exception`, and
+  cancellation is not one. The redelivery found the marker, was skipped as a duplicate and
+  acknowledged, and the event was never processed. The same happened to a handler that swallowed
+  the cancellation, to a run cancelled by a shutdown, and to a failure after the handler returned
+  (a scalar return value that is not a valid `HandlerResult`). A delivery now keeps its marker only
+  when it is acknowledged. Measured against JetStream with a 0.5 s limit: before, one run and the
+  redelivery acknowledged unrun; now the redelivery runs to completion.
+
+- **Logs and Dapr answers no longer carry payload values or credentials.** A delivery that is not a
+  valid CloudEvent was logged with pydantic's rendering of the error, which quotes every offending
+  input value: under Dapr (`Discarding unparseable delivery`), under NATS (`Discarding unparseable
+  message`, also in 0.8) and for a malformed inner event of a `com.dapr.event.sent` envelope, which
+  was additionally logged in full when it had no `type`. These lines now name each field and error
+  type only (`body.id: string_type`). The Dapr answer for an exception that is not a `HandlerError`
+  carries its type name as `reason` (`"ValueError"`), no longer its text; a `HandlerError`'s
+  `reason` is unchanged. The NATS connection lines (a failed attempt, a permanent failure, an error
+  on a named connection) redact the URL and the connection's password, token and nkey seed, and the
+  permanent-failure line no longer adds a traceback. Measured with a placeholder secret in the
+  payload, against JetStream and the Dapr endpoint: before, it was in 1 to 4 log records per
+  scenario and in the Dapr answer; now in none.
+
 - **`/health/ready` no longer waits for a running health poll.** The cached answer was read under the
   lock the poll holds while it awaits every check, so a slow check -- a NATS connect up to its 10 s
   timeout -- delayed every readiness probe with it. Measured with a 4 s check: up to 3.9 s per probe

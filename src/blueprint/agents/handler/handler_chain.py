@@ -26,6 +26,15 @@ that enum is normative in spec sec. 7.2: it carries two values so that no failur
 reach the transport as a returned value, and a third one would invite exactly that.
 """
 
+CLAIMED_CONTEXT_KEY = "idempotency_claimed"
+"""Context key set to ``True`` while this delivery holds the dedup marker it claimed.
+
+Only the delivery that claimed a marker may drop it. A duplicate holds none -- the marker it ran
+into is the first delivery's, still running or finished -- and releasing on its behalf would
+let a third copy dispatch while the first is mid-run. The flag is per delivery for the same
+reason the duplicate flag is: ``context`` is the one object that belongs to exactly one.
+"""
+
 IDEMPOTENCY_CACHE_NAMESPACE = "idempotency"
 """Cache namespace holding the seen-event markers, kept away from application data."""
 
@@ -183,9 +192,13 @@ class HandlerChain(Component):
     ``idempotency_ttl``.
 
     When it is on, the chain claims a marker keyed on the event before dispatching and
-    skips the dispatch if the marker is already there. A failed dispatch releases the
-    claim, because the failure naks and the redelivery must be allowed to run: a claim
-    kept across a failure would turn every retry into a silent no-op.
+    skips the dispatch if the marker is already there. The marker is kept only by a delivery
+    that is settled as a success; every other way out releases it, because the delivery is
+    nak'd or abandoned and the redelivery must be allowed to run: a claim kept across a failure
+    would turn every retry into a silent no-op that acknowledges. A dispatch that raises --
+    including ``CancelledError``, which is how a handler timeout or a shutdown ends a run --
+    is released here; what fails after the dispatch is the caller's to release
+    (:meth:`release`), and ``EventProcessingService.process_event`` does.
 
     The claim is the cache's atomic set-if-absent (``CacheService.claim``), so two replicas
     handed the same event at the same instant cannot both win it -- with a cache they share
@@ -280,7 +293,7 @@ class HandlerChain(Component):
         if policy is None:
             policy = self._policy = self._resolve_idempotency_policy()
 
-        if not self._claim(event, policy):
+        if not self._claim(event, policy, context):
             context[DUPLICATE_CONTEXT_KEY] = True
             trace.get_current_span().set_attribute("event.duplicate", True)
             logger.info("Skipping event '%s' from '%s': already processed within the dedup window", event.id, event.source)
@@ -288,8 +301,11 @@ class HandlerChain(Component):
 
         try:
             return await self._dispatch(event, context)
-        except Exception:
-            self._release(event, policy)
+        except BaseException:
+            # BaseException, not Exception: a handler cut off by nats_handler_timeout, or by a
+            # shutdown, ends with CancelledError. Kept, the marker would make the nak'd
+            # redelivery a duplicate that acknowledges, and the event would be lost unrun.
+            self.release(event, context)
             raise
 
     # ------------------------------------------------------------------
@@ -473,8 +489,11 @@ class HandlerChain(Component):
     # Idempotency (P4)
     # ------------------------------------------------------------------
 
-    def _claim(self, event: CloudEvent[Any], policy: IdempotencyPolicy) -> bool:
+    def _claim(self, event: CloudEvent[Any], policy: IdempotencyPolicy, context: dict[str, Any]) -> bool:
         """Record that this event is being processed, and report whether to dispatch it.
+
+        A claim that is won is recorded in ``context`` (:data:`CLAIMED_CONTEXT_KEY`), so that
+        :meth:`release` drops only a marker this delivery owns.
 
         Returns:
             ``True`` if the event should be dispatched -- dedup is off, the event cannot be
@@ -490,35 +509,38 @@ class HandlerChain(Component):
 
         # One atomic set-if-absent, not exists() then set(): between those two calls a second
         # replica handed the same event passes the check too, and both dispatch.
-        return self.registry.cache_service.claim(
+        claimed = self.registry.cache_service.claim(
             key,
             {"seen_at": time.time(), "event_type": event.type},
             namespace=IDEMPOTENCY_CACHE_NAMESPACE,
             ttl=policy.ttl,
         )
+        if claimed:
+            context[CLAIMED_CONTEXT_KEY] = True
+        return claimed
 
-    def release(self, event: CloudEvent[Any]) -> None:
-        """Drop this event's dedup marker after a failure that happened after a successful dispatch.
-
-        For the caller that finishes the delivery: a handler result that could not be published
-        fails the delivery after the chain has already kept its claim, and the redelivery must be
-        allowed to run the chain again. A no-op when dedup is off.
-        """
-        policy = self._policy
-        if policy is None:
-            policy = self._policy = self._resolve_idempotency_policy()
-        self._release(event, policy)
-
-    def _release(self, event: CloudEvent[Any], policy: IdempotencyPolicy) -> None:
-        """Drop the marker after a failed dispatch so the redelivery is allowed to run.
+    def release(self, event: CloudEvent[Any], context: dict[str, Any]) -> None:
+        """Drop the dedup marker this delivery claimed, so its redelivery is allowed to run.
 
         The claim is taken before dispatch, which is the only point at which it can stop a
-        concurrent duplicate. That means a dispatch that raises leaves a marker behind for
-        an event that was *not* processed, and the nak this failure produces sends the very
-        same event back. Without this the retry would be swallowed as a duplicate and the
-        message would be lost after ``max_deliver`` attempts that never ran a handler.
+        concurrent duplicate. So every delivery that is not settled as a success leaves a marker
+        behind for an event that was *not* processed, and the nak it ends in sends the very same
+        event back. Without the release that retry is swallowed as a duplicate, acknowledged,
+        and the event is lost with no handler having finished it.
+
+        The chain calls this for a dispatch that raises. The caller that finishes the delivery
+        calls it for what fails afterwards -- a result that cannot be normalised or published,
+        a run cancelled after the handler returned.
+
+        A no-op unless ``context`` holds this delivery's claim: dedup off, an event that could
+        not be keyed, a duplicate (whose marker is the first delivery's), or a claim already
+        released. That makes it safe to call from every exit path, more than once.
+
+        Args:
+            event: The event the claim was taken for.
+            context: The delivery's processing context, which records whether it holds a claim.
         """
-        if not policy.enabled:
+        if not context.pop(CLAIMED_CONTEXT_KEY, False):
             return
 
         key = self._idempotency_key(event)
@@ -526,7 +548,7 @@ class HandlerChain(Component):
             return
 
         self.registry.cache_service.delete(key, namespace=IDEMPOTENCY_CACHE_NAMESPACE)
-        logger.debug("Released the dedup marker for event '%s' after a failed dispatch", event.id)
+        logger.debug("Released the dedup marker for event '%s': the delivery was not settled as a success", event.id)
 
     @staticmethod
     def _idempotency_key(event: CloudEvent[Any]) -> dict[str, str] | None:

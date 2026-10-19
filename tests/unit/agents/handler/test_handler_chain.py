@@ -1,11 +1,13 @@
 """Unit tests for HandlerChain."""
 
+import asyncio
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
 from blueprint.agents.handler.handler_chain import (
+    CLAIMED_CONTEXT_KEY,
     DUPLICATE_CONTEXT_KEY,
     IDEMPOTENCY_CACHE_NAMESPACE,
     HandlerChain,
@@ -290,15 +292,56 @@ class TestIdempotencyEnabled:
 
         _wire_handlers(mock_registry, [Counting()])
 
-        await chain.process(cloud_event, {})
-        chain.release(cloud_event)
+        context: dict[str, Any] = {}
+        await chain.process(cloud_event, context)
+        chain.release(cloud_event, context)
         await chain.process(cloud_event, {})
 
         assert seen == ["evt-001", "evt-001"]
 
-    def test_release_with_dedup_off_is_a_no_op(self, chain: HandlerChain, mock_registry: MagicMock, cloud_event: GenericCloudEvent) -> None:
-        chain.release(cloud_event)
+    async def test_release_with_dedup_off_is_a_no_op(
+        self, chain: HandlerChain, mock_registry: MagicMock, cloud_event: GenericCloudEvent
+    ) -> None:
+        _wire_handlers(mock_registry, [StubHandler(result=None)])
+        context: dict[str, Any] = {}
+        await chain.process(cloud_event, context)
+
+        chain.release(cloud_event, context)
+
+        assert CLAIMED_CONTEXT_KEY not in context
         mock_registry.cache_service.delete.assert_not_called()
+
+    async def test_a_duplicate_releases_nothing(
+        self, chain: HandlerChain, mock_registry: MagicMock, mock_config: MagicMock, cloud_event: GenericCloudEvent
+    ) -> None:
+        """B1 -- the marker a duplicate ran into is the first delivery's; dropping it would let a third copy run."""
+        cache = _enable_dedup(mock_config, mock_registry)
+        _wire_handlers(mock_registry, [StubHandler(result=None)])
+        first: dict[str, Any] = {}
+        await chain.process(cloud_event, first)
+        duplicate: dict[str, Any] = {}
+        await chain.process(cloud_event, duplicate)
+
+        chain.release(cloud_event, duplicate)
+
+        assert first[CLAIMED_CONTEXT_KEY] is True
+        assert CLAIMED_CONTEXT_KEY not in duplicate
+        assert len(cache.store) == 1
+
+    async def test_a_released_claim_is_released_once(
+        self, chain: HandlerChain, mock_registry: MagicMock, mock_config: MagicMock, cloud_event: GenericCloudEvent
+    ) -> None:
+        """Every exit path may release; only the first one deletes, so a later claim by a redelivery survives."""
+        cache = _enable_dedup(mock_config, mock_registry)
+        _wire_handlers(mock_registry, [StubHandler(result=None)])
+        context: dict[str, Any] = {}
+        await chain.process(cloud_event, context)
+        chain.release(cloud_event, context)
+        await chain.process(cloud_event, {})  # the redelivery claims again
+
+        chain.release(cloud_event, context)
+
+        assert len(cache.store) == 1
 
     async def test_same_event_delivered_twice_dispatches_once(
         self, chain: HandlerChain, mock_registry: MagicMock, mock_config: MagicMock, cloud_event: GenericCloudEvent
@@ -385,6 +428,23 @@ class TestIdempotencyEnabled:
         with pytest.raises(RuntimeError):
             await chain.process(cloud_event, {})
         assert attempts == ["evt-001", "evt-001"]
+
+    async def test_a_cancelled_dispatch_releases_the_claim(
+        self, chain: HandlerChain, mock_registry: MagicMock, mock_config: MagicMock, cloud_event: GenericCloudEvent
+    ) -> None:
+        """B1 -- a handler timeout or a shutdown ends the run with CancelledError, a BaseException."""
+        cache = _enable_dedup(mock_config, mock_registry)
+
+        class Cancelled(StubHandler):
+            async def handle_event(self, event, context):
+                raise asyncio.CancelledError
+
+        _wire_handlers(mock_registry, [Cancelled()])
+
+        with pytest.raises(asyncio.CancelledError):
+            await chain.process(cloud_event, {})
+
+        assert cache.store == {}
 
     async def test_event_without_a_source_is_dispatched_untracked(
         self, chain: HandlerChain, mock_registry: MagicMock, mock_config: MagicMock

@@ -18,6 +18,8 @@ from blueprint.agents.clients.io.nats_client import (
     ConsumerTuning,
     JetStreamUnavailableError,
     NATSClient,
+    _Binding,
+    _Link,
     redact_url,
 )
 from blueprint.agents.models.errors import CriticalHandlerError, InvalidEventError, RetryableHandlerError
@@ -2512,3 +2514,70 @@ class TestAClosedConnectionComesBack:
             await nats_client.connect()
         mock_connect.assert_not_awaited()
         start.assert_called_once()
+
+
+_SECRET = "PLACEHOLDER-SECRET-VALUE"
+
+
+class TestNoCredentialOrPayloadInLogs:
+    """B2/S4/N3 -- what a transport logs about a failure names where and what, never a value or a credential."""
+
+    async def test_an_unparseable_payload_logs_the_field_not_the_value(self, caplog: pytest.LogCaptureFixture) -> None:
+        payload = {"specversion": "1.0", "id": {"token": _SECRET}, "source": "s", "type": "t"}
+        with caplog.at_level("DEBUG"):
+            event = NATSClient._decode_message(MagicMock(data=json.dumps(payload).encode()), "orders.created")
+        assert event is None
+        assert _SECRET not in caplog.text
+        assert "id: string_type" in caplog.text
+
+    def test_a_link_and_its_binding_render_no_credential(self) -> None:
+        link = _Link(name="A", url=f"nats://u:{_SECRET}@h:4222", connect_options={"user": "u", "password": _SECRET})
+        assert _SECRET not in repr(link)
+        assert _SECRET not in repr(_Binding(link=link))
+        assert "name='A'" in repr(link)
+
+    async def test_a_failed_attempt_of_the_default_connection_is_logged_redacted(
+        self, nats_client: NATSClient, mock_config: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        mock_config.get.side_effect = lambda k, d=None: {"event_client_max_retries": 1, "event_client_retry_delay": 0.0}.get(k, d)
+        nats_client._nats_url = f"nats://u:{_SECRET}@h:4222"
+        nats_client._connect_options = {"token": "PLACEHOLDER-TOKEN"}
+        failure = OSError(f"could not reach nats://u:{_SECRET}@h:4222 with PLACEHOLDER-TOKEN")
+        nats_client._subscriptions_managed = True
+        with (
+            patch.object(nats_client, "_connect_and_subscribe", new_callable=AsyncMock, side_effect=failure),
+            caplog.at_level("DEBUG"),
+        ):
+            task = asyncio.ensure_future(nats_client._start_with_retry())
+            await asyncio.gather(task, return_exceptions=True)
+            nats_client._on_retry_done(task)
+        assert "attempt 1 failed" in caplog.text
+        assert "permanently failed" in caplog.text
+        assert _SECRET not in caplog.text
+        assert "PLACEHOLDER-TOKEN" not in caplog.text
+
+    async def test_an_error_on_a_named_connection_is_logged_redacted(
+        self, nats_client: NATSClient, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        link = _Link(name="A", url="nats://h:4222", connect_options={"user": "u", "password": _SECRET})
+        connect = AsyncMock(return_value=MagicMock(is_closed=False))
+        with patch("blueprint.agents.clients.io.nats_client.nats.connect", connect), caplog.at_level("DEBUG"):
+            await nats_client._open_named_link(link)
+            await connect.call_args.kwargs["error_cb"](Exception(f"authorization violation for u/{_SECRET}"))
+        assert "error on named connection 'A'" in caplog.text
+        assert _SECRET not in caplog.text
+
+    async def test_a_failed_attempt_of_a_named_connection_is_logged_redacted(
+        self, nats_client: NATSClient, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        binding = _Binding(link=_Link(name="A", url=f"nats://u:{_SECRET}@h:4222"))
+        failure = OSError(f"could not reach nats://u:{_SECRET}@h:4222")
+        with (
+            patch.object(nats_client, "_open_named_link", new_callable=AsyncMock, side_effect=failure),
+            patch("blueprint.agents.clients.io.nats_client.asyncio.sleep", new_callable=AsyncMock, side_effect=asyncio.CancelledError),
+            caplog.at_level("DEBUG"),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await nats_client._run_named_link(binding)
+        assert "named connection 'A' attempt 1 failed" in caplog.text
+        assert _SECRET not in caplog.text

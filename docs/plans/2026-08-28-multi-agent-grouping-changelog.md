@@ -125,6 +125,23 @@ framework endpoints (`nats`, `cache`, `scheduler`), one Swagger tag per agent, a
   `docs/plans/2026-10-15-named-connections-step6-inventory.md`); `asbs validate` checks the NATS
   keys; `examples/site_readings` shows two named connections end to end.
 
+**PR #96 review fixes** (`2026-10-16-pr96-review-fixes.md`).
+- Step 1, dedup bracket (B1, M11): a delivery keeps its dedup marker only when it is acknowledged.
+  The chain releases on any `BaseException` from dispatch (a handler timeout or shutdown is a
+  `CancelledError`); `EventProcessingService.process_event` releases in a `finally` unless the result
+  was settled and no cancellation is pending (a handler that swallowed it). Only the delivery that
+  won the claim releases (`CLAIMED_CONTEXT_KEY`), so a duplicate never drops the first delivery's
+  marker. Measured on JetStream (`nats_handler_timeout = 0.5`, disk cache): timeout, swallowed
+  cancellation and a scalar return each lost the event before (redelivery skipped and acked), and
+  run to completion on redelivery now; a real duplicate is still skipped.
+- Step 2, leaks in logs and responses (B2, S8, S4, N3): `describe_validation_errors` (`models/errors.py`)
+  renders a validation failure as `loc: type` only, used by the Dapr and NATS unparseable-payload lines
+  and the inner Dapr event's errors (no longer logged where raised, raised `from None`); a Dapr reason
+  is a `HandlerError`'s or the exception's type name; `_Link` hides `url` and `connect_options` from
+  `repr`; the default and named connection lines go through `_describe_error`. Measured with a
+  placeholder secret (JetStream, Dapr endpoint with the sidecar mock): in the logs and the answer
+  before, in neither now. A handler's own exception text is still logged as it is, by design.
+
 **Measured against a real broker** (`tests/integration`, NATS 2.10 with JetStream, plus an
 accounts broker): acknowledgement exactly once, redelivery after `ack_wait`, concurrent runs,
 heartbeat, run timeout, reconnect with resubscription, named connections without permission

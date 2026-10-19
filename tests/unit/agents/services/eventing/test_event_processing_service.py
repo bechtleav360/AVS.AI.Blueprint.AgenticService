@@ -1,13 +1,22 @@
 """Unit tests for EventProcessingService."""
 
+import asyncio
+import traceback
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from pydantic import ValidationError
 
 from blueprint.agents.component.namespace import ROOT_NAMESPACE
+from blueprint.agents.handler.handler_chain import DUPLICATE_CONTEXT_KEY, IDEMPOTENCY_CACHE_NAMESPACE
 from blueprint.agents.models.events import GenericCloudEvent, HandlerResult
 from blueprint.agents.models.result import ProcessingStatus
 from blueprint.agents.services.eventing.event_processing_service import EventProcessingService
+from blueprint.agents.services.infrastructure.cache_service import DiskCacheService
+from tests.unit.agents.handler.conftest import StubHandler
+
+_SECRET = "PLACEHOLDER-SECRET-VALUE"
 
 # ---------------------------------------------------------------------------
 # _extract_handler_results (static — no instance needed)
@@ -117,6 +126,28 @@ class TestUnwrapDaprEvent:
         outer = GenericCloudEvent.model_construct(id="outer-1", type="com.dapr.event.sent", source="dapr", data=42)
         with pytest.raises(RuntimeError, match="Unsupported inner Dapr event payload type"):
             event_processing_service._unwrap_dapr_event(outer)
+
+    def test_an_inner_event_without_type_is_not_logged(
+        self, event_processing_service: EventProcessingService, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """B2 -- the inner event is the payload; the error is raised, and the caller logs it."""
+        outer = GenericCloudEvent(id="outer-1", type="com.dapr.event.sent", source="dapr", data={"id": "inner-1", "token": _SECRET})
+        with caplog.at_level("DEBUG"), pytest.raises(RuntimeError) as caught:
+            event_processing_service._unwrap_dapr_event(outer)
+        assert _SECRET not in caplog.text
+        assert _SECRET not in "".join(traceback.format_exception(caught.value))
+
+    def test_an_invalid_inner_event_names_the_field_but_not_the_value(
+        self, event_processing_service: EventProcessingService, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """B2 -- pydantic's rendering embeds the input; the caller logs the traceback with its cause chain."""
+        outer = GenericCloudEvent(
+            id="outer-1", type="com.dapr.event.sent", source="dapr", data={"id": {"token": _SECRET}, "type": "t", "source": "s"}
+        )
+        with caplog.at_level("DEBUG"), pytest.raises(RuntimeError, match="id: string_type") as caught:
+            event_processing_service._unwrap_dapr_event(outer)
+        assert _SECRET not in caplog.text
+        assert _SECRET not in "".join(traceback.format_exception(caught.value))
 
 
 # ---------------------------------------------------------------------------
@@ -302,3 +333,101 @@ class TestTheRequestIdIsKept:
         await event_processing_service.process_event(GenericCloudEvent(id="e1", type="t", source="s"), context)
 
         assert context["request_id"]
+
+
+class TestTheDedupBracket:
+    """B1, M11 (PR #96) -- a delivery that is not acknowledged gives its dedup marker back.
+
+    The marker is claimed before dispatch and is only right to keep once the delivery is settled
+    as a success. Every other way out -- a handler timeout or a shutdown cancelling the run, a
+    failure after the handler returned -- naks or abandons the delivery, and a marker left behind
+    turns the redelivery into a skipped duplicate that acknowledges: the event is lost with no
+    handler having finished it. A real chain and a real cache, because the property is "the
+    marker is not in the cache afterwards", which a mocked chain cannot show.
+    """
+
+    KEY = {"id": "e1", "source": "s"}
+
+    @staticmethod
+    def _wire(mock_registry: MagicMock, mock_config: MagicMock, tmp_path: Path, handler: StubHandler) -> DiskCacheService:
+        settings = {"idempotency_enabled": True, "idempotency_ttl": 60}
+        mock_config.get.side_effect = lambda key, default=None: settings.get(key, default)
+        cache = DiskCacheService(cache_dir=str(tmp_path / "cache"))
+        mock_registry.has_cache.return_value = True
+        mock_registry.cache_service = cache
+        mock_registry.get_event_handler.return_value = [handler]
+        return cache
+
+    def _marker_held(self, cache: DiskCacheService) -> bool:
+        return cache.exists(self.KEY, namespace=IDEMPOTENCY_CACHE_NAMESPACE)
+
+    async def test_a_handler_cut_off_by_its_timeout_gives_the_marker_back(
+        self, event_processing_service: EventProcessingService, mock_registry: MagicMock, mock_config: MagicMock, tmp_path: Path
+    ) -> None:
+        """B1 -- ``nats_handler_timeout`` cancels the run with CancelledError, which ``except Exception`` never saw."""
+        runs: list[str] = []
+
+        class SlowOnce(StubHandler):
+            async def handle_event(self, event, context):
+                runs.append(event.id)
+                if len(runs) == 1:
+                    await asyncio.sleep(10)
+                return HandlerResult(data={})
+
+        cache = self._wire(mock_registry, mock_config, tmp_path, SlowOnce())
+        event = GenericCloudEvent(id="e1", type="t", source="s")
+
+        with pytest.raises(TimeoutError):
+            async with asyncio.timeout(0.05):
+                await event_processing_service.process_event(event)
+        assert not self._marker_held(cache)
+
+        result = await event_processing_service.process_event(event)
+        assert result.status == ProcessingStatus.PROCESSED
+        assert runs == ["e1", "e1"]
+
+    async def test_a_handler_that_swallows_the_cancellation_gives_the_marker_back(
+        self, event_processing_service: EventProcessingService, mock_registry: MagicMock, mock_config: MagicMock, tmp_path: Path
+    ) -> None:
+        """B1 -- the run returns normally, but past its limit, and the NATS edge naks it all the same."""
+
+        class Stubborn(StubHandler):
+            async def handle_event(self, event, context):
+                try:
+                    await asyncio.sleep(10)
+                except asyncio.CancelledError:
+                    pass
+                return HandlerResult(data={})
+
+        cache = self._wire(mock_registry, mock_config, tmp_path, Stubborn())
+
+        async with asyncio.timeout(0.05):
+            await event_processing_service.process_event(GenericCloudEvent(id="e1", type="t", source="s"))
+
+        assert not self._marker_held(cache)
+
+    async def test_a_return_value_that_fails_after_dispatch_gives_the_marker_back(
+        self, event_processing_service: EventProcessingService, mock_registry: MagicMock, mock_config: MagicMock, tmp_path: Path
+    ) -> None:
+        """M11 -- a scalar return fails HandlerResult validation after the chain kept its claim."""
+        cache = self._wire(mock_registry, mock_config, tmp_path, StubHandler(result=5))
+
+        with pytest.raises(ValidationError):
+            await event_processing_service.process_event(GenericCloudEvent(id="e1", type="t", source="s"))
+
+        assert not self._marker_held(cache)
+
+    async def test_an_acknowledged_delivery_keeps_the_marker(
+        self, event_processing_service: EventProcessingService, mock_registry: MagicMock, mock_config: MagicMock, tmp_path: Path
+    ) -> None:
+        """The control: a delivery that succeeded keeps its marker, so its redelivery is a duplicate."""
+        cache = self._wire(mock_registry, mock_config, tmp_path, StubHandler(result=HandlerResult(data={})))
+        event = GenericCloudEvent(id="e1", type="t", source="s")
+
+        await event_processing_service.process_event(event)
+        assert self._marker_held(cache)
+
+        context: dict = {}
+        result = await event_processing_service.process_event(event, context)
+        assert result.status == ProcessingStatus.NO_HANDLER_FOUND
+        assert context[DUPLICATE_CONTEXT_KEY] is True

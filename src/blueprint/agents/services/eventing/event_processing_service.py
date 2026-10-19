@@ -1,5 +1,6 @@
 """Unified processing service that coordinates handlers and runtimes."""
 
+import asyncio
 import logging
 from typing import Any
 from uuid import uuid4
@@ -11,11 +12,25 @@ from ...component.namespace import ROOT_LABEL, ROOT_NAMESPACE, namespace_of
 from ...handler.handler_chain import RUNTIME_NAME_CONTEXT_KEY, HandlerChain
 from ...io.telemetry.inflight import IN_FLIGHT
 from ...models import ProcessingResult, ProcessingStatus
+from ...models.errors import describe_validation_errors
 from ...models.events import GenericCloudEvent, HandlerResult, CloudEvent
 from ..service_base import ServiceBase
 from .event_publishing_service import EventPublishingService
 
 logger = logging.getLogger(__name__)
+
+
+def _cancellation_requested() -> bool:
+    """Report whether the current task has been asked to cancel and has not withdrawn the request.
+
+    How a run that swallowed its cancellation is told apart from one that finished in time: the
+    handler returned normally, but ``asyncio.timeout`` (``nats_handler_timeout``) or a shutdown
+    has cancelled the task, and the transport edge will nak or abandon the delivery rather than
+    acknowledge it. Erring this way is safe -- a delivery acknowledged anyway merely loses its
+    marker early, which is at-least-once, never a lost event.
+    """
+    task = asyncio.current_task()
+    return task is not None and task.cancelling() > 0
 
 
 class EventProcessingService(ServiceBase):
@@ -156,12 +171,20 @@ class EventProcessingService(ServiceBase):
 
         event = self._unwrap_dapr_event(event)
 
+        chain = self._chain_for(namespace)
+        # The dedup bracket: from the chain's claim to a settled result. Only a delivery that
+        # gets to the end keeps its marker; every other exit gives it back (chain.release is a
+        # no-op unless this delivery holds a claim). A finally with a flag rather than an except
+        # clause, because the exits that lost events were not Exceptions: a handler timeout or a
+        # shutdown cancels the run, and a handler that swallows that cancellation returns
+        # normally although the edge naks it.
+        settled = False
         try:
             # Counted around the chain, not around the transport: this is the one place both
             # transports and the REST path pass through, so one measurement covers all three
             # and it means "work this agent is doing" rather than "messages it has taken".
             with IN_FLIGHT.track(namespace):
-                handler_result: Any | HandlerResult | list[HandlerResult] | None = await self._chain_for(namespace).process(event, context)
+                handler_result: Any | HandlerResult | list[HandlerResult] | None = await chain.process(event, context)
 
             handler_results: list[HandlerResult] = self._extract_handler_results(handler_result)
 
@@ -172,22 +195,14 @@ class EventProcessingService(ServiceBase):
                     # namespace (P6) that finds several and refuses to choose, so a grouped
                     # process would fail on the first handler that returns an event_type.
                     publisher = self.registry.get_component(EventPublishingService, namespace=namespace)
-                    try:
-                        await publisher.publish_handler_event(
-                            event_type=result.event_type,
-                            data=result.data,
-                            metadata=result.metadata or {},
-                            source_event=event,
-                            new_subject=result.subject or new_subject,
-                            index=index,
-                        )
-                    except Exception:
-                        # The chain claimed this event's dedup marker and kept it, because the
-                        # dispatch succeeded. The failure below naks the event; left in place, the
-                        # marker would make the redelivery a skipped duplicate, and the result this
-                        # publish failed to send would be lost after all.
-                        self._chain_for(namespace).release(event)
-                        raise
+                    await publisher.publish_handler_event(
+                        event_type=result.event_type,
+                        data=result.data,
+                        metadata=result.metadata or {},
+                        source_event=event,
+                        new_subject=result.subject or new_subject,
+                        index=index,
+                    )
 
             if handler_result is None:
                 status = ProcessingStatus.NO_HANDLER_FOUND
@@ -197,11 +212,15 @@ class EventProcessingService(ServiceBase):
                 status = ProcessingStatus.SKIPPED
             else:
                 status = ProcessingStatus.PROCESSED
-            return self._build_result(request_id, handler_results, status)
+            processing_result = self._build_result(request_id, handler_results, status)
+            settled = not _cancellation_requested()
+            return processing_result
 
         # A failure propagates unlogged: every caller is a transport edge (NATS, Dapr, REST) that
         # logs it with what it decided to do about it. Logging here too duplicated each failure.
         finally:
+            if not settled:
+                chain.release(event, context)
             self._correlation_context.reset(correlation_token)
 
     async def process_rest_request(
@@ -289,7 +308,13 @@ class EventProcessingService(ServiceBase):
         )
 
     def _unwrap_dapr_event(self, event: GenericCloudEvent) -> GenericCloudEvent:
-        """Unwrap Dapr-wrapped events (com.dapr.event.sent envelope)."""
+        """Unwrap Dapr-wrapped events (com.dapr.event.sent envelope).
+
+        A malformed inner event raises and is not logged here: the transport edge logs the
+        failure with its traceback. The errors therefore carry no payload value, and a
+        validation failure is raised ``from None`` -- its pydantic cause would print every
+        offending input in that traceback (B2).
+        """
         if event.type != "com.dapr.event.sent":
             return event
 
@@ -304,13 +329,12 @@ class EventProcessingService(ServiceBase):
 
         if isinstance(inner_event, dict):
             if "type" not in inner_event:
-                logger.error("Inner Dapr event is missing required 'type' field: %s", inner_event)
                 raise RuntimeError("Inner Dapr event is missing required 'type' field")
             try:
                 return GenericCloudEvent.model_validate(inner_event)
             except ValidationError as exc:
-                logger.error("Failed to validate inner Dapr event as CloudEvent: %s", exc)
-                raise RuntimeError("Inner Dapr event could not be parsed as CloudEvent") from exc
+                raise RuntimeError(
+                    f"Inner Dapr event could not be parsed as CloudEvent: {describe_validation_errors(exc.errors())}"
+                ) from None
 
-        logger.error("Unexpected inner event type: %s", type(inner_event))
-        raise RuntimeError("Unsupported inner Dapr event payload type")
+        raise RuntimeError(f"Unsupported inner Dapr event payload type: {type(inner_event).__name__}")
