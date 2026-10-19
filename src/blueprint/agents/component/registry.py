@@ -159,6 +159,19 @@ class Registry:
         self._views[namespace] = view
         return view
 
+    def _refuse_on_a_view(self, action: str) -> None:
+        """Refuse a process-wide mutation asked of a view (S16).
+
+        A view shares the registry's dictionaries by reference, so ``clear()`` on one agent's view
+        emptied the registry of every agent. What acts on the whole process belongs to the
+        application's registry, which agent code never holds.
+        """
+        if self._default_namespace:
+            raise RuntimeError(
+                f"The registry view for namespace '{self._default_namespace}' was asked to {action}. That acts on "
+                "every agent of the process, so only the application's registry does it."
+            )
+
     @property
     def default_namespace(self) -> str | None:
         """The namespace this object answers as; ``None`` on the application's own registry."""
@@ -232,8 +245,11 @@ class Registry:
         namespace = self._effective_namespace(namespace)
         if namespace:
             qualified = qualified_component_name(namespace, name)
-            if qualified in self._components:
-                return self._components[qualified]
+            hit = self._components.get(qualified)
+            # Checked like the fallback below (S15): '_' joins namespace and name and may occur in
+            # either, so 'orders' + 'eu_ledger' is the key 'orders_eu' + 'ledger' registered.
+            if hit is not None and namespace_of(hit) == namespace:
+                return hit
 
         found = self._components.get(name)
         if found is not None and namespace and namespace_of(found) not in (ROOT_NAMESPACE, namespace):
@@ -271,6 +287,9 @@ class Registry:
             The pool for that namespace.
         """
 
+        # Own pool or the root's, never a neighbour's: the pools exist so that no agent can
+        # exhaust another's (S16).
+        namespace = self._effective_namespace(namespace) or ROOT_NAMESPACE
         executor = self._executors.get(namespace)
         if executor is None:
             executor = ThreadPoolExecutor(
@@ -294,6 +313,7 @@ class Registry:
         hangs until the last blocking call returns on its own.
         """
 
+        self._refuse_on_a_view("shut down the thread pools")
         for namespace, executor in self._executors.items():
             logger.info("Shutting down thread pool for namespace '%s'", namespace or ROOT_LABEL)
             executor.shutdown(wait=True)
@@ -474,6 +494,11 @@ class Registry:
 
         if not isinstance(component, self._component_class):  # type: ignore[arg-type]
             raise ValueError(f"component must be an instance of {self._component_class}")
+        if self._default_namespace and namespace_of(component) != self._default_namespace:
+            raise RuntimeError(
+                f"The registry view for namespace '{self._default_namespace}' was asked to register a component of "
+                f"namespace '{namespace_of(component) or ROOT_LABEL}'. A view registers its own agent's components."
+            )
 
         if name in self._components:
             existing = type(self._components[name]).__name__
@@ -512,6 +537,13 @@ class Registry:
 
         if old_name not in self._components:
             raise ValueError(f"Component with name {old_name} does not exist")
+        if self._default_namespace and namespace_of(self._components[old_name]) != self._default_namespace:
+            # A view renames its own agent's components only: a rename moves a neighbour's
+            # component out from under every lookup that finds it (S16).
+            raise RuntimeError(
+                f"The registry view for namespace '{self._default_namespace}' was asked to rename '{old_name}', which "
+                "belongs to another namespace."
+            )
 
         if new_name == old_name:
             return
@@ -650,6 +682,7 @@ class Registry:
     def clear_components(self) -> None:
         """Clear all registered components (useful for testing)."""
 
+        self._refuse_on_a_view("clear the components")
         logger.info("Clearing all registered components")
         self._components.clear()
 
@@ -660,6 +693,7 @@ class Registry:
         Useful for testing or resetting the registry state.
         """
 
+        self._refuse_on_a_view("clear the registry")
         logger.info("Clearing all components from registry")
         self.clear_components()
         self.shutdown_executors()

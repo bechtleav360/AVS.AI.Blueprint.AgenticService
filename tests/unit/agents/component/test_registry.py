@@ -550,6 +550,35 @@ class TestNamespaceViews:
     def test_an_omitted_namespace_still_falls_back_to_the_root(self, grouped_registry: Registry) -> None:
         assert grouped_registry.for_namespace("orders").get_component("shared_audit").namespace == ""
 
+    def test_a_qualified_key_another_agent_owns_is_not_found(self) -> None:
+        """S15 -- 'orders' + 'eu_ledger' is the key 'orders_eu' + 'ledger' registered."""
+        registry = Registry(StubBase)
+        registry.add_component("orders_eu_ledger", _Namespaced("orders_eu"))
+
+        assert registry.has_component("eu_ledger", "orders") is False
+        assert registry.get_component("ledger", "orders_eu").namespace == "orders_eu"
+
+    @pytest.mark.parametrize("action", ["clear", "clear_components", "shutdown_executors"])
+    def test_a_view_cannot_act_on_the_whole_process(self, grouped_registry: Registry, action: str) -> None:
+        """S16 -- a view shares the dictionaries, so clear() on one agent's view emptied every agent's."""
+        with pytest.raises(RuntimeError, match="acts on every agent of the process"):
+            getattr(grouped_registry.for_namespace("orders"), action)()
+        assert grouped_registry.has_component("billing_order_service")
+
+    def test_a_view_cannot_rename_a_neighbours_component(self, grouped_registry: Registry) -> None:
+        with pytest.raises(RuntimeError, match="belongs to another namespace"):
+            grouped_registry.for_namespace("orders").update_component_name("billing_order_service", "orders_taken")
+        assert grouped_registry.has_component("billing_order_service")
+
+    def test_a_view_registers_only_its_own_agents_components(self, grouped_registry: Registry) -> None:
+        with pytest.raises(RuntimeError, match="registers its own agent's components"):
+            grouped_registry.for_namespace("orders").add_component("billing_extra", _Namespaced("billing"))
+
+    def test_a_view_cannot_take_a_neighbours_thread_pool(self, grouped_registry: Registry) -> None:
+        with pytest.raises(RuntimeError, match="was asked for namespace 'billing'"):
+            grouped_registry.for_namespace("orders").get_or_create_executor("billing")
+        grouped_registry.shutdown_executors()
+
     def test_a_class_lookup_on_a_view_finds_this_agents_instance(self, grouped_registry: Registry) -> None:
         assert grouped_registry.for_namespace("billing").get_component(_Namespaced).namespace == "billing"
 

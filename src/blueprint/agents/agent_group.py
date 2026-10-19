@@ -28,6 +28,7 @@ from collections.abc import Collection, Mapping
 from enum import Enum
 from pathlib import Path
 from types import BuiltinFunctionType, FunctionType, MethodType, ModuleType
+from typing import Any
 
 from fastapi import FastAPI
 
@@ -71,11 +72,36 @@ cost of being conservative is one keyword in a declaration.
 """
 
 
-def is_shareable(value: object) -> bool:
-    """Whether ``value`` may be handed to more than one agent. See :data:`SHAREABLE_TYPES`."""
+def is_shareable(value: object, _seen: frozenset[int] = frozenset()) -> bool:
+    """Whether ``value`` may be handed to more than one agent. See :data:`SHAREABLE_TYPES`.
+
+    **Code is shareable only when it carries no state** (S17). A bound method holds its instance
+    in ``__self__`` -- ``ledger.add`` hands over ``ledger`` -- and a built-in one the same way
+    (``holdings.append``); a closure holds whatever it closes over in its cells. Each is
+    shareable exactly when what it carries is, so a classmethod, a module function and a lambda
+    closing over constants pass, and one closing over a list does not.
+    """
+    if id(value) in _seen:
+        return True  # a recursive closure: what it carries is being checked already
+    seen = _seen | {id(value)}
     if isinstance(value, tuple):
-        return all(is_shareable(item) for item in value)
+        return all(is_shareable(item, seen) for item in value)
+    if isinstance(value, MethodType):
+        return is_shareable(value.__self__, seen)
+    if isinstance(value, BuiltinFunctionType):
+        bound_to = getattr(value, "__self__", None)
+        return bound_to is None or isinstance(bound_to, ModuleType) or is_shareable(bound_to, seen)
+    if isinstance(value, FunctionType):
+        return all(is_shareable(_cell_value(cell), seen) for cell in value.__closure__ or ())
     return isinstance(value, SHAREABLE_TYPES)
+
+
+def _cell_value(cell: Any) -> object:
+    """What a closure cell holds; ``None`` for a cell not yet filled, which holds nothing."""
+    try:
+        return cell.cell_contents
+    except ValueError:
+        return None
 
 
 class AgentGroup:
@@ -437,6 +463,13 @@ class AgentGroup:
         *standalone is permissive, the group has rules* applied to the one case that is genuinely
         about the group.
 
+        **Two declarations that are handed one object share it, and that is allowed** (plan D11,
+        W6). The check is keyed by the declaration, so ``orders_builder.with_service(A, pool=p)``
+        and ``billing_builder.with_service(B, pool=p)`` both get ``p``: their author passed it to
+        two agents explicitly, which is a decision rather than an accident of replay -- a shared
+        connection pool is the usual reason. What is never shared between agents is framework
+        state per data source; see the named-connection rules (step 1a).
+
         Raises:
             ValueError: naming the agents, the call, the argument and the way out.
         """
@@ -450,6 +483,16 @@ class AgentGroup:
             if len(namespaces) < 2:
                 continue
             for declaration in builders[identity].declarations:
+                if isinstance(declaration.target, (FunctionType, MethodType)) and not is_shareable(declaration.target):
+                    # A factory is called once per agent, but what it closes over -- or the
+                    # instance a bound method belongs to -- is one object for all of them (S17).
+                    raise ValueError(
+                        f"One declaration serves agents {', '.join(repr(name) for name in namespaces)}, and its "
+                        f"{declaration.kind} call is given a factory that carries state: a bound method, or a "
+                        "closure over a mutable value. Every agent's component would then be built from the same "
+                        "object, so a value written by one agent is read by the others. Create the state inside "
+                        "the factory, or declare this component separately for each agent."
+                    )
                 for argument, value in declaration.kwargs.items():
                     if is_shareable(value):
                         continue

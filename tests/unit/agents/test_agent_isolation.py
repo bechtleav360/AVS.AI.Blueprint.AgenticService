@@ -366,6 +366,39 @@ class TestOneDeclarationDoesNotBecomeASharedObject:
         assert registry is not None
         assert registry.get_component("orders_ledger").holdings == []
 
+    def test_a_bound_method_carries_its_instance_and_is_refused(self, config: Config) -> None:
+        """S17 -- ``holdings.append`` hands every agent the one list it is bound to."""
+        shared: list[str] = []
+        declaration = AppBuilder().with_service(Ledger, on_record=shared.append)
+
+        with pytest.raises(ValueError, match="written by one agent is read by the others"):
+            AgentGroup("finance", {"orders": declaration, "billing": declaration}).assemble(config)
+
+    def test_a_factory_closing_over_a_list_is_refused(self, config: Config) -> None:
+        """S17 -- the factory runs once per agent, but the list it closes over is one."""
+        holdings: list[str] = []
+        declaration = AppBuilder().with_service(lambda: Ledger(holdings=holdings))
+
+        with pytest.raises(ValueError, match="factory that carries state"):
+            AgentGroup("finance", {"orders": declaration, "billing": declaration}).assemble(config)
+
+    def test_a_factory_closing_over_constants_is_fine(self, config: Config) -> None:
+        name = "read-only"
+        declaration = AppBuilder().with_service(lambda: Ledger(holdings=(name,)))
+        AgentGroup("finance", {"orders": declaration, "billing": declaration}).assemble(config)
+
+    def test_two_declarations_handed_one_object_share_it_deliberately(self, config: Config) -> None:
+        """Plan D11 (W6): passed to two agents by their author, not by replay -- allowed, and documented."""
+        shared: list[str] = []
+        AgentGroup(
+            "finance",
+            {"orders": AppBuilder().with_service(Ledger, holdings=shared), "billing": AppBuilder().with_service(Ledger, holdings=shared)},
+        ).assemble(config)
+
+        registry = Component.shared_registry
+        assert registry is not None
+        assert registry.get_component("orders_ledger").holdings is registry.get_component("billing_ledger").holdings
+
 
 class TestTheProcessLevelResourcesAreStillPerAgent:
     """Not data, but channels through which data would flow."""

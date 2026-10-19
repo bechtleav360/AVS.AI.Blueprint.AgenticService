@@ -263,6 +263,19 @@ class TestStatusMessagesInBindingMode:
         callback.assert_not_awaited()
         msg.term.assert_not_awaited()
 
+    async def test_a_stalled_consumer_reported_by_a_heartbeat_is_answered(
+        self, nats_client: NATSClient, mock_nats_core: MagicMock, jsm: MagicMock
+    ) -> None:
+        callback = AsyncMock()
+        binding, handler = await _bound(nats_client, mock_nats_core, jsm, callback)
+        msg = self._status()
+        msg.headers["Nats-Consumer-Stalled"] = "$JS.FC.NOTIFICATIONS_A.y"
+
+        await _settled(binding, handler, msg)
+
+        mock_nats_core.publish.assert_awaited_once_with("$JS.FC.NOTIFICATIONS_A.y", b"")
+        callback.assert_not_awaited()
+
     async def test_an_idle_heartbeat_is_dropped(self, nats_client: NATSClient, mock_nats_core: MagicMock, jsm: MagicMock) -> None:
         callback = AsyncMock()
         binding, handler = await _bound(nats_client, mock_nats_core, jsm, callback)

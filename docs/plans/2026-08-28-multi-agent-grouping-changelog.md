@@ -146,6 +146,11 @@ framework endpoints (`nats`, `cache`, `scheduler`), one Swagger tag per agent, a
   per-data-source state is keyed by that context key. Broker test on the accounts broker: the same
   `(source, id)` on connections A and B runs on both, a repeat on A is skipped; without the change B
   was skipped.
+- Step 9, registry and sharing guards (S15, S16, S17, W6, D11): the qualified hit in `_lookup` must
+  belong to the asking namespace; `clear`, `clear_components`, `shutdown_executors` are refused on a view,
+  `add_component`/`update_component_name` only for the view's own components, `get_or_create_executor`
+  only for its own namespace or the root; `is_shareable` looks into a bound method's `__self__` and a
+  closure's cells, and a shared declaration's factory target is checked too. W6 documented as allowed.
 - Step 8, agent settings merge (M5, S11, S12, S13, D9): an agent's `.secrets.toml` is merged before its
   settings (`AgentGroup.secrets`, `merge_agent_settings(..., secret=True)` logs no value); fragments are
   layered for `current_env` and inactive environment sections are dropped; `cache`, `event_publishing`,

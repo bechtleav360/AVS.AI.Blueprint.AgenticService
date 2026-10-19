@@ -2570,7 +2570,7 @@ class NATSClient(IOClientBase):
         """
 
         async def message_handler(msg: Any) -> None:
-            if binding.jetstream is not None and await self._answer_control_message(msg):
+            if binding.jetstream is not None and await self._answer_control_message(msg, binding):
                 return
             if self._consumption_paused and self._settles(binding):
                 # A degraded agent runs nothing (C4). What reaches it anyway -- a delivery still in
@@ -2601,7 +2601,7 @@ class NATSClient(IOClientBase):
         return message_handler
 
     @staticmethod
-    async def _answer_control_message(msg: Any) -> bool:
+    async def _answer_control_message(msg: Any, binding: _Binding) -> bool:
         """Answer or drop a JetStream status message; ``True`` if ``msg`` was one (S2).
 
         Binding mode consumes through a plain subscription, so what nats-py's JetStream
@@ -2609,6 +2609,9 @@ class NATSClient(IOClientBase):
         control request, after which the consumer delivers nothing until it is answered. Both
         carry status ``100`` and no event; run as a delivery, they were termed as unparseable.
         Only an operator-made consumer with ``idle_heartbeat`` or ``flow_control`` sends them.
+
+        A heartbeat may report a stalled consumer in ``Nats-Consumer-Stalled``: a flow control
+        reply subject that was never answered, which is answered here as nats-py would.
         """
         headers = getattr(msg, "headers", None)
         if not headers or headers.get(js_api.Header.STATUS) != CONTROL_MESSAGE_STATUS:
@@ -2616,6 +2619,11 @@ class NATSClient(IOClientBase):
         if msg.reply:  # a flow control request; a heartbeat has no reply subject
             with contextlib.suppress(Exception):
                 await msg.respond(b"")
+        stalled = headers.get(js_api.Header.CONSUMER_STALLED)
+        client = binding.link.nats_client
+        if stalled and client is not None:
+            with contextlib.suppress(Exception):
+                await client.publish(stalled, b"")
         return True
 
     @staticmethod

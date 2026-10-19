@@ -278,6 +278,20 @@ imports keep working standalone as well, so the change needs no second copy. `as
 grep -rnE "^\s*(from|import) src(\.|\s|$)" src/
 ```
 
+### One declaration serving two agents
+
+A group may name the same `AppBuilder` for several agents; it is replayed once per agent. What that
+declaration was handed is then handed to every one of them, so it must not carry state. Refused at
+assembly, with the agents and the argument named:
+
+- a mutable argument -- `with_service(Ledger, holdings=[])`;
+- a bound method, which carries its instance -- `on_record=journal.append`;
+- a factory closing over a mutable value -- `with_service(lambda: Ledger(holdings=shared))`.
+
+Create the state inside the factory (`lambda: Ledger(holdings=[])`), or declare the component
+separately per agent. Two *separate* declarations that are both given one object -- a connection
+pool, deliberately -- share it: that is the author's decision, and it is allowed.
+
 ### Routes under `/nats`, `/cache` or `/scheduler`
 
 In a group, `nats`, `cache` and `scheduler` directly under `/api/<agent>/` belong to the framework:

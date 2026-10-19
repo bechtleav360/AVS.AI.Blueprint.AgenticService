@@ -12,6 +12,12 @@
   when it is acknowledged. Measured against JetStream with a 0.5 s limit: before, one run and the
   redelivery acknowledged unrun; now the redelivery runs to completion.
 
+- **The registry keeps agents apart where it did not.** A namespaced lookup's qualified key could be
+  another agent's (`orders` + `eu_ledger` is `orders_eu` + `ledger`); it now has to belong to the asking
+  agent. A view can no longer clear the registry, shut down the thread pools, rename or register
+  another agent's component, or take another agent's thread pool. A declaration shared by several
+  agents is now also refused when it carries state in a bound method or a closure.
+
 - **An agent's own `.secrets.toml` is read in a group.** Only its `settings.toml` was merged, although
   the layout check, the guides and `asbs setup` said the secrets beside it are read. It is now merged
   first, so a secret wins over the settings file, and none of its values is logged.
