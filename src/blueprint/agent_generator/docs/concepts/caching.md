@@ -154,6 +154,12 @@ Where the data goes:
 | Agent `orders`, default cache | `<cache_dir>/orders.default` | keys under `<key_prefix>:orders.default` |
 | Agent `orders`, cache `sessions` | `<cache_dir>/orders.sessions` | keys under `<key_prefix>:orders.sessions` |
 
+On Redis every other store nests under the default store's prefix, so the default store's `clear()`
+and `list_namespaces()` take only keys of its own form (`<key_prefix>:<namespace>:<digest>`): clearing
+the root cache leaves every agent's and every named cache alone. With `key_prefix = ""` the process
+shares the database's keyspace with anything else using it; a clear then warns, and still deletes
+only its own keys -- set a prefix.
+
 A named store is a **subdirectory** of `cache_dir` rather than a sibling, because a deployment may
 mount its volume at `cache_dir` itself and nothing outside the mount can be created under
 `readOnlyRootFilesystem`. See *Writable Cache Directory* in

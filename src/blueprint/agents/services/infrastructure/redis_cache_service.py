@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 import logging
 from collections.abc import Iterator
 from typing import Any
@@ -18,6 +19,9 @@ from .cache_key_mixin import _CacheKeyMixin
 from .cache_service import CacheService
 
 logger = logging.getLogger(__name__)
+
+_DIGEST = re.compile(r"[0-9a-f]{64}")
+"""The last segment of every key this class writes: the SHA-256 of the cache key (``CacheKeyMixin.hash``)."""
 
 
 class RedisCacheService(_CacheKeyMixin, CacheService):
@@ -106,15 +110,30 @@ class RedisCacheService(_CacheKeyMixin, CacheService):
         return f"{self._key_prefix}:*" if self._key_prefix else "*"
 
     def _parse_namespace(self, redis_key: str) -> str | None:
-        """Extract namespace from a Redis key, accounting for optional key_prefix."""
+        """The namespace of one of this store's own keys; ``None`` for any other key (see :meth:`_owns`)."""
+        if not self._owns(redis_key):
+            return None
+        key = redis_key[len(self._key_prefix) + 1 :] if self._key_prefix else redis_key
+        return key.split(":", 1)[0]
+
+    def _owns(self, redis_key: str) -> bool:
+        """Whether ``redis_key`` is this store's own: ``<prefix>:<namespace>:<sha256>``, nothing deeper (M6).
+
+        Every other store of the process nests under this one's prefix -- a named cache, every
+        agent's cache: ``<prefix>:<storage>:<namespace>:<sha256>``. A scan of ``<prefix>:*``
+        therefore found them all, so clearing the root cache emptied every agent's, and listing
+        it reported their storage names as namespaces. One segment too many marks a child's key,
+        and a last segment that is not this class's digest marks a key someone else wrote -- with
+        ``key_prefix = ""`` the scan covers the whole database.
+        """
         key = redis_key
         if self._key_prefix:
             prefix = f"{self._key_prefix}:"
             if not key.startswith(prefix):
-                return None
+                return False
             key = key[len(prefix) :]
-        parts = key.split(":", 1)
-        return parts[0] if len(parts) >= 2 else None
+        parts = key.split(":")
+        return len(parts) == 2 and _DIGEST.fullmatch(parts[1]) is not None
 
     def get(self, key: str | list[str] | dict[str, Any], namespace: str = "default") -> Any | None:
         try:
@@ -192,14 +211,23 @@ class RedisCacheService(_CacheKeyMixin, CacheService):
 
     def clear(self, namespace: str | None = None) -> None:
         try:
+            if not namespace and not self._key_prefix:
+                logger.warning(
+                    "Clearing a Redis cache with no key_prefix: its keys share the database with whatever else uses it. "
+                    "Only keys of this store's own form are deleted; set 'cache.key_prefix' to give the process a space "
+                    "of its own."
+                )
             pattern = self._namespace_scan_pattern(namespace) if namespace else self._all_scan_pattern()
             cursor = 0
             deleted_count = 0
             while True:
                 cursor, keys = self._client.scan(cursor=cursor, match=pattern, count=500)
-                if keys:
-                    self._client.delete(*keys)
-                    deleted_count += len(keys)
+                # Only this store's keys: the pattern also matches every store nested under this
+                # one's prefix -- every named and every agent cache (M6).
+                own = [key for key in keys if self._owns(key)]
+                if own:
+                    self._client.delete(*own)
+                    deleted_count += len(own)
                 if cursor == 0:
                     break
             if namespace:
@@ -256,6 +284,8 @@ class RedisCacheService(_CacheKeyMixin, CacheService):
             while True:
                 cursor, batch = self._client.scan(cursor=cursor, match=pattern, count=500)
                 for key in batch:
+                    if not self._owns(key):
+                        continue  # a nested store's key whose storage name equals this namespace
                     if skipped < offset:
                         skipped += 1
                         continue

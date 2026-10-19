@@ -10,6 +10,7 @@ Run with the services this directory's compose file stands up:
 """
 
 import json
+import os
 import subprocess
 import sys
 import textwrap
@@ -19,7 +20,8 @@ import redis
 
 from .conftest import COMPOSE_HINT
 
-REDIS_URL = "redis://localhost:6379/0"
+REDIS_URL = os.environ.get("BLUEPRINT_TEST_REDIS_URL", "redis://localhost:6379/0")
+"""The shared Redis (``redis`` in docker-compose.yml); overridden like ``BLUEPRINT_TEST_NATS_URL``."""
 KEY_PREFIX = "pytest_shared_cache"
 
 IMPORT_BUDGET_SECONDS = 60
@@ -38,7 +40,7 @@ def redis_url() -> str:
         client.ping()
         client.close()
     except Exception:
-        pytest.skip("Redis is not available at localhost:6379. Start it with: " + COMPOSE_HINT)
+        pytest.skip(f"Redis is not available at {REDIS_URL}. Start it with: " + COMPOSE_HINT)
     return REDIS_URL
 
 

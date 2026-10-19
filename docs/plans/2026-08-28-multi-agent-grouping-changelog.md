@@ -146,6 +146,12 @@ framework endpoints (`nats`, `cache`, `scheduler`), one Swagger tag per agent, a
   per-data-source state is keyed by that context key. Broker test on the accounts broker: the same
   `(source, id)` on connections A and B runs on both, a repeat on A is skipped; without the change B
   was skipped.
+- Step 12, Redis cache isolation (M6): the default store's `clear`, `list_namespaces` and `list_values`
+  take only keys of its own form (`<prefix>:<namespace>:<sha256>`); a clear without `key_prefix` warns;
+  no key-layout change. Live (Redis 7 in WSL, stores from `CacheBackendFactory` for root, `orders`,
+  `billing`): after a root clear both agents' keys and a foreign key remain, with prefix and without;
+  control: all agent keys gone, and without a prefix the whole database. The Redis integration tests
+  (`BLUEPRINT_TEST_REDIS_URL`) ran for the first time on this branch: 3 passed.
 - Step 11, scheduler robustness (S24-S27, D14, D15): `_started` is set only after the timer or the event
   wiring stands; one tick-age gauge per meter reports every scheduler of it (weak registry); `validate_crontab`
   runs in both modes, refuses day `7` and, in event mode, any numeric weekday; opt-in `scheduler_timezone`;

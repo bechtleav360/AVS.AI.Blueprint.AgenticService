@@ -365,3 +365,73 @@ class TestClaim:
     def test_an_unreachable_cache_fails_open(self, redis_cache_service: RedisCacheService) -> None:
         with patch.object(redis_cache_service._client, "set", side_effect=ConnectionError("redis gone")):
             assert redis_cache_service.claim("slot", 1) is True
+
+
+def _store(client: "fakeredis.FakeRedis", prefix: str) -> RedisCacheService:
+    """A store on a shared fake Redis, as the factory builds them: one per cache, nested by prefix."""
+    svc = RedisCacheService.__new__(RedisCacheService)
+    svc._client = client
+    svc._key_prefix = prefix
+    svc._default_ttl = None
+    svc._fallback_to_local = False
+    svc._redis_url = "redis://fake:6379/0"
+    svc._safe_redis_url = "redis://fake:6379/0"
+    svc._password = None
+    svc._db = 0
+    svc._tls = False
+    return svc
+
+
+class TestTheRootStoreLeavesNestedStoresAlone:
+    """M6 -- every named and agent cache nests under the root store's prefix, so its scans found them all."""
+
+    @pytest.fixture
+    def stores(self, mock_registry, mock_config) -> Generator[tuple[RedisCacheService, RedisCacheService, "fakeredis.FakeRedis"]]:
+        client = fakeredis.FakeRedis(decode_responses=True)
+        root, orders = _store(client, "app"), _store(client, "app:orders.default")
+        root.set("k", "root-value")
+        orders.set("k", "orders-value")
+        orders.set("k", "orders-session", namespace="sessions")
+        yield root, orders, client
+        client.close()
+
+    def test_clearing_the_root_keeps_an_agents_cache(self, stores) -> None:
+        root, orders, _ = stores
+        root.clear()
+        assert root.get("k") is None
+        assert orders.get("k") == "orders-value"
+        assert orders.get("k", namespace="sessions") == "orders-session"
+
+    def test_clearing_a_root_namespace_keeps_a_store_of_that_name(self, stores) -> None:
+        """A root cache named 'sessions' and the root store's namespace 'sessions' share a scan pattern."""
+        root, _, client = stores
+        sessions = _store(client, "app:sessions")
+        sessions.set("k", "named-cache")
+        root.set("k", "root-session", namespace="sessions")
+
+        root.clear(namespace="sessions")
+
+        assert sessions.get("k") == "named-cache"
+        assert root.get("k", namespace="sessions") is None
+
+    def test_the_roots_namespaces_are_its_own(self, stores) -> None:
+        root, orders, _ = stores
+        assert root.list_namespaces() == ["default"]
+        assert orders.list_namespaces() == ["default", "sessions"]
+
+    def test_without_a_prefix_only_this_stores_keys_are_cleared(self, mock_registry, mock_config, caplog: pytest.LogCaptureFixture) -> None:
+        """key_prefix = "" scans the whole database: other users' keys must survive, and the clear warns."""
+        client = fakeredis.FakeRedis(decode_responses=True)
+        root = _store(client, "")
+        root.set("k", "root-value")
+        client.set("someone:else", "theirs")
+        client.set("orders.default:default:" + "a" * 64, "nested")
+
+        with caplog.at_level("WARNING"):
+            root.clear()
+
+        assert client.get("someone:else") == "theirs"
+        assert client.get("orders.default:default:" + "a" * 64) == "nested"
+        assert root.get("k") is None
+        assert "no key_prefix" in caplog.text
+        client.close()

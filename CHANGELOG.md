@@ -12,6 +12,13 @@
   when it is acknowledged. Measured against JetStream with a 0.5 s limit: before, one run and the
   redelivery acknowledged unrun; now the redelivery runs to completion.
 
+- **Clearing the root Redis cache no longer clears every agent's.** Every named and agent cache nests
+  under the default store's key prefix, and its `clear()` deleted everything under it -- with
+  `key_prefix = ""`, the whole database. Its `list_namespaces()` listed the nested stores as its own
+  namespaces. The default store now touches only keys of its own form, and a clear without a prefix
+  warns. The key layout is unchanged. Measured on Redis 7: two agents' caches and a foreign key survive
+  a root clear (before: all gone, the database empty without a prefix).
+
 - **Crontabs read the same in both scheduler modes, or fail startup.** The day of the week is
   apscheduler's count -- `0` = Monday ... `6` = Sunday -- so `in_process` firing days do not move. `7` is
   refused (it was accepted in `event` mode and failed only when the timer was built), and **an `event`-mode
