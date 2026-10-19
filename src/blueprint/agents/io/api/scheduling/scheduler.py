@@ -323,6 +323,10 @@ class SchedulerBase(RestApiBase):
         self._mode: str | None = None
         self._tick_handler: SchedulerTickHandler | None = None
         self._scheduler: AsyncIOScheduler | None = None
+        # The in-process timer's trigger and its latest fire time known to be due, which the
+        # tick slot is read from (W2). Set by _arm_trigger.
+        self._trigger: CronTrigger | None = None
+        self._fire_cursor: datetime | None = None
         self._started = False
         self._gauge_registered = False
         self._trigger_route_registered = False
@@ -597,6 +601,7 @@ class SchedulerBase(RestApiBase):
 
         timezone = self._resolve_timezone()
         trigger = CronTrigger.from_crontab(self._crontab, timezone=timezone)
+        self._arm_trigger(trigger, datetime.now(UTC))
 
         scheduler = AsyncIOScheduler(timezone=timezone) if timezone is not None else AsyncIOScheduler()
         scheduler.add_job(self._claimed_tick, trigger, name=self.name)
@@ -728,7 +733,7 @@ class SchedulerBase(RestApiBase):
         if not self.registry.has_cache():
             return True
 
-        slot = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M")
+        slot = self._tick_slot(datetime.now(UTC))
         # In a thread: a blocking Redis round trip or disk write on the event loop (S7).
         return await asyncio.to_thread(
             self.registry.cache_service.claim,
@@ -737,6 +742,34 @@ class SchedulerBase(RestApiBase):
             namespace=TICK_CACHE_NAMESPACE,
             ttl=TICK_CLAIM_TTL_SECONDS,
         )
+
+    def _arm_trigger(self, trigger: CronTrigger, now: datetime) -> None:
+        """Remember the timer's trigger and its first fire time from ``now``, for :meth:`_tick_slot`."""
+        self._trigger = trigger
+        self._fire_cursor = trigger.get_next_fire_time(None, now)
+
+    def _tick_slot(self, now: datetime) -> str:
+        """The minute this run was scheduled for, in UTC: the slot every replica derives (W2).
+
+        The scheduled time, not the clock at run time: a run that started late across a minute
+        boundary claimed the next minute's slot. The scheduled time is the trigger's latest fire
+        time at or before ``now``, found by walking a cursor forward from the last one -- fire
+        times that passed without a run (a misfire) are walked over, so they cannot be claimed
+        late. Without a trigger, or before its first fire time, the clock decides, as before.
+
+        With today's 1 s misfire grace and fire times on the full minute the two agree; this is
+        what keeps them agreeing if either changes.
+
+        Args:
+            now: The current time, timezone-aware.
+        """
+        cursor = self._fire_cursor
+        if self._trigger is None or cursor is None or cursor > now:
+            return now.astimezone(UTC).strftime("%Y-%m-%dT%H:%M")
+        while (following := self._trigger.get_next_fire_time(cursor, cursor)) is not None and following <= now:
+            cursor = following
+        self._fire_cursor = cursor
+        return cursor.astimezone(UTC).strftime("%Y-%m-%dT%H:%M")
 
     # ------------------------------------------------------------------
     # Manual trigger

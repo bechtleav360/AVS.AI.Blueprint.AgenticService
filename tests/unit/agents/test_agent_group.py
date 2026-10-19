@@ -612,3 +612,28 @@ class TestOneAgentBuilderServesSeveralAgents:
         built = self._assemble(config, AppBuilder().with_agent(agent), ("order", "billing"))
         assert built[0]["tools"] is not built[1]["tools"]
         assert built[0]["tools"] == built[1]["tools"]
+
+
+class TestTheResolvedGroupIsTheDeploymentGroup:
+    """S19 -- a group named only in the group file reached neither the connection name nor telemetry."""
+
+    def test_a_group_from_the_file_is_published(self, tmp_path, monkeypatch) -> None:
+        from unittest.mock import patch
+
+        from blueprint.agents.deployment import deployment_group
+        from blueprint.agents.group_config import GroupConfig
+
+        monkeypatch.delenv("BLUEPRINT_GROUP", raising=False)
+        resolved = GroupConfig(name="finance", agents=())
+        with patch.object(GroupConfig, "resolve", return_value=resolved), patch.object(AgentGroup, "from_config") as built:
+            AgentGroup.resolve(MagicMock(), environ={})
+        built.assert_called_once_with(resolved)
+        assert deployment_group() == "finance"
+
+    def test_without_a_resolved_group_the_environment_still_decides(self, monkeypatch) -> None:
+        from blueprint.agents.deployment import UNGROUPED_LABEL, deployment_group
+
+        monkeypatch.setenv("BLUEPRINT_GROUP", "from-env")
+        assert deployment_group() == "from-env"
+        monkeypatch.delenv("BLUEPRINT_GROUP")
+        assert deployment_group() == UNGROUPED_LABEL

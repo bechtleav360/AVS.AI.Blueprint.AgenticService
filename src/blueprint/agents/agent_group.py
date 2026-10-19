@@ -35,6 +35,7 @@ from fastapi import FastAPI
 from .app_builder import AppBuilder, refuse_constructed_components
 from .component.namespace import namespace_scope, validate_namespace
 from .config import Config
+from .deployment import publish_deployment_group
 from .group_config import AgentSpec, GroupConfig, GroupConfigError
 from .layout import check_agent_layout
 
@@ -226,7 +227,11 @@ class AgentGroup:
             GroupConfigError: if the group cannot be resolved, or a critical agent cannot be
                 loaded.
         """
-        return cls.from_config(GroupConfig.resolve(config, environ=environ))
+        group = GroupConfig.resolve(config, environ=environ)
+        # Before anything reads it: the connection name and the telemetry resource take the
+        # deployment group, and a group named only by the file never reached them (S19).
+        publish_deployment_group(group.name)
+        return cls.from_config(group)
 
     @classmethod
     def from_config(cls, group: GroupConfig) -> "AgentGroup":

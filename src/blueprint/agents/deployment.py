@@ -35,16 +35,34 @@ UNKNOWN_POD_LABEL = "<unknown-pod>"
 """Stands in when neither the environment nor the host can say which pod this is."""
 
 
-def deployment_group() -> str:
-    """Return the deployment group this process was started as, or :data:`UNGROUPED_LABEL`.
+_resolved_group: str | None = None
+"""The group ``AgentGroup.resolve`` resolved for this process; ``None`` until one did (S19)."""
 
-    Read straight from the environment rather than through ``Config``: group composition
-    decides which agents get a configuration view at all, so it cannot itself come from one.
+
+def publish_deployment_group(name: str | None) -> None:
+    """Record the group this process resolved, so :func:`deployment_group` reports it (S19).
+
+    Called by ``AgentGroup.resolve``. A group can be named by the group file alone -- a file that
+    declares one group needs no ``BLUEPRINT_GROUP`` -- and that name reached neither the NATS
+    connection name nor the telemetry resource, which read only the environment. ``None``
+    forgets it again, for tests.
+    """
+    global _resolved_group
+    _resolved_group = name
+
+
+def deployment_group() -> str:
+    """Return the deployment group this process runs as, or :data:`UNGROUPED_LABEL`.
+
+    The group ``AgentGroup.resolve`` published, else ``BLUEPRINT_GROUP`` -- read straight from
+    the environment rather than through ``Config``: group composition decides which agents get a
+    configuration view at all, so it cannot itself come from one.
 
     The group is deployment identity, so it belongs in the connection name and on the telemetry
     resource, and nowhere near the queue group or the durable (C1).
     """
-    return display_segment(os.environ.get("BLUEPRINT_GROUP", ""), UNGROUPED_LABEL)
+    raw = _resolved_group if _resolved_group is not None else os.environ.get("BLUEPRINT_GROUP", "")
+    return display_segment(raw, UNGROUPED_LABEL)
 
 
 def pod_identity() -> str:

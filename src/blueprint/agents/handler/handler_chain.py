@@ -212,7 +212,7 @@ class HandlerChain(Component):
 
     The claim is the cache's atomic set-if-absent (``CacheService.claim``), so two replicas
     handed the same event at the same instant cannot both win it -- with a cache they share
-    (Redis, or a disk cache on a shared volume). A per-pod cache deduplicates within one pod
+    (Redis; a disk cache's claim holds within one process only, S23). A per-pod cache deduplicates within one pod
     only, and a cache that is unreachable fails open: both dispatch. A handler whose side
     effects must never repeat still needs its own reconciliation.
 

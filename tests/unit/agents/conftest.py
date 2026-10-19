@@ -25,3 +25,13 @@ def mock_prompt_loader(request):
     with patch("blueprint.agents.agent.agent_builder.PromptLoader.load_prompt") as mock_load:
         mock_load.return_value = "Test prompt"
         yield mock_load
+
+
+@pytest.fixture(autouse=True)
+def _forget_the_published_group():
+    """``AgentGroup.resolve`` publishes the group into process state (S19); no case may see another's."""
+    from blueprint.agents.deployment import publish_deployment_group
+
+    publish_deployment_group(None)
+    yield
+    publish_deployment_group(None)

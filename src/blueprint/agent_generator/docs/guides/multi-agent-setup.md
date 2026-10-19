@@ -419,7 +419,13 @@ reporting a healthy replica that is quietly short one consumer.
 Nothing. There is no supported API that exposes the group's name, its membership or its size, and
 that is what makes regrouping incapable of breaking agent code: an agent that could read its
 neighbours could be written to depend on them. `deployment.group` is set by the framework on
-telemetry resources and is not readable through any public API.
+telemetry resources and is not readable through any public API. It is the group's name as
+resolved -- from `BLUEPRINT_GROUP`, or from a group file that declares one group.
+
+**A component in the root namespace is the exception.** Its registry is the unscoped one, and a
+collection lookup without `namespace` -- `self.registry.get_services()` -- returns every agent's
+components, not the root's. Pass `namespace=""` for the root's own. An agent's components get a
+view instead, where an omitted `namespace` means that agent.
 
 ### A group assembled in code
 

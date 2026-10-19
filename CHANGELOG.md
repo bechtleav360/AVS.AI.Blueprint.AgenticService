@@ -12,6 +12,18 @@
   when it is acknowledged. Measured against JetStream with a 0.5 s limit: before, one run and the
   redelivery acknowledged unrun; now the redelivery runs to completion.
 
+- **A group named only by its group file is the deployment group** (S19). A group file that declares
+  one group needs no `BLUEPRINT_GROUP`, but the name reached neither the NATS connection name, the
+  telemetry resource's `deployment.group` nor the supervisor's log lines, which read only the
+  variable: they said `<ungrouped>`. They now carry the resolved name.
+
+- **`diskcache-rs` 0.4.10 is the minimum, and a disk cache's claim is documented as per-process**
+  (S23). 0.4.9 and earlier refused a second process the cache directory ("Database already open").
+  0.4.10 lets several open it, but its set-if-absent is not atomic between them: four processes
+  claiming one key at once each won in 297 of 300 rounds. Deduplication and the in-process tick
+  claim therefore hold across replicas, and across several `app_workers`, only with Redis; the docs no
+  longer say "a disk cache on a shared volume".
+
 - **A standalone application written for 0.8 builds again** (S20). Three 0.8 shapes were refused
   or changed:
   - A health check of the application's own under a built-in name (`cache`, a client's name)

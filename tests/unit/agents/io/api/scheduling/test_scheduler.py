@@ -595,11 +595,10 @@ class TestClaimedTick:
         Component.shared_registry.cache_service = cache
         try:
             scheduler = _TestScheduler()
-            with patch(f"{_SCHEDULER_MODULE}.datetime") as clock:
-                clock.now.return_value.strftime.return_value = "2026-09-04T03:00"
+            slots = ["2026-09-04T03:00", "2026-09-04T03:00", "2026-09-04T04:00"]
+            with patch.object(scheduler, "_tick_slot", side_effect=slots):
                 await scheduler._claimed_tick()
                 await scheduler._claimed_tick()
-                clock.now.return_value.strftime.return_value = "2026-09-04T04:00"
                 await scheduler._claimed_tick()
             assert scheduler.tick_call_count == 2
         finally:
@@ -759,3 +758,56 @@ class TestSchedulerTimezone:
         settings["scheduler_timezone"] = "Mars/Olympus"
         with pytest.raises(ValueError, match="not an IANA timezone name"):
             await in_process_scheduler.on_startup()
+
+
+class TestTheSlotIsTheScheduledMinute:
+    """W2 -- the slot came from the clock at run time, not from the time the run was scheduled for."""
+
+    @pytest.fixture
+    def cached_scheduler(self, settings: dict[str, Any], mock_registry: MagicMock) -> _TestScheduler:
+        settings["scheduler_mode"] = SCHEDULER_MODE_IN_PROCESS
+        mock_registry.has_cache.return_value = True
+        return _TestScheduler()
+
+    @staticmethod
+    def _at(hour: int, minute: int, second: int, micro: int = 0):
+        from datetime import UTC, datetime
+
+        return datetime(2026, 10, 19, hour, minute, second, micro, tzinfo=UTC)
+
+    def test_a_run_late_past_the_minute_claims_the_scheduled_one(self, cached_scheduler: _TestScheduler) -> None:
+        from datetime import UTC
+
+        from apscheduler.triggers.cron import CronTrigger
+
+        cached_scheduler._arm_trigger(CronTrigger.from_crontab("*/5 * * * *", timezone=UTC), self._at(11, 58, 0))
+        assert cached_scheduler._tick_slot(self._at(12, 1, 0, 200_000)) == "2026-10-19T12:00"
+
+    def test_fire_times_passed_without_a_run_are_walked_over(self, cached_scheduler: _TestScheduler) -> None:
+        from datetime import UTC
+
+        from apscheduler.triggers.cron import CronTrigger
+
+        cached_scheduler._arm_trigger(CronTrigger.from_crontab("*/5 * * * *", timezone=UTC), self._at(11, 58, 0))
+        assert cached_scheduler._tick_slot(self._at(12, 31, 0)) == "2026-10-19T12:30"
+
+    def test_a_run_on_time_claims_its_own_minute_not_the_previous(self, cached_scheduler: _TestScheduler) -> None:
+        from datetime import UTC
+
+        from apscheduler.triggers.cron import CronTrigger
+
+        cached_scheduler._arm_trigger(CronTrigger.from_crontab("* * * * *", timezone=UTC), self._at(11, 59, 30))
+        assert cached_scheduler._tick_slot(self._at(12, 0, 0)) == "2026-10-19T12:00"
+        assert cached_scheduler._tick_slot(self._at(12, 0, 0, 900_000)) == "2026-10-19T12:00"
+        assert cached_scheduler._tick_slot(self._at(12, 1, 0, 100_000)) == "2026-10-19T12:01"
+
+    def test_another_timezone_names_the_same_instant(self, cached_scheduler: _TestScheduler) -> None:
+        from zoneinfo import ZoneInfo
+
+        from apscheduler.triggers.cron import CronTrigger
+
+        cached_scheduler._arm_trigger(CronTrigger.from_crontab("0 14 * * *", timezone=ZoneInfo("Europe/Berlin")), self._at(11, 0, 0))
+        assert cached_scheduler._tick_slot(self._at(12, 0, 0, 300_000)) == "2026-10-19T12:00"
+
+    def test_without_a_trigger_the_clock_decides(self, cached_scheduler: _TestScheduler) -> None:
+        assert cached_scheduler._tick_slot(self._at(12, 7, 30)) == "2026-10-19T12:07"

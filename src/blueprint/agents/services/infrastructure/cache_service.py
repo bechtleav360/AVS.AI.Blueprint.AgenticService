@@ -351,11 +351,17 @@ class DiskCacheService(_CacheKeyMixin, CacheService):
             logger.warning("Error setting cache: %s", e)
 
     def claim(self, key: str | list[str] | dict[str, Any], value: Any, namespace: str = "default", ttl: int | None = None) -> bool:
-        """Store a value only if the key is absent (atomic), and report whether we stored it.
+        """Store a value only if the key is absent, and report whether we stored it.
 
-        ``diskcache_rs.Cache.add`` is the set-if-absent operation, and it is atomic across
-        processes sharing the directory because the cache is opened with file locking. Its
-        own ``expire`` argument is **not** honoured by that backend -- an entry added with
+        ``diskcache_rs.Cache.add`` is the set-if-absent operation. **It is atomic within one
+        process** -- this service's lock serialises its threads -- **and not across processes**
+        (S23): measured with diskcache-rs 0.4.10, four processes on one directory claiming one
+        key at once each won in 297 of 300 rounds, with no error raised. Processes opened one
+        after the other do see each other's entries. So a claim that must hold across processes
+        -- several ``app_workers``, several replicas -- needs Redis. (0.4.9 and earlier refused a
+        second process the directory altogether: "Database already open".)
+
+        Its own ``expire`` argument is **not** honoured by that backend -- an entry added with
         ``expire=1`` is still readable minutes later -- so the TTL is kept in the parallel
         metadata entry this service already maintains, exactly as ``set`` does.
 

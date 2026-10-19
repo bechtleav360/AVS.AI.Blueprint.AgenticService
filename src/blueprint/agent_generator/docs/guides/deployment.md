@@ -393,8 +393,9 @@ prevent. Too long only costs cache entries. If you raise `nats_ack_wait` or `nat
 raise this with them.
 
 Two limits to know: dedup needs the agent to declare `with_cache()` -- the marker lives in that
-agent's own cache -- and the claim is atomic only across replicas that share that cache (Redis, or
-a disk cache on a shared volume); a per-pod cache deduplicates within one pod.
+agent's own cache -- and the claim is atomic only across replicas that share a Redis cache. A disk
+cache's claim holds within one process: two processes on one directory -- several `app_workers`, or
+replicas on a shared volume -- can both win it, so they can both run one event or one tick.
 
 **Grouped Dapr is the exception that wants dedup on.** A group has one Dapr endpoint: it publishes
 the union of every agent's topics and fans each delivery out to the agents that declared it, and the

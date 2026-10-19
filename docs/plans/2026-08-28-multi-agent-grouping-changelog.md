@@ -146,6 +146,15 @@ framework endpoints (`nats`, `cache`, `scheduler`), one Swagger tag per agent, a
   per-data-source state is keyed by that context key. Broker test on the accounts broker: the same
   `(source, id)` on connections A and B runs on both, a repeat on A is skipped; without the change B
   was skipped.
+- Step 20, smaller items (S19, S23/D16, W2, W3/D7): `deployment.publish_deployment_group` from
+  `AgentGroup.resolve`, read first by `deployment_group()`; the in-process tick slot is the trigger's latest
+  fire time at or before now (`_arm_trigger`, `_tick_slot`); `diskcache-rs>=0.4.10`; the disk claim documented
+  as per-process (docstring, `handler_chain`, deployment guide, configuration keys); W3 documented on
+  `Component.registry` and in the grouping guide. Live (WSL): the group image with a one-group file and no
+  `BLUEPRINT_GROUP` exported `deployment.group = finance` for 'agent-group', 'orders' and 'billing' (control:
+  absent, supervisor lines said '<ungrouped>'). Cross-process claim, 4 processes x 300 rounds on one
+  directory: several winners in 297 rounds through `DiskCacheService.claim` and through raw `Cache.add`, no
+  error; 0.4.9 refused the second process ('Database already open'). Found N13, open as D22.
 - Step 19, standalone compatibility (S10, S20, S21, N1): `HealthCheckEntry.builtin` and an application check
   replacing a built-in one with a WARNING; `Registry.reorder` puts declared handlers in declaration order (the
   refusal is gone); `SessionsJobHandler.get_handled_event_types` declares nothing when `can_handle_event` is

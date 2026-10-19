@@ -216,6 +216,13 @@ class Component(ABC, metaclass=_ComponentMeta):
         :attr:`config`, that is the definition rather than an optimisation: the root namespace
         *is* the unscoped registry, so every existing single-agent application resolves exactly
         what it resolved before.
+
+        **So an omitted ``namespace`` means two things** (W3, plan D7). On a view it means this
+        agent; on the registry itself it means *every* agent, for the collection lookups
+        (``get_services()``, ``get_event_handler()``, ...). A root component in a group
+        therefore sees every agent's components; ``namespace=""`` asks for the root's alone.
+        The framework's own root components depend on "every agent" -- the Dapr endpoint and
+        the event processing service collect across the group -- so the meaning is kept.
         """
         registry: Registry = Component.shared_registry  # type: ignore[assignment]
         if not self._namespace:
