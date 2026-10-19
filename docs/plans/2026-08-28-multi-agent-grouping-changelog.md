@@ -146,6 +146,12 @@ framework endpoints (`nats`, `cache`, `scheduler`), one Swagger tag per agent, a
   per-data-source state is keyed by that context key. Broker test on the accounts broker: the same
   `(source, id)` on connections A and B runs on both, a repeat on A is skipped; without the change B
   was skipped.
+- Step 8, agent settings merge (M5, S11, S12, S13, D9): an agent's `.secrets.toml` is merged before its
+  settings (`AgentGroup.secrets`, `merge_agent_settings(..., secret=True)` logs no value); fragments are
+  layered for `current_env` and inactive environment sections are dropped; `cache`, `event_publishing`,
+  `runtimes`, `runtime` are reserved namespaces and a root scalar is never replaced; a view refuses a bare
+  key naming an agent's section (`Config.declare_agent`). Repro of S13 first (ENV_FOR_DYNACONF=production:
+  root `prod`, fragment `frag-dev`); unit tests fail on the old code; live with the group image (step 14).
 - Step 7, group config validation (M7, N2, D8): unknown critical names (also against a
   `BLUEPRINT_AGENTS`-replaced list), scalar `agents`/`critical_agents` and duplicate group names raise
   `GroupConfigError`; `AgentGroup.from_config` refuses a group left with no agent. Unit tests fail on the

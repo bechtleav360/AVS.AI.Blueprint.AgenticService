@@ -128,6 +128,17 @@ class TestEachAgentReadsItsOwnFiles:
         assert PromptLoader.load_prompt("system", config.for_namespace("alpha")) == "ALPHA PROMPT"
         assert PromptLoader.load_prompt("system", config.for_namespace("beta")) == "BETA PROMPT"
 
+    def test_each_agents_own_secrets_are_read_and_win(self, two_agents: Path) -> None:
+        """M5 -- the layout check and the guides said secrets are read from beside src; nothing read them."""
+        (two_agents / "services/beta/.secrets.toml").write_text('model_name = "beta-secret-model"\n', encoding="utf-8")
+        config = process_config(two_agents)
+        group = AgentGroup.from_config(GroupConfig.resolve(config, environ={"BLUEPRINT_AGENTS": "alpha,beta"}))
+        group.assemble(config)
+
+        assert group.secrets == {"beta": two_agents / "services/beta/.secrets.toml"}
+        assert config.for_namespace("beta").get("model_name") == "beta-secret-model"
+        assert config.for_namespace("alpha").get("model_name") == "alpha-model"
+
     def test_the_package_root_each_agent_sees_is_its_own(self, two_agents: Path) -> None:
         config = process_config(two_agents)
         AgentGroup.from_config(GroupConfig.resolve(config, environ={"BLUEPRINT_AGENTS": "alpha,beta"})).assemble(config)

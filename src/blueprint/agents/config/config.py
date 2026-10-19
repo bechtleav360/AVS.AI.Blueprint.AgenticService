@@ -46,6 +46,9 @@ keeps them out of reach.
 """
 
 
+CONVENTIONAL_ENVIRONMENTS = frozenset({"development", "production", "staging", "testing", "test"})
+"""Environment section names an agent's settings file may carry whether or not the process's own files use them."""
+
 SHARED_NESTED_PREFIXES = frozenset({"cache", "event_publishing", "runtimes", "runtime"})
 """The dotted sections that belong to the process rather than to an agent.
 
@@ -193,6 +196,10 @@ class Config:
         self._agent_scope = agent_scope
         self._is_view = False
         self._views: dict[str, Config] = {}
+        # Every agent namespace this configuration has met: by a view, a merged file or a root.
+        # Shared with each view (copy() keeps the reference), so a view can refuse a bare key that
+        # names an agent's section without being able to list the agents itself (S11, C6).
+        self._agent_namespaces: set[str] = set()
         # Set on a view by for_namespace, so a view can ask the object that owns the tree to
         # flatten *its own* scope. Stripping the other agents' subsections needs the list of
         # namespaces, and a view deliberately does not have one (C6).
@@ -291,6 +298,12 @@ class Config:
         # to self._settings to ensure ValidationError is converted to ConfigError
         # by validate()'s exception handler.
         self.validate()
+
+        # The environment Dynaconf actually loaded, which is what an agent's fragment has to be
+        # layered for. The first pass's app_environment is only Dynaconf's starting point:
+        # ENV_FOR_DYNACONF wins over it, and then the root loaded [production] while every agent's
+        # fragment was layered for [development] (S13).
+        self._environment = str(self._settings.current_env or app_env).lower()
 
         # Replace DOT placeholders
         dot_placeholder = self._settings.get("dot_placeholder", "")
@@ -469,6 +482,7 @@ class Config:
         if cached is not None:
             return cached
 
+        self._agent_namespaces.add(namespace.lower())
         view = copy(self)
         view._agent_scope = namespace
         view._is_view = True
@@ -482,6 +496,20 @@ class Config:
             view._root_path = agent_root
         self._views[namespace] = view
         return view
+
+    def declare_agent(self, namespace: str) -> None:
+        """Record that ``namespace`` is an agent this process hosts, before any agent code runs.
+
+        A view then refuses a bare key of that name, which at the root is the agent's section
+        (S11). Called by :class:`~blueprint.agents.agent_group.AgentGroup` for every agent it
+        assembles; a view, a merged settings file and an agent root record their agent too.
+
+        Raises:
+            RuntimeError: if called on a view, for the reason :meth:`set_agent_root` gives.
+        """
+        if self._is_view:
+            raise RuntimeError(f"Namespace '{self._agent_scope}' tried to declare an agent. The group declares its agents.")
+        self._agent_namespaces.add(namespace.lower())
 
     def set_agent_root(self, namespace: str, root: Path | str) -> None:
         """Record where one agent's own files live, for the view that agent reads through.
@@ -504,6 +532,7 @@ class Config:
                 "applied by the group before any agent has a view."
             )
         resolved = Path(root)
+        self._agent_namespaces.add(namespace.lower())
         self._agent_roots[namespace] = resolved
         cached = self._views.get(namespace)
         if cached is not None:
@@ -541,7 +570,7 @@ class Config:
             )
         return tuple(sorted(self._views))
 
-    def merge_agent_settings(self, namespace: str, path: str | Path) -> tuple[str, ...]:
+    def merge_agent_settings(self, namespace: str, path: str | Path, *, secret: bool = False) -> tuple[str, ...]:
         """Merge one agent's own settings file under that agent's scope (spec sec. 5.3, D5).
 
         An agent author writes plain keys in their own directory's ``settings.toml`` --
@@ -578,6 +607,8 @@ class Config:
                 the process's own settings files, which are loaded by ``__init__``.
             path: The agent's settings file. It need not exist; an agent that ships none is
                 simply an agent with no settings of its own.
+            secret: The file holds secrets (the agent's ``.secrets.toml``): no value of it is
+                ever logged, the WARNING for a process-scope key included.
 
         Returns:
             The keys merged, sorted. Empty when the file is absent, holds nothing, or is one of
@@ -602,6 +633,7 @@ class Config:
                 "process's own settings files, which __init__ loads."
             )
 
+        self._agent_namespaces.add(namespace.lower())
         candidate = Path(path)
         resolved = (self._root_path / candidate).resolve()
         if resolved in self._settings_files:
@@ -622,12 +654,20 @@ class Config:
 
         fragment = self._layer_fragment(document)
         self._refuse_self_scoped_fragment(namespace, resolved, fragment)
-        fragment = self._drop_process_scope_keys(namespace, resolved, fragment)
+        fragment = self._drop_process_scope_keys(namespace, resolved, fragment, secret=secret)
         if not fragment:
             logger.debug("The settings file of agent '%s' (%s) contributes nothing", namespace, resolved)
             return ()
 
         existing = self._settings.get(namespace)
+        if existing is not None and not hasattr(existing, "items"):
+            # A root key of the agent's name that is not a table: merging would replace the value
+            # every other agent reads for that key with this agent's section (S12).
+            raise ConfigError(
+                f"Agent '{namespace}' cannot have settings of its own: the group's configuration already uses "
+                f"'{namespace}' as a key, with a value that is not a section. Merging the agent's file ({resolved}) "
+                "would replace that value for the whole process. Rename the agent or the key."
+            )
         merged = dict(existing.items()) if hasattr(existing, "items") else {}
         added = self._fill_missing(merged, fragment)
         self._settings[namespace] = merged
@@ -658,17 +698,42 @@ class Config:
         """
         sections = {str(key).lower(): value for key, value in document.items() if hasattr(value, "items")}
         layered: dict[str, Any] = {key: value for key, value in document.items() if not hasattr(value, "items")}
-        for section in ("default", self._environment.lower(), "global"):
+        active = ("default", self._environment, "global")
+        for section in active:
             values = sections.get(section)
             if values:
                 layered.update({str(key): value for key, value in values.items()})
         # A table the file wrote at the top level is a value, not a section: [cache] beside
-        # [default] is this agent's cache configuration, and it is only the three names above
-        # that mean "an environment".
+        # [default] is this agent's cache configuration. An environment section that is not
+        # active is neither: it is dropped, as Dynaconf drops the process's own. It was kept as a
+        # key, so every agent carried its [production] table as 'production' in development (S13).
+        environments = self._environment_names()
         for name, values in sections.items():
-            if name not in ("default", self._environment.lower(), "global"):
-                layered.setdefault(name, values)
+            if name in active:
+                continue
+            if name in environments:
+                logger.debug("Agent settings: section [%s] is for another environment than '%s'; dropped", name, self._environment)
+                continue
+            layered.setdefault(name, values)
         return layered
+
+    def _environment_names(self) -> frozenset[str]:
+        """Every table name that is an environment section to this process, ``default`` and ``global`` excluded.
+
+        The conventional ones, and every top-level table of the process's own settings files: in
+        environment mode Dynaconf reads each of those as an environment, so a fragment table of the
+        same name is one too.
+        """
+        names = set(CONVENTIONAL_ENVIRONMENTS)
+        for path in self._settings_files:
+            if path.suffix != ".toml" or not path.is_file():
+                continue
+            try:
+                document = tomllib.loads(path.read_text(encoding="utf-8"))
+            except (OSError, tomllib.TOMLDecodeError):
+                continue
+            names.update(str(key).lower() for key, value in document.items() if isinstance(value, dict))
+        return frozenset(names - {"default", "global"})
 
     @staticmethod
     def _refuse_self_scoped_fragment(namespace: str, path: Path, fragment: dict[str, Any]) -> None:
@@ -705,11 +770,12 @@ class Config:
             "standalone too, because a scoped lookup falls back to the root key."
         )
 
-    def _drop_process_scope_keys(self, namespace: str, path: Path, fragment: dict[str, Any]) -> dict[str, Any]:
+    def _drop_process_scope_keys(self, namespace: str, path: Path, fragment: dict[str, Any], *, secret: bool = False) -> dict[str, Any]:
         """Return ``fragment`` without the keys an agent cannot set, warning about each.
 
         The warning carries what the process uses instead, because "your value is not used" is
-        only actionable next to the value that is.
+        only actionable next to the value that is -- except for a secrets file, whose values are
+        never logged, and the process's then neither.
         """
         refused = PROCESS_SCOPE_KEYS | DEPLOYMENT_IDENTITY_KEYS
         kept: dict[str, Any] = {}
@@ -718,14 +784,18 @@ class Config:
                 kept[key] = value
                 continue
             current = self._settings.get(str(key))
+            if secret:
+                used = "the group's own value is used" if current is not None else "the group's settings do not set it"
+            else:
+                used = f"the group's own value ({current!r}) is used" if current is not None else "the group's settings do not set it"
             logger.warning(
                 "Agent '%s' sets '%s' in %s, and that is a process-wide setting: one process has one of it, so this "
-                "value (%r) is ignored and %s. Remove it from the agent's settings file, or set it in the group's.",
+                "value (%s) is ignored and %s. Remove it from the agent's settings file, or set it in the group's.",
                 namespace,
                 key,
                 path,
-                value,
-                f"the group's own value ({current!r}) is used" if current is not None else "the group's settings do not set it",
+                "<hidden>" if secret else repr(value),
+                used,
             )
         return kept
 
@@ -919,9 +989,7 @@ class Config:
                         (
                             self._process_dynabox(item, placeholder, replacement)
                             if isinstance(item, (dict, DynaBox)) or hasattr(item, "items")
-                            else _try_parse_json(item)
-                            if isinstance(item, str)
-                            else item
+                            else _try_parse_json(item) if isinstance(item, str) else item
                         )
                         for item in value
                     ]
@@ -971,12 +1039,24 @@ class Config:
         Args:
             key: The key being resolved, before the root fallback runs.
 
+        A bare key is refused by the same rule when it is an agent's name (plan D9): the root key
+        ``billing`` *is* billing's section, so ``for_namespace("orders").get("billing")`` returned
+        a neighbour's whole configuration through the fallback (S11).
+
         Raises:
             ValueError: if ``key`` is dotted and its first segment is not one of the framework's
-                own nested sections.
+                own nested sections, or if it is bare and names an agent.
         """
         head = key.split(".", 1)[0]
-        if "." not in key or head in SHARED_NESTED_PREFIXES:
+        if "." not in key:
+            if key.lower() in self._agent_namespaces and hasattr(self._settings.get(key), "items"):
+                raise ValueError(
+                    f"Agent '{self._agent_scope}' cannot read '{key}': that is the name of an agent, and the key at "
+                    "the root of the configuration tree is that agent's section. An agent reads its own keys and "
+                    "the process's shared ones."
+                )
+            return
+        if head in SHARED_NESTED_PREFIXES:
             return
         raise ValueError(
             f"Agent '{self._agent_scope}' cannot read '{key}': its first segment names a section of the "

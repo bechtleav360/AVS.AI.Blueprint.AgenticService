@@ -293,3 +293,74 @@ class TestAFileThatIsNotThere:
         """A file that is there was meant to be used, so failing to read it is an error."""
         with pytest.raises(ConfigError, match="could not be read"):
             config.merge_agent_settings("orders", fragment(tmp_path, "orders", "this is not = = toml\n"))
+
+
+class TestTheEnvironmentTheProcessLoaded:
+    """S13 -- a fragment is layered for the environment Dynaconf loaded, and no other section survives as a key."""
+
+    def test_env_for_dynaconf_decides_for_the_fragment_too(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """ENV_FOR_DYNACONF wins over app_environment; the root loaded [production], the agent [development]."""
+        (tmp_path / "settings.toml").write_text('[production]\nmarker = "prod"\n[development]\nmarker = "dev"\n')
+        monkeypatch.setenv("ENV_FOR_DYNACONF", "production")
+        config = Config(settings_files=["settings.toml"], root_path=str(tmp_path))
+        body = '[development]\nmodel_name = "frag-dev"\n[production]\nmodel_name = "frag-prod"\n'
+
+        config.merge_agent_settings("orders", fragment(tmp_path, "orders", body))
+
+        assert config.get("marker") == "prod"
+        assert config.for_namespace("orders").get("model_name") == "frag-prod"
+
+    def test_an_inactive_environment_section_is_dropped(self, config: Config, tmp_path: Path) -> None:
+        body = "[default]\ntemperature = 0.2\n[production]\ntemperature = 0.0\n[staging]\ntemperature = 0.1\n"
+
+        config.merge_agent_settings("orders", fragment(tmp_path, "orders", body))
+
+        assert sorted(dict(config.get("orders")).keys()) == ["temperature"]
+
+    def test_a_section_the_processs_own_file_uses_as_an_environment_is_one(self, tmp_path: Path) -> None:
+        (tmp_path / "settings.toml").write_text('[default]\napp_environment = "development"\n[qa]\nmarker = "qa"\n')
+        config = Config(settings_files=["settings.toml"], root_path=str(tmp_path))
+
+        config.merge_agent_settings("orders", fragment(tmp_path, "orders", 'model_name = "m"\n[qa]\nmodel_name = "qa"\n'))
+
+        assert "qa" not in {key.lower() for key in dict(config.get("orders"))}
+
+
+class TestTheProcessesSectionsAreNotAnAgents:
+    """S12 -- an agent's settings are merged under its name; that name must not be the process's."""
+
+    def test_a_root_scalar_of_the_agents_name_is_not_replaced(self, tmp_path: Path) -> None:
+        (tmp_path / "settings.toml").write_text('[default]\napp_environment = "development"\nmodel_name = "group-model"\n')
+        config = Config(settings_files=["settings.toml"], root_path=str(tmp_path))
+
+        with pytest.raises(ConfigError, match="already uses 'model_name' as a key"):
+            config.merge_agent_settings("model_name", fragment(tmp_path, "model_name", "x = 1\n"))
+
+        assert config.get("model_name") == "group-model"
+
+
+class TestAnAgentsOwnSecrets:
+    """M5 -- an agent's ``.secrets.toml`` is merged, before its settings, and none of its values is logged."""
+
+    @staticmethod
+    def secrets(tmp_path: Path, agent: str, body: str) -> Path:
+        path = tmp_path / "pkg" / agent / ".secrets.toml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body)
+        return path
+
+    def test_a_secret_wins_over_the_settings_file(self, config: Config, tmp_path: Path) -> None:
+        config.merge_agent_settings("orders", self.secrets(tmp_path, "orders", 'model_api_key = "PLACEHOLDER-SECRET"\n'), secret=True)
+        config.merge_agent_settings("orders", fragment(tmp_path, "orders", 'model_api_key = "from-settings"\nmodel_name = "m"\n'))
+
+        view = config.for_namespace("orders")
+        assert view.get("model_api_key") == "PLACEHOLDER-SECRET"
+        assert view.get("model_name") == "m"
+
+    def test_no_value_of_a_secrets_file_is_logged(self, config: Config, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        body = 'model_api_key = "PLACEHOLDER-SECRET"\nlog_level = "PLACEHOLDER-SECRET-2"\n'
+        with caplog.at_level("DEBUG"):
+            config.merge_agent_settings("orders", self.secrets(tmp_path, "orders", body), secret=True)
+
+        assert "PLACEHOLDER-SECRET" not in caplog.text
+        assert "log_level" in caplog.text, "the process-scope key is still reported, by name"

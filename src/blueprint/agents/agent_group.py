@@ -100,6 +100,7 @@ class AgentGroup:
         agents: Mapping[str, AppBuilder],
         *,
         settings: Mapping[str, Path] | None = None,
+        secrets: Mapping[str, Path] | None = None,
         roots: Mapping[str, Path] | None = None,
         critical: Collection[str] | None = None,
     ) -> None:
@@ -119,6 +120,9 @@ class AgentGroup:
                 exists. :meth:`from_config` takes these from each agent's stated ``root``; a group
                 constructed literally passes them, or passes none and every agent's settings then
                 come from the group's own file.
+            secrets: Each agent's own ``.secrets.toml``, keyed by agent name. Merged under the
+                agent's scope before its settings file, so a secret wins over a value the settings
+                file states for the same key, and no value of it is ever logged (M5).
             roots: Each agent's own directory, keyed by agent name. It is what the agent's
                 configuration view reports as its package root, so the agent's prompts are found
                 under its own ``src/prompts`` rather than under the process's working directory --
@@ -139,6 +143,7 @@ class AgentGroup:
                 )
             self._agents[namespace] = builder
         self._settings: dict[str, Path] = {name: Path(path) for name, path in (settings or {}).items()}
+        self._secrets: dict[str, Path] = {name: Path(path) for name, path in (secrets or {}).items()}
         self._roots: dict[str, Path] = {name: Path(path) for name, path in (roots or {}).items()}
         self._critical: frozenset[str] = frozenset(self._agents) if critical is None else frozenset(critical)
 
@@ -156,6 +161,11 @@ class AgentGroup:
     def settings(self) -> Mapping[str, Path]:
         """Where each agent's own settings file is, for the agents that have one."""
         return dict(self._settings)
+
+    @property
+    def secrets(self) -> Mapping[str, Path]:
+        """Where each agent's own ``.secrets.toml`` is, for the agents that have one."""
+        return dict(self._secrets)
 
     @property
     def roots(self) -> Mapping[str, Path]:
@@ -222,6 +232,7 @@ class AgentGroup:
 
         agents: dict[str, AppBuilder] = {}
         settings: dict[str, Path] = {}
+        secrets: dict[str, Path] = {}
         roots: dict[str, Path] = {}
         critical: set[str] = set()
         for spec in group.agents:
@@ -252,6 +263,11 @@ class AgentGroup:
                 settings[spec.name] = fragment
             else:
                 logger.debug("Agent '%s' ships no settings of its own (looked at %s)", spec.name, fragment)
+            # The agent's secrets beside it, as a standalone project keeps them: the layout check and
+            # the guides said they were read from there, and nothing did (M5).
+            secret_file = spec.root / ".secrets.toml"
+            if secret_file.is_file():
+                secrets[spec.name] = secret_file
 
         if not agents:
             # Every agent was non-critical and none loaded. A pod with no agent passes its probes
@@ -260,7 +276,7 @@ class AgentGroup:
                 f"Group '{group.name}' has no agent left to run: every one of {', '.join(group.agent_names) or 'none'} "
                 "was skipped. Fix the agents above, or mark the one this pod must run as critical."
             )
-        return cls(group.name, agents, settings=settings, roots=roots, critical=critical)
+        return cls(group.name, agents, settings=settings, secrets=secrets, roots=roots, critical=critical)
 
     @staticmethod
     def _load_declaration(spec: AgentSpec) -> AppBuilder | None:
@@ -362,12 +378,17 @@ class AgentGroup:
         # every component reads its keys through its agent's scoped view during build(), so a
         # fragment merged afterwards would be a file that was read too late to matter.
         for namespace in self._agents:
+            config.declare_agent(namespace)
             # The root first: it is what the agent's view reports as its package root, and a
             # view taken before it is set would keep the process's root for the rest of the
             # process's life.
             agent_root = self._roots.get(namespace)
             if agent_root is not None:
                 config.set_agent_root(namespace, agent_root)
+            # Secrets first: the merge fills in what is missing, so what comes first wins.
+            secret_file = self._secrets.get(namespace)
+            if secret_file is not None:
+                config.merge_agent_settings(namespace, secret_file, secret=True)
             path = self._settings.get(namespace)
             if path is not None:
                 config.merge_agent_settings(namespace, path)

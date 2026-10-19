@@ -2,7 +2,9 @@
 
 import pytest
 
+from blueprint.agents.config.config import SHARED_NESTED_PREFIXES
 from blueprint.agents.component.namespace import (
+    RESERVED_NAMESPACES,
     ROOT_LABEL,
     ROOT_NAMESPACE,
     current_namespace,
@@ -106,6 +108,15 @@ class TestValidateNamespace:
     def test_whitespace_only_namespace_is_not_the_root(self) -> None:
         with pytest.raises(ValueError, match="is not the root namespace"):
             validate_namespace("   ")
+
+    @pytest.mark.parametrize("namespace", sorted(RESERVED_NAMESPACES))
+    def test_a_shared_configuration_section_is_not_a_namespace(self, namespace: str) -> None:
+        """S12 -- an agent's settings are merged under its name, which would land in the process's section."""
+        with pytest.raises(ValueError, match="configuration section the whole process shares"):
+            validate_namespace(namespace)
+
+    def test_the_reserved_names_are_the_shared_sections(self) -> None:
+        assert RESERVED_NAMESPACES == SHARED_NESTED_PREFIXES
 
     def test_the_error_names_the_offending_characters(self) -> None:
         with pytest.raises(ValueError, match="'A'"):

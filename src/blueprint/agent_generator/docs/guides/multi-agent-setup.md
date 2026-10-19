@@ -167,6 +167,11 @@ agents/
       ...
 ```
 
+An agent's `.secrets.toml` is merged under that agent too, before its `settings.toml`, so a secret
+wins over a value the settings file states for the same key; no value of it is ever logged. Both files
+are resolved for the environment the process loaded (`ENV_FOR_DYNACONF` included), and a section for
+another environment is dropped rather than kept as a key.
+
 Each agent directory is exactly what `asbs setup` writes on its own, so moving one into its own
 repository means deleting its line from this map -- nothing inside the directory changes. An
 agent may keep its own `Dockerfile` to be built as a single-agent image at the same time.
@@ -208,7 +213,11 @@ durable name: `orders-eu` on topic `created` and `orders` on topic `eu-created` 
 produce the same durable, and two agents would bind one consumer and eat each other's events. The
 alphabet is the intersection of what a registry key, a queue group, a consumer name and a telemetry
 resource all accept, and a name outside it is **refused, never repaired** -- a name quietly rewritten
-by four subsystems is four names for one agent.
+by four subsystems is four names for one agent. Four names are reserved because they are
+configuration sections the whole process shares -- `cache`, `event_publishing`, `runtimes`,
+`runtime` -- and an agent whose name is already a plain key of the group's settings cannot bring
+settings of its own. An agent's view refuses a key that names another agent (`orders`, or
+`orders.model_name`): that is the neighbour's section, not configuration it may read.
 
 ---
 

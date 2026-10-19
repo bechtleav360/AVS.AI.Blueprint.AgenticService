@@ -267,6 +267,19 @@ class TestAnAgentCannotReadANeighboursConfiguration:
         with pytest.raises(ValueError, match="outside this agent"):
             config.for_namespace("billing").get("orders.record_id")
 
+    def test_a_bare_key_naming_a_neighbour_is_refused(self, config: Config) -> None:
+        """S11, plan D9 -- the root key ``orders`` is orders' section; the fallback handed it over whole."""
+        config.declare_agent("orders")
+        with pytest.raises(ValueError, match="that is the name of an agent"):
+            config.for_namespace("billing").get("orders")
+
+    def test_a_flat_root_value_that_shares_an_agents_name_still_resolves(self, tmp_path: Path) -> None:
+        """Only a section is an agent's; a scalar of the same name is the process's."""
+        (tmp_path / "settings.toml").write_text('[default]\napp_environment = "development"\ntimeout = 5\n')
+        config = Config(settings_files=["settings.toml"], root_path=str(tmp_path))
+        config.declare_agent("timeout")
+        assert config.for_namespace("billing").get("timeout") == 5
+
     def test_the_frameworks_own_nested_sections_still_resolve(self, config: Config) -> None:
         """An allowlist, so what the process genuinely shares keeps working -- and this is the
         case that would have been broken by a denylist of agent names."""

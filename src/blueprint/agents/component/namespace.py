@@ -51,6 +51,14 @@ avoid.
 _ALLOWED_NAMESPACE = re.compile(r"\A[a-z][a-z0-9_]*\Z")
 """Lowercase, digits and underscore, starting with a letter. See :func:`validate_namespace`."""
 
+RESERVED_NAMESPACES = frozenset({"cache", "event_publishing", "runtimes", "runtime"})
+"""Names no agent may take: the configuration sections the whole process shares (S12).
+
+The same four names as ``config.SHARED_NESTED_PREFIXES`` -- a test keeps them equal; this module
+cannot import the configuration package without a cycle. An agent's settings are merged under its
+name, so an agent called ``cache`` would have written its own keys into the process's cache section.
+"""
+
 _DISPLAY_UNSAFE = re.compile(r"[<>.\s]+")
 """Characters a display segment cannot keep. See :func:`display_segment`."""
 
@@ -114,6 +122,13 @@ def validate_namespace(namespace: str) -> str:
             f"Namespace '{namespace}' is not a legal namespace: {''.join(offenders) or namespace!r} cannot appear in it. "
             "A namespace must match [a-z][a-z0-9_]*, because it becomes a registry key prefix, a NATS queue group, "
             "part of a JetStream durable name and a telemetry service name, and those do not accept the same characters."
+        )
+
+    if namespace in RESERVED_NAMESPACES:
+        raise ValueError(
+            f"Namespace '{namespace}' is the name of a configuration section the whole process shares "
+            f"({', '.join(sorted(RESERVED_NAMESPACES))}). An agent's settings live under its name, so an agent "
+            f"called '{namespace}' would write its own settings into that shared section. Choose another name."
         )
 
     return namespace

@@ -12,6 +12,21 @@
   when it is acknowledged. Measured against JetStream with a 0.5 s limit: before, one run and the
   redelivery acknowledged unrun; now the redelivery runs to completion.
 
+- **An agent's own `.secrets.toml` is read in a group.** Only its `settings.toml` was merged, although
+  the layout check, the guides and `asbs setup` said the secrets beside it are read. It is now merged
+  first, so a secret wins over the settings file, and none of its values is logged.
+
+- **Agent settings are resolved for the environment the process actually loaded.** With
+  `ENV_FOR_DYNACONF` set, the process loaded that environment while every agent's file was layered for
+  `app_environment`; and each agent kept its other environments' sections as keys (`production` in
+  development). Both now follow what Dynaconf loaded.
+
+- **An agent can no longer read or overwrite what is not its own through its name.** `cache`,
+  `event_publishing`, `runtimes` and `runtime` are refused as agent names (an agent's settings would
+  have landed in the shared section); merging an agent's settings onto a plain key of the same name
+  fails instead of replacing it; and a view refuses a bare key naming another agent, which returned that
+  agent's whole section.
+
 - **A group file that says something other than what it means now fails startup.** A name in
   `critical_agents` (or `BLUEPRINT_CRITICAL_AGENTS`) that the group does not run made every agent
   non-critical -- also when `BLUEPRINT_AGENTS` replaced the file's list, whose `critical_agents` still
