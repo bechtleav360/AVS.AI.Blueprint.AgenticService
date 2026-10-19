@@ -146,6 +146,15 @@ framework endpoints (`nats`, `cache`, `scheduler`), one Swagger tag per agent, a
   per-data-source state is keyed by that context key. Broker test on the accounts broker: the same
   `(source, id)` on connections A and B runs on both, a repeat on A is skipped; without the change B
   was skipped.
+- Final run with containers (2026-10-19): unit 3781 tests, 0 failed, 1 skipped; integration (JetStream,
+  accounts broker, Redis in WSL) 66 of 67 -- the one failure is the pre-existing
+  `test_the_broker_counts_it_as_a_redelivery`, which fails on the committed HEAD too. Two findings on the way,
+  both fixed: N14, M4's refusal check raced because nats-py 2.15 writes PING ahead of a pending SUB --
+  `_bind` now makes two round trips (8 of 8 runs green; before 3 of 9 failed); and step 20 published the
+  stand-in name 'ungrouped' of a group nothing named, so telemetry would have carried
+  `deployment.group = ungrouped` -- `group_config.DEFAULT_GROUP_NAME` is not published. The group image,
+  scaffolded fresh (`asbs setup --group`, two agents, `asbs validate --group` valid) and built from the
+  working tree, turned healthy under `BLUEPRINT_AGENTS` ('<ungrouped>') and under a one-group file ('finance').
 - Step 21, docs and PR hygiene (W7, W8/D19, W9, D20): the isolation tests' xfail paragraph in the past tense;
   `[0.9.0] - 2026-09-14` folded into `[Unreleased]`, one section per heading; `pyproject.toml` back to `0.8.2`
   with no licence fields, `LICENSE` and its CHANGELOG entry removed (D20: no approval yet); a "Rolling back

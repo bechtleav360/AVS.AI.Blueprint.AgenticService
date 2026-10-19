@@ -630,6 +630,19 @@ class TestTheResolvedGroupIsTheDeploymentGroup:
         built.assert_called_once_with(resolved)
         assert deployment_group() == "finance"
 
+    def test_a_group_nothing_named_is_not_published(self, monkeypatch) -> None:
+        """BLUEPRINT_AGENTS alone names no group; its stand-in name must not become deployment.group."""
+        from unittest.mock import patch
+
+        from blueprint.agents.deployment import UNGROUPED_LABEL, deployment_group
+        from blueprint.agents.group_config import DEFAULT_GROUP_NAME
+
+        monkeypatch.delenv("BLUEPRINT_GROUP", raising=False)
+        resolved = GroupConfig(name=DEFAULT_GROUP_NAME, agents=())
+        with patch.object(GroupConfig, "resolve", return_value=resolved), patch.object(AgentGroup, "from_config"):
+            AgentGroup.resolve(MagicMock(), environ={})
+        assert deployment_group() == UNGROUPED_LABEL
+
     def test_without_a_resolved_group_the_environment_still_decides(self, monkeypatch) -> None:
         from blueprint.agents.deployment import UNGROUPED_LABEL, deployment_group
 

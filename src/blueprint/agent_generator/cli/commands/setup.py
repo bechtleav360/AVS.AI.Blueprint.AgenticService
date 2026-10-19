@@ -165,7 +165,6 @@ def run(args: Namespace) -> None:
     print(f"Location: {output_dir}")
 
     try:
-
         # Create a temporary config file for the generator
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as f:
             json.dump(config, f, indent=2, ensure_ascii=False)

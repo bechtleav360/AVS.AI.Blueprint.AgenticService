@@ -443,9 +443,9 @@ class TestTheImage:
 
         assert "src.main:create_app" in final
         assert "--factory" in final, "create_app is a factory; uvicorn needs an import string to reload it"
-        assert (
-            "blueprint.agents.entrypoint" not in final
-        ), "The image serves one agent through the group entry point, which makes a standalone agent declare itself a group of one."
+        assert "blueprint.agents.entrypoint" not in final, (
+            "The image serves one agent through the group entry point, which makes a standalone agent declare itself a group of one."
+        )
 
     def test_no_agent_map_is_in_the_image(self, project: Path) -> None:
         """This image holds one agent and serves it; there is no group for a map to describe."""

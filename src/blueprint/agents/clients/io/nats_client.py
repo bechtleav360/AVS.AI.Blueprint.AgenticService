@@ -2528,6 +2528,12 @@ class NATSClient(IOClientBase):
         # trip makes any refusal arrive first; one naming this subject fails the attempt, and the
         # connect loop retries it as a permission error. Compared lowercased: nats-py lowercases the
         # whole -ERR line, the subject in it included.
+        # Two round trips, not one: nats-py writes PING straight to the transport while the SUB
+        # still waits in its pending buffer for the flusher task, so the first PONG can come back
+        # before the broker has seen the SUB (measured with nats-py 2.15: the refusal arrived after
+        # flush() returned, and the binding read as bound). The flusher writes the SUB during the
+        # first round trip; the second PING follows it on the wire, and so does its answer.
+        await client.flush()
         await client.flush()
         subject = spec.deliver_subject.lower()
         refused = [error for error in binding.link.permission_errors if subject in error.lower()]

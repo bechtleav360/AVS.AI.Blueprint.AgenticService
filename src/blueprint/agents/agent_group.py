@@ -36,7 +36,7 @@ from .app_builder import AppBuilder, refuse_constructed_components
 from .component.namespace import namespace_scope, validate_namespace
 from .config import Config
 from .deployment import publish_deployment_group
-from .group_config import AgentSpec, GroupConfig, GroupConfigError
+from .group_config import DEFAULT_GROUP_NAME, AgentSpec, GroupConfig, GroupConfigError
 from .layout import check_agent_layout
 
 logger = logging.getLogger(__name__)
@@ -229,8 +229,9 @@ class AgentGroup:
         """
         group = GroupConfig.resolve(config, environ=environ)
         # Before anything reads it: the connection name and the telemetry resource take the
-        # deployment group, and a group named only by the file never reached them (S19).
-        publish_deployment_group(group.name)
+        # deployment group, and a group named only by the file never reached them (S19). A group
+        # nothing named keeps reading as ungrouped: its stand-in name is no deployment's.
+        publish_deployment_group(None if group.name == DEFAULT_GROUP_NAME else group.name)
         return cls.from_config(group)
 
     @classmethod

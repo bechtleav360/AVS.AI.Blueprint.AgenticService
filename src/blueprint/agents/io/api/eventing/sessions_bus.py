@@ -116,8 +116,7 @@ class SessionsBus(Component, CloudEventProcessorMixin):
         self._consumption_paused = True
         await self._stop_stream()
         logger.error(
-            "Agent '%s' stopped consuming: its job stream is closed while it is degraded, so its jobs stay pending "
-            "for a healthy replica",
+            "Agent '%s' stopped consuming: its job stream is closed while it is degraded, so its jobs stay pending for a healthy replica",
             self.namespace or ROOT_LABEL,
         )
 

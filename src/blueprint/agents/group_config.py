@@ -60,6 +60,13 @@ GROUP_CONFIG_ENV = "BLUEPRINT_GROUP_CONFIG"
 GROUP_ENV = "BLUEPRINT_GROUP"
 AGENTS_ENV = "BLUEPRINT_AGENTS"
 CRITICAL_AGENTS_ENV = "BLUEPRINT_CRITICAL_AGENTS"
+
+DEFAULT_GROUP_NAME = "ungrouped"
+"""The name of a group neither the file nor ``BLUEPRINT_GROUP`` names -- a stand-in, not a group name.
+
+``AgentGroup.resolve`` does not publish it as the deployment group (S19), so telemetry carries no
+``deployment.group`` for such a group, as the observability guide says.
+"""
 AGENT_MAP_ENV = "BLUEPRINT_AGENT_MAP"
 
 DEFAULT_GROUP_CONFIG = "deployment-groups.yaml"
@@ -428,7 +435,7 @@ class GroupConfig:
         if not name:
             # A group has to be called something: the name reaches the connection name and the
             # telemetry resource, where an empty segment reads as a bug rather than as "no group".
-            name, sources["name"] = "ungrouped", "default"
+            name, sources["name"] = DEFAULT_GROUP_NAME, "default"
 
         for key, source in sources.items():
             if source != "file" or declared:

@@ -225,13 +225,16 @@ def integration_config(
         "nats_use_jetstream = true\n"
         # Well above any handler here, and short enough that a test asserting *no* redelivery can
         # afford to wait the whole window out. Unset, it would be the server's default (30 s).
-        "nats_ack_wait = 2.0\n" "nats_max_deliver = 3\n"
+        "nats_ack_wait = 2.0\n"
+        "nats_max_deliver = 3\n"
         # The client retries the initial connect forever by default, which turns "the broker
         # refused this subscription" into a test that hangs instead of one that fails.
-        "event_client_max_retries = 2\n" "event_client_retry_delay = 0.5\n\n"
+        "event_client_max_retries = 2\n"
+        "event_client_retry_delay = 0.5\n\n"
         # Where a handler's HandlerResult goes. Without a mapping for the event type,
         # EventPublishingService logs "no topic mapping found" and publishes nothing at all.
-        f'[default.event_publishing.topic_mapping."{OUTBOUND_EVENT_TYPE}"]\n' f'topic = "{outbound_subject}"\n',
+        f'[default.event_publishing.topic_mapping."{OUTBOUND_EVENT_TYPE}"]\n'
+        f'topic = "{outbound_subject}"\n',
         encoding="utf-8",
     )
     config = Config(settings_files=["settings.toml"], root_path=str(tmp_path))
