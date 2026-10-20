@@ -122,6 +122,15 @@ that lost a race against another client creating the same stream, not a refusal.
 CONTROL_MESSAGE_STATUS = "100"
 """The status a JetStream idle heartbeat and flow control request carry (``nats.js.api.StatusCode.CONTROL_MESSAGE``)."""
 
+NAK_DELAY_KEY = "nats_nak_delay"
+"""Seconds before a failed JetStream delivery comes back: one number, or one per redelivery (B4)."""
+
+DEFAULT_NAK_DELAYS: tuple[float, ...] = (1.0, 5.0, 15.0, 30.0, 60.0)
+"""The redelivery delays when ``nats_nak_delay`` is unset: the first redelivery after 1 s, the second
+after 5 s, then 15 s, 30 s, and 60 s for every one after that. With ``max_deliver = 5`` a failing
+event is retried over about 51 s rather than within a few hundred milliseconds: a backend restart, a
+5xx or a short network fault used to use up every attempt before it had passed."""
+
 RESUME_RETRY_MAX_DELAY = 60.0
 """The longest wait between two attempts of a resume that keeps failing (M2): the delay doubles from
 ``event_client_retry_delay`` up to this."""
@@ -232,6 +241,38 @@ def validate_durable_name(configured: str, topic_count: int) -> None:
             "A JetStream durable filters one subject, so one name cannot serve them all. "
             "Remove the key to derive a durable per topic."
         )
+
+
+def resolve_nak_delays(raw: object) -> tuple[float, ...]:
+    """``nats_nak_delay`` as one delay per redelivery, the last one repeating (B4); shared with ``asbs validate``.
+
+    Unset is :data:`DEFAULT_NAK_DELAYS`. A number applies to every redelivery; ``0`` redelivers at
+    once, as before this key existed. A list gives the delay before the first, second, ...
+    redelivery.
+
+    Raises:
+        ValueError: anything but a number of seconds, or a non-empty list of them, none negative.
+            A boolean is refused rather than read as 1.
+    """
+    if raw is None or raw == "":
+        return DEFAULT_NAK_DELAYS
+    values = list(raw) if isinstance(raw, (list, tuple)) else [raw]
+    delays: list[float] = []
+    for value in values:
+        if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+            delays = []
+            break
+        try:
+            delays.append(float(value))
+        except ValueError:
+            delays = []
+            break
+    if not delays or any(delay < 0 for delay in delays):
+        raise ValueError(
+            f"'{NAK_DELAY_KEY}' must be a number of seconds or a non-empty list of them, none negative, got {raw!r}. "
+            "0 redelivers a failed event at once."
+        )
+    return tuple(delays)
 
 
 DEAD_LETTERED_COUNTER = "blueprint.events.dead_lettered"
@@ -474,8 +515,10 @@ class NATSClient(IOClientBase):
     ``nats_heartbeat_enabled`` (bool, default true): whether running JetStream deliveries report
     ``in_progress``; off, a run longer than the consumer's ``ack_wait`` is redelivered while it runs.
     ``nats_handler_timeout`` (float seconds, unset by default): the longest one run may take, on
-    every connection. At the limit the run is cancelled and nak'd for immediate redelivery; unset,
-    a run is never cut.
+    every connection. At the limit the run is cancelled and nak'd for redelivery after
+    ``nats_nak_delay``; unset, a run is never cut.
+    ``nats_nak_delay`` (seconds, or a list per redelivery; default 1, 5, 15, 30, 60): how long a
+    failed delivery waits before it is redelivered; ``0`` redelivers at once.
 
     Concurrent runs
     ~~~~~~~~~~~~~~~
@@ -525,6 +568,7 @@ class NATSClient(IOClientBase):
         self._pairs_registered = 0
         self._heartbeat_enabled: bool = True
         self._handler_timeout: float | None = None
+        self._nak_delays: tuple[float, ...] = DEFAULT_NAK_DELAYS
         self._source: ConnectionSource | None = None
         self._named: list[_Binding] = []
         self._named_tasks: dict[_Binding, asyncio.Task[None]] = {}
@@ -698,6 +742,37 @@ class NATSClient(IOClientBase):
             self._connections_readiness = self._resolve_connections_readiness()
         return self._connections_readiness
 
+    def tenant_subject(self, topic: str) -> str | None:
+        """Why ``topic`` belongs to one of this agent's tenants, or ``None`` (B1).
+
+        A subject the connection source claims for this agent, or one a tenant binding filters on
+        or delivers to -- the bindings in place and the ones the source would hand over now. A
+        publish there on the agent's default connection lands in the tenant's stream and runs under
+        the tenant's identity, which is what plan D4 already refuses for handler results. A source
+        that cannot be asked counts as owning the subject: refusing is the safe answer.
+
+        Args:
+            topic: A subject to publish to.
+        """
+        if self._source is None:
+            return None
+        owners: dict[str, str] = dict.fromkeys(self._claimed, "the connection source claims it")
+        bindings = [binding.jetstream for binding in self._named if binding.jetstream is not None]
+        try:
+            for spec in self._source.connections().values():
+                jetstream = self._source.binding(self._queue_group, tuple(self._declared), spec)
+                if jetstream is not None:
+                    bindings.append(jetstream)
+        except Exception as exc:
+            return f"the connection source could not be asked which subjects its tenants own ({type(exc).__name__})"
+        for jetstream in bindings:
+            for subject in (*jetstream.filter_subjects, jetstream.deliver_subject):
+                owners.setdefault(subject, f"a tenant binding on stream '{jetstream.stream}' carries it")
+        for pattern, why in owners.items():
+            if topic == pattern or subject_is_covered_by(topic, pattern):
+                return f"'{topic}' is a tenant subject: {why} ('{pattern}')"
+        return None
+
     def named_connection_states(self) -> tuple[NamedConnectionState, ...]:
         """How each current named connection stands, in the source's order; one being replaced is left out."""
         return tuple(self._state_of(binding) for binding in self._named if not binding.superseded)
@@ -838,6 +913,7 @@ class NATSClient(IOClientBase):
         self._binding.limit = self._max_concurrent_runs
         self._heartbeat_enabled = self._resolve_heartbeat_enabled()
         self._handler_timeout = self._resolve_handler_timeout()
+        self._nak_delays = self._resolve_nak_delays()
         self._change_grace = self._resolve_change_grace()
         self._connections_readiness = self._resolve_connections_readiness()
         self._declared = dict(topic_callbacks)
@@ -1653,6 +1729,22 @@ class NATSClient(IOClientBase):
                 otherwise read as true and keep the heartbeat the operator meant to switch off.
         """
         return resolve_heartbeat_enabled(self.config.get("nats_heartbeat_enabled", True))
+
+    def _resolve_nak_delays(self) -> tuple[float, ...]:
+        """Return ``nats_nak_delay`` for this agent; see :func:`resolve_nak_delays`.
+
+        Raises:
+            ValueError: as :func:`resolve_nak_delays` does, naming the agent.
+        """
+        try:
+            return resolve_nak_delays(self.config.get(NAK_DELAY_KEY, None))
+        except ValueError as exc:
+            raise ValueError(f"{exc} (agent '{self.namespace or ROOT_LABEL}')") from None
+
+    def _nak_delay(self, msg: Any) -> float:
+        """The delay before this failed delivery comes back: by its delivery count, the last delay repeating."""
+        delivered = self._delivery_count(msg) or 1
+        return self._nak_delays[min(delivered, len(self._nak_delays)) - 1]
 
     def _resolve_handler_timeout(self) -> float | None:
         """Return ``nats_handler_timeout``: seconds one run may take, or ``None`` for no limit (plan D9).
@@ -2836,7 +2928,7 @@ class NATSClient(IOClientBase):
                 # the buffer while the pause waits for a connection change to finish, before it
                 # can drain -- is nak'd at once, so it redelivers to a healthy replica (N4). Core
                 # NATS cannot nak; its buffered messages run, as the drain lets them.
-                await self._settle(msg, DeliveryDisposition.NAK, msg.subject, self._peek_event_id(msg), binding)
+                await self._settle(msg, DeliveryDisposition.NAK, msg.subject, self._peek_event_id(msg), binding, delayed=False)
                 return
             resolved = topic if topic is not None else self._bound_topic(binding, msg)
             if resolved is None:
@@ -2941,7 +3033,7 @@ class NATSClient(IOClientBase):
         Everything is settled against ``binding``, the one the message arrived on.
 
         With ``nats_handler_timeout`` set, a run that reaches the limit is cancelled and nak'd for
-        immediate redelivery (plan D9). Whether the limit was hit is read from the run's own timer,
+        redelivery after ``nats_nak_delay`` (plan D9, B4). Whether the limit was hit is read from the run's own timer,
         not from the exception: a ``TimeoutError`` the handler raises itself is an ordinary failure.
         A handler that swallows the cancellation runs on and holds its slot until it returns; that
         is logged, and its delivery is nak'd all the same.
@@ -3142,7 +3234,14 @@ class NATSClient(IOClientBase):
     # ------------------------------------------------------------------
 
     async def _settle(
-        self, msg: Any, disposition: DeliveryDisposition, topic: str, event_id: str | None, binding: _Binding | None = None
+        self,
+        msg: Any,
+        disposition: DeliveryDisposition,
+        topic: str,
+        event_id: str | None,
+        binding: _Binding | None = None,
+        *,
+        delayed: bool = True,
     ) -> None:
         """Tell the broker what became of a delivery (spec sec. 7.2).
 
@@ -3163,6 +3262,12 @@ class NATSClient(IOClientBase):
         redelivers and the message leaves the consumer with no trace of why. Terming it here
         keeps the payload, on the dead-letter subject, and releases the consumer's pending
         slot immediately instead of one more ``ack_wait`` later.
+
+        A nak waits ``nats_nak_delay`` before the broker redelivers (B4): a failed run usually failed
+        on something that needs a moment -- a restarting backend, a 5xx, a dropped connection -- and
+        an immediate redelivery used up every attempt within a few hundred milliseconds. ``delayed``
+        is ``False`` only where the delivery should go elsewhere at once: a degraded agent hands its
+        buffered deliveries back to a healthy replica (N4).
         """
         binding = binding or self._binding
         if not self._settles(binding):
@@ -3172,7 +3277,8 @@ class NATSClient(IOClientBase):
             if disposition is DeliveryDisposition.ACK:
                 await msg.ack()
             elif disposition is DeliveryDisposition.NAK and not self._deliveries_exhausted(msg, binding):
-                await msg.nak()
+                delay = self._nak_delay(msg) if delayed else 0.0
+                await (msg.nak(delay=delay) if delay > 0 else msg.nak())
             else:
                 await self._dead_letter(msg, disposition, topic, event_id, binding)
                 await msg.term()

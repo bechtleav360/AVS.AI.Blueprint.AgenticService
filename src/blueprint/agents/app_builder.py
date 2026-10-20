@@ -60,6 +60,12 @@ from .io.telemetry.loop_watchdog import (
 from .io.telemetry.telemetry import TelemetryConfigError
 from .utils import parse_bool
 
+OPERATOR_ROUTES_KEY = "operator_routes_enabled"
+"""Process scope, default true: whether the NATS publish route and the cache routes are served (B1).
+
+They act on the broker and on a cache without authentication, which a deployment whose port is
+reachable from outside may not want at all. ``false`` leaves them out of the application."""
+
 _UNCONSTRUCTED_KINDS = frozenset({"cache", "health_checker"})
 """Declaration kinds the replay pass does not construct.
 
@@ -1193,8 +1199,17 @@ class AppBuilder:
         return parse_bool(raw, "event_publishing_enabled")
 
     def _build_rest_endpoints(self, app: FastAPI, registry: Registry) -> None:
-        """Include all routers into the FastAPI app."""
+        """Include all routers into the FastAPI app.
+
+        ``operator_routes_enabled = false`` leaves out the routes that act on the broker or a cache
+        without authentication -- NATS's ``POST .../events/{topic}`` and ``.../cache/*`` (B1). Dapr's
+        ``/events/{topic}`` stays: it is how the sidecar delivers.
+        """
         app.include_router(RootApi(app=app).router, tags=["root"])
+        raw = self._require_config().get(OPERATOR_ROUTES_KEY, None)
+        operator_routes = True if raw is None or (isinstance(raw, str) and not raw.strip()) else parse_bool(raw, OPERATOR_ROUTES_KEY)
+        if not operator_routes:
+            logger.info("'%s' is false: the NATS publish and the cache routes are not served", OPERATOR_ROUTES_KEY)
 
         for rest_api in registry.get_rest_apis():
             # No blanket `tags=["rest"]`: it stamps every operation with a redundant "rest" tag on
@@ -1206,9 +1221,11 @@ class AppBuilder:
             self._mount(app, rest_api, root_prefix="/api")
 
         for eventing_component in self._eventing_components:
+            if not operator_routes and isinstance(eventing_component, NatsEventing):
+                eventing_component.drop_publish_route()
             self._mount(app, eventing_component, root_prefix="")
 
-        for namespace in self._cache_owners(registry):
+        for namespace in self._cache_owners(registry) if operator_routes else []:
             # One router per agent that has a cache, mounted under that agent's prefix, so
             # ``/api/orders/cache/stats`` reports the orders agent's cache and nothing else.
             # A process-wide endpoint would report one agent's keys to another, which is the
@@ -1697,6 +1714,9 @@ class AppBuilder:
                 await self._start_component("Lifecycle component", lifecycle_component, type(lifecycle_component).__name__)
 
             self._start_startup_recovery(startup_retry_interval)
+            # No health refresh here (B3, tried and measured): the subscriptions are still being made,
+            # so the client reads "not yet established", the supervisor sees a transition and pauses
+            # the agent mid-subscribe. The periodic job, which no longer drops a late run, follows.
             logger.info("Application startup completed")
             yield
 

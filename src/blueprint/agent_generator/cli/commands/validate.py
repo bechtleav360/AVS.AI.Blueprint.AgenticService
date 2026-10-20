@@ -22,6 +22,7 @@ from blueprint.agents.clients.io.io_client_base import TOPIC_TRANSPORTS
 from blueprint.agents.clients.io.nats_client import (
     CONNECTIONS_READINESS_MODES,
     resolve_heartbeat_enabled,
+    resolve_nak_delays,
     resolve_nats_url,
     resolve_root_queue_group,
     validate_durable_name,
@@ -795,6 +796,7 @@ def transport_findings(agent_dir: Path, *, view: SettingsView, settings: Process
         return [], warnings, []
 
     issues: list[str] = []
+    notices: list[str] = []
     try:
         resolve_nats_url(
             view.get("nats_url", ""),
@@ -802,13 +804,16 @@ def transport_findings(agent_dir: Path, *, view: SettingsView, settings: Process
             override_variable=f"{settings.override_variable_prefix}NATS_URL",
         )
     except ValueError as exc:
-        issues.append(f"{named}{exc}")
+        # A notice, not an issue, as for 'event_bus': nats_url is container topology the deployment
+        # injects when the container starts, so a check that runs while the image is built cannot
+        # see it -- and failed every image build that validates there (B2). Startup still refuses.
+        notices.append(f"{named}{exc} Startup fails unless the deployment sets it.")
     try:
         resolve_heartbeat_enabled(view.get("nats_heartbeat_enabled", True))
     except ValueError as exc:
         issues.append(f"{named}{exc}")
     if not consumes:
-        return issues, warnings, []
+        return issues, warnings, notices
 
     if not agent:
         # A namespaced client's queue group is its namespace; only the root reads these keys.
@@ -828,7 +833,7 @@ def transport_findings(agent_dir: Path, *, view: SettingsView, settings: Process
                 validate_durable_name(durable, count)
             except ValueError as exc:
                 issues.append(f"{named}{exc}")
-    return issues, warnings, []
+    return issues, warnings, notices
 
 
 def process_findings(settings: ProcessSettings) -> Findings:
@@ -858,6 +863,10 @@ def nats_value_findings(project_dir: Path, view: SettingsView) -> list[str]:
     if timeout is not None and timeout != "":
         if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
             issues.append(f"'nats_handler_timeout' must be a number of seconds above 0, got {timeout!r}. Unset it for no limit.")
+    try:
+        resolve_nak_delays(view.get("nats_nak_delay"))
+    except ValueError as exc:
+        issues.append(str(exc))
     readiness = view.get("nats_connections_readiness")
     if readiness is not None and str(readiness).strip().lower() not in CONNECTIONS_READINESS_MODES:
         issues.append(f"'nats_connections_readiness' must be one of {', '.join(CONNECTIONS_READINESS_MODES)}, got {readiness!r}.")

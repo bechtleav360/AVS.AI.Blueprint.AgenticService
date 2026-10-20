@@ -100,9 +100,11 @@ NATS (per agent with `--group`):
   `nats_unclaimed_subjects`, and `nats_connection_source` (form, and its module found). Checked
   whatever `event_bus` the files say, because the deployment can set it; a value from the image is
   reported once, an agent's own value under the agent's name
-- With `event_bus = "nats"`, for an agent that consumes or publishes: `nats_url` is set outside
-  `development` (a `DYNACONF_NATS_URL` in the environment counts), `nats_heartbeat_enabled` is a
-  boolean, and one `nats_durable_name` does not serve several topics under JetStream
+- With `event_bus = "nats"`, for an agent that consumes or publishes: `nats_heartbeat_enabled` is a
+  boolean, and one `nats_durable_name` does not serve several topics under JetStream. An unset
+  `nats_url` outside `development` is a **notice**, not an issue: the deployment usually injects it
+  when the container starts (`DYNACONF_NATS_URL`), so a validation that runs while the image is
+  built cannot see it -- and the process still refuses to start without one
 - Standalone, the queue group (`nats_queue_group`, else `app_name`) can appear in a subject: no
   whitespace, `*` or `>`. A grouped agent's queue group is its name, which is checked as a
   namespace

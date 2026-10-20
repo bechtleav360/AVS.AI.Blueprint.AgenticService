@@ -297,7 +297,7 @@ lost -- nothing redelivers it and nothing records it.
 |---------|-------------|
 | The handler chain returned and every result was published, including "no handler matched" | `ack` |
 | A result could not be published | `nak` -- the handler runs again on redelivery; with deduplication on, its marker is released first |
-| `RetryableHandlerError`, or any unexpected exception | `nak` -- redelivered at once, not after `nats_ack_wait` |
+| `RetryableHandlerError`, or any unexpected exception | `nak` with `nats_nak_delay` -- by default redelivered after 1 s, then 5, 15, 30 and 60 s, not after `nats_ack_wait` |
 | `InvalidEventError` or `CriticalHandlerError` | dead-lettered, then `term` |
 | The payload is not a parseable CloudEvent | dead-lettered, then `term` |
 | The last delivery `nats_max_deliver` allows failed again (only when `nats_max_deliver` is set) | dead-lettered, then `term` |
@@ -334,7 +334,7 @@ heartbeat. `nats_heartbeat_enabled = false` switches the heartbeat off for an ag
 **A run can be bounded.** The heartbeat proves the process is alive, not that the run makes progress:
 a hung model request would hold its slot -- and, with one run per subscription, every later event of
 that subscription -- forever. `nats_handler_timeout` cancels a run at the limit and naks its delivery
-for immediate redelivery, up to `nats_max_deliver` attempts. Whether the limit was hit is read from
+for redelivery after `nats_nak_delay`, up to `nats_max_deliver` attempts. Whether the limit was hit is read from
 the run's own timer: a `TimeoutError` raised by the handler is an ordinary failure.
 
 An existing consumer is never rewritten. Its filter subject and deliver group are broker-side

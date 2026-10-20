@@ -352,8 +352,8 @@ scaling out and regrouping are independent of each other.
 | Outcome | Disposition |
 |---|---|
 | Handled, skipped (`HandlerResult.skipped`), or no handler matched it | **ack** -- none of them is a failure |
-| A retryable failure | **nak**, redelivered at once (no delay is set) |
-| A run that exceeded `nats_handler_timeout` | cancelled and **nak**'d for immediate redelivery |
+| A retryable failure | **nak**, redelivered after `nats_nak_delay` (by default 1 s, then 5, 15, 30, 60 s) |
+| A run that exceeded `nats_handler_timeout` | cancelled and **nak**'d, redelivered after `nats_nak_delay` |
 | A poison payload, or a `CriticalHandlerError` | **term**, and dead-lettered |
 | `nats_max_deliver` attempts exhausted | dead-lettered |
 
@@ -559,6 +559,14 @@ names a secret (`key`, `token`, `password`, `secret`, ... and `pass`, `dsn`, `co
 with any section under it, a URL's userinfo, secret query parameters (`token=`, `sig=`) and
 `Name=value` segments of connection strings (`AccountKey=`); a URL whose userinfo cannot be told
 from the rest is masked whole. Treat it as an operator endpoint all the same.
+
+**Routes without authentication.** The framework authenticates no route. Two of them act on the
+broker or a cache: NATS's `POST /events/{topic}` (`/api/<agent>/nats/events/{topic}` in a group)
+publishes whatever it is given, and `/cache/*` reads and evicts cache entries. Keep the port off the
+public network, or set `operator_routes_enabled = false` to leave both out. With a connection
+source, the publish route refuses a subject one of the agent's tenants owns (403): an event put into
+a tenant's stream there would run under that tenant's identity. Grant the process's own NATS
+account no publish rights on tenant subjects either.
 
 ### `readiness_policy`
 

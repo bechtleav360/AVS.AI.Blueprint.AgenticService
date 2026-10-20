@@ -3,6 +3,9 @@
 import logging
 from typing import Any
 
+from fastapi import HTTPException, status
+from fastapi.routing import APIRoute
+
 from ....clients.client_base import DeliveryCallback
 from ....clients.io.nats_client import NATSClient
 from ....clients.io.nats_connections import NATS_CONNECTION_CONTEXT_KEY, current_connection, current_delivery
@@ -156,9 +159,18 @@ class NatsEventing(EventHandlingBase):
 
         return _process_event
 
+    def drop_publish_route(self) -> None:
+        """Remove ``POST /events/{topic}`` before mounting, for ``operator_routes_enabled = false`` (B1)."""
+        self.router.routes[:] = [route for route in self.router.routes if not (isinstance(route, APIRoute) and route.name == "publish")]
+
     @RestApiBase.post("/events/{topic}", tags=["nats"])
     async def publish(self, topic: str, event: CloudEvent[Any]) -> dict[str, Any]:
         """Publish a CloudEvent to a NATS topic.
+
+        **A tenant's subject is refused** (B1): the route has no authentication of its own, and a
+        subject a tenant connection owns would put the event into that tenant's stream, to run under
+        the tenant's identity -- the reason plan D4 refuses handler results on such an agent. Turn
+        the route off altogether with ``operator_routes_enabled = false``.
 
         Args:
             topic: The topic to publish to.
@@ -166,9 +178,19 @@ class NatsEventing(EventHandlingBase):
 
         Returns:
             Success message.
+
+        Raises:
+            HTTPException: 403 for a subject one of this agent's tenants owns.
         """
         if not self._client:
             raise RuntimeError("NATS client not initialized")
+        owned = self._client.tenant_subject(topic)
+        if owned is not None:
+            logger.warning("Refused to publish event %s through the HTTP route: %s", event.id, owned)
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"{owned}. An event published here would run under that tenant's identity; it is refused.",
+            )
 
         await self._client.publish(topic, event)
         return {"message": f"Published event {event.id} to topic {topic}"}

@@ -451,3 +451,28 @@ class TestCacheEndpointsPerAgent:
         app = AppBuilder(cache_config).build()
 
         assert not [path for path in paths(app) if "/cache/" in path]
+
+
+class TestOperatorRoutesCanBeSwitchedOff:
+    """B1 -- the NATS publish route and the cache routes act without authentication."""
+
+    @staticmethod
+    def _off(tmp_path: Path) -> Config:
+        """The fixture's settings file again, with the switch off."""
+        settings = tmp_path / "settings.toml"
+        text = settings.read_text().replace("app_port = 8000\n", "app_port = 8000\noperator_routes_enabled = false\n", 1)
+        settings.write_text(text)
+        return Config(settings_files=[str(settings)], root_path=str(tmp_path))
+
+    def test_they_are_served_by_default(self, nats_config: Config) -> None:
+        app = AgentGroup("g", {"orders": AppBuilder().with_handler(OrderHandler).with_cache()}).assemble(nats_config)
+        assert {"/api/orders/nats/events/{topic}", "/api/orders/cache/stats"} <= set(paths(app))
+
+    def test_false_leaves_them_out(self, nats_config: Config, tmp_path: Path) -> None:
+        app = AgentGroup("g", {"orders": AppBuilder().with_handler(OrderHandler).with_cache()}).assemble(self._off(tmp_path))
+        assert not [path for path in paths(app) if "/nats/events/" in path or "/cache/" in path]
+
+    def test_the_dapr_delivery_route_stays(self, dapr_config: Config, tmp_path: Path) -> None:
+        """It is how the sidecar delivers, not an operator route."""
+        app = AppBuilder(self._off(tmp_path)).with_handler(OrderHandler).build()
+        assert "/events/{topic}" in paths(app)

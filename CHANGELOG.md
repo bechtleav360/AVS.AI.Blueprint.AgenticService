@@ -188,6 +188,17 @@ Full migration path, including the one decision to get right before the first de
     `JetStreamBindingError` for the clash), `StreamConflictError`, `JetStreamPermissionError`,
     `TenancyError`; `JetStreamUnavailableError` is one too. A missing binding-mode stream is still
     retried (Known issues).
+20. **A failed JetStream delivery comes back after a delay.** A `RetryableHandlerError`, any
+    unexpected exception and `nats_handler_timeout` used to nak for immediate redelivery, so every
+    attempt was used up within a few hundred milliseconds -- measured: 5 attempts in 0.3 s -- and a
+    backend restart or a 5xx outlasted them all. The new `nats_nak_delay` (agent scope) defaults to
+    1 s, 5 s, 15 s, 30 s, then 60 s per redelivery; `0` restores the old behaviour. A degraded
+    agent still hands its buffered deliveries back at once.
+21. **The NATS publish route refuses a tenant's subject.** With a connection source,
+    `POST .../events/{topic}` answers 403 for a subject the source claims for the agent or a tenant
+    binding filters or delivers to: the route has no authentication, and an event put into a
+    tenant's stream ran under that tenant's identity. `operator_routes_enabled = false` (process
+    scope) leaves the publish route and the cache routes out altogether.
 19. **An orphaned agent takes the pod out, whatever `readiness_policy` says.** An agent latched down
     -- its startup failed and recovery retries it, or its transport failed for good -- now gates
     readiness under `"critical"` and `"any"` too: it consumes nothing for a reason that is not
@@ -240,7 +251,7 @@ Full migration path, including the one decision to get right before the first de
   messages; keep `nats_max_ack_pending` near replicas x this value.
 - **`nats_heartbeat_enabled`** (bool, default `true`): switches the delivery heartbeat off for an agent.
 - **`nats_handler_timeout`** (seconds, unset by default): the longest one run may take. At the limit the
-  run is cancelled and nak'd for immediate redelivery; a `TimeoutError` of the handler's own is an
+  run is cancelled and nak'd for redelivery after `nats_nak_delay`; a `TimeoutError` of the handler's own is an
   ordinary failure. Unset, a run is never cut.
 - **`RestApiBase.path_prefix`**, an optional class attribute putting every route of an API under
   one segment -- `/api/reports/...` standalone, `/api/<agent>/reports/...` in a group. Default `""`,
@@ -389,6 +400,17 @@ Full migration path, including the one decision to get right before the first de
   the installed `METADATA`. The CI badge pointed at an unrelated repository.
 
 ### Fixed
+
+- **`asbs validate` no longer fails an image build on an unset `nats_url`.** Outside development
+  it reported one as an issue, and an image that validates while it is built has no `nats_url` yet:
+  the deployment injects it when the container starts. It is a notice now, as `event_bus` is; the
+  process still refuses to start without one.
+
+- **Readiness follows a healthy start within seconds.** The periodic health check is an
+  APScheduler job, and APScheduler dropped a run that started more than 1 s late; every dropped run
+  kept the verdict of the first startup moment -- AI clients "not initialized", agents paused --
+  for another interval: measured 96 to 217 s after a start. A late run now runs, and runs missed
+  meanwhile are folded into one.
 
 - **Under Dapr, a shared topic is warned about when `idempotency_enabled` is `"false"`.** The
   startup check for a topic two agents declare read the raw value, and the string `"false"` an

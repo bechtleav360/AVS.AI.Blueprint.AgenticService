@@ -532,3 +532,29 @@ class TestADeadConnectionCountsForReadinessOnly:
             assert not client.consumption_paused, "a dead named connection never pauses the agent"
             sent = await publish(accounts_url, subject_prefix, "A", "risk.created")
             await wait_until(lambda: sent in [run["id"] for run in runs], timeout=10, description="A to keep delivering")
+
+
+class TestThePublishRouteRefusesATenantSubject:
+    """B1 -- an anonymous POST put an event into a tenant's stream, to run under the tenant's identity."""
+
+    async def test_403_for_a_tenant_subject_and_nothing_runs(
+        self, settings_group: Any, operator: Operator, accounts_url: str, subject_prefix: str
+    ) -> None:
+        agent = f"risk_{subject_prefix}"
+        await operator(["A"], {agent: ["risk.>"]})
+        runs: list[dict[str, Any]] = []
+        apps: list[Any] = []
+        tenant_subject = f"{subject_prefix_for(subject_prefix, 'A')}risk.created"
+        event = {"specversion": "1.0", "id": str(uuid.uuid4()), "source": "/x", "type": "risk.created", "data": {}}
+        async with settings_group(
+            settings(accounts_url, subject_prefix, ["A"]), {agent: recording_handler(["risk.>"], runs)}, named=1, apps=apps
+        ):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=apps[0]), base_url="http://it") as http:
+                refused = await http.post(f"/api/{agent}/nats/events/{tenant_subject}", json=event)
+                other = await http.post(f"/api/{agent}/nats/events/{subject_prefix}.elsewhere", json=event)
+            await asyncio.sleep(1.0)
+
+        assert refused.status_code == 403, refused.text
+        assert "tenant subject" in refused.json()["detail"]
+        assert other.status_code == 200, other.text
+        assert runs == [], "nothing reached the tenant's stream"

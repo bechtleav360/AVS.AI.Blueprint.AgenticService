@@ -257,12 +257,14 @@ class TestTransport:
 
         assert any("no valid event_bus" in warning for warning in warnings)
 
-    def test_nats_without_a_url_in_production_is_an_issue(self, tmp_path: Path) -> None:
+    def test_nats_without_a_url_in_production_is_a_notice(self, tmp_path: Path) -> None:
+        """B2 -- an issue failed every image build that validates; the deployment sets it at container start."""
         project = _project(tmp_path, '[default]\napp_name = "demo"\nevent_bus = "nats"\n', handler=True)
 
-        issues, _, _ = _findings(project)
+        issues, _, notices = _findings(project)
 
-        assert any("'nats_url' is not set" in issue for issue in issues)
+        assert not any("'nats_url' is not set" in issue for issue in issues)
+        assert any("'nats_url' is not set" in notice for notice in notices)
 
     def test_nats_without_a_url_in_development_falls_back(self, tmp_path: Path) -> None:
         project = _project(tmp_path, '[default]\napp_name = "demo"\nevent_bus = "nats"\n', handler=True)
@@ -327,6 +329,7 @@ class TestTheValidatorAppliesTheRuntimesOwnRules:
             ("blueprint.agents.clients.io.nats_client", "resolve_heartbeat_enabled"),
             ("blueprint.agents.clients.io.nats_client", "resolve_root_queue_group"),
             ("blueprint.agents.clients.io.nats_client", "validate_durable_name"),
+            ("blueprint.agents.clients.io.nats_client", "resolve_nak_delays"),
             ("blueprint.agents.handler.handler_chain", "resolve_idempotency_policy"),
             ("blueprint.agents.handler.handler_chain", "dedup_redelivery_warning"),
             ("blueprint.agents.io.api.scheduling.scheduler", "resolve_scheduler_timezone"),

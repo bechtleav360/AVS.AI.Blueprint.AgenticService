@@ -8,7 +8,7 @@ matters to a deployment:
 | what the handler does            | disposition | what the broker does            |
 |----------------------------------|-------------|---------------------------------|
 | returns normally                 | ack         | nothing more                    |
-| raises `RetryableHandlerError`   | nak         | redelivers after `nats_ack_wait`|
+| raises `RetryableHandlerError`   | nak         | redelivers after `nats_nak_delay`|
 | raises `CriticalHandlerError`    | term        | never redelivers                |
 | raises `InvalidEventError`       | term        | never redelivers                |
 | no handler matches               | **ack**     | nothing more                    |
@@ -47,6 +47,8 @@ class Attempts:
     handler: type[EventHandlerBase]
     topic: str
     seen: list[str] = field(default_factory=list)
+    times: list[float] = field(default_factory=list)
+    """The event loop's clock at each call, for the delay between deliveries."""
 
 
 @pytest.fixture
@@ -60,6 +62,7 @@ def failing(subject_prefix: str) -> Any:
     def make(error: BaseException | None, *, matches: bool = True) -> Attempts:
         topic = f"{subject_prefix}.orders.created"
         seen: list[str] = []
+        times: list[float] = []
 
         class FailingHandler(EventHandlerBase):
             async def on_startup(self) -> None:
@@ -76,11 +79,12 @@ def failing(subject_prefix: str) -> Any:
 
             async def handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> None:
                 seen.append(event.id)
+                times.append(asyncio.get_running_loop().time())
                 if error is not None:
                     raise error
                 return None
 
-        return Attempts(handler=FailingHandler, topic=topic, seen=seen)
+        return Attempts(handler=FailingHandler, topic=topic, seen=seen, times=times)
 
     return make
 
@@ -280,3 +284,19 @@ class TestRedeliveriesRunOut:
 
         assert dead.headers["Blueprint-Dead-Letter-Reason"] == "deliveries-exhausted"
         assert dead.headers["Blueprint-Delivery-Count"] == "3"
+
+
+class TestARetryComesBackAfterADelay:
+    """B4 -- every attempt used to be spent within 0.3 s, so a backend restart outlasted them all."""
+
+    async def test_the_default_waits_1_then_5_seconds(self, nats_app: Any, failing: Any, jetstream: JetStreamContext) -> None:
+        """``nats_max_deliver = 3`` here, so three deliveries: the first, after 1 s, after 5 more."""
+        attempts = failing(RetryableHandlerError(status="failed", reason="backend restarting"))
+
+        async with nats_app(attempts.handler):
+            await jetstream.publish(attempts.topic, an_order().model_dump_json().encode())
+            await wait_until(lambda: len(attempts.times) >= 3, timeout=20, description="three deliveries")
+
+        first, second = attempts.times[1] - attempts.times[0], attempts.times[2] - attempts.times[1]
+        assert 0.9 <= first < 3.0, f"first redelivery after {first:.2f}s"
+        assert 4.5 <= second < 8.0, f"second redelivery after {second:.2f}s"

@@ -271,3 +271,17 @@ class TestStandaloneSubscriptionLines:
         with caplog.at_level("INFO", logger="blueprint.agents.io.api.eventing.nats"):
             await nats_eventing.on_startup()
         assert caplog.messages == ["NatsEventing: no auto-subscriptions configured"]
+
+
+class TestATenantSubjectIsRefused:
+    """B1 -- the route has no authentication; a tenant's subject would run under that tenant's identity."""
+
+    async def test_it_answers_403_and_publishes_nothing(self, connected_nats_eventing: NatsEventing, cloud_event: CloudEvent) -> None:
+        from fastapi import HTTPException
+
+        connected_nats_eventing._client.tenant_subject.return_value = "'t.acme.risk.created' is a tenant subject"  # type: ignore[union-attr]
+        with pytest.raises(HTTPException) as refused:
+            await connected_nats_eventing.publish("t.acme.risk.created", cloud_event)
+        assert refused.value.status_code == 403
+        assert "tenant" in refused.value.detail
+        connected_nats_eventing._client.publish.assert_not_awaited()  # type: ignore[union-attr]

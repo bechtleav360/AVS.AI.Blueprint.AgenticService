@@ -409,3 +409,16 @@ class TestStandaloneLogLines:
         with caplog.at_level("WARNING", logger="blueprint.agents.io.api.actuators.health.health_cache"):
             await cache._run_health_checks()
         assert caplog.messages == ["Health check failed for db: boom"]
+
+
+class TestALateRunIsRunNotDropped:
+    """B3 -- APScheduler dropped a run starting over 1 s late, and the first startup verdict stood for minutes."""
+
+    async def test_the_job_has_no_misfire_limit_and_coalesces(self) -> None:
+        cache = HealthCheckCache(check_interval_seconds=30)
+        await cache.start()
+        try:
+            job = cache._scheduler.get_job("health_check_job")  # type: ignore[union-attr]
+            assert (job.misfire_grace_time, job.coalesce, job.max_instances) == (None, True, 1)
+        finally:
+            await cache.stop()

@@ -3038,3 +3038,122 @@ class TestAFaultNoRetryFixes:
         await nats_client._on_error(Exception("nats: permissions violation for subscription to _DELIVER.x"))
         await nats_client._on_error(Exception("nats: unexpected EOF"))
         assert nats_client._link.permission_errors == ["nats: permissions violation for subscription to _DELIVER.x"]
+
+
+class TestAFailedRunComesBackAfterADelay:
+    """B4 -- all five attempts were used up within 0.3 s; a nak now waits nats_nak_delay before the redelivery."""
+
+    @staticmethod
+    async def _failing(nats_client: NATSClient, mock_config: MagicMock, mock_nats_jetstream: tuple, **overrides: object):
+        async def _callback(event: CloudEvent, subject: str) -> None:
+            raise RetryableHandlerError(status="error", reason="backend restarting")
+
+        return await TestNATSClientDeadLettering._handler(
+            nats_client, mock_config, mock_nats_jetstream, _callback, nats_max_deliver=10, **overrides
+        )
+
+    @pytest.mark.parametrize(("delivered", "delay"), [(1, 1.0), (2, 5.0), (3, 15.0), (4, 30.0), (5, 60.0), (9, 60.0)])
+    async def test_the_default_backs_off_by_delivery_count(
+        self,
+        nats_client: NATSClient,
+        mock_config: MagicMock,
+        mock_nats_jetstream: tuple,
+        cloud_event: CloudEvent,
+        delivered: int,
+        delay: float,
+    ) -> None:
+        handler = await self._failing(nats_client, mock_config, mock_nats_jetstream)
+        msg = TestNATSClientDeadLettering._msg(json.dumps(dict(cloud_event)).encode(), num_delivered=delivered)
+        await handler(msg)
+        msg.nak.assert_awaited_once_with(delay=delay)
+
+    async def test_one_number_applies_to_every_redelivery(
+        self, nats_client: NATSClient, mock_config: MagicMock, mock_nats_jetstream: tuple, cloud_event: CloudEvent
+    ) -> None:
+        handler = await self._failing(nats_client, mock_config, mock_nats_jetstream, nats_nak_delay=2)
+        msg = TestNATSClientDeadLettering._msg(json.dumps(dict(cloud_event)).encode(), num_delivered=4)
+        await handler(msg)
+        msg.nak.assert_awaited_once_with(delay=2.0)
+
+    async def test_zero_redelivers_at_once_as_before(
+        self, nats_client: NATSClient, mock_config: MagicMock, mock_nats_jetstream: tuple, cloud_event: CloudEvent
+    ) -> None:
+        handler = await self._failing(nats_client, mock_config, mock_nats_jetstream, nats_nak_delay=0)
+        msg = TestNATSClientDeadLettering._msg(json.dumps(dict(cloud_event)).encode())
+        await handler(msg)
+        msg.nak.assert_awaited_once_with()
+
+    async def test_a_paused_agent_hands_a_buffered_delivery_back_at_once(
+        self, nats_client: NATSClient, mock_config: MagicMock, mock_nats_jetstream: tuple, cloud_event: CloudEvent
+    ) -> None:
+        """N4 -- it should reach a healthy replica now, not after a backoff."""
+        handler = await self._failing(nats_client, mock_config, mock_nats_jetstream)
+        nats_client._consumption_paused = True
+        msg = TestNATSClientDeadLettering._msg(json.dumps(dict(cloud_event)).encode())
+        msg.subject = "orders.created"
+        await handler(msg)
+        msg.nak.assert_awaited_once_with()
+
+    @pytest.mark.parametrize("value", [-1, True, "soon", [], [1, -2], {"a": 1}])
+    def test_a_value_that_is_not_a_delay_is_refused(self, value: object) -> None:
+        from blueprint.agents.clients.io.nats_client import resolve_nak_delays
+
+        with pytest.raises(ValueError, match="nats_nak_delay"):
+            resolve_nak_delays(value)
+
+    def test_unset_is_the_default_backoff(self) -> None:
+        from blueprint.agents.clients.io.nats_client import DEFAULT_NAK_DELAYS, resolve_nak_delays
+
+        assert resolve_nak_delays(None) == DEFAULT_NAK_DELAYS == (1.0, 5.0, 15.0, 30.0, 60.0)
+
+
+class TestWhichSubjectsATenantOwns:
+    """B1 -- the publish route asks this before it publishes on the agent's default connection."""
+
+    @staticmethod
+    def _sourced(nats_client: NATSClient, *, raises: bool = False) -> NATSClient:
+        from blueprint.agents.clients.io.nats_connections import JetStreamBinding
+
+        bound = JetStreamBinding(
+            subjects=("risk.>",),
+            stream="RISK_A",
+            durable="d",
+            deliver_subject="deliver.a.risk",
+            deliver_group="risk",
+            ack_wait=30.0,
+            subject_prefix="t.a.",
+        )
+        offered = JetStreamBinding(
+            subjects=("risk.>",),
+            stream="RISK_B",
+            durable="d",
+            deliver_subject="deliver.b.risk",
+            deliver_group="risk",
+            ack_wait=30.0,
+            subject_prefix="t.b.",
+        )
+        source = MagicMock()
+        source.connections.side_effect = RuntimeError("down") if raises else None
+        source.connections.return_value = {"B": MagicMock()}
+        source.binding.return_value = offered
+        nats_client._source = source
+        nats_client._claimed = frozenset({"risk.>"})
+        nats_client._named = [_Binding(link=_Link(name="A"), jetstream=bound)]
+        return nats_client
+
+    @pytest.mark.parametrize(
+        "topic",
+        ["t.a.risk.created", "deliver.a.risk", "t.b.risk.created", "risk.created"],
+        ids=["bound-filter", "bound-deliver", "offered-not-yet-bound", "claimed"],
+    )
+    def test_a_tenant_subject_is_named(self, nats_client: NATSClient, topic: str) -> None:
+        assert self._sourced(nats_client).tenant_subject(topic) is not None
+
+    def test_another_subject_is_not(self, nats_client: NATSClient) -> None:
+        assert self._sourced(nats_client).tenant_subject("orders.created") is None
+
+    def test_without_a_source_nothing_is(self, nats_client: NATSClient) -> None:
+        assert nats_client.tenant_subject("t.a.risk.created") is None
+
+    def test_a_source_that_cannot_be_asked_owns_everything(self, nats_client: NATSClient) -> None:
+        assert "could not be asked" in (self._sourced(nats_client, raises=True).tenant_subject("orders.created") or "")

@@ -79,6 +79,7 @@ PROCESS_SCOPE_KEYS = frozenset(
         "health_check_interval_seconds",
         "startup_retry_interval_seconds",
         "readiness_policy",
+        "operator_routes_enabled",
         "dot_placeholder",
         "nats_stream_name",
         "nats_connection_source",

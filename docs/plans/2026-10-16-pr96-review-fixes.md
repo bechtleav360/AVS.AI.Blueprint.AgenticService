@@ -317,6 +317,20 @@ Must-fix and blockers first (steps 1-14), then hardening (15-20), then documenta
     - **22d N15** checked and decided; **22e N19** -- the runtime rules the validator restates
       become public and the validator calls them.
 
+23. **Findings of the first consumer's test report** (2026-10-20, 19 agents on 0.9.0a16 against a
+    local backend). B2 (regression of 22e/`ab6bd74`): an unset `nats_url` outside development is a
+    validator notice, not an issue -- an image that validates while it is built has none yet. B3:
+    the health job runs late instead of being dropped (`misfire_grace_time=None`, `coalesce`). A
+    refresh at the end of startup, the report's other suggestion, was tried and withdrawn: it caught
+    the subscriptions still being made, the supervisor read that as a transition and paused the agent
+    mid-subscribe (integration tests timed out). Why each run started ~2.7 s late in their setup is
+    not explained. B4 also fixed the pre-existing `test_the_broker_counts_it_as_a_redelivery`. B4 (owner, 2026-10-20: a fixed default, not opt-in): `nats_nak_delay`,
+    default 1/5/15/30/60 s; a degraded agent's hand-back stays immediate. B1 (owner, 2026-10-20):
+    the publish route refuses a subject the agent's tenants own (403) and `operator_routes_enabled`
+    switches the publish and cache routes off; authentication stays the deployment's. Checked for
+    this agent's own tenants only -- another agent's tenant subjects are the process account's
+    permissions to deny.
+
 ---
 
 ## 3. Decisions

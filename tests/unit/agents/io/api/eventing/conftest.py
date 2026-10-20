@@ -56,5 +56,6 @@ def connected_nats_eventing(nats_eventing: NatsEventing) -> NatsEventing:
     mock_client = MagicMock()
     mock_client.subscribe = AsyncMock()
     mock_client.publish = AsyncMock()
+    mock_client.tenant_subject = MagicMock(return_value=None)  # no tenants: every subject may be published
     nats_eventing._client = mock_client
     return nats_eventing

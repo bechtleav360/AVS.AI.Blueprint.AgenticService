@@ -244,14 +244,18 @@ class TestPerAgentRuntimeChecks:
 
         assert any("Agent 'orders'" in issue and "'idempotency_ttl' is not set" in issue for issue in issues)
 
-    def test_nats_without_a_url_is_an_issue_per_consuming_agent(self, tmp_path: Path) -> None:
+    def test_nats_without_a_url_is_a_notice_per_consuming_agent(self, tmp_path: Path) -> None:
+        """B2 -- the deployment injects nats_url when the container starts; a build-time check cannot see it."""
         image = _image(tmp_path, "orders", image_settings='[default]\napp_name = "group"\nevent_bus = "nats"\n')
         (image / "agents" / "orders" / "src" / "handlers").mkdir()
         (image / "agents" / "orders" / "src" / "handlers" / "order_handler.py").write_text("# h\n", encoding="utf-8")
 
-        issues, _, _ = _findings(image)
+        issues, _, notices = _findings(image)
 
-        assert any("Agent 'orders'" in issue and "'nats_url' is not set" in issue for issue in issues)
+        assert not any("'nats_url' is not set" in issue for issue in issues)
+        assert any(
+            "Agent 'orders'" in notice and "'nats_url' is not set" in notice and "unless the deployment" in notice for notice in notices
+        )
 
     def test_a_shared_dapr_topic_without_dedup_is_warned(self, tmp_path: Path) -> None:
         """Audit 6: the runtime warns at startup that one retry redelivers to every agent."""

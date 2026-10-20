@@ -104,13 +104,19 @@ class HealthCheckCache:
         # Run initial check immediately
         await self._run_health_checks()
 
-        # Schedule periodic checks
+        # Schedule periodic checks. A late run is run, not dropped (B3): APScheduler skips a run that
+        # starts more than misfire_grace_time (default 1 s) late, and every skipped run kept the
+        # verdict of the first startup moment -- agents paused, readiness DOWN -- for another
+        # interval; measured 96 to 217 s after a start. coalesce folds runs missed meanwhile into one.
         self._scheduler.add_job(
             self._run_health_checks,
             trigger=IntervalTrigger(seconds=self.check_interval_seconds),
             id="health_check_job",
             name="Periodic health check",
             replace_existing=True,
+            misfire_grace_time=None,
+            coalesce=True,
+            max_instances=1,
         )
 
         self._scheduler.start()
