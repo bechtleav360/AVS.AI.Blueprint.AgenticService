@@ -33,6 +33,7 @@ on correctness* cannot be checked by a machine at all.
 """
 
 import ast
+import os
 import re
 from collections.abc import Callable, Generator, Iterator
 from pathlib import Path
@@ -926,11 +927,17 @@ def strip_code(text: str) -> str:
 
 
 def all_markdown() -> Iterator[Path]:
-    """Every markdown file present, ignoring the dot directories and the vendored trees."""
-    for path in REPO_ROOT.rglob("*.md"):
-        parts = path.relative_to(REPO_ROOT).parts
-        if not any(part.startswith(".") or part in {"node_modules", "__pycache__"} for part in parts):
-            yield path
+    """Every markdown file present, ignoring the dot directories and the vendored trees.
+
+    The ignored directories are pruned before they are entered, not filtered afterwards: a
+    ``.venv`` holds far more files than the repository, and walking it made every test that
+    calls this cost about half a second.
+    """
+    for root, directories, files in os.walk(REPO_ROOT):
+        directories[:] = [name for name in directories if not name.startswith(".") and name not in {"node_modules", "__pycache__"}]
+        for name in files:
+            if name.endswith(".md") and not name.startswith("."):
+                yield Path(root) / name
 
 
 def markdown_documents() -> list[Path]:
