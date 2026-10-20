@@ -22,6 +22,10 @@ world lives -- so that case must keep behaving as it does today, whatever the po
 in a grouped process it holds the shared infrastructure every agent depends on. A root that is
 degraded is not a partial failure.
 
+**An orphaned agent gates under every policy too** (N12): one latched down -- its startup failed
+and recovery retries it, or its transport failed for good -- consumes nothing for a reason that is
+not transient, and the policy exists to ignore agents that may recover, not ones that will not.
+
 **The probe decides where traffic goes; it does not decide who is woken.** A degraded namespace
 is reported as ``blueprint.namespace.up = 0`` and an ERROR event whatever the policy (C3, C7), so
 choosing ``critical`` or ``any`` suppresses a *routing* consequence and never a signal.
@@ -71,8 +75,13 @@ class ReadinessPolicy(StrEnum):
                 f"{', '.join(repr(policy.value) for policy in cls)}."
             ) from None
 
-    def is_ready(self, namespace_status: Mapping[str, bool], critical_namespaces: Collection[str]) -> bool:
+    def is_ready(self, namespace_status: Mapping[str, bool], critical_namespaces: Collection[str], orphaned: Collection[str] = ()) -> bool:
         """Return whether the pod is ready, given each namespace's health.
+
+        **An orphaned agent gates under every policy** (D23, N12): one latched down -- its startup
+        failed and recovery retries it, or its transport failed for good -- consumes nothing for a
+        reason that is not transient, so the pod is short a consumer whatever the deployment chose
+        to run without. The policy decides only for an agent whose checks fail and may recover.
 
         Args:
             namespace_status: ``True`` where every one of that namespace's health checks passed.
@@ -80,10 +89,13 @@ class ReadinessPolicy(StrEnum):
                 counts as up, because nothing about it can be failing.
             critical_namespaces: The agents the group flagged critical. Read only by
                 :attr:`CRITICAL`.
+            orphaned: The agents latched down (the supervisor's ``forced_down``).
 
         Returns:
             Whether the readiness probe should answer ``UP``.
         """
+        if orphaned:
+            return False
         if not namespace_status.get(ROOT_NAMESPACE, True):
             return False
 

@@ -60,9 +60,36 @@ from ....component.namespace import ROOT_LABEL, namespace_scope
 from ....handler.event_handler_base import EventHandlerBase
 from ....models.events import GenericCloudEvent
 from ...telemetry.providers import agent_meter
+
 from ..rest_api_base import RestApiBase
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_scheduler_timezone(value: object, scheduler: str = "") -> ZoneInfo | None:
+    """``scheduler_timezone`` as a ``ZoneInfo``, or ``None`` for the host's local time (plan D15); shared (N19).
+
+    Opt-in: unset keeps the host-local timezone every in-process scheduler has always used. Only the
+    in-process timer reads it; in event mode the external cron's own timezone decides.
+
+    Args:
+        value: The configured ``scheduler_timezone``.
+        scheduler: The scheduler's name, for the message; empty when the check is not about one.
+
+    Raises:
+        ValueError: if the value is not an IANA timezone name.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return ZoneInfo(raw)
+    except (ZoneInfoNotFoundError, ValueError):
+        of = f" of scheduler '{scheduler}'" if scheduler else ""
+        raise ValueError(
+            f"'scheduler_timezone'{of} is {raw!r}, which is not an IANA timezone name (such as 'Europe/Berlin' or 'UTC')."
+        ) from None
+
 
 SCHEDULER_MODE_EVENT = "event"
 """No in-process timer; the tick arrives as an ordinary namespaced event."""
@@ -480,16 +507,7 @@ class SchedulerBase(RestApiBase):
         Raises:
             ValueError: if the value is not an IANA timezone name.
         """
-        raw = str(self.config.get("scheduler_timezone", "") or "").strip()
-        if not raw:
-            return None
-        try:
-            return ZoneInfo(raw)
-        except (ZoneInfoNotFoundError, ValueError):
-            raise ValueError(
-                f"'scheduler_timezone' of scheduler '{self.base_name}' is {raw!r}, which is not an IANA timezone name "
-                "(such as 'Europe/Berlin' or 'UTC')."
-            ) from None
+        return resolve_scheduler_timezone(self.config.get("scheduler_timezone", ""), self.base_name)
 
     def _require_event_transport(self) -> None:
         """Fail unless a transport that can deliver a tick is configured.

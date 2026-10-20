@@ -33,6 +33,7 @@ from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import nats
 import pytest
@@ -66,6 +67,21 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     for item in items:
         if INTEGRATION_ROOT in Path(str(item.fspath)).parents:
             item.add_marker(pytest.mark.integration)
+
+
+@pytest.fixture(autouse=True)
+def _the_process_is_not_ended() -> Iterator[None]:
+    """Fail a test whose application ends the process, instead of letting it end pytest.
+
+    A fault no retry can fix in a critical agent makes the framework send SIGTERM to its own
+    process (D23) -- here that is pytest, which then stops without a report. A test that expects
+    it patches ``signal.raise_signal`` itself, and that inner patch wins over this one.
+    """
+    with patch("blueprint.agents.app_builder.signal.raise_signal") as raise_signal:
+        yield
+    assert not raise_signal.called, (
+        "the application ended the process (SIGTERM): an agent hit a fault no retry can fix -- see the CRITICAL log"
+    )
 
 
 # ---------------------------------------------------------------------------

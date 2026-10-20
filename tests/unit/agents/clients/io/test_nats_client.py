@@ -16,8 +16,11 @@ from blueprint.agents.clients.io.io_client_base import subject_is_covered_by
 from blueprint.agents.clients.io.nats_client import (
     DEVELOPMENT_NATS_URL,
     ConsumerTuning,
+    DurableConflictError,
+    JetStreamPermissionError,
     JetStreamUnavailableError,
     NATSClient,
+    StreamConflictError,
     _Binding,
     _Link,
     redact_url,
@@ -2094,6 +2097,51 @@ class TestPausingADegradedAgent:
         assert subscribed._subscriptions == []
         assert "attempt 1" in caplog.text and "attempt 2" in caplog.text
 
+    async def test_a_failed_resume_reports_the_agent_orphaned_once_and_success_takes_it_back(
+        self, subscribed: NATSClient, mock_config: MagicMock
+    ) -> None:
+        """N12 -- paused, healthy by design, consuming nothing: liveness must hear of it, and of the end of it."""
+        self._fast_retries(mock_config)
+        handler = MagicMock()
+        subscribed.set_orphan_handler(handler)
+        await subscribed.pause_consumption()
+        outcomes = [RuntimeError("stream gone"), RuntimeError("stream gone"), None]
+
+        async def subscribe_all() -> None:
+            outcome = outcomes.pop(0)
+            if outcome is not None:
+                raise outcome
+
+        with patch.object(subscribed, "_subscribe_all", new=subscribe_all):
+            await subscribed.resume_consumption()
+            await asyncio.wait_for(subscribed._resume_retry, timeout=5)  # type: ignore[arg-type]
+
+        assert [c.args[1] is None for c in handler.call_args_list] == [False, True], "orphaned once, then back"
+        assert "attempt 1" in handler.call_args_list[0].args[1] and "stream gone" in handler.call_args_list[0].args[1]
+
+    async def test_a_resume_that_meets_a_fault_no_retry_fixes_reports_it_fatal(self, subscribed: NATSClient) -> None:
+        """D23 -- a clash that appeared while the agent was paused is as final as one at the first connect."""
+        fatal = AsyncMock()
+        subscribed._started = True
+        subscribed.set_fatal_handler(fatal)
+        await subscribed.pause_consumption()
+        clash = DurableConflictError("clash found on resume")
+        with patch.object(subscribed, "_subscribe_all", new=AsyncMock(side_effect=clash)):
+            await subscribed.resume_consumption()
+        await asyncio.sleep(0)
+        fatal.assert_awaited_once_with(subscribed.namespace, clash)
+        await subscribed.close()
+
+    async def test_a_connection_loop_that_gave_up_reports_the_agent_orphaned(self, nats_client: NATSClient) -> None:
+        handler = MagicMock()
+        nats_client.set_orphan_handler(handler)
+        task = MagicMock()
+        task.cancelled.return_value = False
+        task.exception.return_value = OSError("final failure")
+        nats_client._on_retry_done(task)
+        handler.assert_called_once()
+        assert "gave up" in handler.call_args.args[1] and "final failure" in handler.call_args.args[1]
+
     async def test_a_pause_stops_the_retry(self, subscribed: NATSClient, mock_config: MagicMock) -> None:
         await subscribed.pause_consumption()
         with patch.object(subscribed, "_subscribe_all", new=AsyncMock(side_effect=RuntimeError("no"))):
@@ -2339,6 +2387,27 @@ class TestTheDeclaredModeIsEnforced:
     async def test_a_timeout_is_not_an_answer(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
         """No reply proves nothing; it stays an ordinary, retried connection failure."""
         self._configure(mock_config, jetstream=True)
+        with pytest.raises(NatsTimeoutError):
+            await self._connect(nats_client, self._server(AsyncMock(side_effect=NatsTimeoutError())))
+        assert nats_client._jetstream_mismatch is None
+
+    async def test_a_timeout_after_a_refused_grant_is_final(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        """D23 -- a denied request just times out; the grant is the cause. Found before startup, it fails startup."""
+        self._configure(mock_config, jetstream=True)
+
+        async def refused() -> None:
+            await nats_client._on_error(Exception('nats: permissions violation for publish to "$js.api.info"'))
+            raise NatsTimeoutError()
+
+        with pytest.raises(JetStreamPermissionError, match=r"\$js\.api\.info"):
+            await self._connect(nats_client, self._server(AsyncMock(side_effect=refused)))
+        assert isinstance(nats_client._jetstream_mismatch, JetStreamPermissionError)
+        health = await nats_client.health_check()
+        assert health.status == "unhealthy" and "refused this agent's connection a permission" in (health.message or "")
+
+    async def test_a_grant_refused_on_an_earlier_connect_does_not_count(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        self._configure(mock_config, jetstream=True)
+        nats_client._link.permission_errors.append("nats: permissions violation for publish to x")
         with pytest.raises(NatsTimeoutError):
             await self._connect(nats_client, self._server(AsyncMock(side_effect=NatsTimeoutError())))
         assert nats_client._jetstream_mismatch is None
@@ -2771,13 +2840,13 @@ class TestADurableOfAnotherTopicIsNotBound:
     async def test_a_consumer_filtering_another_subject_is_refused(
         self, nats_client: NATSClient, mock_config: MagicMock, mock_nats_jetstream: tuple
     ) -> None:
-        from blueprint.agents.clients.io.nats_client import JetStreamBindingError
+        from blueprint.agents.clients.io.nats_client import DurableConflictError
 
         mock_js = await _prepare_js_client(nats_client, mock_config, mock_nats_jetstream, ["orders-created"])
         theirs = js_api.ConsumerConfig(durable_name="orders-created-durable", filter_subject="created", deliver_group="orders")
         mock_js.consumer_info = AsyncMock(return_value=MagicMock(config=theirs))
 
-        with pytest.raises(JetStreamBindingError) as refused:
+        with pytest.raises(DurableConflictError) as refused:
             await nats_client._subscribe_one("orders-created", AsyncMock())
 
         mock_js.subscribe_bind.assert_not_awaited()
@@ -2835,3 +2904,137 @@ class TestTheConsumerLineRendersAnUnsetAckWait:
         with caplog.at_level("INFO", logger="blueprint.agents.clients.io.nats_client"):
             await nats_client._subscribe_one("orders.created", AsyncMock())
         assert any("ack_wait 45.0s" in message for message in caplog.messages)
+
+
+class TestAFaultNoRetryFixes:
+    """D23 -- the broker answered and the answer is final: not retried, handed to the fatal handler."""
+
+    @staticmethod
+    def _managed(nats_client: NATSClient, mock_config: MagicMock) -> AsyncMock:
+        mock_config.get.side_effect = lambda k, d=None: {"event_client_max_retries": -1, "event_client_retry_delay": 0.0}.get(k, d)
+        nats_client._subscriptions_managed = True
+        nats_client._started = True
+        handler = AsyncMock()
+        nats_client.set_fatal_handler(handler)
+        return handler
+
+    async def test_a_durable_clash_stops_the_loop_and_reaches_the_handler(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        handler = self._managed(nats_client, mock_config)
+        clash = DurableConflictError("consumer 'orders-created-durable' filters 'created'")
+        attempt = AsyncMock(side_effect=clash)
+        with patch.object(nats_client, "_connect_and_subscribe", attempt), pytest.raises(DurableConflictError):
+            await nats_client._start_with_retry()
+        await asyncio.sleep(0)
+        assert attempt.await_count == 1
+        handler.assert_awaited_once_with(nats_client.namespace, clash)
+        assert nats_client.subscriptions_ready is False
+
+    async def test_a_refused_grant_is_a_permission_fault_not_a_timeout(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        """The broker reports the grant through error_cb and lets the request time out; the grant is the cause."""
+        handler = self._managed(nats_client, mock_config)
+
+        async def refused() -> None:
+            await nats_client._on_error(Exception('nats: permissions violation for publish to "$js.api.consumer.create.events"'))
+            raise NatsTimeoutError()
+
+        attempt = AsyncMock(side_effect=refused)
+        with patch.object(nats_client, "_connect_and_subscribe", attempt), pytest.raises(JetStreamPermissionError, match="consumer.create"):
+            await nats_client._start_with_retry()
+        await asyncio.sleep(0)
+        assert attempt.await_count == 1
+        handler.assert_awaited_once()
+        assert isinstance(handler.await_args.args[1], JetStreamPermissionError)
+
+    async def test_a_transient_fault_is_still_retried(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        handler = self._managed(nats_client, mock_config)
+        attempt = AsyncMock(side_effect=[OSError("connection refused"), None])
+        with patch.object(nats_client, "_connect_and_subscribe", attempt):
+            await nats_client._start_with_retry()
+        assert attempt.await_count == 2
+        handler.assert_not_awaited()
+
+    async def test_a_permission_error_of_an_earlier_attempt_does_not_linger(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        """Recorded at runtime (a refused publish), it must not make the next connect failure read as final."""
+        handler = self._managed(nats_client, mock_config)
+        nats_client._link.permission_errors.append("nats: permissions violation for publish to x")
+        attempt = AsyncMock(side_effect=[OSError("connection refused"), None])
+        with patch.object(nats_client, "_connect_and_subscribe", attempt):
+            await nats_client._start_with_retry()
+        handler.assert_not_awaited()
+
+    async def test_the_done_callback_does_not_call_a_final_fault_exhausted_retries(self, nats_client: NATSClient) -> None:
+        task = MagicMock()
+        task.cancelled.return_value = False
+        task.exception.return_value = DurableConflictError("clash")
+        with patch.object(logging.getLogger("blueprint.agents.clients.io.nats_client"), "error") as mock_log:
+            nats_client._on_retry_done(task)
+        mock_log.assert_not_called()
+
+    async def test_a_stream_the_server_refuses_to_create_is_final(
+        self, nats_client: NATSClient, mock_config: MagicMock, mock_nats_jetstream: tuple
+    ) -> None:
+        mock_js = await _prepare_js_client(nats_client, mock_config, mock_nats_jetstream, ["orders.created"])
+        mock_js.add_stream = AsyncMock(
+            side_effect=APIError(code=400, err_code=10065, description="subjects overlap with an existing stream")
+        )
+        with pytest.raises(StreamConflictError, match="overlap") as refused:
+            await nats_client._provision_stream()
+        assert "'EVENTS'" in str(refused.value)
+        assert "orders.created" in str(refused.value)
+
+    async def test_a_stream_created_meanwhile_is_widened_not_refused(
+        self, nats_client: NATSClient, mock_config: MagicMock, mock_nats_jetstream: tuple
+    ) -> None:
+        """Found live: two agents of one process sharing a stream both create it; the second loses the race."""
+        mock_js = await _prepare_js_client(nats_client, mock_config, mock_nats_jetstream, ["orders.created"])
+        from nats.js.errors import NotFoundError
+
+        existing = MagicMock(config=js_api.StreamConfig(name="EVENTS", subjects=["other.subject"]))
+        mock_js.stream_info = AsyncMock(side_effect=[NotFoundError(), existing])
+        mock_js.add_stream = AsyncMock(
+            side_effect=APIError(code=400, err_code=10058, description="stream name already in use with a different configuration")
+        )
+        await nats_client._provision_stream()
+        updated = mock_js.update_stream.await_args.args[0].subjects
+        assert {"other.subject", "orders.created"} <= set(updated)
+
+    async def test_a_stream_the_server_refuses_to_widen_is_final(
+        self, nats_client: NATSClient, mock_config: MagicMock, mock_nats_jetstream: tuple
+    ) -> None:
+        mock_js = await _prepare_js_client(nats_client, mock_config, mock_nats_jetstream, ["orders.created"])
+        mock_js.stream_info = AsyncMock(return_value=MagicMock(config=js_api.StreamConfig(name="EVENTS", subjects=["legacy.subject"])))
+        mock_js.update_stream = AsyncMock(
+            side_effect=APIError(code=400, err_code=10065, description="subjects overlap with an existing stream")
+        )
+        with pytest.raises(StreamConflictError, match="add subject"):
+            await nats_client._provision_stream()
+
+    async def test_a_reconnect_that_finds_a_clash_reports_it(self, nats_client: NATSClient, mock_config: MagicMock) -> None:
+        handler = self._managed(nats_client, mock_config)
+        nats_client._use_jetstream = True
+        nats_client._topic_callbacks = {"orders-created": AsyncMock()}
+        clash = DurableConflictError("clash after the broker came back")
+        with patch.object(nats_client, "_ensure_broker_state", AsyncMock(side_effect=clash)):
+            await nats_client._on_reconnected()
+        await asyncio.sleep(0)
+        handler.assert_awaited_once_with(nats_client.namespace, clash)
+        assert nats_client.subscriptions_ready is False
+
+    async def test_the_handler_hears_the_first_fault_and_every_later_one_is_logged_critical(
+        self, nats_client: NATSClient, mock_config: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        handler = self._managed(nats_client, mock_config)
+        first, second = DurableConflictError("first"), StreamConflictError("second")
+        with caplog.at_level(logging.CRITICAL):
+            nats_client._report_fatal(first)
+            nats_client._report_fatal(first)
+            nats_client._report_fatal(second)
+            nats_client._report_fatal(second)
+        await asyncio.sleep(0)
+        handler.assert_awaited_once_with(nats_client.namespace, first)
+        assert [r.getMessage().endswith("second") for r in caplog.records if r.levelno == logging.CRITICAL] == [True]
+
+    async def test_the_error_callback_records_a_refused_grant(self, nats_client: NATSClient) -> None:
+        await nats_client._on_error(Exception("nats: permissions violation for subscription to _DELIVER.x"))
+        await nats_client._on_error(Exception("nats: unexpected EOF"))
+        assert nats_client._link.permission_errors == ["nats: permissions violation for subscription to _DELIVER.x"]

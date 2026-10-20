@@ -343,10 +343,27 @@ consumer whose deliver group, `ack_wait`, `max_ack_pending` or `max_deliver` dif
 configuration is kept: the client logs a WARNING naming the differences and consumes with the
 values the broker already has. Apply new values by deleting the consumer during a maintenance
 window. A consumer of that durable name whose filter is **another subject** is not bound at all,
-because it belongs to another subscription: the client raises `JetStreamBindingError` into the
-connection's retry loop and keeps retrying. A root topic and an agent's topic can derive one
-durable name (root `orders-created`, agent `orders` on `created`); rename one of the topics, or
-delete the consumer if it is stale.
+because it belongs to another subscription: the client raises `DurableConflictError` and does
+not retry it -- the consumer keeps its filter until someone changes it. It is logged CRITICAL and
+fails the start, or after startup takes liveness DOWN (see *Faults no retry can fix* below). A root
+topic and an agent's topic can derive one durable name (root `orders-created`, agent `orders` on
+`created`); rename one of the topics, or delete the consumer if it is stale.
+
+## Faults no retry can fix
+
+Most broker faults heal: the broker comes back, the connection is restored, a timeout passes. Those
+are retried for as long as it takes (below). Some do not, because the broker answered and its answer
+is final: a durable that filters another subject, a stream the server refuses to create or widen, a grant the account lacks, a tenant's login or deliver subject refused. Retrying would only log the same answer forever while the agent consumes nothing.
+So the client stops at once and the fault is handled the same way in every agent, critical or not:
+
+- logged **CRITICAL**, naming the agent, the consumer, stream or connection, why it is final and
+  what to change;
+- **at startup** the start fails, whatever `critical_agents` says;
+- **after startup** `/health/live` answers `503` naming the agent, so the orchestrator restarts the
+  pod, the agent is marked down, and the root or a critical agent also ends the process.
+
+A binding-mode stream that does not exist yet is not one of them: provisioning may create it later,
+so it is retried and shows as `retrying` in readiness.
 
 ## Broker Startup Resilience
 

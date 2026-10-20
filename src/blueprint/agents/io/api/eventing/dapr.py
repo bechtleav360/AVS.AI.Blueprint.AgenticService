@@ -1,7 +1,7 @@
 """Generic Dapr pub/sub endpoints for the agent service (framework-level)."""
 
 import logging
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Iterable, Mapping
 from typing import Any
 
 from fastapi import Request, Response
@@ -23,6 +23,45 @@ from ....models.events import CloudEvent
 from ..rest_api_base import RestApiBase
 from .dapr_response import dapr_status
 from .event_handling_base import UNDECLARED_TOPIC_LABEL, EventHandlingBase
+from ....utils import parse_bool
+
+
+def shared_topic_warnings(topics_by_agent: Mapping[str, Iterable[str]], idempotency_enabled: Callable[[str], object]) -> list[str]:
+    """The warnings for a topic two agents declare while one of them does not deduplicate (S5); shared (N19).
+
+    There is one Dapr delivery for every agent of a topic, and so one answer: a retry asked for by
+    one agent redelivers the event to all of them, and one that does not deduplicate runs it again.
+
+    Args:
+        topics_by_agent: Each agent's declared topics; ``""`` is the root.
+        idempotency_enabled: An agent's ``idempotency_enabled``, as configured. Read as the handler
+            chain reads it, so ``"false"`` from an environment variable is off; a value that is not
+            a boolean at all counts as off here (the chain fails startup on it, naming it).
+    """
+
+    def deduplicates(namespace: str) -> bool:
+        try:
+            return parse_bool(idempotency_enabled(namespace), "idempotency_enabled")
+        except ValueError:
+            return False
+
+    sharing: dict[str, list[str]] = {}
+    for namespace, topics in topics_by_agent.items():
+        for topic in topics:
+            sharing.setdefault(topic, []).append(namespace)
+    warnings = []
+    for topic, namespaces in sharing.items():
+        if len(namespaces) < 2:
+            continue
+        repeating = [ns or ROOT_LABEL for ns in namespaces if not deduplicates(ns)]
+        if repeating:
+            warnings.append(
+                f"Topic '{topic}' is declared by agents {', '.join(ns or ROOT_LABEL for ns in namespaces)}, and Dapr delivers "
+                f"it once for all of them: a retry asked for by one redelivers it to every one, and {', '.join(repeating)} "
+                "run it again because 'idempotency_enabled' is off."
+            )
+    return warnings
+
 
 logger = logging.getLogger(__name__)
 
@@ -174,22 +213,8 @@ class DaprEventing(EventHandlingBase):
         redelivers the event to every agent of the topic, and one that does not deduplicate runs
         it again.
         """
-        sharing: dict[str, list[str]] = {}
-        for namespace, topics in topics_by_agent.items():
-            for topic in topics:
-                sharing.setdefault(topic, []).append(namespace)
-        for topic, namespaces in sharing.items():
-            if len(namespaces) < 2:
-                continue
-            repeating = [ns or ROOT_LABEL for ns in namespaces if not self.config.for_namespace(ns).get("idempotency_enabled", False)]
-            if repeating:
-                logger.warning(
-                    "Topic '%s' is declared by agents %s, and Dapr delivers it once for all of them: a retry asked for "
-                    "by one redelivers it to every one, and %s run it again because 'idempotency_enabled' is off.",
-                    topic,
-                    ", ".join(ns or ROOT_LABEL for ns in namespaces),
-                    ", ".join(repeating),
-                )
+        for warning in shared_topic_warnings(topics_by_agent, lambda ns: self.config.for_namespace(ns).get("idempotency_enabled", False)):
+            logger.warning("%s", warning)
 
     def _metric_topic(self, namespace: str, topic: str) -> str:
         """The topic for a declared one, :data:`UNDECLARED_TOPIC_LABEL` otherwise (S9, plan D6).

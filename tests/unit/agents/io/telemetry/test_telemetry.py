@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from blueprint.agents.io.telemetry.providers import agent_meter, agent_tracer, configured_namespaces, reset_providers, tracer_provider
-from blueprint.agents.io.telemetry.telemetry import TelemetryManager, TracingContext
+from blueprint.agents.io.telemetry.telemetry import TelemetryConfigError, TelemetryManager, TracingContext
 from blueprint.agents.models.config import ObservabilityConfig
 
 
@@ -22,6 +22,14 @@ def _forget_providers() -> Iterator[None]:
     reset_providers()
     yield
     reset_providers()
+
+
+@pytest.fixture(autouse=True)
+def _agent_views(mock_config: MagicMock) -> None:
+    """An agent's view reports the agent's name, as ``Config`` does for an agent that sets none (C2)."""
+    mock_config.for_namespace.side_effect = lambda namespace: MagicMock(
+        get_observability_config=MagicMock(return_value=ObservabilityConfig(otel_service_name=namespace))
+    )
 
 
 @pytest.fixture
@@ -489,3 +497,36 @@ class TestOtelServiceNameInAGroup:
             configure()
         assert self._name("") == "platform-wide"
         assert [r for r in caplog.records if r.levelname == "WARNING" and r.name.startswith("blueprint")] == []
+
+    def test_a_service_name_only_in_resource_attributes_fails_a_group(self, configure, monkeypatch: pytest.MonkeyPatch) -> None:
+        """D17 (D23 c) -- taken as declared it would name every agent alike."""
+        monkeypatch.delenv("OTEL_SERVICE_NAME", raising=False)
+        monkeypatch.setenv("OTEL_RESOURCE_ATTRIBUTES", "service.name=platform-wide,deployment.environment=prod")
+        with pytest.raises(TelemetryConfigError, match="orders, billing"):
+            configure("orders", "billing")
+
+    def test_with_otel_service_name_too_it_does_not(self, configure, monkeypatch: pytest.MonkeyPatch) -> None:
+        """OTEL_SERVICE_NAME names the root only, and the agents keep their names, as before."""
+        monkeypatch.setenv("OTEL_SERVICE_NAME", "platform-wide")
+        monkeypatch.setenv("OTEL_RESOURCE_ATTRIBUTES", "service.name=platform-wide")
+        configure("orders")
+        assert [self._name(ns) for ns in ("", "orders")] == ["platform-wide", "orders"]
+
+    def test_standalone_it_is_used_as_declared(self, configure, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("OTEL_SERVICE_NAME", raising=False)
+        monkeypatch.setenv("OTEL_RESOURCE_ATTRIBUTES", "service.name=platform-wide")
+        configure()
+        assert self._name("") == "platform-wide"
+
+    def test_an_agents_own_otel_service_name_reaches_its_resource(
+        self, configure, mock_config: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """N16 -- ``<agent>.otel_service_name`` was resolved by the view and never used."""
+        monkeypatch.delenv("OTEL_SERVICE_NAME", raising=False)
+        monkeypatch.delenv("OTEL_RESOURCE_ATTRIBUTES", raising=False)
+        names = {"orders": "orders", "billing": "billing-override"}
+        mock_config.for_namespace.side_effect = lambda namespace: MagicMock(
+            get_observability_config=MagicMock(return_value=ObservabilityConfig(otel_service_name=names[namespace]))
+        )
+        configure("orders", "billing")
+        assert [self._name(ns) for ns in ("", "orders", "billing")] == ["test-service", "orders", "billing-override"]

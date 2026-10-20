@@ -131,13 +131,17 @@ class TestTheStateOfEachConnection:
         assert states["B"].last_error.startswith("ConnectionError: nats://***@h:4222 refused")
         assert PASSWORD not in states["B"].describe()
 
-    async def test_a_refused_permission_is_reported(self, nats_client: NATSClient, broker: Broker) -> None:
+    async def test_a_refused_permission_fails_the_connection(self, nats_client: NATSClient, broker: Broker) -> None:
+        """D23: a grant the account lacks is a tenancy fault -- the connection reads failed, and is not retried."""
         broker.failing["B"] = TimeoutError("no response")
         broker.denied.add("B")
-        with patch.object(nats_client_module, "PERMISSION_RETRY_SECONDS", 0.01):
-            await _started(nats_client, "B")
-        assert _states(nats_client)["B"].permission_denied
-        assert "permission violation" in _states(nats_client)["B"].describe()
+        await _started(nats_client, "B")
+        state = _states(nats_client)["B"]
+        assert state.state == "failed"
+        assert state.permission_denied
+        assert "permission violation" in state.describe()
+        assert "TenancyError" in state.last_error
+        assert nats_client._named_tasks[nats_client._named[0]].done()
 
     async def test_the_error_is_cleared_once_it_binds(self, nats_client: NATSClient, broker: Broker) -> None:
         broker.failing["B"] = ConnectionError("down")
@@ -147,8 +151,8 @@ class TestTheStateOfEachConnection:
             await asyncio.sleep(0.01)
         assert _states(nats_client)["B"] == NamedConnectionState("B", "bound")
 
-    async def test_a_refused_login_reads_retrying_although_connect_never_returns(self, nats_client: NATSClient) -> None:
-        """With max_reconnect_attempts=-1 nats.connect() retries a refused login itself; only error_cb hears of it."""
+    async def test_a_refused_login_fails_the_connection_although_connect_never_returns(self, nats_client: NATSClient) -> None:
+        """With max_reconnect_attempts=-1 nats.connect() retries a refused login itself; only error_cb hears of it (D23)."""
         await _started(nats_client, "B")
         binding = nats_client._named[0]
         binding.subscriptions_ready = False
@@ -162,7 +166,9 @@ class TestTheStateOfEachConnection:
             await nats_client._open_named_link(link)
             await connect.call_args.kwargs["error_cb"](Exception("nats: 'Authorization Violation'"))
 
-        assert _states(nats_client)["B"] == NamedConnectionState("B", "retrying", "Exception: nats: 'Authorization Violation'")
+        state = _states(nats_client)["B"]
+        assert state.state == "failed"
+        assert state.last_error.startswith("TenancyError: Agent '<root>': named connection 'B' -- the broker refused the login")
 
     async def test_a_lost_broker_reads_reconnecting(self, nats_client: NATSClient, broker: Broker) -> None:
         await _started(nats_client, "A")

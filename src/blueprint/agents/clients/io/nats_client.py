@@ -20,6 +20,7 @@ from nats.aio.client import Client as NatsClient
 from nats.js import api as js_api
 from nats.js.client import JetStreamContext
 from nats.errors import NoRespondersError
+from nats.errors import TimeoutError as NatsTimeoutError
 from nats.js.errors import APIError, NotFoundError
 from opentelemetry.metrics import CallbackOptions, Counter, Observation
 from pydantic import ValidationError
@@ -53,12 +54,42 @@ class JetStreamBindingError(RuntimeError):
     """
 
 
-class JetStreamUnavailableError(RuntimeError):
+class DeterministicTransportError(RuntimeError):
+    """A transport fault no retry can fix: the broker answered, and the answer is final (D23).
+
+    Never retried by a connection loop. It goes to the fatal handler :class:`AppBuilder` installs,
+    which logs it CRITICAL and takes the process's liveness DOWN, in every agent -- whatever
+    ``critical_agents`` says, because a fault that cannot heal is not one a deployment can choose to
+    run without. The message says what failed, where, why it is final and what to change.
+    """
+
+
+class JetStreamUnavailableError(DeterministicTransportError):
     """The agent declared ``nats_use_jetstream = true`` and the server does not offer JetStream to it.
 
     A deployment error, not a transient one: no retry makes a server grow JetStream. It is therefore
     never retried by the connection loop, and it fails the agent -- at startup through the startup
     failure policy (spec sec. 9.1), later through the fatal handler :class:`AppBuilder` installs.
+    """
+
+
+class DurableConflictError(DeterministicTransportError):
+    """The durable this agent derives for a topic exists on the broker and filters another subject (S1)."""
+
+
+class StreamConflictError(DeterministicTransportError):
+    """The server refused to create or widen the agent's stream, e.g. because its subjects overlap another stream's."""
+
+
+class JetStreamPermissionError(DeterministicTransportError):
+    """The broker refused this agent's own connection a permission it needs to consume."""
+
+
+class TenancyError(DeterministicTransportError):
+    """A named connection the connection source handed over is wrong for the broker it points at.
+
+    A refused login, a refused deliver subject, or a binding-mode consumer that filters another
+    subject: the tenant's deployment does not match its broker, and only changing one of them helps.
     """
 
 
@@ -84,9 +115,9 @@ CONNECTION_BOUND_GAUGE = "blueprint.nats.connection.bound"
 PERMISSION_VIOLATIONS_COUNTER = "blueprint.nats.connection.permission_violations"
 """Permission violations a named connection's broker reported; attributes ``agent`` and ``connection``."""
 
-PERMISSION_RETRY_SECONDS = 60.0
-"""How often a named connection retries after the broker refused it a permission: a missing grant does
-not heal in seconds, so retrying at the normal pace would only fill the log (spec 7.9)."""
+STREAM_NAME_IN_USE = 10058
+"""JetStream's ``err_code`` for "stream name already in use with a different configuration": a create
+that lost a race against another client creating the same stream, not a refusal."""
 
 CONTROL_MESSAGE_STATUS = "100"
 """The status a JetStream idle heartbeat and flow control request carry (``nats.js.api.StatusCode.CONTROL_MESSAGE``)."""
@@ -102,6 +133,11 @@ can refuse a revoked run (dynamic-subscriptions spec 7.5)."""
 
 FatalHandler = Callable[[str, BaseException], Awaitable[None]]
 """Called once when a client finds, after startup, that its agent cannot run at all: namespace, error."""
+
+OrphanHandler = Callable[[str, "str | None"], None]
+"""Called when an agent stops consuming for a reason that does not pass by itself -- its resume keeps
+failing, its connection loop gave up -- with the namespace and why, and with ``None`` once it consumes
+again (D23, N12)."""
 
 
 def redact_url(url: str) -> str:
@@ -119,6 +155,83 @@ def redact_url(url: str) -> str:
     host = parts.hostname or ""
     netloc = f"{host}:{parts.port}" if parts.port else host
     return urlunsplit(parts._replace(netloc=f"***@{netloc}"))
+
+
+def resolve_nats_url(url: object, environment: object, *, override_variable: str) -> str:
+    """Return the broker URL an agent connects to; outside development, refuse to run without one.
+
+    Development falls back to :data:`DEVELOPMENT_NATS_URL`, so a broker on the developer's machine
+    needs no configuration. Anywhere else there is no fallback: a pod pointed at ``localhost``
+    connects to nothing and never says so. Public because ``asbs validate`` applies the same rule
+    (N19).
+
+    Args:
+        url: The configured ``nats_url``.
+        environment: ``app_environment``.
+        override_variable: The environment variable that sets ``nats_url``, for the message.
+
+    Raises:
+        ValueError: if ``url`` is unset or empty and ``environment`` is not ``"development"``.
+    """
+    resolved = str(url or "").strip()
+    if resolved:
+        return resolved
+    if str(environment).lower() == "development":
+        return DEVELOPMENT_NATS_URL
+    raise ValueError(
+        f"'event_bus' is 'nats' but 'nats_url' is not set (app_environment is {str(environment)!r}). Outside "
+        "development there is no default: localhost is rarely right in a container, and a client pointed at it retries "
+        f"forever while the pod looks healthy. Set 'nats_url' in the group's settings.toml or as {override_variable}."
+    )
+
+
+def resolve_heartbeat_enabled(value: object) -> bool:
+    """Return ``nats_heartbeat_enabled``: whether running JetStream deliveries report ``in_progress`` (N19: shared).
+
+    Raises:
+        ValueError: if the value is not a boolean -- a string such as ``"false"`` would otherwise
+            read as true and keep the heartbeat the operator meant to switch off.
+    """
+    if not isinstance(value, bool):
+        raise ValueError(f"'nats_heartbeat_enabled' must be true or false, got {value!r}.")
+    return value
+
+
+def resolve_root_queue_group(get: Callable[[str, Any], Any]) -> str:
+    """Return the root namespace's queue group: ``nats_queue_group``, else ``app_name`` (N19: shared).
+
+    An agent's queue group is its namespace and needs no resolving; see
+    :meth:`NATSClient._resolve_queue_group` for why the root reads keys at all.
+
+    Args:
+        get: How to read a key, ``(key, default) -> value``.
+
+    Raises:
+        ValueError: if neither key yields a name, or the name cannot appear in a subject.
+    """
+    for key in ("nats_queue_group", "app_name"):
+        name = str(get(key, "") or "").strip()
+        if not name:
+            continue
+        validate_subject_segment(name, source=f"The queue group (from '{key}')", subject=f"{name}.dead-letter")
+        return name
+    raise ValueError(
+        "NATS subscriptions require a queue group: set 'nats_queue_group' or 'app_name'. Without one every replica processes every message."
+    )
+
+
+def validate_durable_name(configured: str, topic_count: int) -> None:
+    """Refuse one ``nats_durable_name`` for several topics (N19: shared).
+
+    Raises:
+        ValueError: if ``configured`` is set and more than one topic is subscribed.
+    """
+    if configured and topic_count > 1:
+        raise ValueError(
+            f"'nats_durable_name' is set to '{configured}' but {topic_count} topics are subscribed. "
+            "A JetStream durable filters one subject, so one name cannot serve them all. "
+            "Remove the key to derive a durable per topic."
+        )
 
 
 DEAD_LETTERED_COUNTER = "blueprint.events.dead_lettered"
@@ -158,8 +271,8 @@ class NamedConnectionState:
 
     ``state`` is ``"bound"`` (delivering), ``"connecting"`` (first attempt in progress),
     ``"reconnecting"`` (the broker was lost; the client reconnects by itself), ``"retrying"`` (an
-    attempt failed; ``last_error`` says why) or ``"paused"`` (the agent is degraded and consumes
-    nowhere, C4).
+    attempt failed; ``last_error`` says why), ``"failed"`` (a tenancy fault no retry fixes;
+    ``last_error`` says which, D23) or ``"paused"`` (the agent is degraded and consumes nowhere, C4).
     """
 
     name: str
@@ -202,7 +315,8 @@ class _Link:
     connection_name: str = ""
     nats_client: NatsClient | None = None
     js: JetStreamContext | None = None
-    jetstream_mismatch: JetStreamUnavailableError | None = None
+    jetstream_mismatch: DeterministicTransportError | None = None
+    """What the JetStream probe found that no retry fixes: no JetStream, or no grant to use it."""
     permission_errors: list[str] = field(default_factory=list)
     """Permission violations the broker reported through ``error_cb`` since the last attempt."""
     closing: bool = False
@@ -256,6 +370,8 @@ class _Binding:
     """Why the last connect-and-bind attempt failed, redacted; ``""`` once it is bound."""
     permission_denied: bool = False
     """The last failed attempt was refused a permission by the broker."""
+    failed: bool = False
+    """A fault no retry fixes stopped this binding's connect loop (D23); ``last_error`` says which."""
 
     def __post_init__(self) -> None:
         self.idle.set()
@@ -394,6 +510,9 @@ class NATSClient(IOClientBase):
         self._closing = False
         self._fatal_handler: FatalHandler | None = None
         self._fatal_reported = False
+        self._fatal_errors: list[BaseException] = []
+        self._orphan_handler: OrphanHandler | None = None
+        self._orphaned = False
         self._use_jetstream: bool = False
         self._publish_via_jetstream: bool = False
         self._publish_subjects: set[str] = set()
@@ -453,11 +572,11 @@ class NATSClient(IOClientBase):
         self._link.connect_options = value
 
     @property
-    def _jetstream_mismatch(self) -> JetStreamUnavailableError | None:
+    def _jetstream_mismatch(self) -> DeterministicTransportError | None:
         return self._link.jetstream_mismatch
 
     @_jetstream_mismatch.setter
-    def _jetstream_mismatch(self, value: JetStreamUnavailableError | None) -> None:
+    def _jetstream_mismatch(self, value: DeterministicTransportError | None) -> None:
         self._link.jetstream_mismatch = value
 
     @property
@@ -588,6 +707,8 @@ class NATSClient(IOClientBase):
         client = binding.link.nats_client
         if binding.subscriptions_ready:
             state = "bound"
+        elif binding.failed:
+            state = "failed"
         elif self._consumption_paused:
             state = "paused"
         elif client is not None and client.is_reconnecting:
@@ -861,10 +982,14 @@ class NATSClient(IOClientBase):
         self._named_tasks[binding] = task
 
     async def _run_named_link(self, binding: _Binding) -> None:
-        """Connect ``binding``'s link and bind, retrying until it works.
+        """Connect ``binding``'s link and bind, retrying until it works -- unless the broker's answer is final.
 
-        Never gives up: a named connection's stream or account may appear later (provisioning), and
-        unlike the default connection its absence does not make the agent unready (plan D5).
+        A transient fault is retried for ever: a named connection's broker may come back later, and
+        unlike the default connection its absence does not make the agent unready (plan D5). A
+        tenancy fault is not (D23): a refused grant or a :class:`DeterministicTransportError` marks the
+        binding ``failed`` and goes to the fatal handler, because the tenant's deployment does not
+        match its broker and an operator has to change one of them. A missing stream is still
+        retried -- provisioning may create it later (D23 (b), deferred).
         """
         delay = float(self.config.get("event_client_retry_delay", 5.0))
         attempt = 0
@@ -881,6 +1006,7 @@ class NATSClient(IOClientBase):
                 binding.subscriptions_ready = True
                 binding.last_error = ""
                 binding.permission_denied = False
+                binding.failed = False
                 self._named_bound_changed(binding)
                 if binding.replaces is not None:
                     # New before old (spec 7.4): only now that this one delivers is the old one retired.
@@ -895,19 +1021,17 @@ class NATSClient(IOClientBase):
                 denied = list(binding.link.permission_errors)
                 binding.last_error = self._describe_error(binding.link, exc)
                 binding.permission_denied = bool(denied)
-                if denied:
+                if denied and not isinstance(exc, DeterministicTransportError):
                     # The broker reports a missing grant through error_cb and lets the request time
                     # out: that is permanent, not a slow broker (spec 7.9).
-                    logger.error(
-                        "Agent '%s': named connection '%s' was refused a permission (%s); retrying every %.0fs until "
-                        "the deployment grants it",
-                        self.namespace or ROOT_LABEL,
-                        binding.link.name,
-                        "; ".join(denied),
-                        PERMISSION_RETRY_SECONDS,
+                    exc = TenancyError(
+                        f"Agent '{self.namespace or ROOT_LABEL}': named connection '{binding.link.name}' -- the broker "
+                        f"refused a permission ({'; '.join(denied)}). The tenant's account lacks a grant this agent needs "
+                        "to consume: grant it, or correct the binding. Not retried: a missing grant does not appear by itself."
                     )
-                    await asyncio.sleep(PERMISSION_RETRY_SECONDS)
-                    continue
+                if isinstance(exc, DeterministicTransportError):
+                    self._fail_named(binding, exc)
+                    return
                 logger.warning(
                     "Agent '%s': named connection '%s' attempt %d failed, retrying in %.1fs: %s",
                     self.namespace or ROOT_LABEL,
@@ -917,6 +1041,14 @@ class NATSClient(IOClientBase):
                     binding.last_error,
                 )
                 await asyncio.sleep(delay)
+
+    def _fail_named(self, binding: _Binding, error: DeterministicTransportError) -> None:
+        """Stop treating ``binding`` as one that may still bind: mark it ``failed`` and report the fault (D23)."""
+        binding.subscriptions_ready = False
+        binding.failed = True
+        binding.last_error = self._describe_error(binding.link, error)
+        self._named_bound_changed(binding)
+        self._report_fatal(error)
 
     def _on_named_link_done(self, binding: _Binding, task: asyncio.Task[None]) -> None:
         """Report a named-connection loop that died of anything but its cancellation, naming agent and connection."""
@@ -964,10 +1096,23 @@ class NATSClient(IOClientBase):
                 self._permission_violations.add(1, {"agent": agent, "connection": link.name})
             # A refused login lands here too, and only here: with max_reconnect_attempts=-1,
             # nats.connect() retries it by itself and never returns, so the connect loop sees no
-            # exception. Recorded so the state reads "retrying" with the reason, not "connecting".
+            # exception. Recorded so the state reads "retrying" with the reason, not "connecting" --
+            # and a refused login is a tenancy fault (D23): the binding fails, once, while nats-py
+            # keeps trying in case the account is fixed (a later bind clears it).
+            refused_login = "authorization violation" in str(error).lower()
             for binding in self._named:
-                if binding.link is link and not binding.subscriptions_ready:
+                if binding.link is link and not binding.subscriptions_ready and not binding.failed:
                     binding.last_error = self._describe_error(link, error)
+                    if refused_login:
+                        self._fail_named(
+                            binding,
+                            TenancyError(
+                                f"Agent '{agent}': named connection '{link.name}' -- the broker refused the login "
+                                f"({self._describe_error(link, error)}). The credentials the connection source hands "
+                                "over for this tenant are not accepted by its broker: correct them in the tenant's "
+                                "configuration, or create the account on the broker. Not retried by the framework."
+                            ),
+                        )
             logger.error("Agent '%s': error on named connection '%s': %s", agent, link.name, self._describe_error(link, error))
 
         link.nats_client = await nats.connect(
@@ -1233,17 +1378,7 @@ class NATSClient(IOClientBase):
         """
         if self.namespace:
             return self.namespace
-
-        for key in ("nats_queue_group", "app_name"):
-            name = str(self.config.get(key, "") or "").strip()
-            if not name:
-                continue
-            validate_subject_segment(name, source=f"The queue group (from '{key}')", subject=f"{name}.dead-letter")
-            return name
-        raise ValueError(
-            "NATS subscriptions require a queue group: set 'nats_queue_group' or 'app_name'. "
-            "Without one every replica processes every message."
-        )
+        return resolve_root_queue_group(self.config.get)
 
     # ------------------------------------------------------------------
     # Publishing (mode and subjects)
@@ -1418,12 +1553,7 @@ class NATSClient(IOClientBase):
                 subscribed, or if two topics sanitise to the same durable name.
         """
         configured = str(self.config.get("nats_durable_name", "") or "").strip()
-        if configured and len(topics) > 1:
-            raise ValueError(
-                f"'nats_durable_name' is set to '{configured}' but {len(topics)} topics are subscribed. "
-                "A JetStream durable filters one subject, so one name cannot serve them all. "
-                "Remove the key to derive a durable per topic."
-            )
+        validate_durable_name(configured, len(topics))
         if configured and self.namespace:
             logger.warning(
                 "Namespace '%s' is using the configured durable name '%s'. A durable is broker-side state "
@@ -1522,10 +1652,7 @@ class NATSClient(IOClientBase):
             ValueError: if the value is not a boolean -- a string such as ``"false"`` would
                 otherwise read as true and keep the heartbeat the operator meant to switch off.
         """
-        value = self.config.get("nats_heartbeat_enabled", True)
-        if not isinstance(value, bool):
-            raise ValueError(f"'nats_heartbeat_enabled' must be true or false, got {value!r}.")
-        return value
+        return resolve_heartbeat_enabled(self.config.get("nats_heartbeat_enabled", True))
 
     def _resolve_handler_timeout(self) -> float | None:
         """Return ``nats_handler_timeout``: seconds one run may take, or ``None`` for no limit (plan D9).
@@ -1615,6 +1742,18 @@ class NATSClient(IOClientBase):
             await self.connect()
         self._started = True
 
+    def set_orphan_handler(self, handler: OrphanHandler) -> None:
+        """Install what is told when this agent stops consuming for a reason that does not pass by itself, and when it consumes again."""
+        self._orphan_handler = handler
+
+    def _report_orphaned(self, reason: str | None) -> None:
+        """Tell the handler that this agent is orphaned (``reason``) or consumes again (``None``); transitions only."""
+        if (reason is not None) == self._orphaned:
+            return
+        self._orphaned = reason is not None
+        if self._orphan_handler is not None:
+            self._orphan_handler(self.namespace, reason)
+
     def set_fatal_handler(self, handler: FatalHandler) -> None:
         """Install what is called when this agent turns out, after startup, to be unable to run.
 
@@ -1635,25 +1774,21 @@ class NATSClient(IOClientBase):
             ValueError: if ``nats_url`` is unset or empty and ``app_environment`` is not
                 ``"development"``. Names the key, the environment, and how to set it.
         """
-        url = str(self.config.get("nats_url", "") or "").strip()
-        if url:
-            return url
-        environment = str(self.config.get("app_environment", "development"))
-        if environment.lower() == "development":
+        configured = self.config.get("nats_url", "")
+        prefix = self.config.envvar_prefix
+        url = resolve_nats_url(
+            configured,
+            self.config.get("app_environment", "development"),
+            override_variable=f"{prefix}_NATS_URL" if prefix else "NATS_URL",
+        )
+        if not str(configured or "").strip():
             logger.warning(
                 "Agent '%s': 'nats_url' is not set, connecting to %s because app_environment is 'development'. "
                 "Set 'nats_url' for any other environment -- there, an unset one fails startup.",
                 self.namespace or ROOT_LABEL,
                 DEVELOPMENT_NATS_URL,
             )
-            return DEVELOPMENT_NATS_URL
-        prefix = self.config.envvar_prefix
-        variable = f"{prefix}_NATS_URL" if prefix else "NATS_URL"
-        raise ValueError(
-            f"'event_bus' is 'nats' but 'nats_url' is not set (app_environment is {environment!r}). Outside "
-            "development there is no default: localhost is rarely right in a container, and a client pointed at it retries "
-            f"forever while the pod looks healthy. Set 'nats_url' in the group's settings.toml or as {variable}."
-        )
+        return url
 
     def _resolve_connect_options(self, nats_url: str) -> dict[str, Any]:
         """Return the credential and inbox arguments for ``nats.connect()`` (M2).
@@ -1760,6 +1895,8 @@ class NATSClient(IOClientBase):
             self._connect_options = self._resolve_connect_options(self._nats_url)
         nats_url = redact_url(self._nats_url)
         self._connection_name = self._resolve_connection_name()
+        # A fresh attempt: what an earlier one was refused must not be read as this one's answer.
+        self._link.permission_errors.clear()
         # Unlimited by default: with 5 attempts 2 s apart, an outage of about 10 s closed the
         # connection for good (review finding #10). _on_closed restarts it either way.
         reconnect_attempts = self.config.get("nats_max_reconnect_attempts", -1)
@@ -1773,6 +1910,7 @@ class NATSClient(IOClientBase):
                 disconnected_cb=self._on_disconnected,
                 reconnected_cb=self._on_reconnected,
                 closed_cb=self._on_closed,
+                error_cb=self._on_error,
                 **self._connect_options,
             )
             # Read by nats-py on every reconnect attempt, so from here on the configured count governs.
@@ -1787,7 +1925,7 @@ class NATSClient(IOClientBase):
                 self._log_connected("with JetStream", nats_url)
             else:
                 self._log_connected("(Core NATS)", nats_url)
-        except JetStreamUnavailableError:
+        except DeterministicTransportError:
             raise
         except Exception as e:
             # Raised, not logged: the retry loop logs each failed attempt, and a caller outside it
@@ -1825,15 +1963,25 @@ class NATSClient(IOClientBase):
         info request is the cheapest call that the server answers only when JetStream is there.
 
         A timeout proves nothing either way and stays an ordinary connection failure, retried like
-        any other. No responders (no JetStream on the server) and an API error (not enabled for the
+        any other -- unless the broker refused this connection a permission while it waited: a
+        request whose publish or reply subscription is denied simply times out, and the grant is the
+        cause (D23). No responders (no JetStream on the server) and an API error (not enabled for the
         account) are answers, and they are final.
+
+        A final answer is kept on the link: found by the health poll that connects before startup,
+        it fails the agent's startup when :meth:`on_startup` probes again.
 
         Raises:
             JetStreamUnavailableError: the server answered, and JetStream is not available.
+            JetStreamPermissionError: the request timed out, and the broker refused this connection a
+                permission meanwhile.
         """
+        error: DeterministicTransportError
         try:
             await self._js.account_info()  # type: ignore[union-attr]
+            return
         except (NoRespondersError, APIError) as exc:
+            cause: BaseException = exc
             error = JetStreamUnavailableError(
                 f"Agent '{self.namespace or ROOT_LABEL}' declares 'nats_use_jetstream = true', but the NATS server at "
                 f"{nats_url} does not offer JetStream to this account ({type(exc).__name__}: {exc}). It is not retried "
@@ -1841,17 +1989,42 @@ class NATSClient(IOClientBase):
                 "without anyone deciding it. Enable JetStream on the server or account, or set "
                 "'nats_use_jetstream = false' if Core NATS is intended."
             )
-            await self._nats_client.close()  # type: ignore[union-attr]
-            self._nats_client = None
-            self._js = None
-            self._client = None
-            self._jetstream_mismatch = error
-            self._report_fatal(error)
-            raise error from exc
+        except NatsTimeoutError as exc:
+            denied = list(self._link.permission_errors)
+            if not denied:
+                raise
+            cause = exc
+            error = JetStreamPermissionError(
+                f"Agent '{self.namespace or ROOT_LABEL}': the NATS server at {nats_url} refused this agent's connection a "
+                f"permission it needs to use JetStream ({'; '.join(denied)}). Grant the account the '$JS.API' requests, "
+                "the reply inbox ('_INBOX.>' or 'nats_inbox_prefix') and the deliver subjects -- or point the agent at an "
+                "account that has them. Not retried: a missing grant does not appear by itself."
+            )
+        await self._nats_client.close()  # type: ignore[union-attr]
+        self._nats_client = None
+        self._js = None
+        self._client = None
+        self._jetstream_mismatch = error
+        self._report_fatal(error)
+        raise error from cause
 
     def _report_fatal(self, error: BaseException) -> None:
-        """Hand a fatal error found after startup to the installed handler, once."""
-        if not self._started or self._fatal_handler is None or self._fatal_reported:
+        """Hand a fatal error found after startup to the installed handler; the first one only.
+
+        The handler acts once per agent -- the agent is down after that -- but every later fault is
+        still logged CRITICAL here, so a second tenant failing is not silent. The same error object
+        is reported once (it can reach this twice: found while connecting, then raised into the loop).
+
+        Before startup has finished nothing is reported here: :meth:`on_startup` raises what it
+        finds, and the startup failure policy handles it. Started without a handler -- a client
+        used outside :class:`AppBuilder` -- the error is logged CRITICAL here, so it is never silent.
+        """
+        if not self._started or any(error is seen for seen in self._fatal_errors):
+            return
+        self._fatal_errors.append(error)
+        if self._fatal_reported or self._fatal_handler is None:
+            logger.critical("Agent '%s' cannot consume, and no retry can fix it: %s", self.namespace or ROOT_LABEL, error)
+            self._fatal_reported = True
             return
         self._fatal_reported = True
         task = asyncio.ensure_future(self._fatal_handler(self.namespace, error))
@@ -1948,9 +2121,15 @@ class NATSClient(IOClientBase):
                 next_delay,
                 self._describe_error(self._link, exc),
             )
+            if isinstance(exc, DeterministicTransportError):
+                # A clash or a refusal that appeared while the agent was paused: final here too (D23).
+                self._report_fatal(exc)
+            # Paused, healthy by design, and consuming nothing: an orphan until a retry succeeds (N12).
+            self._report_orphaned(f"its resume failed (attempt {attempt}) and is retried: {self._describe_error(self._link, exc)}")
             return False
         self._consumption_paused = False
         self._subscriptions_ready = True
+        self._report_orphaned(None)
         logger.info("Agent '%s' resumed consuming: %d subscription(s) restored", self.namespace or ROOT_LABEL, len(self._subscriptions))
         return True
 
@@ -2190,6 +2369,7 @@ class NATSClient(IOClientBase):
         delay: float = float(self.config.get("event_client_retry_delay", 5.0))
         attempt = 0
         while True:
+            self._link.permission_errors.clear()
             try:
                 await self._connect_and_subscribe()
                 if self._consumption_paused:
@@ -2197,13 +2377,26 @@ class NATSClient(IOClientBase):
                 self._subscriptions_ready = True
                 logger.info("NATSClient connected and subscribed successfully")
                 return
-            except JetStreamUnavailableError:
-                # Final, not transient: retrying would log the same answer forever.
+            except DeterministicTransportError as e:
+                # Final, not transient: retrying would log the same answer forever (D23).
                 self._subscriptions_ready = False
+                self._report_fatal(e)
                 raise
             except Exception as e:
                 attempt += 1
                 self._subscriptions_ready = False
+                denied = list(self._link.permission_errors)
+                if denied:
+                    # The broker reports a missing grant through error_cb and lets the request time
+                    # out, so the exception here is only the timeout: the grant is the cause.
+                    error = JetStreamPermissionError(
+                        f"Agent '{self.namespace or ROOT_LABEL}': the NATS server refused this agent's connection a "
+                        f"permission it needs to consume ({'; '.join(denied)}). Grant the account those subjects -- for "
+                        "JetStream that includes the '$JS.API' requests and the deliver subjects -- or point the agent at "
+                        "an account that has them. Not retried: a missing grant does not appear by itself."
+                    )
+                    self._report_fatal(error)
+                    raise error from e
                 if max_retries != -1 and attempt > max_retries:
                     raise
                 logger.warning("NATSClient attempt %d failed, retrying in %.1fs: %s", attempt, delay, self._describe_error(self._link, e))
@@ -2219,6 +2412,9 @@ class NATSClient(IOClientBase):
         if task.cancelled():
             return
         exc = task.exception()
+        if isinstance(exc, DeterministicTransportError):
+            # Not "exhausting retries": it was never retried, and _report_fatal has said so already.
+            return
         if exc is not None:
             # No traceback: its last line is str(exc) again, unredacted (N3).
             logger.error(
@@ -2226,6 +2422,8 @@ class NATSClient(IOClientBase):
                 self.namespace or ROOT_LABEL,
                 self._describe_error(self._link, exc),
             )
+            # Nothing retries after this: the agent never consumes again in this process (N12).
+            self._report_orphaned(f"its connection loop gave up ('event_client_max_retries'): {self._describe_error(self._link, exc)}")
 
     async def _connect_and_subscribe(self) -> None:
         await self.connect()
@@ -2297,9 +2495,16 @@ class NATSClient(IOClientBase):
         as a warning, leaving the remaining topics uncaptured.
 
         Widening is additive -- subjects already on the stream are kept -- so this never
-        removes a subject an operator added. A failure to update is logged rather than
-        raised: the consumer that needs the subject fails immediately afterwards, and that
-        failure names the consumer as well as the stream.
+        removes a subject an operator added.
+
+        A refusal by the server is final (D23): it answered, and asking again gets the same
+        answer -- typically subjects that overlap another stream's. It raises
+        :class:`StreamConflictError` instead of the consumers failing to bind on every attempt. A
+        failure without an answer (a timeout) stays an ordinary, retried connection failure on
+        create, and is logged on update, as before.
+
+        Raises:
+            StreamConflictError: the server refused to create the stream or to add the subjects.
         """
         js = self._nats_client.jetstream()  # type: ignore[union-attr]
         stream = self.config.get("nats_stream_name", "EVENTS")
@@ -2308,9 +2513,16 @@ class NATSClient(IOClientBase):
         try:
             info = await js.stream_info(stream)
         except NotFoundError:
-            await js.add_stream(name=stream, subjects=sorted(wanted))
-            logger.info("Created JetStream stream '%s' with subjects %s", stream, sorted(wanted))
-            return
+            try:
+                await js.add_stream(name=stream, subjects=sorted(wanted))
+                logger.info("Created JetStream stream '%s' with subjects %s", stream, sorted(wanted))
+                return
+            except APIError as exc:
+                if exc.err_code != STREAM_NAME_IN_USE:
+                    raise self._stream_refused(stream, "create it with subject(s)", sorted(wanted), exc) from exc
+            # Created between the lookup and the create -- by another agent of this process sharing
+            # the stream, or by another replica: a race, not a refusal. Widen the one that exists.
+            info = await js.stream_info(stream)
 
         # Not a set difference: a stream an operator provisioned as 'orders.>' already captures
         # 'orders.created', and asking the server to add the literal is refused as an overlap --
@@ -2324,6 +2536,8 @@ class NATSClient(IOClientBase):
         try:
             await js.update_stream(info.config)
             logger.info("Added subject(s) %s to existing JetStream stream '%s'", sorted(missing), stream)
+        except APIError as exc:
+            raise self._stream_refused(stream, "add subject(s)", sorted(missing), exc) from exc
         except Exception as exc:
             logger.error(
                 "JetStream stream '%s' does not carry subject(s) %s and could not be updated (%s); "
@@ -2332,6 +2546,15 @@ class NATSClient(IOClientBase):
                 sorted(missing),
                 exc,
             )
+
+    def _stream_refused(self, stream: str, action: str, subjects: list[str], exc: APIError) -> StreamConflictError:
+        """The error for a stream the server would not create or widen, naming what to change."""
+        return StreamConflictError(
+            f"Agent '{self.namespace or ROOT_LABEL}': the NATS server refused to {action} {', '.join(subjects)} on "
+            f"JetStream stream '{stream}' ({exc.description or exc}). Usually another stream already captures one of "
+            "these subjects: give this agent its own subjects or its own 'nats_stream_name', or provision the stream "
+            "so it carries them. Not retried: the server gives the same answer until the streams change."
+        )
 
     def _consumer_config(self, topic: str, durable: str) -> js_api.ConsumerConfig:
         """Build the durable consumer this client wants for one topic.
@@ -2393,12 +2616,14 @@ class NATSClient(IOClientBase):
         if filters != [topic]:
             # Another subscription's consumer under this name (S1): binding to it would deliver
             # that subscription's messages here. Not renamed -- the durable's pending state is
-            # broker-side and belongs to the subscription that made it.
-            raise JetStreamBindingError(
-                f"JetStream consumer '{durable}' on stream '{stream}' filters {', '.join(repr(f) for f in filters) or 'nothing'}, "
-                f"not '{topic}', so it belongs to another subscription and is not bound. A root topic and an agent's "
-                f"topic can derive one durable name (root 'orders-created' and agent 'orders' on 'created'): rename one "
-                f"of the topics, or delete the consumer if it is stale."
+            # broker-side and belongs to the subscription that made it. Not retried either (D23):
+            # the consumer does not change its filter by itself.
+            raise DurableConflictError(
+                f"Agent '{self.namespace or ROOT_LABEL}': JetStream consumer '{durable}' on stream '{stream}' filters "
+                f"{', '.join(repr(f) for f in filters) or 'nothing'}, not '{topic}', so it belongs to another subscription "
+                f"and is not bound. A root topic and an agent's topic can derive one durable name (root 'orders-created' "
+                f"and agent 'orders' on 'created'): rename one of the topics, or delete the consumer if it is stale. "
+                f"Not retried: the consumer keeps its filter until someone changes it."
             )
 
         legacy = not info.config.deliver_group
@@ -2511,6 +2736,7 @@ class NATSClient(IOClientBase):
             JetStreamBindingError: the binding manages its consumer and its stream does not
                 exist. The stream belongs to whoever provisions the deployment; it is never
                 created here.
+            TenancyError: the broker refused the subscription to the deliver subject (D23).
         """
         spec = binding.jetstream
         if spec is None:
@@ -2526,9 +2752,9 @@ class NATSClient(IOClientBase):
         sub = await client.subscribe(spec.deliver_subject, queue=spec.deliver_group, cb=handler)
         # The broker refuses a subscription the account may not make asynchronously, through
         # error_cb, so subscribe() returned and the binding read as bound for good (M4). The round
-        # trip makes any refusal arrive first; one naming this subject fails the attempt, and the
-        # connect loop retries it as a permission error. Compared lowercased: nats-py lowercases the
-        # whole -ERR line, the subject in it included.
+        # trip makes any refusal arrive first; one naming this subject fails the binding for good
+        # (D23: a grant the account lacks does not appear by retrying). Compared lowercased: nats-py
+        # lowercases the whole -ERR line, the subject in it included.
         # Two round trips, not one: nats-py writes PING straight to the transport while the SUB
         # still waits in its pending buffer for the flusher task, so the first PONG can come back
         # before the broker has seen the SUB (measured with nats-py 2.15: the refusal arrived after
@@ -2541,7 +2767,12 @@ class NATSClient(IOClientBase):
         if refused:
             with contextlib.suppress(Exception):
                 await sub.unsubscribe()
-            raise PermissionError(f"the broker refused the subscription to '{spec.deliver_subject}': {refused[0]}")
+            raise TenancyError(
+                f"Agent '{self.namespace or ROOT_LABEL}': named connection '{binding.link.name}' -- the broker refused "
+                f"the subscription to deliver subject '{spec.deliver_subject}' ({refused[0]}). The tenant's account is "
+                "not allowed to receive on it: grant the account that subject, or correct the deliver subject in the "
+                "binding. Not retried: a missing grant does not appear by itself."
+            )
         binding.subscriptions.append(sub)
         logger.info(
             "Agent '%s' bound to consumer '%s' on stream '%s' (deliver subject '%s', group '%s', subjects %s)",
@@ -3094,6 +3325,17 @@ class NATSClient(IOClientBase):
         # Paused or not: the loop connects either way and subscribes only an agent that is not paused.
         self._start_retry_task()
 
+    async def _on_error(self, error: Exception) -> None:
+        """nats-py's error callback for the default connection: record a permission violation, log every error.
+
+        A grant the account lacks is reported only here -- the request it refused just times out --
+        so the connect loop reads this list to tell a missing grant from a slow broker (D23). Set,
+        it replaces nats-py's own callback, which logged the error with a traceback and no agent.
+        """
+        if "permissions violation" in str(error).lower():
+            self._link.permission_errors.append(str(error))
+        logger.error("Agent '%s': error on the NATS connection: %s", self.namespace or ROOT_LABEL, self._describe_error(self._link, error))
+
     async def _on_reconnected(self) -> None:
         logger.info("NATSClient reconnected")
         if not self._subscriptions_managed:
@@ -3116,6 +3358,11 @@ class NATSClient(IOClientBase):
             # That is re-checked; nothing is re-subscribed.
             try:
                 await self._ensure_broker_state()
+            except DeterministicTransportError as e:
+                # A broker that came back with another subscription's durable, or a stream that can
+                # no longer be widened: as final after a reconnect as at the first connect (D23).
+                self._report_fatal(e)
+                return
             except Exception as e:
                 logger.error(
                     "Agent '%s': re-checking the JetStream stream and consumers after a reconnect failed: %s",

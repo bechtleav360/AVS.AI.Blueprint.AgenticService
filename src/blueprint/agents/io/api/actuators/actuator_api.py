@@ -15,7 +15,7 @@ from fastapi import HTTPException, status
 from opentelemetry import trace
 
 from ....component.component import Component, traced
-from ....component.namespace import ROOT_NAMESPACE
+from ....component.namespace import ROOT_LABEL, ROOT_NAMESPACE
 from ....component.registry import Registry
 from ....config import Config
 from ....config.config import DEFAULT_ENVVAR_PREFIX
@@ -74,6 +74,33 @@ class ActuatorApi(RestApiBase):
         self._namespaces: tuple[str, ...] = tuple(namespaces)
         self._critical_agents: tuple[str, ...] = tuple(critical_agents)
         self._supervisor: NamespaceSupervisor | None = None
+        self._not_live: dict[str, str] = {}
+        self._orphaned: dict[str, str] = {}
+
+    def mark_not_live(self, namespace: str, reason: str) -> None:
+        """Make the liveness probe answer DOWN for good, naming ``namespace`` and why (D23).
+
+        For a fault no retry and no recovery can fix -- the broker's answer is final -- so the
+        orchestrator restarts the pod and the operator who looks finds the reason in the probe's
+        payload. Latched: nothing in the process can make the fault go away.
+
+        Args:
+            namespace: The agent the fault belongs to; ``""`` for the root.
+            reason: What failed and what to change, as the fault's message says it.
+        """
+        self._not_live.setdefault(namespace, reason)
+
+    def mark_orphaned(self, namespace: str, reason: str) -> None:
+        """Make the liveness probe answer DOWN while ``namespace`` consumes nothing for a reason that does not pass by itself (N12).
+
+        Not latched, unlike :meth:`mark_not_live`: the resume that keeps failing may still succeed,
+        and :meth:`clear_orphaned` takes it back then.
+        """
+        self._orphaned[namespace] = reason
+
+    def clear_orphaned(self, namespace: str) -> None:
+        """``namespace`` consumes again."""
+        self._orphaned.pop(namespace, None)
 
     @property
     def health_entries(self) -> tuple[HealthCheckEntry, ...]:
@@ -270,7 +297,15 @@ class ActuatorApi(RestApiBase):
         Returns 200 OK even if configuration has validation errors, as restarting
         the pod won't fix configuration issues. Configuration errors should be
         caught by the readiness probe instead.
+
+        Answers 503 once an agent hit a transport fault no retry can fix (:meth:`mark_not_live`,
+        D23), and while an agent is orphaned (:meth:`mark_orphaned`, N12), with each such agent and
+        its reason in the payload.
         """
+        if self._not_live or self._orphaned:
+            failures = {namespace or ROOT_LABEL: reason for namespace, reason in {**self._orphaned, **self._not_live}.items()}
+            logger.warning("Liveness probe failed: %s", failures)
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail={"status": "DOWN", "agents": failures})
         if self.config and self.config.has_validation_errors():
             logger.warning(
                 "Liveness probe: configuration validation errors present: %s",

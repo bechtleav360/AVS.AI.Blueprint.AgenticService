@@ -160,6 +160,15 @@ def _framework_attributes(service_name: str, group: str, pod: str, own_service_n
     return {key: value for key, value in attributes.items() if key not in declared or (own_service_name and key == "service.name")}
 
 
+class TelemetryConfigError(ValueError):
+    """The deployment's telemetry declaration cannot be honoured in this process; it fails the start (D17).
+
+    Raised through :meth:`TelemetryManager.configure_tracing`, which otherwise only logs a failure:
+    telemetry that cannot be set up must not stop a service, but telemetry that would be wrong
+    about which agent did what must.
+    """
+
+
 class TelemetryManager(IOBase):
     """Object-oriented manager for logging and tracing setup."""
 
@@ -174,6 +183,10 @@ class TelemetryManager(IOBase):
             namespaces: The agents this process hosts. The root is configured whether or not it
                 appears here, because it is where a single-agent application's components live
                 and where the framework's own root components go.
+
+        Raises:
+            TelemetryConfigError: in a group, ``service.name`` is declared only through
+                ``OTEL_RESOURCE_ATTRIBUTES`` (D17). Every other failure is logged, not raised.
         """
 
         if self.config is None:
@@ -199,6 +212,16 @@ class TelemetryManager(IOBase):
             # every agent would make their telemetry impossible to tell apart.
             grouped = any(namespace != ROOT_NAMESPACE for namespace in namespaces)
             declared_service_name = os.environ.get("OTEL_SERVICE_NAME", "").strip()
+            if grouped and not declared_service_name and "service.name" in OTELResourceDetector().detect().attributes:
+                # Declared there, it would be every agent's service.name: the deployment's word is
+                # used as declared, and here it would make the agents' telemetry indistinguishable.
+                raise TelemetryConfigError(
+                    f"OTEL_RESOURCE_ATTRIBUTES declares service.name, and this process hosts a group "
+                    f"({', '.join(namespace for namespace in namespaces if namespace)}). Taken as declared it would name "
+                    "every agent alike, so their telemetry could not be told apart. Remove service.name from "
+                    "OTEL_RESOURCE_ATTRIBUTES -- each agent then reports its own name -- or set OTEL_SERVICE_NAME, which "
+                    "names the root only."
+                )
             if grouped and declared_service_name:
                 logger.warning(
                     "OTEL_SERVICE_NAME is set to '%s', which names the root's telemetry only: in a group every agent "
@@ -212,7 +235,7 @@ class TelemetryManager(IOBase):
                     continue
                 own_service_name = bool(declared_service_name) and namespace != ROOT_NAMESPACE
                 self._configure_namespace(
-                    namespace, observability.otel_service_name, group, pod, span_processors, metric_exporters, own_service_name
+                    namespace, self._service_name(namespace, observability), group, pod, span_processors, metric_exporters, own_service_name
                 )
             _register_exit_hook()
 
@@ -226,13 +249,26 @@ class TelemetryManager(IOBase):
 
             self._setup_instrumentation()
 
+        except TelemetryConfigError:
+            raise
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.error("Failed to configure telemetry", exc_info=exc)
+
+    def _service_name(self, namespace: str, observability: Any) -> str:
+        """The ``service.name`` of ``namespace``: the root's ``otel_service_name``, else the agent's view's (N16).
+
+        An agent's view resolves its own name -- ``<agent>.otel_service_name`` when the agent set one,
+        else the agent's name, never the root's value (C2). Reading it there, rather than taking the
+        namespace, is what lets an agent's own setting reach its resource.
+        """
+        if namespace == ROOT_NAMESPACE:
+            return str(observability.otel_service_name)
+        return str(self.config.for_namespace(namespace).get_observability_config().otel_service_name)  # type: ignore[union-attr]
 
     @staticmethod
     def _configure_namespace(
         namespace: str,
-        root_service_name: str,
+        service_name: str,
         group: str,
         pod: str,
         span_processors: Sequence[_SharedSpanProcessor],
@@ -248,7 +284,8 @@ class TelemetryManager(IOBase):
 
         Args:
             namespace: The agent to configure; ``""`` for the root.
-            root_service_name: ``otel_service_name``, used only for the root.
+            service_name: The name to report: ``otel_service_name`` for the root, the agent's own
+                (its name, or ``<agent>.otel_service_name``) for an agent.
             group: The deployment group, for ``deployment.group``.
             pod: The replica, for ``service.instance.id``.
             span_processors: The process's span processors, shared by every provider.
@@ -257,7 +294,6 @@ class TelemetryManager(IOBase):
             own_service_name: Keep ``service.name`` although ``OTEL_SERVICE_NAME`` declares one --
                 an agent of a group (D17).
         """
-        service_name = root_service_name if namespace == ROOT_NAMESPACE else namespace
         resource = Resource.create(_framework_attributes(service_name, group, pod, own_service_name))
 
         # No atexit hook per provider: shutdown_providers() closes them in order, the root last.

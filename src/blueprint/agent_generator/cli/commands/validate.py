@@ -15,12 +15,17 @@ from argparse import Namespace
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dynaconf import Dynaconf
 
-from blueprint.agents.clients.io.io_client_base import TOPIC_TRANSPORTS, validate_subject_segment
-from blueprint.agents.clients.io.nats_client import CONNECTIONS_READINESS_MODES
+from blueprint.agents.clients.io.io_client_base import TOPIC_TRANSPORTS
+from blueprint.agents.clients.io.nats_client import (
+    CONNECTIONS_READINESS_MODES,
+    resolve_heartbeat_enabled,
+    resolve_nats_url,
+    resolve_root_queue_group,
+    validate_durable_name,
+)
 from blueprint.agents.clients.io.nats_run_pool import RunLimit
 from blueprint.agents.config.config import (
     AGENT_REFUSED_KEYS,
@@ -31,12 +36,14 @@ from blueprint.agents.config.config import (
     environment_section_names,
     layer_settings_document,
 )
+from blueprint.agents.handler.handler_chain import dedup_redelivery_warning, resolve_idempotency_policy
 from blueprint.agents.io.api.scheduling.scheduler import (
     SCHEDULER_MODE_EVENT,
     SCHEDULER_MODE_IN_PROCESS,
     SCHEDULER_MODES,
     delivers_ticks,
     normalise_scheduler_mode,
+    resolve_scheduler_timezone,
     validate_crontab,
 )
 from blueprint.agents.utils import parse_bool
@@ -691,16 +698,11 @@ def scheduler_findings(agent_dir: Path, *, view: SettingsView, settings: Process
             )
         return issues, [], notices
 
-    # In process: the timer reads scheduler_timezone, as SchedulerBase reads it at startup.
-    timezone = str(view.get("scheduler_timezone", "") or "").strip()
-    if timezone:
-        try:
-            ZoneInfo(timezone)
-        except (ZoneInfoNotFoundError, ValueError):
-            issues.append(
-                f"{named}'scheduler_timezone' is {timezone!r}, which is not an IANA timezone name (such as "
-                "'Europe/Berlin' or 'UTC'). Every in-process scheduler fails to start"
-            )
+    # In process: the timer reads scheduler_timezone, with the runtime's own rule.
+    try:
+        resolve_scheduler_timezone(view.get("scheduler_timezone", ""))
+    except ValueError as exc:
+        issues.append(f"{named}{exc} Every in-process scheduler fails to start")
     if not main_declares_a_cache(agent_dir):
         notices.append(
             "\n".join(
@@ -736,57 +738,23 @@ def _disk_claim_notice(view: SettingsView, named: str, what: str) -> str | None:
 def dedup_findings(agent_dir: Path, *, view: SettingsView, settings: ProcessSettings, agent: str = "") -> Findings:
     """The dedup policy a handler chain resolves at startup, and the warnings it logs.
 
-    The rules of ``HandlerChain._resolve_idempotency_policy`` and ``_warn_without_a_heartbeat``,
-    in their own words. Neither is public, and both live in the runtime, so they are restated here
-    and pinned by tests; the boolean is read with the runtime's ``parse_bool``.
+    The runtime's own ``resolve_idempotency_policy`` and ``dedup_redelivery_warning`` (N19); a
+    cache counts when ``src/main.py`` declares one. The policy stops at its first problem, as
+    startup does.
     """
     if not consumes_events(agent_dir, view):
         return [], [], []
     named = f"Agent '{agent}': " if agent else ""
     try:
-        enabled = parse_bool(view.get("idempotency_enabled", False), "idempotency_enabled")
+        policy = resolve_idempotency_policy(view.get, has_cache=main_declares_a_cache(agent_dir))
     except ValueError as exc:
-        return [f"{named}{exc}"], [], []
-    if not enabled:
+        return [f"{named}{exc} Startup fails"], [], []
+    if not policy.enabled:
         return [], [], []
 
     issues: list[str] = []
-    raw_ttl = view.get("idempotency_ttl")
-    if raw_ttl is None:
-        issues.append(
-            f"{named}'idempotency_enabled' is true but 'idempotency_ttl' is not set. It is the number of seconds a "
-            "processed event is remembered, and it must outlast the broker's redelivery window ('nats_ack_wait' * "
-            "'nats_max_deliver' on JetStream). Startup fails"
-        )
-    else:
-        try:
-            ttl = int(raw_ttl)
-        except (TypeError, ValueError):
-            issues.append(f"{named}Config key 'idempotency_ttl' must be an integer number of seconds, got {raw_ttl!r}.")
-        else:
-            if ttl <= 0:
-                issues.append(f"{named}'idempotency_ttl' must be greater than 0, got {ttl}. It is the dedup window, in seconds.")
-    if not main_declares_a_cache(agent_dir):
-        issues.append(
-            f"{named}'idempotency_enabled' is true but src/main.py declares no cache, so there is nowhere to record "
-            "the events already processed. Add '.with_cache()' to the AppBuilder chain. Startup fails"
-        )
-
-    warnings: list[str] = []
-    bus = _bus(settings)
-    label = agent or "<root>"
-    if bus == "nats" and view.get("nats_heartbeat_enabled", True) is False:
-        warnings.append(
-            f"Agent '{label}' deduplicates events with 'nats_heartbeat_enabled = false': a run that outlasts ack_wait "
-            "is redelivered while it runs, the redelivery is skipped as a duplicate and acknowledged, and if the first "
-            "run then fails the event is lost. Keep the heartbeat on, or keep runs well under ack_wait."
-        )
-    elif bus == "dapr":
-        warnings.append(
-            f"Agent '{label}' deduplicates events under Dapr, which has no heartbeat: a run that outlasts the sidecar's "
-            "app-call timeout is delivered again while it runs, that delivery is skipped as a duplicate, and if the "
-            "first run then fails the event is lost. Keep runs well under that timeout."
-        )
+    warning = dedup_redelivery_warning(view.get, agent or "<root>")
+    warnings = [warning] if warning else []
 
     notices: list[str] = []
     if main_declares_a_cache(agent_dir):
@@ -827,36 +795,27 @@ def transport_findings(agent_dir: Path, *, view: SettingsView, settings: Process
         return [], warnings, []
 
     issues: list[str] = []
-    environment = str(view.get("app_environment", "development"))
-    if not str(view.get("nats_url", "") or "").strip() and environment.lower() != "development":
-        issues.append(
-            f"{named}'event_bus' is 'nats' but 'nats_url' is not set (app_environment is {environment!r}). Outside "
-            "development there is no default: localhost is rarely right in a container, and a client pointed at it "
-            f"retries forever while the pod looks healthy. Set 'nats_url' in the settings or as "
-            f"{settings.override_variable_prefix}NATS_URL."
+    try:
+        resolve_nats_url(
+            view.get("nats_url", ""),
+            view.get("app_environment", "development"),
+            override_variable=f"{settings.override_variable_prefix}NATS_URL",
         )
-    heartbeat = view.get("nats_heartbeat_enabled", True)
-    if not isinstance(heartbeat, bool):
-        issues.append(f"{named}'nats_heartbeat_enabled' must be true or false, got {heartbeat!r}.")
+    except ValueError as exc:
+        issues.append(f"{named}{exc}")
+    try:
+        resolve_heartbeat_enabled(view.get("nats_heartbeat_enabled", True))
+    except ValueError as exc:
+        issues.append(f"{named}{exc}")
     if not consumes:
         return issues, warnings, []
 
     if not agent:
         # A namespaced client's queue group is its namespace; only the root reads these keys.
-        for key in ("nats_queue_group", "app_name"):
-            name = str(view.get(key, "") or "").strip()
-            if not name:
-                continue
-            try:
-                validate_subject_segment(name, source=f"The queue group (from '{key}')", subject=f"{name}.dead-letter")
-            except ValueError as exc:
-                issues.append(str(exc))
-            break
-        else:
-            issues.append(
-                "NATS subscriptions require a queue group: set 'nats_queue_group' or 'app_name'. Without one every "
-                "replica processes every message."
-            )
+        try:
+            resolve_root_queue_group(view.get)
+        except ValueError as exc:
+            issues.append(str(exc))
 
     durable = str(view.get("nats_durable_name", "") or "").strip()
     if durable and view.get("nats_use_jetstream", False) and not view.get("nats_connection_source"):
@@ -865,12 +824,10 @@ def transport_findings(agent_dir: Path, *, view: SettingsView, settings: Process
         if topics is not None:
             declared = set(topics) | ({str(topic) for topic in subscriptions if topic} if isinstance(subscriptions, list) else set())
             count = len(declared) + (len(scheduler_modules(agent_dir)) if _mode(view) == SCHEDULER_MODE_EVENT else 0)
-            if count > 1:
-                issues.append(
-                    f"{named}'nats_durable_name' is set to '{durable}' but {count} topics are subscribed. A JetStream "
-                    "durable filters one subject, so one name cannot serve them all. Remove the key to derive a "
-                    "durable per topic."
-                )
+            try:
+                validate_durable_name(durable, count)
+            except ValueError as exc:
+                issues.append(f"{named}{exc}")
     return issues, warnings, []
 
 

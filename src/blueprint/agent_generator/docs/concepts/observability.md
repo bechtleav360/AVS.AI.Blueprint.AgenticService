@@ -42,7 +42,7 @@ its own resource:
 
 | Attribute | Value |
 |---|---|
-| `service.name` | The agent's own name. `otel_service_name` for the root namespace. |
+| `service.name` | The agent's own name, or `<agent>.otel_service_name` when the agent sets one for itself. `otel_service_name` for the root namespace. |
 | `deployment.group` | The group the process resolved -- `BLUEPRINT_GROUP`, or the one group a mounted group file declares. Absent for a standalone agent and for a group nothing named (`BLUEPRINT_AGENTS` alone). Set by the framework; no supported API exposes it to an agent (C6). |
 | `service.instance.id` | `POD_NAME`, else `HOSTNAME`, else the host name. When none can be told, the framework sets nothing and the OpenTelemetry SDK's own default applies. |
 
@@ -51,8 +51,9 @@ its own resource:
 attributes the deployment left out, and never replaces a declared one. **One exception:** in a
 group, `OTEL_SERVICE_NAME` names the root's telemetry only, and every agent keeps its own name as
 `service.name` -- one name for all of them would make their telemetry impossible to tell apart.
-Startup logs a WARNING naming the value. A `service.name` in `OTEL_RESOURCE_ATTRIBUTES` is left as
-declared, and gives every agent that name -- the deployment's choice, not the framework's.
+Startup logs a WARNING naming the value. A `service.name` in `OTEL_RESOURCE_ATTRIBUTES` without
+`OTEL_SERVICE_NAME` fails the start of a group: taken as declared it would give every agent that
+name. Remove it there, or set `OTEL_SERVICE_NAME` instead. Standalone it is used as declared.
 
 So an agent called `orders` reports `service.name = "orders"` whether it runs alone or beside
 nineteen others, and a dashboard keyed on it cannot tell which. A single-agent application keeps
@@ -149,14 +150,28 @@ the only attribution available is what was emitted *before* the process died.
 
 | Endpoint | Answers |
 |---|---|
-| `GET /health/live` | `200` while the process is running. Never namespace-dependent (C3). |
+| `GET /health/live` | `200` while the process is running; `503` once an agent hit a transport fault no retry can fix, naming each such agent and why (C3). |
 | `GET /health/ready` | `200` when the pod should receive traffic, `503` otherwise. Answered from the last poll's result at once, also while a poll is still waiting on a slow check. |
 | `GET /info`, `/status/env`, `/status/llm`, `/status/build` | Service, configuration, AI-provider and build metadata. |
 
-**Liveness is never namespace-dependent, and that is a rule rather than an accident.** A failing
+**A degraded agent never fails liveness, and that is a rule rather than an accident.** A failing
 liveness probe restarts the pod, and in a group that restarts every agent in it -- reintroducing
 exactly the blast radius the grouping was paid to remove. So liveness reflects the process and the
-event loop, and nothing else.
+event loop.
+
+**The one exception is a transport fault no retry can fix**: a durable that filters another subject, a stream the server refuses to create or widen, a grant the account lacks, a tenant's login or deliver subject refused. The broker answered and the
+answer is final, so the agent consumes nothing until someone changes the broker or the deployment.
+Such a fault is logged CRITICAL -- what failed, where, why it is final, what to change -- in any
+agent, critical or not, and `/health/live` answers `503` with `{"status": "DOWN", "agents": {...}}`
+naming each such agent and its reason. The restart is how the orchestrator makes someone look. At
+startup the same fault fails the start, whatever `critical_agents` says. A fault that may heal (the
+broker unreachable, a lost connection, a timeout, a stream not yet provisioned) is retried and shows
+in readiness only.
+
+**An orphaned agent fails liveness too, until it consumes again**: its resume after a degradation
+keeps failing (a paused client reports healthy, so readiness alone would read UP), or its
+connection loop gave up after `event_client_max_retries`. It is logged CRITICAL once, and when it
+consumes again liveness comes back and a WARNING says so.
 
 ### Readiness is a policy
 
@@ -172,7 +187,7 @@ readiness_policy = "critical"   # "all" (default) | "critical" | "any"
 | `any` | Ready while at least one agent is up. |
 
 The root namespace gates readiness under every policy: it holds the shared infrastructure, so its
-failure is not a partial one. In a single-agent application the root is the whole application, and
+failure is not a partial one. An agent latched down -- its startup failed and recovery retries it, or its transport failed for good -- gates readiness under every policy, critical or not: it consumes nothing for a reason that is not transient. In a single-agent application the root is the whole application, and
 all three policies therefore agree -- which is what makes the key safe to set in a settings file
 that standalone projects also read.
 
@@ -262,13 +277,14 @@ framework's, with a WARNING at startup -- the way to override a built-in check.
 
 With a `nats_connection_source`, each agent's client gets one more entry,
 `<agent>.nats_client:connections`. Its message lists every named connection and how it stands --
-`bound`, `connecting`, `reconnecting`, `retrying` (with the last error, credentials redacted) or
-`paused` -- and whether the broker reported a permission violation:
+`bound`, `connecting`, `reconnecting`, `retrying` (with the last error, credentials redacted),
+`failed` (a tenancy fault no retry fixes: the login or a grant refused; also logged CRITICAL and
+failing liveness, above) or `paused` -- and whether the broker reported a permission violation:
 
 ```json
 "orders.nats_client:connections": {
   "status": "unhealthy",
-  "message": "1/2 named connection(s) bound, readiness 'all': A=bound, B=retrying (Error: nats: 'Authorization Violation')"
+  "message": "1/2 named connection(s) bound, readiness 'all': A=bound, B=retrying (OSError: connection refused)"
 }
 ```
 

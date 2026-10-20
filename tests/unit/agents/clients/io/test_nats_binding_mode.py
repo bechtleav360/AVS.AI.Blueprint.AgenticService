@@ -8,7 +8,7 @@ import pytest
 from nats.js import api as js_api
 from nats.js.errors import APIError, NotFoundError
 
-from blueprint.agents.clients.io.nats_client import JetStreamBindingError, NATSClient, _Binding
+from blueprint.agents.clients.io.nats_client import JetStreamBindingError, NATSClient, TenancyError, _Binding
 from blueprint.agents.clients.io.nats_connections import JetStreamBinding
 from blueprint.agents.models.errors import RetryableHandlerError
 from blueprint.agents.models.events import CloudEvent
@@ -224,7 +224,7 @@ class TestARefusedSubscription:
         mock_nats_core.jsm = MagicMock(return_value=jsm)
         nats_client._link.nats_client = mock_nats_core
 
-        with pytest.raises(PermissionError, match="acme.agent.A.risk"):
+        with pytest.raises(TenancyError, match="acme.agent.A.risk"):
             await nats_client._subscribe_all(binding)
 
         mock_nats_core.subscribe.return_value.unsubscribe.assert_awaited_once()

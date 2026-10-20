@@ -45,6 +45,7 @@ question asked of a group that misbehaves.
 import logging
 import os
 import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -71,6 +72,17 @@ AGENT_MAP_ENV = "BLUEPRINT_AGENT_MAP"
 
 DEFAULT_GROUP_CONFIG = "deployment-groups.yaml"
 DEFAULT_AGENT_MAP = "agents.toml"
+
+
+def group_file_path(env: Mapping[str, str] | Any, root: Path) -> Path:
+    """Where the group file is looked for, whether or not it exists; shared with ``asbs validate`` (N19).
+
+    ``BLUEPRINT_GROUP_CONFIG`` when it is set, else ``./deployment-groups.yaml``; a relative path is
+    relative to ``root``, the image root.
+    """
+    configured = str(env.get(GROUP_CONFIG_ENV, "") or "").strip()
+    path = Path(configured) if configured else root / DEFAULT_GROUP_CONFIG
+    return path if path.is_absolute() else root / path
 
 
 class GroupConfigError(Exception):
@@ -250,10 +262,8 @@ class GroupConfig:
 
     @staticmethod
     def _group_file_path(env: dict[str, str] | Any, root: Path) -> Path:
-        """Return where the group file is looked for, whether or not it exists."""
-        configured = str(env.get(GROUP_CONFIG_ENV, "") or "").strip()
-        path = Path(configured) if configured else root / DEFAULT_GROUP_CONFIG
-        return path if path.is_absolute() else root / path
+        """Return where the group file is looked for, whether or not it exists; see :func:`group_file_path`."""
+        return group_file_path(env, root)
 
     @classmethod
     def _read_group_file(cls, env: dict[str, str] | Any, root: Path) -> dict[str, Any]:

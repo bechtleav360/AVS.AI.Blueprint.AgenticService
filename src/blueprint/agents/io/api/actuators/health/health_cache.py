@@ -184,7 +184,9 @@ class HealthCheckCache:
                         components[entry.key] = result
 
                 namespace_status, consumption_status, namespaces = self._aggregate_by_agent(components)
-                overall_status = "UP" if self._policy.is_ready(namespace_status, self._critical_namespaces()) else "DOWN"
+                orphaned = self._supervisor.forced_down if self._supervisor is not None else {}
+                ready = self._policy.is_ready(namespace_status, self._critical_namespaces(), orphaned)
+                overall_status = "UP" if ready else "DOWN"
 
                 # Update cache
                 self._cached_response = ReadinessResponse(

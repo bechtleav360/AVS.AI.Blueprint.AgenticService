@@ -39,7 +39,7 @@ from .io.api.utilities.root import RootApi
 from .io.api.utilities.cache import CacheManagementApi
 from .clients.io.dapr_client import DaprClient
 from .clients.io.io_client_base import TOPIC_TRANSPORTS
-from .clients.io.nats_client import NATSClient
+from .clients.io.nats_client import DeterministicTransportError, NATSClient
 from .clients.io.nats_connections import CONNECTION_SOURCE_KEY, ConnectionSource, load_connection_source
 from .clients.io.nats_run_pool import RunLimit, RunPool
 from .services.service_base import ServiceBase
@@ -57,6 +57,7 @@ from .io.telemetry.loop_watchdog import (
     LoopWatchdog,
     configure_loop_debug,
 )
+from .io.telemetry.telemetry import TelemetryConfigError
 from .utils import parse_bool
 
 _UNCONSTRUCTED_KINDS = frozenset({"cache", "health_checker"})
@@ -1116,6 +1117,7 @@ class AppBuilder:
         elif event_bus_type == "nats":
             client = NATSClient(namespace=namespace)  # auto-registers
             client.set_fatal_handler(self._on_transport_fatal)
+            client.set_orphan_handler(self._on_orphaned)
             client.set_health_refresh(self._refresh_health)
             client.set_connection_source(connection_source)
             if connection_source is not None:
@@ -1357,6 +1359,12 @@ class AppBuilder:
         The root is always critical: it holds the shared infrastructure, and there is no
         "rest of the process" to keep running without it.
 
+        **A fault no retry can fix fails the start in every agent** (D23): a
+        :class:`DeterministicTransportError` is logged CRITICAL and propagates whatever
+        ``critical_agents`` says. That flag decides only for faults that may heal -- which is what
+        startup recovery retries -- and a deterministic one would latch the agent down for good
+        while the pod reported a replica that is silently short a consumer.
+
         Args:
             kind: What sort of component this is, for the log line.
             component: The component to start.
@@ -1364,12 +1372,19 @@ class AppBuilder:
 
         Raises:
             Exception: whatever ``on_startup`` raised, when the component belongs to the root or
-                to a critical agent.
+                to a critical agent, or when it is a :class:`DeterministicTransportError`.
         """
         try:
             await component.on_startup()
         except Exception as exc:
             namespace = namespace_of(component)
+            if isinstance(exc, DeterministicTransportError):
+                logger.critical(
+                    "%s startup failed with a fault no retry can fix, so the start fails whatever 'critical_agents' says: %s",
+                    f"{kind} {label}" if label else kind,
+                    exc,
+                )
+                raise
             if not namespace or namespace in self._critical_namespaces:
                 logger.error("%s startup failed: %s", f"{kind} {label}" if label else kind, exc, exc_info=True)
                 raise
@@ -1398,7 +1413,15 @@ class AppBuilder:
 
         The process is ended with SIGTERM to itself, so uvicorn runs the normal graceful shutdown
         -- the other agents drain -- instead of the interpreter stopping mid-flight.
+
+        **A fault no retry can fix also takes liveness DOWN, in every agent** (D23): a
+        :class:`DeterministicTransportError` -- a durable clash, a stream the server refused, a
+        missing grant, a tenancy fault -- is logged CRITICAL and the liveness probe answers 503
+        naming it, so the orchestrator restarts the pod and an operator sees why. A non-critical
+        agent is not exempt: ``critical_agents`` decides only for faults that may heal.
         """
+        if isinstance(error, DeterministicTransportError) and self._actuator_api is not None:
+            self._actuator_api.mark_not_live(namespace, str(error))
         if not namespace or namespace in self._critical_namespaces:
             logger.critical(
                 "Agent '%s' cannot run, and it is %s, so the process is shut down: %s",
@@ -1408,7 +1431,31 @@ class AppBuilder:
             )
             signal.raise_signal(signal.SIGTERM)
             return
+        if isinstance(error, DeterministicTransportError):
+            logger.critical(
+                "Agent '%s' cannot run, and no retry can fix it, so liveness is DOWN although the agent is not critical: %s",
+                namespace,
+                error,
+            )
         await self._mark_agent_down(namespace, str(error))
+
+    def _on_orphaned(self, namespace: str, reason: str | None) -> None:
+        """An agent stopped consuming for a reason that does not pass by itself, or consumes again (N12).
+
+        Its resume keeps failing, or its connection loop gave up: the client is paused or done, it
+        reports healthy by design, and readiness alone would read UP while nothing is consumed. So
+        liveness goes DOWN, whatever ``critical_agents`` and ``readiness_policy`` say, and comes back
+        when the agent consumes again -- unlike a fault no retry can fix, this one may still clear.
+        """
+        if self._actuator_api is None:  # pragma: no cover - the actuator is started first
+            return
+        label = namespace or ROOT_LABEL
+        if reason is None:
+            self._actuator_api.clear_orphaned(namespace)
+            logger.warning("Agent '%s' consumes again; liveness no longer counts it as orphaned", label)
+            return
+        self._actuator_api.mark_orphaned(namespace, reason)
+        logger.critical("Agent '%s' consumes nothing, and the cause does not pass by itself, so liveness is DOWN: %s", label, reason)
 
     @staticmethod
     def _startup_retry_interval(config: Config) -> float:
@@ -1593,6 +1640,9 @@ class AppBuilder:
             # component's first traced call happens after this point.
             try:
                 self._telemetry_manager.configure_tracing(self.namespaces)
+            except TelemetryConfigError:
+                # Telemetry that would misattribute every agent's work fails the start (D17).
+                raise
             except Exception as e:
                 logger.warning("Failed to configure OpenTelemetry: %s", e)
 

@@ -9,6 +9,7 @@
 | **Amended by** | `docs/plans/2026-09-10-builder-unification.md` -- decided 2026-09-10, folded into sec. 2, 4, 5.3, 8, 9, 10 and 11 below. |
 | **Amended by** | `docs/plans/2026-09-28-grouped-http-surface.md` -- decided 2026-09-28, folded into sec. 10 and 11.2 below. |
 | **Amended by** | PR #96 review, 2026-10-19 -- brought in line with the implementation: C1 (root/agent durable clash), C2 (resolved group, per-provider metric readers, declared OTel keys), C4 (pause instead of close), sec. 2 and 11 (standalone agents at the root), 4.1 and 9 (`AgentGroup.resolve` / `from_config` / `assemble`), 4.2 (handler order restored, not refused), 5.1 (further group-file refusals), 5.3 (config refusals; process-scope keys dropped with a WARNING), 6 (resolved group; history), 7.1 and 7.2 (history; `SKIPPED`; `<undeclared>`; `max_deliver` optional), 7.4 (dedup key), 7.5 (no default mode; claim atomic on Redis only; slot from the fire time; crontab rules; `scheduler_timezone`), 9.1 (no agent left), 10 (instances refused by `build(config)`), 11.1 (`event_loop_debug`, watchdog), 12 (claim criteria scoped to Redis). Each change is marked in place. |
+| **Amended by** | PR #96 review step 22, 2026-10-20 -- owner decision D23 in `docs/plans/2026-10-16-pr96-review-fixes.md`: C1 (the root/agent clash is not retried), C3 (a transport fault no retry can fix takes liveness DOWN), 9.1 (such a fault fails the start whatever `critical` says). Each change is marked in place. |
 | **Deferred out of** | `docs/plans/2026-09-10-config-validation-unification.md` -- configuration validation is not part of this feature. |
 
 Requirement keywords (**MUST**, **MUST NOT**, **SHOULD**, **MAY**) are used in the RFC 2119 sense.
@@ -84,9 +85,10 @@ other deployment identifier.
     `f"{topic}-durable"` has no namespace segment, so root topic `orders-created` and agent
     `orders` on topic `created` still derive one name (`orders-created-durable`). That clash
     **MUST** fail rather than share a consumer: the client refuses to bind a durable whose filter
-    is another subject (`JetStreamBindingError`), naming the consumer and the fix. *(Amended
+    is another subject (`DurableConflictError`), naming the consumer and the fix. *(Amended
     2026-10-19, PR #96 review: the root/agent clash is not prevented by the alphabet, and is
-    refused at bind.)*
+    refused at bind.)* It is not retried: it is a fault no retry can fix (C3, sec. 9.1).
+    *(Amended 2026-10-20, D23.)*
   - `<` and `>` keep the sec. 6 connection-name placeholders unforgeable. `>` is a NATS wildcard
     and illegal in a consumer name in any case.
 
@@ -139,22 +141,41 @@ shutdown as implemented.)*
 When the namespace is `""`, the provider **MUST** use `otel_service_name` from config, reproducing
 current behaviour exactly (`io/telemetry/telemetry.py:39-41`).
 
-**Keys the deployment declares.** *(Amended 2026-10-19, PR #96 review: describes the current
-behaviour; decision D23 (c) in `docs/plans/2026-10-16-pr96-review-fixes.md` is open and may change
-it.)* A key set in `OTEL_RESOURCE_ATTRIBUTES` or by `OTEL_SERVICE_NAME` is used as declared and
-replaces the framework's value, on every provider. The one exception is `OTEL_SERVICE_NAME` in a
-group: every agent's provider keeps `service.name = <namespace>`, the root's provider takes the
-declared name, and one startup WARNING names the value and says it applies to the root only. A
-`service.name` given only in `OTEL_RESOURCE_ATTRIBUTES` is not excepted, so it currently names
-every agent of a group alike.
+**Keys the deployment declares.** *(Amended 2026-10-19, PR #96 review; and 2026-10-20, decision
+D23 (c) in `docs/plans/2026-10-16-pr96-review-fixes.md`.)* A key set in `OTEL_RESOURCE_ATTRIBUTES` or
+by `OTEL_SERVICE_NAME` is used as declared and replaces the framework's value, on every provider.
+The one exception is `OTEL_SERVICE_NAME` in a group: every agent's provider keeps its own
+`service.name`, the root's provider takes the declared name, and one startup WARNING names the value
+and says it applies to the root only. A `service.name` given only in `OTEL_RESOURCE_ATTRIBUTES` --
+no `OTEL_SERVICE_NAME` -- **MUST** fail the start of a group, naming both ways out: taken as declared
+it would name every agent alike. Standalone it is used as declared.
+
+An agent's own `service.name` is its name, or `<agent>.otel_service_name` when the agent sets one for
+itself; the root's `otel_service_name` never applies to an agent. *(Amended 2026-10-20, N16: the
+agent's own setting was resolved and never used.)*
 
 ### C3 -- Liveness is never namespace-dependent
 
 The liveness probe **MUST** reflect only process and event-loop health. A degraded namespace
 **MUST NOT** cause a liveness failure, because that restarts every agent in the group.
 
-Already satisfied: `io/api/actuators/actuator_api.py:126-143` returns `UP` unconditionally. This
-invariant exists to stop the behaviour from being changed, not to change it.
+**One exception: a transport fault no retry can fix.** The broker answered, and the answer is final
+-- a durable that filters another subject (C1), a stream the server refuses to create or widen, a
+grant the account lacks, a tenant's login or deliver subject refused. Such a fault **MUST** take
+liveness DOWN, in whichever agent it happens and whatever its `critical` flag, and **MUST** be logged
+CRITICAL with what failed, where, why it is final and what to change; `/health/live` answers 503
+naming each such agent and its reason. The agent consumes nothing until someone changes the broker
+or the deployment, so the pod is short a consumer for good, and a restart is how the orchestrator
+makes an operator look. Restarting the group's other agents is the accepted price. A fault that may
+heal -- the broker unreachable, a connection lost, a timeout, a stream not yet provisioned -- stays
+a degraded namespace under this invariant and `readiness_policy`. *(Amended 2026-10-20, owner
+decision D23: liveness was `UP` unconditionally.)*
+
+**An orphaned agent also takes liveness DOWN**: one that should consume and does not, for a reason
+that does not pass by itself -- its resume after a degradation keeps failing (the client is paused
+and so reports healthy), or its connection loop gave up (`event_client_max_retries`). Unlike the
+fault above it may still clear, so liveness comes back when the agent consumes again. *(Amended
+2026-10-20, N12 / D21, decided with D23.)*
 
 Readiness **MUST** follow `readiness_policy`:
 
@@ -163,6 +184,11 @@ Readiness **MUST** follow `readiness_policy`:
 | `"all"` | **Default.** Any degraded namespace makes the pod not ready. Reproduces current behaviour. |
 | `"critical"` | Only namespaces marked `critical` gate readiness. |
 | `"any"` | Ready while at least one namespace is up. |
+
+Whatever the policy, a namespace latched down (sec. 9.1, and a non-critical agent whose transport
+failed for good) **MUST** gate readiness: it consumes nothing for a reason that is not transient,
+and a policy that ignores it would report a pod short a consumer as ready. *(Amended 2026-10-20,
+N12 / D21: the policy decided for latched namespaces too.)*
 
 A degraded namespace **MUST** be reported as `blueprint_namespace_up{agent="..."} = 0` and an
 ERROR-level event regardless of policy. Alerting is driven by that signal, not by the probe. C7
@@ -957,9 +983,15 @@ There is no partial build: one process, one `build()`. The `critical` flag is th
 | Module import raises | exit non-zero | log ERROR, skip |
 | `on_startup` raises | exit non-zero | mark namespace down, pause consumers (C4), continue; retry (below) |
 | No agent left after the skips above | exit non-zero | exit non-zero |
+| A transport fault no retry can fix (C3) | exit non-zero | exit non-zero |
 
 *(Amended 2026-10-19, PR #96 review: last row added -- a pod with no agent passes its probes while
 it consumes nothing, which is the failure criticality exists to prevent.)*
+
+*(Amended 2026-10-20, D23: last row added. `critical` decides only for failures that may heal,
+which is what the retry below is for; a fault no retry can fix would latch the agent down for good.
+Found after startup, such a fault is logged CRITICAL and takes liveness DOWN (C3); the root or a
+critical agent also ends the process, as for any fatal transport error.)*
 
 Exit **MUST** happen before the port is bound, so Kubernetes crash-loops with a readable message
 rather than reporting a healthy pod that is silently short-staffed.
@@ -969,7 +1001,8 @@ Every `startup_retry_interval_seconds` (default 30, process scope) the framework
 again on that namespace's failed components, in their original start order, stopping at the first
 that raises again. When all of them have started, the mark is released and the namespace's health
 checks decide from then on. While it is marked, the readiness payload **MUST** report the namespace
-`DOWN` with the failure as its reason, whatever its health checks say -- the mark exists because a
+`DOWN` with the failure as its reason, whatever its health checks say, and the namespace gates
+readiness under every policy (C3) -- the mark exists because a
 component that failed to start may still pass its check. Terminating instead is not a recovery: a
 deterministic failure fails the same way after a restart, and the restart takes every healthy
 namespace in the process down with it. `on_startup` **MUST** therefore be safe to call again after

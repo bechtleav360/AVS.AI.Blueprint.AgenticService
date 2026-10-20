@@ -261,3 +261,36 @@ app_name = "from-production"
         config = Config(settings_files=[str(path)], root_path=str(tmp_path))
 
         assert config.get("app_name") == "from-default"
+
+    def test_a_sectioned_declaration_reads_as_the_environment_that_loaded_and_is_warned(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """N15 -- it read 'production' while [development] was loaded, so production checks ran in development."""
+        monkeypatch.delenv("DYNACONF_APP_ENVIRONMENT", raising=False)
+        monkeypatch.delenv("ENV_FOR_DYNACONF", raising=False)
+        path = self._written(
+            tmp_path,
+            """
+[default]
+app_environment = "production"
+app_name = "from-default"
+app_port = 8000
+""",
+        )
+        with caplog.at_level("WARNING"):
+            config = Config(settings_files=[str(path)], root_path=str(tmp_path))
+
+        assert config.get("app_environment") == "development"
+        assert config.for_namespace("orders").get("app_environment") == "development"
+        assert "app_environment = 'production', but the 'development' environment was loaded" in caplog.text
+
+    def test_a_selected_environment_reads_as_itself_without_a_warning(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        monkeypatch.setenv("DYNACONF_APP_ENVIRONMENT", "production")
+        path = self._written(tmp_path, '[default]\napp_name = "a"\napp_port = 8000\n\n[production]\napp_name = "b"\n')
+        with caplog.at_level("WARNING"):
+            config = Config(settings_files=[str(path)], root_path=str(tmp_path))
+
+        assert config.get("app_environment") == "production"
+        assert "does not select the environment" not in caplog.text

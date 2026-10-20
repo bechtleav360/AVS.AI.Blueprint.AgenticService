@@ -315,3 +315,40 @@ class TestTransport:
         issues, _, _ = _findings(project)
 
         assert any("event_loop_debug" in issue for issue in issues)
+
+
+class TestTheValidatorAppliesTheRuntimesOwnRules:
+    """N19 -- a rule restated in the validator drifts from the runtime's; it calls the runtime's function instead."""
+
+    @pytest.mark.parametrize(
+        ("module", "name"),
+        [
+            ("blueprint.agents.clients.io.nats_client", "resolve_nats_url"),
+            ("blueprint.agents.clients.io.nats_client", "resolve_heartbeat_enabled"),
+            ("blueprint.agents.clients.io.nats_client", "resolve_root_queue_group"),
+            ("blueprint.agents.clients.io.nats_client", "validate_durable_name"),
+            ("blueprint.agents.handler.handler_chain", "resolve_idempotency_policy"),
+            ("blueprint.agents.handler.handler_chain", "dedup_redelivery_warning"),
+            ("blueprint.agents.io.api.scheduling.scheduler", "resolve_scheduler_timezone"),
+        ],
+    )
+    def test_the_single_command_uses_the_runtimes_function(self, module: str, name: str) -> None:
+        import importlib
+
+        from blueprint.agent_generator.cli.commands import validate
+
+        assert getattr(validate, name) is getattr(importlib.import_module(module), name)
+
+    @pytest.mark.parametrize(
+        ("module", "name"),
+        [
+            ("blueprint.agents.io.api.eventing.dapr", "shared_topic_warnings"),
+            ("blueprint.agents.group_config", "group_file_path"),
+        ],
+    )
+    def test_the_group_command_uses_the_runtimes_function(self, module: str, name: str) -> None:
+        import importlib
+
+        from blueprint.agent_generator.cli.commands import validate_group
+
+        assert getattr(validate_group, name) is getattr(importlib.import_module(module), name)

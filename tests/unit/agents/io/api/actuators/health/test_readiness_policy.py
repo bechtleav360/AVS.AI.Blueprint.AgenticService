@@ -63,3 +63,16 @@ class TestAGroup:
 
     def test_any_refuses_readiness_when_every_agent_is_down(self) -> None:
         assert ReadinessPolicy.ANY.is_ready({"": True, "orders": False, "billing": False}, set()) is False
+
+
+class TestAnOrphanedAgent:
+    """N12, D23 -- a latched agent consumes nothing for a reason that is not transient: it gates under every policy."""
+
+    @pytest.mark.parametrize("policy", list(ReadinessPolicy))
+    def test_it_takes_the_pod_out_whatever_the_policy(self, policy: ReadinessPolicy) -> None:
+        status = {"": True, "orders": True, "billing": False}
+        assert policy.is_ready(status, {"orders"}, orphaned={"billing"}) is False
+
+    def test_without_it_the_policy_still_decides(self) -> None:
+        status = {"": True, "orders": True, "billing": False}
+        assert ReadinessPolicy.CRITICAL.is_ready(status, {"orders"}, orphaned=()) is True

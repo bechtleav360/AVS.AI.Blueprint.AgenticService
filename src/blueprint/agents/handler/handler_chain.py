@@ -5,6 +5,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from collections.abc import Callable
 from typing import Any
 
 from opentelemetry import trace
@@ -183,6 +184,87 @@ class IdempotencyPolicy:
 
     enabled: bool
     ttl: int
+
+
+def resolve_idempotency_policy(get: Callable[[str, Any], Any], *, has_cache: bool) -> IdempotencyPolicy:
+    """Read and validate the dedup settings (spec sec. 7.4); shared with ``asbs validate`` (N19).
+
+    ``idempotency_ttl`` has no default on purpose. The window has to outlast the redelivery
+    window it is there to cover -- under JetStream that is ``nats_ack_wait * nats_max_deliver``,
+    under Dapr it is whatever the component's retry policy says -- and neither number is one this
+    layer can read. Choosing a value here would mean shipping a dedup window that silently expires
+    before the last redelivery arrives, which looks exactly like dedup not working. Enabling dedup
+    is therefore two keys, and the second one is the decision spec sec. 7.4 requires the author to
+    make.
+
+    Args:
+        get: How to read a key, ``(key, default) -> value``.
+        has_cache: Whether the agent has a cache to keep the markers in.
+
+    Raises:
+        ValueError: if ``idempotency_enabled`` is not a boolean, if it is on without a positive
+            ``idempotency_ttl``, or if it is on with no cache -- there would be nowhere to keep the
+            markers, and dedup would be silently off.
+    """
+    if not parse_bool(get("idempotency_enabled", False), "idempotency_enabled"):
+        return IdempotencyPolicy(enabled=False, ttl=0)
+
+    raw_ttl = get("idempotency_ttl", None)
+    if raw_ttl is None:
+        raise ValueError(
+            "'idempotency_enabled' is true but 'idempotency_ttl' is not set. It is the number of "
+            "seconds a processed event is remembered, and it must outlast the broker's redelivery "
+            "window ('nats_ack_wait' * 'nats_max_deliver' on JetStream), or a redelivery arrives "
+            "after the marker has expired and is processed again."
+        )
+    try:
+        ttl = int(raw_ttl)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Config key 'idempotency_ttl' must be an integer number of seconds, got {raw_ttl!r}.") from exc
+    if ttl <= 0:
+        raise ValueError(f"'idempotency_ttl' must be greater than 0, got {ttl}. It is the dedup window, in seconds.")
+
+    if not has_cache:
+        raise ValueError(
+            "'idempotency_enabled' is true but no cache is registered, so there is nowhere to record "
+            "the events already processed. Add '.with_cache()' to the AppBuilder chain."
+        )
+    return IdempotencyPolicy(enabled=True, ttl=ttl)
+
+
+def dedup_redelivery_warning(get: Callable[[str, Any], Any], agent: str) -> str | None:
+    """The warning for dedup where a run can outlast its delivery (S6, plan D4), or ``None``; shared (N19).
+
+    A marker has no "in progress" state: a redelivery that arrives while the first run is still
+    going finds the marker, is skipped as a duplicate and acknowledged -- and if the first run then
+    fails, the event is lost. The NATS heartbeat (``in_progress``) is what stops the broker
+    redelivering a running delivery, so dedup without it is the one combination where that can
+    happen. Dapr has no heartbeat at all: the sidecar's app-call timeout decides when it gives up on
+    a delivery and sends it again.
+
+    Args:
+        get: How to read a key, ``(key, default) -> value``, for an agent that deduplicates.
+        agent: The agent's name for the message; ``<root>`` for the root.
+    """
+    bus = str(get("event_bus", "") or "").strip().lower()
+    try:
+        heartbeat = parse_bool(get("nats_heartbeat_enabled", True), "nats_heartbeat_enabled")
+    except ValueError:
+        # Not ours to refuse: the NATS client fails startup on the same value, naming it.
+        heartbeat = True
+    if bus == "nats" and not heartbeat:
+        return (
+            f"Agent '{agent}' deduplicates events with 'nats_heartbeat_enabled = false': a run that outlasts ack_wait is "
+            "redelivered while it runs, the redelivery is skipped as a duplicate and acknowledged, and if the first run "
+            "then fails the event is lost. Keep the heartbeat on, or keep runs well under ack_wait."
+        )
+    if bus == "dapr":
+        return (
+            f"Agent '{agent}' deduplicates events under Dapr, which has no heartbeat: a run that outlasts the sidecar's "
+            "app-call timeout is delivered again while it runs, that delivery is skipped as a duplicate, and if the first "
+            "run then fails the event is lost. Keep runs well under that timeout."
+        )
+    return None
 
 
 class HandlerChain(Component):
@@ -501,36 +583,10 @@ class HandlerChain(Component):
     # ------------------------------------------------------------------
 
     def _warn_without_a_heartbeat(self) -> None:
-        """Warn when dedup runs where a run can outlast its delivery (S6, plan D4).
-
-        A marker has no "in progress" state: a redelivery that arrives while the first run is
-        still going finds the marker, is skipped as a duplicate and acknowledged -- and if the
-        first run then fails, the event is lost. The NATS heartbeat (``in_progress``) is what
-        stops the broker redelivering a running delivery, so dedup without it is the one
-        combination where that can happen. Dapr has no heartbeat at all: the sidecar's app-call
-        timeout decides when it gives up on a delivery and sends it again.
-        """
-        bus = str(self.config.get("event_bus", "") or "").strip().lower()
-        agent = self.namespace or ROOT_LABEL
-        try:
-            heartbeat = parse_bool(self.config.get("nats_heartbeat_enabled", True), "nats_heartbeat_enabled")
-        except ValueError:
-            # Not ours to refuse: the NATS client fails startup on the same value, naming it.
-            heartbeat = True
-        if bus == "nats" and not heartbeat:
-            logger.warning(
-                "Agent '%s' deduplicates events with 'nats_heartbeat_enabled = false': a run that outlasts ack_wait is "
-                "redelivered while it runs, the redelivery is skipped as a duplicate and acknowledged, and if the "
-                "first run then fails the event is lost. Keep the heartbeat on, or keep runs well under ack_wait.",
-                agent,
-            )
-        elif bus == "dapr":
-            logger.warning(
-                "Agent '%s' deduplicates events under Dapr, which has no heartbeat: a run that outlasts the sidecar's "
-                "app-call timeout is delivered again while it runs, that delivery is skipped as a duplicate, and if "
-                "the first run then fails the event is lost. Keep runs well under that timeout.",
-                agent,
-            )
+        """Warn when dedup runs where a run can outlast its delivery; see :func:`dedup_redelivery_warning`."""
+        warning = dedup_redelivery_warning(self.config.get, self.namespace or ROOT_LABEL)
+        if warning:
+            logger.warning("%s", warning)
 
     async def _claim(self, event: CloudEvent[Any], policy: IdempotencyPolicy, context: dict[str, Any]) -> bool:
         """Record that this event is being processed, and report whether to dispatch it.
@@ -628,49 +684,9 @@ class HandlerChain(Component):
         return {"id": event_id, "source": source}
 
     def _resolve_idempotency_policy(self) -> IdempotencyPolicy:
-        """Read and validate the dedup settings (spec sec. 7.4).
-
-        ``idempotency_ttl`` has no default on purpose. The window has to outlast the
-        redelivery window it is there to cover -- under JetStream that is
-        ``nats_ack_wait * nats_max_deliver``, under Dapr it is whatever the component's
-        retry policy says -- and neither number is one this layer can read. Choosing a
-        value here would mean shipping a dedup window that silently expires before the last
-        redelivery arrives, which looks exactly like dedup not working. Enabling dedup is
-        therefore two keys, and the second one is the decision spec sec. 7.4 requires the
-        author to make.
+        """Read and validate the dedup settings; see :func:`resolve_idempotency_policy`.
 
         Raises:
-            ValueError: if ``idempotency_enabled`` is not a boolean, if it is on without a
-                positive ``idempotency_ttl``, or if it is on with no cache registered --
-                there would be nowhere to keep the markers, and dedup would be silently off.
+            ValueError: as :func:`resolve_idempotency_policy` does.
         """
-        enabled = self._read_bool("idempotency_enabled", False)
-        if not enabled:
-            return IdempotencyPolicy(enabled=False, ttl=0)
-
-        raw_ttl = self.config.get("idempotency_ttl", None)
-        if raw_ttl is None:
-            raise ValueError(
-                "'idempotency_enabled' is true but 'idempotency_ttl' is not set. It is the number of "
-                "seconds a processed event is remembered, and it must outlast the broker's redelivery "
-                "window ('nats_ack_wait' * 'nats_max_deliver' on JetStream), or a redelivery arrives "
-                "after the marker has expired and is processed again."
-            )
-        try:
-            ttl = int(raw_ttl)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"Config key 'idempotency_ttl' must be an integer number of seconds, got {raw_ttl!r}.") from exc
-        if ttl <= 0:
-            raise ValueError(f"'idempotency_ttl' must be greater than 0, got {ttl}. It is the dedup window, in seconds.")
-
-        if not self.registry.has_cache():
-            raise ValueError(
-                "'idempotency_enabled' is true but no cache is registered, so there is nowhere to record "
-                "the events already processed. Add '.with_cache()' to the AppBuilder chain."
-            )
-
-        return IdempotencyPolicy(enabled=True, ttl=ttl)
-
-    def _read_bool(self, key: str, default: bool) -> bool:
-        """Read a boolean config key, accepting the strings an environment variable delivers."""
-        return parse_bool(self.config.get(key, default), key)
+        return resolve_idempotency_policy(self.config.get, has_cache=self.registry.has_cache())

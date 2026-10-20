@@ -459,3 +459,24 @@ class TestDaprEventingOnStartup:
         mock_registry.get_event_handler.return_value = [handler]
 
         await dapr_eventing.on_startup()  # must not raise or hang
+
+
+class TestSharedTopicWarnings:
+    """S5, N19 -- the rule DaprEventing and asbs validate --group share."""
+
+    def test_a_topic_two_agents_declare_warns_for_the_one_that_does_not_deduplicate(self) -> None:
+        from blueprint.agents.io.api.eventing.dapr import shared_topic_warnings
+
+        warnings = shared_topic_warnings(
+            {"orders": ["t"], "billing": ["t"], "solo": ["u"]}, {"orders": True, "billing": False, "solo": False}.get
+        )
+        assert len(warnings) == 1
+        assert "'t'" in warnings[0] and "billing run it again" in warnings[0]
+
+    def test_false_from_an_environment_variable_is_off(self) -> None:
+        """It read the raw value, and the string 'false' is truthy: no warning for an agent that does not deduplicate."""
+        from blueprint.agents.io.api.eventing.dapr import shared_topic_warnings
+
+        warnings = shared_topic_warnings({"orders": ["t"], "billing": ["t"]}, {"orders": "true", "billing": "false"}.get)
+        assert len(warnings) == 1
+        assert "billing run it again" in warnings[0]

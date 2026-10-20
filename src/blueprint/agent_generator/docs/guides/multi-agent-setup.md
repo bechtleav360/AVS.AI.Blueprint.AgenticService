@@ -466,9 +466,11 @@ the class that imposes it, and the single-agent case is not punished for the gro
 
 **Readiness.** `readiness_policy` decides how a degraded agent affects the pod: `all` (the default
 -- any degraded agent makes the pod not ready), `critical` (only agents flagged critical in the
-group gate it) or `any` (ready while at least one agent is up). Liveness is never agent-dependent:
-if one degraded agent failed the pod's liveness probe, Kubernetes would restart every agent in the
-group, reintroducing exactly the blast radius grouping was paid to remove.
+group gate it) or `any` (ready while at least one agent is up). An agent latched down -- its startup failed and recovery retries it, or its transport failed for good -- gates readiness under every policy, critical or not: it consumes nothing for a reason that is not transient. A degraded agent never fails
+liveness: if it did, Kubernetes would restart every agent in the group, reintroducing exactly the
+blast radius grouping was paid to remove. A transport fault no retry can fix -- a durable clash, a
+stream or grant the broker refuses, a tenant's login refused -- does, in any agent, critical or not:
+it is logged CRITICAL with what to change, and the agent would consume nothing until someone does.
 
 **Attribution.** Grouping removes the pod restart that used to serve as the alert, so the alert is
 emitted deliberately instead. Every path that stops an agent serving emits an ERROR-level event

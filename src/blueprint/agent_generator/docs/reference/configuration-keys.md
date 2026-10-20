@@ -14,7 +14,7 @@ Top-level application settings.
 |-----|------|---------|-------------|
 | `app_name` | `str` | `"agent_blueprint"` | Application name. Used in logging, health checks, and OpenTelemetry service identification. |
 | `app_port` | `int` | `8000` | HTTP port the application listens on. |
-| `app_environment` | `str` | `"development"` | Deployment environment identifier (e.g., `"development"`, `"staging"`, `"production"`), which also selects the settings section that is layered over `[default]`. Set it with `DYNACONF_APP_ENVIRONMENT` or as a top-level key of the settings file, above every section: inside `[default]` it selects nothing. `DYNACONF_ENVIRONMENT` is not read. `"development"` enables development fallbacks such as the localhost default for `nats_url`, and the process logs a WARNING at startup that it is not suitable for production. Being the default, a deployment that sets nothing runs in development mode: set it to anything else to deploy. |
+| `app_environment` | `str` | `"development"` | Deployment environment identifier (e.g., `"development"`, `"staging"`, `"production"`), which also selects the settings section that is layered over `[default]`. Set it with `DYNACONF_APP_ENVIRONMENT` or as a top-level key of the settings file, above every section: inside `[default]` it selects nothing, and a startup WARNING says so. Read through `Config`, the key always answers the environment that was loaded. `DYNACONF_ENVIRONMENT` is not read. `"development"` enables development fallbacks such as the localhost default for `nats_url`, and the process logs a WARNING at startup that it is not suitable for production. Being the default, a deployment that sets nothing runs in development mode: set it to anything else to deploy. |
 | `log_level` | `str` | `"INFO"` | Root log level. One of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. |
 | `log_format` | `str` | `"text"` | Log output format. `"text"` for human-readable, `"json"` for structured JSON logging. |
 | `startup_retry_interval_seconds` | `float` | `30` | Seconds between attempts to start again the components of a non-critical agent whose `on_startup` raised. The agent stays out of service, shown with a `reason` in `/health/ready`, until every failed component starts; it is retried indefinitely and never ends the process. Must be positive; startup fails otherwise. Process scope. |
@@ -235,7 +235,7 @@ OpenTelemetry and tracing settings.
 |-----|------|---------|-------------|
 | `otel_enabled` | `bool` | `false` | Enable OpenTelemetry tracing and metrics export. |
 | `otel_endpoint` | `str` | -- | OTLP collector endpoint URL (e.g., `"http://localhost:4317"`). |
-| `otel_service_name` | `str` | `app_name` | `service.name` of the root namespace -- a standalone application's whole telemetry. Every agent of a group reports its own name instead, and in a group `OTEL_SERVICE_NAME` names the root only, with a WARNING at startup. See [observability](../concepts/observability.md). |
+| `otel_service_name` | `str` | `app_name` | `service.name` of the root namespace -- a standalone application's whole telemetry. Every agent of a group reports its own name instead, or `<agent>.otel_service_name` when the agent sets one for itself; the root's value never applies to an agent. In a group `OTEL_SERVICE_NAME` names the root only, with a WARNING at startup, and a `service.name` in `OTEL_RESOURCE_ATTRIBUTES` without it fails the start. See [observability](../concepts/observability.md). |
 | `token_metrics_enabled` | `bool` | `true` | Record LLM token usage and response latency to OpenTelemetry. Only takes effect when `otel_enabled` is also `true`. |
 
 ---
@@ -254,7 +254,7 @@ Additional logging behavior settings.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `readiness_policy` | `str` | `"all"` | Which agents gate `/health/ready`: `"all"`, `"critical"` (only the agents the group flagged critical) or `"any"` (ready while one is up). The root gates readiness under every policy. Any other value fails startup. Process scope. |
+| `readiness_policy` | `str` | `"all"` | Which agents gate `/health/ready`: `"all"`, `"critical"` (only the agents the group flagged critical) or `"any"` (ready while one is up). The root gates readiness under every policy, and so does an agent latched down (its startup failed, or its transport failed for good). Any other value fails startup. Process scope. |
 | `health_check_interval_seconds` | `int` | `30` | Seconds between health polls; readiness and an agent's pause or resume follow the latest poll. Process scope. |
 | `event_loop_debug` | `bool` | `false` | asyncio debug mode, which names a blocking callback and its source. Off unless set, in every environment; with it on, the watchdog does not run. Read as a boolean (`"false"` from the environment means false); any other value fails startup. |
 | `event_loop_slow_callback_seconds` | `float` | `0.2` | Debug mode's threshold for reporting a callback. |

@@ -35,12 +35,13 @@ from blueprint.agents.config.config import AGENT_REFUSED_KEYS
 from blueprint.agents.group_config import (
     AGENTS_ENV,
     CRITICAL_AGENTS_ENV,
-    DEFAULT_GROUP_CONFIG,
     GROUP_CONFIG_ENV,
     GROUP_ENV,
     GroupConfig,
     GroupConfigError,
+    group_file_path,
 )
+from blueprint.agents.io.api.eventing.dapr import shared_topic_warnings
 from blueprint.agents.layout import check_agent_layout
 
 from ..utils.cancellation_check import swallowed_cancellation_warning, swallowed_cancellations
@@ -445,22 +446,9 @@ def _shared_topic_warnings(settings: ProcessSettings, checked: list[_CheckedAgen
     """
     if str(settings.root_view().get("event_bus", "") or "").strip().lower() != "dapr":
         return []
-    sharing: dict[str, list[_CheckedAgent]] = {}
-    for agent in checked:
-        for topic in literal_topics(agent.root) or []:
-            sharing.setdefault(topic, []).append(agent)
-    warnings = []
-    for topic, agents in sharing.items():
-        if len(agents) < 2:
-            continue
-        repeating = [agent.name for agent in agents if not agent.view.get("idempotency_enabled", False)]
-        if repeating:
-            warnings.append(
-                f"Topic '{topic}' is declared by agents {', '.join(agent.name for agent in agents)}, and Dapr delivers "
-                f"it once for all of them: a retry asked for by one redelivers it to every one, and {', '.join(repeating)} "
-                "run it again because 'idempotency_enabled' is off."
-            )
-    return warnings
+    views = {agent.name: agent.view for agent in checked}
+    topics = {agent.name: literal_topics(agent.root) or [] for agent in checked}
+    return shared_topic_warnings(topics, lambda name: views[name].get("idempotency_enabled", False))
 
 
 class _Collected(logging.Handler):
@@ -491,9 +479,7 @@ def group_findings(image_root: Path, agent_map: Path, *, group_config: str | Non
         group_name: ``--group-name``, which wins over ``BLUEPRINT_GROUP``.
     """
     configured = (group_config or os.environ.get(GROUP_CONFIG_ENV, "") or "").strip()
-    group_file = Path(configured) if configured else image_root / DEFAULT_GROUP_CONFIG
-    if not group_file.is_absolute():
-        group_file = image_root / group_file
+    group_file = group_file_path({GROUP_CONFIG_ENV: configured}, image_root)
 
     environ = {AGENT_MAP_ENV: str(agent_map), GROUP_CONFIG_ENV: str(group_file)}
     for variable in (GROUP_ENV, AGENTS_ENV, CRITICAL_AGENTS_ENV):

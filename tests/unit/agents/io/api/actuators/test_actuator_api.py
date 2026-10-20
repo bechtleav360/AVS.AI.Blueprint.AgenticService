@@ -172,6 +172,31 @@ class TestLivenessProbe:
         result = await actuator_api.liveness_probe()
         assert result.status == "UP"
 
+    async def test_an_orphaned_agent_answers_503_until_it_consumes_again(self, actuator_api: ActuatorApi, mock_config: MagicMock) -> None:
+        """N12 -- unlike a fault no retry fixes, an orphan may clear: its resume can still succeed."""
+        from fastapi import HTTPException
+
+        mock_config.has_validation_errors.return_value = False
+        actuator_api.mark_orphaned("orders", "its resume failed (attempt 1) and is retried: stream gone")
+        with pytest.raises(HTTPException) as down:
+            await actuator_api.liveness_probe()
+        assert down.value.detail == {"status": "DOWN", "agents": {"orders": "its resume failed (attempt 1) and is retried: stream gone"}}
+        actuator_api.clear_orphaned("orders")
+        assert (await actuator_api.liveness_probe()).status == "UP"
+
+    async def test_a_fault_no_retry_fixes_answers_503_naming_each_agent(self, actuator_api: ActuatorApi, mock_config: MagicMock) -> None:
+        """D23 -- the orchestrator restarts the pod, and the operator who looks finds why."""
+        from fastapi import HTTPException
+
+        mock_config.has_validation_errors.return_value = False
+        actuator_api.mark_not_live("billing", "consumer clash")
+        actuator_api.mark_not_live("", "stream refused")
+        actuator_api.mark_not_live("billing", "a later fault")
+        with pytest.raises(HTTPException) as down:
+            await actuator_api.liveness_probe()
+        assert down.value.status_code == 503
+        assert down.value.detail == {"status": "DOWN", "agents": {"billing": "consumer clash", "<root>": "stream refused"}}
+
 
 # ---------------------------------------------------------------------------
 # on_startup / on_shutdown

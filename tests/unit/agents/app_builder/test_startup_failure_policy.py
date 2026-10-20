@@ -14,12 +14,13 @@ import signal
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
 
 from blueprint.agents.app_builder import AppBuilder
+from blueprint.agents.clients.io.nats_client import DurableConflictError
 from blueprint.agents.component.namespace import namespace_scope
 from blueprint.agents.config import Config
 from blueprint.agents.io.telemetry.providers import reset_providers
@@ -327,3 +328,82 @@ class TestAFatalTransportErrorAfterStartup:
             await builder._on_transport_fatal("billing", RuntimeError("no JetStream"))
         raise_signal.assert_not_called()
         builder._mark_agent_down.assert_awaited_once_with("billing", "no JetStream")
+
+
+class ClashingService(ServiceBase):
+    """A service whose ``on_startup`` meets a fault no retry can fix (D23)."""
+
+    async def on_startup(self) -> None:
+        raise DurableConflictError("consumer 'billing_created-durable' filters 'orders.created'")
+
+    async def on_shutdown(self) -> None:
+        pass
+
+
+class TestAFaultNoRetryFixes:
+    """D23 -- fatal in every agent, whatever critical_agents says; liveness DOWN after startup."""
+
+    async def test_it_fails_the_start_of_a_non_critical_agent(self, config: Config, caplog: pytest.LogCaptureFixture) -> None:
+        app, _ = build_with(config, ClashingService)
+        with caplog.at_level("CRITICAL"), pytest.raises(DurableConflictError, match="filters 'orders.created'"):
+            async with app.router.lifespan_context(app):
+                pass
+        assert "whatever 'critical_agents' says" in caplog.text
+
+    async def test_after_startup_it_takes_liveness_down_in_a_non_critical_agent(
+        self, config: Config, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        builder = TestAFatalTransportErrorAfterStartup._builder(config)
+        builder._mark_agent_down = AsyncMock()  # type: ignore[method-assign]
+        builder._actuator_api = MagicMock()
+        clash = DurableConflictError("clash")
+        with patch("blueprint.agents.app_builder.signal.raise_signal") as raise_signal, caplog.at_level("CRITICAL"):
+            await builder._on_transport_fatal("billing", clash)
+        raise_signal.assert_not_called()
+        builder._actuator_api.mark_not_live.assert_called_once_with("billing", "clash")
+        builder._mark_agent_down.assert_awaited_once_with("billing", "clash")
+        assert "liveness is DOWN although the agent is not critical" in caplog.text
+
+    @pytest.mark.parametrize("namespace", ["", "orders"], ids=["root", "critical"])
+    async def test_the_root_or_a_critical_agent_also_ends_the_process(self, config: Config, namespace: str) -> None:
+        builder = TestAFatalTransportErrorAfterStartup._builder(config)
+        builder._actuator_api = MagicMock()
+        with patch("blueprint.agents.app_builder.signal.raise_signal") as raise_signal:
+            await builder._on_transport_fatal(namespace, DurableConflictError("clash"))
+        raise_signal.assert_called_once_with(signal.SIGTERM)
+        builder._actuator_api.mark_not_live.assert_called_once_with(namespace, "clash")
+
+    async def test_another_fatal_error_leaves_liveness_alone(self, config: Config) -> None:
+        builder = TestAFatalTransportErrorAfterStartup._builder(config)
+        builder._mark_agent_down = AsyncMock()  # type: ignore[method-assign]
+        builder._actuator_api = MagicMock()
+        await builder._on_transport_fatal("billing", RuntimeError("something else"))
+        builder._actuator_api.mark_not_live.assert_not_called()
+
+
+class TestAnOrphanedAgent:
+    """N12 -- its resume keeps failing or its connection loop gave up: liveness DOWN, whatever its flag; back when it consumes."""
+
+    async def test_it_takes_liveness_down_and_back(self, config: Config, caplog: pytest.LogCaptureFixture) -> None:
+        builder = TestAFatalTransportErrorAfterStartup._builder(config)
+        builder._actuator_api = MagicMock()
+        with caplog.at_level("WARNING"):
+            builder._on_orphaned("billing", "its resume failed (attempt 1) and is retried: stream gone")
+            builder._on_orphaned("billing", None)
+        builder._actuator_api.mark_orphaned.assert_called_once_with("billing", "its resume failed (attempt 1) and is retried: stream gone")
+        builder._actuator_api.clear_orphaned.assert_called_once_with("billing")
+        assert any(r.levelname == "CRITICAL" and "liveness is DOWN" in r.getMessage() for r in caplog.records)
+        assert any("consumes again" in r.getMessage() for r in caplog.records)
+
+    async def test_a_latched_non_critical_agent_takes_readiness_down_under_the_critical_policy(self, tmp_path: Path) -> None:
+        """A non-critical agent whose startup failed is retried and still gates readiness; liveness stays UP."""
+        settings = tmp_path / "settings.toml"
+        settings.write_text(
+            '[development]\napp_name = "group"\napp_port = 8000\napp_environment = "development"\nreadiness_policy = "critical"\n'
+        )
+        app, builder = build(Config(settings_files=[str(settings)], root_path=str(tmp_path)), critical=False)
+        async with app.router.lifespan_context(app):
+            status = await readiness(builder)
+            live = await builder._actuator_api.liveness_probe()  # type: ignore[union-attr]
+        assert status.status == "DOWN"
+        assert live.status == "UP"

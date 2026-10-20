@@ -218,20 +218,35 @@ enabled for the account the connection authenticates as.
 **Solution:** Enable JetStream for that server and account, or set `nats_use_jetstream = false`
 if the agent is meant to run on Core NATS. The framework does not fall back on its own.
 
-### `JetStreamBindingError`: a consumer that `belongs to another subscription`
+### `DurableConflictError`: a consumer that `belongs to another subscription`
 
-**Symptom:** One topic of an agent never receives events, and the log repeats:
+**Symptom:** One agent never starts, or `/health/live` answers `503` naming it, and the log has a
+CRITICAL line:
 
 ```
-JetStreamBindingError: JetStream consumer 'orders-created-durable' on stream ... filters 'orders-created', not 'created', so it belongs to another subscription and is not bound. ...
+DurableConflictError: Agent 'orders': JetStream consumer 'orders-created-durable' on stream ... filters 'orders-created', not 'created', so it belongs to another subscription and is not bound. ... Not retried: ...
 ```
 
 **Cause:** A durable of that name already exists on the stream for another subject. A root topic and
 an agent's topic can derive one durable name -- root topic `orders-created` and agent `orders` on
 topic `created` both give `orders-created-durable`. The framework never rebinds or rewrites a
-consumer that filters another subject, and keeps retrying the binding.
+consumer that filters another subject, and does not retry: the consumer keeps its filter until
+someone changes it, so the start fails (in every agent, critical or not), or after startup liveness
+goes DOWN.
 
 **Solution:** Rename one of the two topics, or delete the consumer if it is stale.
+
+### Other faults no retry can fix
+
+**Symptom:** As above -- CRITICAL in the log, the start fails or `/health/live` answers `503` --
+with `StreamConflictError`, `JetStreamPermissionError` or `TenancyError`.
+
+**Cause and solution:** the message says which and what to change. `StreamConflictError`: the server
+refused to create or widen the agent's stream, usually because another stream already captures one
+of its subjects -- give the agent its own subjects or `nats_stream_name`. `JetStreamPermissionError`:
+the account lacks a grant the agent needs to consume (the `$JS.API` requests, the deliver subjects) --
+grant it. `TenancyError`: a named connection's login or deliver subject was refused by its broker --
+correct the tenant's credentials or binding, or the account on the broker.
 
 ### Topic Mapping Mismatches
 

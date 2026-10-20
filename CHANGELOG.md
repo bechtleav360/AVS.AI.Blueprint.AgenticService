@@ -173,6 +173,27 @@ Full migration path, including the one decision to get right before the first de
     unchanged code now reaches the collector, which can add series -- and cost -- to a metrics
     backend. A project that registered its own `MeterProvider` first keeps it: the SDK refuses a
     second one and the framework's is not installed.
+18. **A broker fault no retry can fix fails the agent, critical or not, and can fail liveness.** A
+    durable that filters another subject, a stream the server refuses to create or widen, a grant the
+    account lacks, and on a named connection a refused login or deliver subject used to be retried for
+    ever (a named connection's missing grant every 60 s) while the agent consumed nothing -- and a
+    JetStream grant refused to the agent's own connection, found by the health poll before startup,
+    left the agent paused as degraded for good, with nothing logged. Now each is logged CRITICAL
+    with what to change and never retried. At startup the start fails, whatever
+    `critical_agents` says; after startup `GET /health/live` answers `503` naming the agent and the
+    reason (it was always `200`), so Kubernetes restarts the pod, and the root or a critical agent
+    also ends the process as before. A degraded agent whose fault may heal still never fails
+    liveness. A named connection in this state reads `failed`. New exception classes, all
+    subclasses of `DeterministicTransportError`: `DurableConflictError` (replaces
+    `JetStreamBindingError` for the clash), `StreamConflictError`, `JetStreamPermissionError`,
+    `TenancyError`; `JetStreamUnavailableError` is one too. A missing binding-mode stream is still
+    retried (Known issues).
+19. **An orphaned agent takes the pod out, whatever `readiness_policy` says.** An agent latched down
+    -- its startup failed and recovery retries it, or its transport failed for good -- now gates
+    readiness under `"critical"` and `"any"` too: it consumes nothing for a reason that is not
+    transient. And an agent whose resume after a degradation keeps failing, or whose connection loop
+    gave up (`event_client_max_retries`), fails liveness until it consumes again, logged CRITICAL: it
+    reported healthy while paused, so readiness read UP while nothing was consumed.
 
 ### Added
 
@@ -190,7 +211,8 @@ Full migration path, including the one decision to get right before the first de
   `ProcessingStatus.SKIPPED`; a REST caller gets `success = true` with the reason as message.
 - **Per-connection state and `nats_connections_readiness`.** Each agent with named connections gets a
   readiness entry `<agent>.nats_client:connections` listing every connection as `bound`, `connecting`,
-  `reconnecting`, `retrying` (with the last error, redacted) or `paused`, and any permission violation,
+  `reconnecting`, `retrying` (with the last error, redacted), `failed` (a tenancy fault no retry
+  fixes, see Breaking 18) or `paused`, and any permission violation,
   plus the gauge `blueprint.nats.connection.bound` and the counter
   `blueprint.nats.connection.permission_violations` (attributes `agent`, `connection`). The new agent-scope
   key decides whether the entry can fail: `"never"` (default), `"any"` (one bound) or `"all"` (every one
@@ -368,6 +390,18 @@ Full migration path, including the one decision to get right before the first de
 
 ### Fixed
 
+- **Under Dapr, a shared topic is warned about when `idempotency_enabled` is `"false"`.** The
+  startup check for a topic two agents declare read the raw value, and the string `"false"` an
+  environment variable can deliver counts as true, so an agent that does not deduplicate went
+  unmentioned. It is read like the handler chain reads it now. `asbs validate` applies the runtime's
+  own functions for this and six other startup rules instead of restating them.
+
+- **`app_environment` reads the environment that was loaded.** Written inside `[default]` it selects
+  nothing, yet `Config.get("app_environment")` answered its value: a process that loaded
+  `[development]` ran its production checks (`nats_url` required) -- or, the other way round, its
+  development fallbacks. It now answers the loaded environment, and startup logs a WARNING when the
+  settings say otherwise.
+
 - **With deduplication on, an event cut off by `nats_handler_timeout` is no longer lost.** The run
   is cancelled and nak'd, but the dedup marker was released only for an `Exception`, and
   cancellation is not one. The redelivery found the marker, was skipped as a duplicate and
@@ -431,7 +465,12 @@ Full migration path, including the one decision to get right before the first de
 
 - **In a group, `OTEL_SERVICE_NAME` no longer names every agent alike.** The agents keep their own
   name as `service.name`; the variable names the root's telemetry, as standalone. Startup logs a
-  WARNING naming the value. `OTEL_RESOURCE_ATTRIBUTES` is unchanged.
+  WARNING naming the value. A `service.name` in `OTEL_RESOURCE_ATTRIBUTES` without
+  `OTEL_SERVICE_NAME` now fails the start of a group, for the same reason; standalone it is used as
+  declared.
+- **An agent's own `otel_service_name` reaches its telemetry.** `[<agent>] otel_service_name` was
+  resolved for the agent and then ignored: its resource always carried the agent's name. It is the
+  agent's `service.name` now. The root's `otel_service_name` still never applies to an agent.
 
 - **Grouped Dapr: each agent gets its own copy of a delivery, and the answer has no stray reason.**
   The fan-out handed one `CloudEvent` object to every agent declaring the topic, so a change one
@@ -557,8 +596,9 @@ Full migration path, including the one decision to get right before the first de
 
 - **A named connection whose subscription the broker refuses is no longer reported as bound.** The
   broker refuses a subscription asynchronously, so `subscribe()` returned and the connection read as
-  bound and was never retried. A bind now waits for the broker's round trip and retries a refusal as a
-  permission violation. Measured: `retrying` with `permission_denied` (before: `bound`).
+  bound and was never retried. A bind now waits for the broker's round trip, and a refusal fails the
+  connection as a tenancy fault (Breaking 18). Measured when it was still retried: `retrying` with
+  `permission_denied` (before: `bound`).
 
 - **An operator's consumer with `idle_heartbeat` or `flow_control` works in binding mode.** Its status
   messages reached the handler, were terminated as matching no subject, and an unanswered flow control

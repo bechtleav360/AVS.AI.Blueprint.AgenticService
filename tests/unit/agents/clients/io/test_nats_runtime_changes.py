@@ -423,9 +423,10 @@ class TestScheduling:
 
 
 class TestPermissionViolations:
-    async def test_a_refused_permission_backs_off_and_says_so(
+    async def test_a_refused_permission_fails_the_connection_and_says_so(
         self, nats_client: NATSClient, broker: Broker, caplog: pytest.LogCaptureFixture
     ) -> None:
+        """D23: a missing grant is final -- not retried, reported CRITICAL naming the connection and the subject."""
         source = WatchedSource(A=_binding("A"))
         calls = 0
 
@@ -439,12 +440,14 @@ class TestPermissionViolations:
 
         with (
             patch.object(nats_client, "_open_named_link", side_effect=denied),
-            patch.object(nats_client_module, "PERMISSION_RETRY_SECONDS", 0.01),
             caplog.at_level(logging.ERROR),
         ):
+            nats_client._started = True
             await _started(nats_client, source, broker)
-        assert any("refused a permission" in message and "deliver.A" in message for message in caplog.messages)
-        assert calls == 2
+        critical = [r.getMessage() for r in caplog.records if r.levelno == logging.CRITICAL]
+        assert any("named connection 'A'" in message and "deliver.A" in message for message in critical)
+        assert calls == 1
+        assert nats_client.named_connection_states()[0].state == "failed"
 
     async def test_the_error_callback_records_permission_violations(self, nats_client: NATSClient) -> None:
         from blueprint.agents.clients.io.nats_client import _Link

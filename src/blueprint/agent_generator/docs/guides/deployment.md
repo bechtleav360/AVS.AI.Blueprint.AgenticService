@@ -541,12 +541,17 @@ Two endpoints, and they answer different questions:
 
 | Endpoint | Question | Never depends on |
 |---|---|---|
-| `GET /health/live` | Is this process running? | any agent's state |
+| `GET /health/live` | Is this process running, and can every agent still consume? | a degraded agent |
 | `GET /health/ready` | Should this pod receive traffic? | -- |
 
-**Liveness is never agent-dependent, deliberately.** If one degraded agent failed the pod's liveness
-probe, Kubernetes would restart every agent in the group, reintroducing exactly the blast radius
-grouping was paid to remove.
+**A degraded agent never fails liveness, deliberately.** If one did, Kubernetes would restart every
+agent in the group, reintroducing exactly the blast radius grouping was paid to remove.
+
+**A transport fault no retry can fix does**: a durable that filters another subject, a stream the server refuses to create or widen, a grant the account lacks, a tenant's login or deliver subject refused. It is logged CRITICAL with what to change,
+in any agent, and `/health/live` answers `503` naming the agent and the reason, so the pod is
+restarted and the cause is in its events and logs. Fix the broker or the deployment; a restart alone
+meets the same fault again. At startup the same fault fails the start, whatever `critical_agents`
+says.
 
 Also served, and useful when debugging rather than as probes: `GET /info`, `/status/env`,
 `/status/llm`, `/status/build`. There is no `/health/detailed`. `/status/env` masks every key that

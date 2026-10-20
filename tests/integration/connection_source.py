@@ -4,9 +4,11 @@ One named connection per tenant, each logging in as that tenant's agent user on 
 (nats-accounts.conf). Everything per test comes from the process config the factory is called with,
 because that is all the framework hands it: ``test_source_url``, ``test_source_prefix`` (keeps
 streams and subjects apart between tests), ``test_source_tenants``, ``test_source_unclaimed``,
-``test_source_wrong_password`` (tenants whose connection logs in with a password the broker refuses)
-and ``test_source_foreign_deliver`` (tenants whose binding names another tenant's deliver subject,
-which their agent user may not subscribe to).
+``test_source_wrong_password`` (tenants whose connection logs in with a password the broker refuses),
+``test_source_foreign_deliver`` (tenants whose binding names another tenant's deliver subject,
+which their agent user may not subscribe to) and ``test_source_unreachable`` (tenants whose
+connection points at a port nothing listens on -- a fault that may heal, unlike the two before it,
+which are tenancy faults the framework does not retry, D23).
 """
 
 import dataclasses
@@ -24,6 +26,9 @@ SCOPE: ContextVar[str | None] = ContextVar("integration_tenant_scope", default=N
 
 SOURCES: list["TenantSource"] = []
 """Every source built in this process, so a test can change its connections at runtime."""
+
+UNREACHABLE_URL = "nats://127.0.0.1:1"
+"""A port nothing listens on: the connection is refused, which is transient -- the broker may come up."""
 
 PASSWORDS = {
     "agent-a": "agent-a-test-only",
@@ -65,6 +70,7 @@ class TenantSource:
         self.unclaimed = tuple(config.get("test_source_unclaimed") or ())
         self.wrong_password = set(config.get("test_source_wrong_password") or ())
         self.foreign_deliver = set(config.get("test_source_foreign_deliver") or ())
+        self.unreachable = set(config.get("test_source_unreachable") or ())
         self.notifiers: list[Callable[[], None]] = []
         SOURCES.append(self)
 
@@ -74,18 +80,23 @@ class TenantSource:
     def watch(self, notify: Callable[[], None]) -> None:
         self.notifiers.append(notify)
 
-    def set_users(self, users: dict[str, str], *, wrong_password: set[str] | None = None) -> None:
-        """Replace the tenants and their users (and which of them log in wrongly), and tell every client."""
+    def set_users(self, users: dict[str, str], *, wrong_password: set[str] | None = None, unreachable: set[str] | None = None) -> None:
+        """Replace the tenants and their users (and which of them log in wrongly or reach nothing), and tell every client."""
         self.users = dict(users)
         if wrong_password is not None:
             self.wrong_password = set(wrong_password)
+        if unreachable is not None:
+            self.unreachable = set(unreachable)
         for notify in self.notifiers:
             notify()
 
     def connections(self) -> dict[str, ConnectionSpec]:
         return {
             tenant: ConnectionSpec(
-                name=tenant, url=self.url, user=user, password="wrong-test-only" if tenant in self.wrong_password else PASSWORDS[user]
+                name=tenant,
+                url=UNREACHABLE_URL if tenant in self.unreachable else self.url,
+                user=user,
+                password="wrong-test-only" if tenant in self.wrong_password else PASSWORDS[user],
             )
             for tenant, user in self.users.items()
         }

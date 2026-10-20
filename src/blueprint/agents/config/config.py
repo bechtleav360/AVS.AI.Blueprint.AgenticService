@@ -364,6 +364,19 @@ class Config:
         # ENV_FOR_DYNACONF wins over it, and then the root loaded [production] while every agent's
         # fragment was layered for [development] (S13).
         self._environment = str(self._settings.current_env or app_env).lower()
+        configured = self._settings.get("app_environment")
+        if configured is not None and str(configured).lower() != self._environment:
+            # Typically `app_environment` written inside [default]: in environment mode it is a key
+            # of that section, read only after the environment was chosen (N15).
+            logger.warning(
+                "The settings say app_environment = %r, but the '%s' environment was loaded: a value inside a "
+                "section does not select the environment. This process runs as '%s', and 'app_environment' reads "
+                "that. Select the environment at the top level of settings.toml or with %s_APP_ENVIRONMENT.",
+                str(configured),
+                self._environment,
+                self._environment,
+                self._envvar_prefix or "DYNACONF",
+            )
 
         # Replace DOT placeholders
         dot_placeholder = self._settings.get("dot_placeholder", "")
@@ -1121,6 +1134,13 @@ class Config:
                 "moving the agent to another group then breaks it. Framework code reads these from the "
                 "environment directly."
             )
+
+        if key.lower() == "app_environment":
+            # The environment Dynaconf loaded, not what a section of it says (N15): written inside
+            # [default], the key selects nothing, and answering its value had a development
+            # process run its production checks -- or the other way round. Every reader means
+            # "which environment is this", so that is the answer.
+            return self._environment
 
         env_var = self._scoped_get(key, default)
         # Convert DynaBox to dict

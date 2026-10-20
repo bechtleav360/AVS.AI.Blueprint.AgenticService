@@ -304,10 +304,11 @@ class TestALatchedAgent:
         assert response.namespaces["billing"].failing == []
         supervisor.observe.assert_awaited_once_with({"": True, "orders": True, "billing": False})
 
-    async def test_critical_policy_keeps_the_pod_in_but_says_why(self) -> None:
+    async def test_critical_policy_takes_the_pod_out_for_it_and_says_why(self) -> None:
+        """N12, D23: a latched agent is orphaned -- it gates under every policy, flagged critical or not."""
         cache, _ = await self._run(ReadinessPolicy.CRITICAL, {"orders"}, [_entry("db", "healthy", namespace="billing")])
         response = await cache.get_health_status()
-        assert response.status == "UP"
+        assert response.status == "DOWN"
         assert response.namespaces["billing"].reason == self.REASON
 
     async def test_it_is_reported_with_no_checks_registered_at_all(self) -> None:

@@ -8,8 +8,11 @@ What a tenant deployment depends on, observed rather than asserted on the client
 - a delivery the source rejects never runs and is termed;
 - a subject the source does not claim fails startup unless the hybrid mode is asked for;
 - connections added, changed and removed at runtime lose and duplicate nothing;
-- a tenant connection that cannot log in moves readiness as ``nats_connections_readiness`` says,
-  and never pauses the agent: its other connection keeps delivering.
+- a tenant connection that cannot reach its broker moves readiness as ``nats_connections_readiness``
+  says, and never pauses the agent: its other connection keeps delivering;
+- a tenancy fault -- a refused login, a refused deliver subject -- is not retried: the connection
+  reads ``failed``, the fault is logged CRITICAL, liveness answers 503, and a critical agent ends the
+  process (D23).
 """
 
 import asyncio
@@ -18,6 +21,7 @@ import logging
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
+from unittest.mock import patch
 
 import httpx
 import nats
@@ -359,11 +363,11 @@ class TestAChangeThatHasNotBoundYet:
             client, source = clients[agent], SOURCES[-1]
             first = client._named[0].link.nats_client
 
-            source.set_users({"A": "agent-a2"}, wrong_password={"A"})  # changed, and it cannot log in
+            source.set_users({"A": "agent-a2"}, unreachable={"A"})  # changed, and it cannot connect (yet)
             await wait_until(lambda: len(client._named) == 2, timeout=10, description="the changed binding to be added")
             assert not first.is_closed, "the old link serves while the new one cannot bind"
 
-            source.set_users({"A": "agent-a2"}, wrong_password=set())  # changed again, now it can
+            source.set_users({"A": "agent-a2"}, unreachable=set())  # changed again, now it can
             await wait_until(lambda: first.is_closed, timeout=15, description="the first link to be retired")
             await wait_until(
                 lambda: len(client._named) == 1 and client._named[0].subscriptions_ready, timeout=10, description="one bound binding"
@@ -383,7 +387,7 @@ class TestAChangeThatHasNotBoundYet:
         ) as clients:
             client, source = clients[agent], SOURCES[-1]
             first = client._named[0].link.nats_client
-            source.set_users({"A": "agent-a2"}, wrong_password={"A"})
+            source.set_users({"A": "agent-a2"}, unreachable={"A"})
             await wait_until(lambda: len(client._named) == 2, timeout=10, description="the changed binding to be added")
 
             source.set_users({})
@@ -392,25 +396,65 @@ class TestAChangeThatHasNotBoundYet:
 
 
 class TestARefusedSubscriptionIsNotBound:
-    """M4 -- the broker refuses a subscription through error_cb only; subscribe() returned and it read as bound."""
+    """M4 -- the broker refuses a subscription through error_cb only; subscribe() returned and it read as bound.
 
-    async def test_it_reads_retrying_with_a_permission_violation(
-        self, settings_group: Any, operator: Operator, accounts_url: str, subject_prefix: str
+    D23 -- and the refusal is a tenancy fault: final, not retried.
+    """
+
+    async def test_it_reads_failed_with_a_permission_violation(
+        self, settings_group: Any, operator: Operator, accounts_url: str, subject_prefix: str, caplog: pytest.LogCaptureFixture
     ) -> None:
         agent = f"risk_{subject_prefix}"
         await operator(["A"], {agent: ["risk.>"]})
         extra = 'test_source_foreign_deliver = ["A"]\n'
-        async with settings_group(
-            settings(accounts_url, subject_prefix, ["A"], extra), {agent: recording_handler(["risk.>"], [])}, named=0
-        ) as clients:
-            client = clients[agent]
-            await wait_until(lambda: client._named[0].last_error != "", timeout=10, description="the bind attempt to fail")
-            # error_cb reports the refusal while the bind still waits on its round trip: read the state
-            # once that bind has finished, or a binding that goes on to read as bound passes too.
-            await asyncio.sleep(1.0)
-            state = client._state_of(client._named[0])
-            assert (state.state, state.permission_denied) == ("retrying", True)
-            assert client._named[0].subscriptions_ready is False
+        with patch("blueprint.agents.app_builder.signal.raise_signal") as raise_signal:
+            async with settings_group(
+                settings(accounts_url, subject_prefix, ["A"], extra), {agent: recording_handler(["risk.>"], [])}, named=0
+            ) as clients:
+                client = clients[agent]
+                await wait_until(lambda: client._named[0].failed, timeout=10, description="the binding to fail")
+                state = client._state_of(client._named[0])
+                assert (state.state, state.permission_denied) == ("failed", True)
+                assert client._named[0].subscriptions_ready is False
+                attempts = sum("refused the subscription to deliver subject" in r.getMessage() for r in caplog.records)
+                await asyncio.sleep(2.0)  # longer than event_client_retry_delay: a retry would have shown by now
+                assert sum("refused the subscription to deliver subject" in r.getMessage() for r in caplog.records) == attempts
+        assert raise_signal.called, "a critical agent ends the process"
+        assert any(r.levelno == logging.CRITICAL and "deliver subject" in r.getMessage() for r in caplog.records)
+
+
+class TestARefusedLoginIsATenancyFault:
+    """D23 -- the credentials the source hands over are wrong for the tenant's broker: CRITICAL, liveness DOWN."""
+
+    async def test_it_reads_failed_and_liveness_answers_503(
+        self, settings_group: Any, operator: Operator, accounts_url: str, subject_prefix: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        agent = f"risk_{subject_prefix}"
+        await operator(["A", "B"], {agent: ["risk.>"]})
+        runs: list[dict[str, Any]] = []
+        apps: list[Any] = []
+        extra = 'test_source_wrong_password = ["B"]\n'
+        with patch("blueprint.agents.app_builder.signal.raise_signal") as raise_signal:
+            async with settings_group(
+                settings(accounts_url, subject_prefix, ["A", "B"], extra), {agent: recording_handler(["risk.>"], runs)}, named=1, apps=apps
+            ) as clients:
+                client = clients[agent]
+                await wait_until(
+                    lambda: {s.name: s.state for s in client.named_connection_states()} == {"A": "bound", "B": "failed"},
+                    timeout=15,
+                    description="A bound, B failed",
+                )
+                (b,) = [s for s in client.named_connection_states() if s.name == "B"]
+                assert "refused the login" in b.last_error and "wrong-test-only" not in b.describe()
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=apps[0]), base_url="http://it") as http:
+                    live = await http.get("/health/live")
+                assert live.status_code == 503
+                assert "refused the login" in live.json()["detail"]["agents"][agent]
+                assert "wrong-test-only" not in live.text
+        assert raise_signal.called, "a critical agent ends the process"
+        critical = [r.getMessage() for r in caplog.records if r.levelno == logging.CRITICAL]
+        assert any("named connection 'B'" in message and "refused the login" in message for message in critical)
+        assert all("wrong-test-only" not in message for message in critical)
 
 
 class TestStatusMessagesOfAnOperatorsConsumer:
@@ -446,7 +490,10 @@ class TestStatusMessagesOfAnOperatorsConsumer:
 
 
 class TestADeadConnectionCountsForReadinessOnly:
-    """Step 5 / D5: a tenant whose connection cannot log in never pauses the agent on its other tenants."""
+    """Step 5 / D5: a tenant whose connection cannot reach its broker never pauses the agent on its other tenants.
+
+    A fault that may heal; a refused login is a tenancy fault and is not retried (D23, above).
+    """
 
     @pytest.mark.parametrize("mode, ready", [("never", True), ("any", True), ("all", False)])
     async def test_readiness_follows_the_mode_and_nothing_is_paused(
@@ -455,7 +502,7 @@ class TestADeadConnectionCountsForReadinessOnly:
         agent = f"risk_{subject_prefix}"
         await operator(["A", "B"], {agent: ["risk.>"]})
         runs: list[dict[str, Any]] = []
-        extra = f'test_source_wrong_password = ["B"]\nnats_connections_readiness = "{mode}"\nhealth_check_interval_seconds = 1\n'
+        extra = f'test_source_unreachable = ["B"]\nnats_connections_readiness = "{mode}"\nhealth_check_interval_seconds = 1\n'
         apps: list[Any] = []
         async with settings_group(
             settings(accounts_url, subject_prefix, ["A", "B"], extra), {agent: recording_handler(["risk.>"], runs)}, named=1, apps=apps
