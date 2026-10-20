@@ -198,8 +198,29 @@ class GroupConfig:
                 malformed, if a named group is absent, or if an agent is not in the agent map
                 and is critical.
         """
+        return cls.resolve_at(config.get_package_root(), environ=environ)
+
+    @classmethod
+    def resolve_at(cls, root: Path, *, environ: dict[str, str] | None = None) -> "GroupConfig":
+        """Resolve the group for the image at ``root`` -- what :meth:`resolve` does, given the root itself.
+
+        The whole resolution needs nothing from the configuration but the directory relative
+        paths resolve against, so this is the same code with that directory passed in. It is what
+        ``asbs validate --group`` runs against a stub environment, so the validator reports the
+        refusals the process would start with, in the process's own words.
+
+        Args:
+            root: The image root: where the group file and the agent map are looked for by default,
+                and what every agent ``root`` resolves against.
+            environ: The environment to read. Defaults to the process environment.
+
+        Returns:
+            The resolved group.
+
+        Raises:
+            GroupConfigError: as :meth:`resolve`.
+        """
         env = os.environ if environ is None else environ
-        root = config.get_package_root()
 
         declared = cls._read_group_file(env, root)
         name, agent_names, critical_names = cls._apply_env_overrides(env, declared)

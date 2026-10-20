@@ -4,13 +4,19 @@
 # Group image - hosts several agents in one process
 # ============================================================================
 #
-# The difference from an agent's own Dockerfile is what gets copied, not how it runs: both end
-# at the same entry point, because a standalone agent is a group of one. Here the agent
-# directories are copied as they are, beside the map that names them.
+# The two images run differently. An agent's own Dockerfile serves its one declaration directly
+# (uvicorn src.main:create_app --factory), at the root namespace, with no map and no group. This
+# one runs the group entry point, which reads agents.toml and hosts each agent the deployment
+# names under its own namespace (/api/<agent>). The agent directories are copied as they are,
+# beside the map that names them.
 #
-# Each agent directory is exactly what `asbs setup <name>` wrote -- its own settings.toml,
-# .secrets.toml and src/ -- and carries no agents.toml. That is what lets the same directory be
-# built by its own Dockerfile as a single-agent image without editing anything.
+# Each agent directory is exactly what `asbs setup <name>` wrote -- its own settings.toml and
+# src/ -- and carries no agents.toml. That is what lets the same directory be built by its own
+# Dockerfile as a single-agent image without editing anything. Its .secrets.toml is NOT copied
+# (.dockerignore excludes every one): mount it at runtime beside the agent's src, at
+# /app/<root>/.secrets.toml, where <root> is the agent's `root` in agents.toml -- for example
+#   docker run -v ./agents/billing/.secrets.toml:/app/agents/billing/.secrets.toml:ro <image>
+# or supply single keys as environment variables (DYNACONF_<AGENT>__MODEL_API_KEY=...).
 
 FROM python:3.13-bookworm AS builder
 

@@ -30,9 +30,15 @@ class TestIdempotencyNotice:
         project = _project(tmp_path, "[default]\nidempotency_enabled = false\n")
         assert _idempotency_notice(project) is None
 
-    def test_top_level_key_without_an_environment_table_counts(self, tmp_path: Path) -> None:
+    def test_a_top_level_key_outside_any_section_is_not_a_decision(self, tmp_path: Path) -> None:
+        """The process loads [default], [<env>] and [global] only, so the key above them is read by nothing."""
         project = _project(tmp_path, "idempotency_enabled = true\nidempotency_ttl = 60\n")
-        assert _idempotency_notice(project) is None
+        assert _idempotency_notice(project) == IDEMPOTENCY_NOTICE
+
+    def test_a_decision_made_only_for_another_environment_does_not_count(self, tmp_path: Path) -> None:
+        project = _project(tmp_path, "[development]\nidempotency_enabled = false\n")
+        assert _idempotency_notice(project) == IDEMPOTENCY_NOTICE
+        assert _idempotency_notice(project, "development") is None
 
     def test_a_project_with_no_handlers_is_not_notified(self, tmp_path: Path) -> None:
         project = _project(tmp_path, '[default]\napp_name = "demo"\n', with_handler=False)

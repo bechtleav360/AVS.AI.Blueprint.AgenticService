@@ -73,6 +73,11 @@ on_shutdown
         #     idempotency_enabled = true
         #     idempotency_ttl = 1500     # seconds; must outlast the redelivery window
         #
+        #     src/main.py
+        #     .with_cache()              # the markers live in this agent's cache
+        #
+        # Startup fails without the ttl or without the cache.
+        #
         # Dedup keys on the event id and source and is best-effort: it narrows the window,
         # it does not close it. Whichever you choose, delete this comment once you have.
 

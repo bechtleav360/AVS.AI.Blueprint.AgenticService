@@ -2,7 +2,6 @@
 app_name
 app_version = "0.1.0"
 app_description
-debug = true
 model_provider = "vllm"
 model_base_url = "https://YOUR_VLLM_HOST/v1"
 
@@ -10,7 +9,9 @@ model_base_url = "https://YOUR_VLLM_HOST/v1"
 # same event, because delivery is at-least-once and an acknowledgement can always be
 # lost. Turn it on only after deciding it is what your handlers need -- see the DECIDE
 # comment in src/handlers/. idempotency_ttl is required when it is enabled, and must
-# outlast the broker redelivery window (nats_ack_wait * nats_max_deliver on JetStream).
+# outlast the broker redelivery window (nats_ack_wait * nats_max_deliver on JetStream);
+# the markers are kept in this agent's cache, so src/main.py needs .with_cache() as well.
+# Startup fails if either is missing.
 # idempotency_enabled = true
 # idempotency_ttl = 1500
 
@@ -19,9 +20,11 @@ model_base_url = "https://YOUR_VLLM_HOST/v1"
 # in-process timer: the tick arrives as an event on <agent>.scheduler.<scheduler_name>
 # (the application's name instead of the agent when it is served on its own), published
 # by an external CronJob, so exactly one replica runs it -- and it needs event_bus set.
-# "in_process" runs an APScheduler timer in the process and claims each tick in the cache
-# so one replica runs it; it is right for local development and plain Docker, and it
-# needs .with_cache() or every replica runs every tick.
+# "in_process" runs an APScheduler timer in every process and claims each tick in the
+# cache; it is right for local development and plain Docker, and it needs .with_cache()
+# or every replica runs every tick. The claim is atomic across processes only on Redis
+# ([default.cache] backend = "redis"); on the default disk cache it holds
+# within one process only, so two replicas sharing the cache directory can both run it.
 # scheduler_mode = "event"
 # scheduler_mode = "in_process"
 

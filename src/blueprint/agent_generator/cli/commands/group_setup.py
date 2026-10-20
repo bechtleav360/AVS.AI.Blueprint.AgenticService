@@ -30,11 +30,15 @@ app_host = "0.0.0.0"
 app_port = 8000
 log_level = "INFO"
 
-# "dapr" or "nats". One process speaks one bus.
+# "dapr" or "nats". One process speaks one bus. With "nats", nats_url is required outside
+# development (DYNACONF_NATS_URL works too): there is no default broker in a container.
 # event_bus = "nats"
+# nats_url = "nats://YOUR_NATS_HOST:4222"
 
 # Required once any agent registers a scheduler. "in_process" runs a timer in every replica and
-# claims each tick through the cache, so it needs a cache; "event" takes the tick as an event.
+# claims each tick through the agent's cache, so it needs a cache -- and Redis
+# (cache.backend = "redis") once there is more than one replica: a disk cache's claim holds
+# within one process only. "event" takes the tick as an event, published by an external CronJob.
 # scheduler_mode = "event"
 
 [development]
@@ -141,7 +145,8 @@ def _report(output_dir: Path, written: list[str], skipped: list[str]) -> None:
     print("An agent directory carries no agents.toml of its own, which is what lets it be")
     print("built as its own single-agent image without editing anything.")
     print("")
-    print("Run 'asbs validate --group' here to check the map against what is on disk.")
+    print("Run 'asbs validate --group' here to check the map against what is on disk -- it reports the")
+    print("empty map as an issue until the first agent is added.")
 
 
 def run(args: Namespace) -> None:

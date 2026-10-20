@@ -51,9 +51,15 @@ class TestNatsFindings:
         assert len(findings) == 1
         assert named in findings[0]
 
-    def test_a_key_in_an_agent_section_is_checked_too(self, tmp_path: Path) -> None:
-        findings = _nats_findings(_project(tmp_path, "[orders]\nnats_max_concurrent_runs = 0\n"))
+    def test_a_key_in_the_target_environment_section_is_checked(self, tmp_path: Path) -> None:
+        findings = _nats_findings(_project(tmp_path, "[production]\nnats_max_concurrent_runs = 0\n"))
         assert findings and "nats_max_concurrent_runs" in findings[0]
+
+    def test_a_key_in_another_environment_section_is_not(self, tmp_path: Path) -> None:
+        """'[orders]' in the process's own file is an environment named orders to Dynaconf, not a scope."""
+        assert _nats_findings(_project(tmp_path, "[orders]\nnats_max_concurrent_runs = 0\n")) == []
+        assert _nats_findings(_project(tmp_path, "[development]\nnats_max_concurrent_runs = 0\n")) == []
+        assert _nats_findings(_project(tmp_path, "[development]\nnats_max_concurrent_runs = 0\n"), "development") != []
 
 
 class TestConnectionSource:

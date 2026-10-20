@@ -187,9 +187,12 @@ def run(args: Namespace) -> None:
             print("  │   ├── models/")
             print("  │   └── prompts/")
             print("  ├── tests/")
+            print("  ├── pyproject.toml   (left alone when there already is one)")
             print("  ├── settings.toml")
-            print("  ├── .secrets.toml")
+            print("  ├── .secrets.toml   (git- and docker-ignored: mount it, never bake it in)")
+            print("  ├── .secrets.toml.example")
             print("  ├── Dockerfile")
+            print("  ├── .dockerignore")
             print("  └── .gitignore")
 
             print("\nNext steps:")
@@ -215,7 +218,7 @@ def run(args: Namespace) -> None:
             print("first deploy is a consumer migration.")
             print("\nTo host it in a group, add to the repository's agents.toml:")
             print(f"  [agents.{namespace}]")
-            print('  root   = "<path from that file to this directory>"')
+            print('  root   = "<path from the image root to this directory>"')
             print('  module = "<that path as a dotted package>.src.main:agent"')
 
         finally:

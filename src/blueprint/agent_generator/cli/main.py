@@ -182,7 +182,8 @@ def main() -> None:
     validate_parser.add_argument(
         "--group",
         action="store_true",
-        help="Validate an image rather than a single agent: the agent map, and every agent it points at.",
+        help="Validate an image rather than a single agent: the agent map, the group file (when there is one), and "
+        "every agent the map points at.",
     )
     validate_parser.add_argument(
         "--agent-map",
@@ -191,12 +192,34 @@ def main() -> None:
         "against that directory, as BLUEPRINT_AGENT_MAP does at runtime. Agent roots are unaffected: they resolve "
         "against the image root either way.",
     )
+    validate_parser.add_argument(
+        "--environment",
+        metavar="NAME",
+        help="The settings environment to check, as the process selects it: [default], then [NAME], then [global]. "
+        "Default: DYNACONF_APP_ENVIRONMENT, else 'production' -- what both scaffolded Dockerfiles set. A key set "
+        "only in another environment's section counts as unset.",
+    )
+    validate_parser.add_argument(
+        "--group-config",
+        metavar="PATH",
+        help="With --group: the group file to resolve, if not BLUEPRINT_GROUP_CONFIG or deployment-groups.yaml in the "
+        "image root. Relative paths resolve against the image root, as at runtime.",
+    )
+    validate_parser.add_argument(
+        "--group-name",
+        metavar="NAME",
+        help="With --group: resolve only this group of the group file (as BLUEPRINT_GROUP does). Default: "
+        "BLUEPRINT_GROUP, else every group the file declares.",
+    )
 
     # Dev command
     dev_parser = subparsers.add_parser(
         "dev",
         help="Start development server",
-        description="Run this project's agents with hot reload, under the namespaces they deploy under",
+        description="Serve with hot reload. In an image directory (an agents.toml here) the image's agents are "
+        "hosted under their namespaces, as the group entry point hosts them. In an agent directory the agent is "
+        "served alone, at the root namespace, as its own Dockerfile serves it -- unless --name asks for the "
+        "namespace a group image would give it.",
     )
     dev_parser.add_argument(
         "--name",

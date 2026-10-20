@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from blueprint.agent_generator.cli.commands.validate_group import _agent_map_path, _findings
+from blueprint.agent_generator.cli.commands.validate_group import _agent_map_path, image_findings
 
 MAP_ENV = "BLUEPRINT_AGENT_MAP"
 
@@ -38,7 +38,7 @@ class TestWhereTheMapMayLive:
         _agent_dir(tmp_path / "agents" / "orders")
         (tmp_path / "agents.toml").write_text(_map_text("agents/orders"), encoding="utf-8")
 
-        issues, _, _ = _findings(tmp_path, _agent_map_path(tmp_path, None))
+        issues, _, _ = image_findings(tmp_path, _agent_map_path(tmp_path, None))
 
         assert issues == []
 
@@ -52,12 +52,12 @@ class TestWhereTheMapMayLive:
             encoding="utf-8",
         )
 
-        issues, _, _ = _findings(tmp_path, _agent_map_path(tmp_path, "deploy/agents.toml"))
+        issues, _, _ = image_findings(tmp_path, _agent_map_path(tmp_path, "deploy/agents.toml"))
 
         assert issues == [], "Resolving the root against deploy/ rather than the image root is the defect."
 
     def test_an_absent_map_names_the_flag_that_points_at_one(self, tmp_path: Path) -> None:
-        issues, _, _ = _findings(tmp_path, _agent_map_path(tmp_path, None))
+        issues, _, _ = image_findings(tmp_path, _agent_map_path(tmp_path, None))
 
         assert len(issues) == 1
         assert "--agent-map" in issues[0], "A reader whose map is elsewhere needs to be told there is a way to say so."
@@ -70,7 +70,7 @@ class TestWhereTheMapMayLive:
         image.mkdir()
         (image / "agents.toml").write_text(_map_text("../outside"), encoding="utf-8")
 
-        issues, _, _ = _findings(image, _agent_map_path(image, None))
+        issues, _, _ = image_findings(image, _agent_map_path(image, None))
 
         assert any("outside the image" in issue for issue in issues)
 
@@ -119,7 +119,7 @@ class TestAbsoluteSrcImports:
             {"main.py": "from src.services.order_service import OrderService\nagent = None\n", "api/routes.py": "import src.models\n"},
         )
 
-        issues, warnings, _ = _findings(image, _agent_map_path(image, None))
+        issues, warnings, _ = image_findings(image, _agent_map_path(image, None))
 
         assert issues == [], "Both styles are legitimate standalone; this must not claim the image cannot start."
         found = [w for w in warnings if "imports its own code as 'src'" in w]
@@ -130,21 +130,21 @@ class TestAbsoluteSrcImports:
     def test_relative_imports_are_not_reported(self, tmp_path: Path) -> None:
         image = self._image_with(tmp_path, {"main.py": "from .services.order_service import OrderService\nagent = None\n"})
 
-        _, warnings, _ = _findings(image, _agent_map_path(image, None))
+        _, warnings, _ = image_findings(image, _agent_map_path(image, None))
 
         assert not any("imports its own code as 'src'" in w for w in warnings)
 
     def test_a_name_in_a_docstring_or_comment_is_not_an_import(self, tmp_path: Path) -> None:
         image = self._image_with(tmp_path, {"main.py": '"""Once: from src.x import Y."""\n# import src\nagent = None\n'})
 
-        _, warnings, _ = _findings(image, _agent_map_path(image, None))
+        _, warnings, _ = image_findings(image, _agent_map_path(image, None))
 
         assert not any("imports its own code as 'src'" in w for w in warnings)
 
     def test_a_package_merely_starting_with_src_is_not_reported(self, tmp_path: Path) -> None:
         image = self._image_with(tmp_path, {"main.py": "import srcutils\nfrom srclib.x import Y\nagent = None\n"})
 
-        _, warnings, _ = _findings(image, _agent_map_path(image, None))
+        _, warnings, _ = image_findings(image, _agent_map_path(image, None))
 
         assert not any("imports its own code as 'src'" in w for w in warnings)
 
@@ -154,14 +154,14 @@ class TestAbsoluteSrcImports:
         (tmp_path / "src" / "main.py").write_text("from src.services import x\nagent = None\n", encoding="utf-8")
         (tmp_path / "agents.toml").write_text(_map_text(".", "src.main:agent"), encoding="utf-8")
 
-        _, warnings, _ = _findings(tmp_path, _agent_map_path(tmp_path, None))
+        _, warnings, _ = image_findings(tmp_path, _agent_map_path(tmp_path, None))
 
         assert not any("imports its own code as 'src'" in w for w in warnings)
 
     def test_a_long_list_is_summarised(self, tmp_path: Path) -> None:
         image = self._image_with(tmp_path, {"main.py": "".join(f"import src.m{i}\n" for i in range(8)) + "agent = None\n"})
 
-        _, warnings, _ = _findings(image, _agent_map_path(image, None))
+        _, warnings, _ = image_findings(image, _agent_map_path(image, None))
 
         found = [w for w in warnings if "imports its own code as 'src'" in w]
         assert "and 3 more" in found[0]
@@ -185,7 +185,7 @@ class TestSchedulersInAGroup:
     def test_a_scheduler_without_a_mode_is_an_issue(self, tmp_path: Path) -> None:
         image = self._image(tmp_path, '[default]\nmodel_name = "x"\n')
 
-        issues, _, _ = _findings(image, image / "agents.toml")
+        issues, _, _ = image_findings(image, image / "agents.toml")
 
         assert any("Agent 'orders'" in issue and "no 'scheduler_mode'" in issue for issue in issues)
 
@@ -193,7 +193,7 @@ class TestSchedulersInAGroup:
         """scheduler_mode from the agent's file, event_bus from the image's -- where a process key lives."""
         image = self._image(tmp_path, '[default]\nscheduler_mode = "event"\n', '[default]\nevent_bus = "nats"\n')
 
-        issues, _, notices = _findings(image, image / "agents.toml")
+        issues, _, notices = image_findings(image, image / "agents.toml")
 
         assert not [issue for issue in issues if "scheduler" in issue]
         assert any("CronJob" in notice for notice in notices)

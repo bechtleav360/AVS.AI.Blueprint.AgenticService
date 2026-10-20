@@ -116,3 +116,14 @@ class TestAProjectWithoutAnAgentMap:
             _run(tmp_path)
 
         assert exit_info.value.code == 1
+
+
+class TestTheDevName:
+    """The name comes from --name only: without it an agent directory is served alone, at the root."""
+
+    def test_the_requested_name_is_normalised_into_a_namespace(self) -> None:
+        assert dev._dev_agent_name("Order-EU") == "order_eu"
+
+    def test_a_name_that_cannot_be_a_namespace_stops(self) -> None:
+        with pytest.raises(SystemExit):
+            dev._dev_agent_name("1orders")

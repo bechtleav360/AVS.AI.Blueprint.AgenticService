@@ -1,5 +1,6 @@
 """Create command - scaffold individual components using existing generators."""
 
+import json
 import logging
 import re
 import sys
@@ -7,10 +8,13 @@ from argparse import Namespace
 from pathlib import Path
 from typing import Any
 
+from blueprint.agents.io.api.scheduling.scheduler import validate_crontab
+
 from ...generator.part_generators import (
     HandlerPartGenerator,
     ServicePartGenerator,
 )
+from ...generator.part_generators.part_generator_base import PartGeneratorBase
 from ..utils.naming_utils import (
     normalize_component_name,
     add_import_to_main,
@@ -99,7 +103,7 @@ def create_handler(args: Namespace) -> None:
 
     # Create minimal config for generator
     config: dict[str, Any] = {
-        "name": "cli_generated",
+        "name": f"{event_type} events",
         "communication_layer": {
             "handlers": {
                 class_name: {
@@ -132,6 +136,10 @@ def create_handler(args: Namespace) -> None:
     output_file.write_text(template_content)
 
     print(f"✓ Created handler: {output_file}")
+
+    # The generated on_startup reads <handler>.input_event_type, so the event type goes where it
+    # is read -- the way create agent writes its runtime's block -- rather than into a docstring.
+    _write_handler_settings(project_root, PartGeneratorBase.camel_to_snake(class_name), event_type)
 
     # Attempt to auto-register in main.py
     auto_registered = False
@@ -171,6 +179,27 @@ def create_handler(args: Namespace) -> None:
         print(f"     .with_handler({class_name})")
 
 
+def _write_handler_settings(project_root: Path, section_key: str, event_type: str) -> None:
+    """Add ``[default.<handler>] input_event_type`` to ``settings.toml``, unless the section exists.
+
+    An existing section is the author's and is left alone; a project without a settings file is
+    told what to add instead of being given one.
+    """
+    section = f"[default.{section_key}]"
+    line = f"input_event_type = {json.dumps(event_type)}"
+    settings_file = project_root / "settings.toml"
+    if not settings_file.is_file():
+        print(f"  No settings.toml here; add this to the agent's settings.toml:\n  {section}\n  {line}")
+        return
+    content = settings_file.read_text(encoding="utf-8")
+    if section in content:
+        print(f"  settings.toml already has {section}; left alone")
+        return
+    separator = "" if content.endswith("\n") or not content else "\n"
+    settings_file.write_text(f"{content}{separator}\n{section}\n{line}\n", encoding="utf-8")
+    print(f"  Added {section} with {line} to settings.toml")
+
+
 def create_service(args: Namespace) -> None:
     """Create a BusinessService component using ServicePartGenerator."""
     output_dir = Path(args.output_dir)
@@ -187,8 +216,9 @@ def create_service(args: Namespace) -> None:
         sys.exit(1)
 
     # Create minimal config for generator
+    # "name" is what the service's docstring says it is for (N: it read "Service for cli_generated.").
     config: dict[str, Any] = {
-        "name": "cli_generated",
+        "name": f"{snake_name.removesuffix('_service')} operations",
         "service_layer": {
             class_name: {
                 "description": f"Service for {snake_name} operations",
@@ -686,7 +716,17 @@ def create_scheduler(args: Namespace) -> None:
 
     Note: Scheduler generation is not yet implemented with generators.
     This creates a simple template file.
+
+    The crontab is checked first with the runtime's own ``validate_crontab`` -- in no mode, since
+    ``scheduler_mode`` is settings and not known here -- so an expression the scheduler would
+    refuse at startup is refused before anything is written.
     """
+    try:
+        validate_crontab(args.cron)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -723,7 +763,9 @@ class {class_name}(SchedulerBase):
         scheduler's own topic, published by an external CronJob that the deployment provides
         (nothing in this project generates it), and 'event_bus' has to be set. With
         'in_process' an APScheduler timer runs here, which is right for local development and
-        un-orchestrated Docker; with a cache each tick is claimed so one replica runs it.
+        un-orchestrated Docker; with a cache each tick is claimed first. That claim holds
+        across replicas only on a Redis cache -- on the default disk cache it holds within one
+        process, so replicas sharing the directory can each run a tick.
         Write days of the week as names ('mon-fri'): 0 is Monday here and Sunday to cron.
         """
         super().__init__(crontab="{args.cron}")

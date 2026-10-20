@@ -60,3 +60,17 @@ class TestSchedulerScaffold:
 
     def test_scheduler_mode_is_explained(self, scaffold: str) -> None:
         assert "scheduler_mode" in scaffold
+
+    def test_a_disk_cache_is_not_said_to_coordinate_replicas(self, scaffold: str) -> None:
+        assert "within one process" in " ".join(scaffold.split())
+
+
+class TestTheCrontabIsCheckedBeforeWriting:
+    @pytest.mark.parametrize("cron", ["every hour", "0 0 * * 7", "0 0 0 * * *"])
+    def test_an_expression_the_runtime_refuses_writes_nothing(self, tmp_path: Path, cron: str, capsys: pytest.CaptureFixture[str]) -> None:
+        with pytest.raises(SystemExit) as exit_info:
+            create_scheduler(Namespace(name="cleanup", output_dir=str(tmp_path), cron=cron))
+
+        assert exit_info.value.code == 1
+        assert not (tmp_path / "cleanup_scheduler.py").exists()
+        assert "crontab" in capsys.readouterr().err

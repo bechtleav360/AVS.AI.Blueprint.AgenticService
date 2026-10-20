@@ -49,8 +49,9 @@ class PartGeneratorBase:
         has exactly one agent has no second name to give it.
 
         The agent itself never stores this: whoever hosts it supplies the name -- a group
-        image's agent map, a single-agent image's Dockerfile, or ``asbs dev``. It is derived
-        here only to write those, and to tell the author what the name will be.
+        image's agent map, or ``asbs dev --name``. Served alone (its own Dockerfile, or
+        ``asbs dev`` without ``--name``) it runs at the root namespace and has no name at all.
+        It is derived here only to tell the author what the name will be in a group.
 
         Raises:
             ValueError: if the project name does not survive the derivation as a legal

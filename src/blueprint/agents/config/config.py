@@ -108,6 +108,14 @@ agent without editing its settings file, which is exactly what grouping must not
 """
 
 
+AGENT_REFUSED_KEYS = PROCESS_SCOPE_KEYS | DEPLOYMENT_IDENTITY_KEYS
+"""Every key an agent's own settings file cannot set: :data:`PROCESS_SCOPE_KEYS` and :data:`DEPLOYMENT_IDENTITY_KEYS`.
+
+:meth:`Config.merge_agent_settings` drops each one with a WARNING. Named once so that ``asbs
+validate`` reports exactly the keys the merge drops.
+"""
+
+
 DEFAULT_SETTINGS_FILES = ["settings.toml", ".secrets.toml"]
 """The settings files the framework loads when the application names none.
 
@@ -166,6 +174,58 @@ identity variable closes its own hole.
 """
 
 
+def environment_section_names(documents: list[dict[str, Any]]) -> frozenset[str]:
+    """Every table name that is an environment section to a process, ``default`` and ``global`` excluded.
+
+    The conventional ones, and every top-level table of the process's own settings files: in
+    environment mode Dynaconf reads each of those as an environment, so an agent's table of the
+    same name is one too. Shared with ``asbs validate``, which layers files the way the merge does.
+
+    Args:
+        documents: The process's own settings files, parsed.
+    """
+    names = set(CONVENTIONAL_ENVIRONMENTS)
+    for document in documents:
+        names.update(str(key).lower() for key, value in document.items() if isinstance(value, dict))
+    return frozenset(names - {"default", "global"})
+
+
+def layer_settings_document(document: dict[str, Any], environment: str, environment_names: frozenset[str]) -> dict[str, Any]:
+    """Flatten an agent's settings file for one environment, the way Dynaconf flattens the process's own.
+
+    Three layers, lowest first: keys written at the top level, ``[default]``, and the section for
+    ``environment``. ``[global]`` is applied last, as Dynaconf applies it. Section names are
+    matched case-insensitively, again as Dynaconf matches them. A table that is not an environment
+    section (``[cache]`` beside ``[default]``) is a value and kept; an environment section that is
+    not active is dropped. What :meth:`Config.merge_agent_settings` merges, and what ``asbs
+    validate`` reads an agent's file through.
+
+    Args:
+        document: The parsed file.
+        environment: The environment in force, lower case.
+        environment_names: What counts as an environment section; see :func:`environment_section_names`.
+    """
+    sections = {str(key).lower(): value for key, value in document.items() if hasattr(value, "items")}
+    layered: dict[str, Any] = {key: value for key, value in document.items() if not hasattr(value, "items")}
+    active = ("default", environment, "global")
+    for section in active:
+        values = sections.get(section)
+        if values:
+            layered.update({str(key): value for key, value in values.items()})
+    # A table the file wrote at the top level is a value, not a section: [cache] beside
+    # [default] is this agent's cache configuration. An environment section that is not
+    # active is neither: it is dropped, as Dynaconf drops the process's own. It was kept as a
+    # key, so every agent carried its [production] table as 'production' in development (S13).
+    for name, values in sections.items():
+        if name in active:
+            continue
+        if name in environment_names:
+            logger.debug("Agent settings: section [%s] is for another environment than '%s'; dropped", name, environment)
+            continue
+        layered.setdefault(name, values)
+    return layered
+
+
 class Config:
     """A class to manage the application's configuration using dynaconf."""
 
@@ -186,7 +246,7 @@ class Config:
         Raw access via ``self.settings`` remains unscoped.
 
         Which environment variables count as overrides is decided here too, before the tree is
-        built: see :meth:`_resolve_envvar_prefix`. The prefix is a property of the process, not
+        built: see :meth:`resolve_envvar_prefix`. The prefix is a property of the process, not
         of a namespace, so a view built by :meth:`for_namespace` shares it.
         """
 
@@ -218,7 +278,7 @@ class Config:
         temp_settings = Dynaconf(
             settings_files=settings_files, environments=False, load_dotenv=False, merge_enabled=True, root_path=root_path
         )
-        self._envvar_prefix = self._resolve_envvar_prefix(temp_settings)
+        self._envvar_prefix = self.resolve_envvar_prefix(temp_settings)
         if self._envvar_prefix != DEFAULT_ENVVAR_PREFIX:
             # Repeat the pass through the resolved prefix. Without this, `<PREFIX>_APP_ENVIRONMENT`
             # is invisible to the only read that consumes it: the second pass would load the
@@ -315,7 +375,7 @@ class Config:
                 self._settings[key] = value
 
     @staticmethod
-    def _resolve_envvar_prefix(bootstrap_settings: Any) -> str | bool:
+    def resolve_envvar_prefix(bootstrap_settings: Any) -> str | bool:
         """Decide which prefix environment overrides must carry, before the real tree is loaded.
 
         Precedence, highest first: the :data:`ENVVAR_PREFIX_OVERRIDE` environment variable, the
@@ -696,44 +756,19 @@ class Config:
         Args:
             document: The parsed file.
         """
-        sections = {str(key).lower(): value for key, value in document.items() if hasattr(value, "items")}
-        layered: dict[str, Any] = {key: value for key, value in document.items() if not hasattr(value, "items")}
-        active = ("default", self._environment, "global")
-        for section in active:
-            values = sections.get(section)
-            if values:
-                layered.update({str(key): value for key, value in values.items()})
-        # A table the file wrote at the top level is a value, not a section: [cache] beside
-        # [default] is this agent's cache configuration. An environment section that is not
-        # active is neither: it is dropped, as Dynaconf drops the process's own. It was kept as a
-        # key, so every agent carried its [production] table as 'production' in development (S13).
-        environments = self._environment_names()
-        for name, values in sections.items():
-            if name in active:
-                continue
-            if name in environments:
-                logger.debug("Agent settings: section [%s] is for another environment than '%s'; dropped", name, self._environment)
-                continue
-            layered.setdefault(name, values)
-        return layered
+        return layer_settings_document(document, self._environment, self._environment_names())
 
     def _environment_names(self) -> frozenset[str]:
-        """Every table name that is an environment section to this process, ``default`` and ``global`` excluded.
-
-        The conventional ones, and every top-level table of the process's own settings files: in
-        environment mode Dynaconf reads each of those as an environment, so a fragment table of the
-        same name is one too.
-        """
-        names = set(CONVENTIONAL_ENVIRONMENTS)
+        """Every table name that is an environment section to this process; see :func:`environment_section_names`."""
+        documents: list[dict[str, Any]] = []
         for path in self._settings_files:
             if path.suffix != ".toml" or not path.is_file():
                 continue
             try:
-                document = tomllib.loads(path.read_text(encoding="utf-8"))
+                documents.append(tomllib.loads(path.read_text(encoding="utf-8")))
             except (OSError, tomllib.TOMLDecodeError):
                 continue
-            names.update(str(key).lower() for key, value in document.items() if isinstance(value, dict))
-        return frozenset(names - {"default", "global"})
+        return environment_section_names(documents)
 
     @staticmethod
     def _refuse_self_scoped_fragment(namespace: str, path: Path, fragment: dict[str, Any]) -> None:
@@ -777,7 +812,7 @@ class Config:
         only actionable next to the value that is -- except for a secrets file, whose values are
         never logged, and the process's then neither.
         """
-        refused = PROCESS_SCOPE_KEYS | DEPLOYMENT_IDENTITY_KEYS
+        refused = AGENT_REFUSED_KEYS
         kept: dict[str, Any] = {}
         for key, value in fragment.items():
             if str(key).lower() not in refused:

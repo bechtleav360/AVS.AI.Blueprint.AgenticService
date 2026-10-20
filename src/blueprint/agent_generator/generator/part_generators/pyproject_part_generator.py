@@ -53,9 +53,10 @@ include = ["src*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# The generated tests import `src.main`, which is how agents.toml names the declaration and how
-# the container's entry point imports it. Without the project root on the path, the first pytest
-# run in a new project fails on the import rather than on anything the author wrote.
+# The generated tests import `src.main`, the module this agent's own Dockerfile serves (a group
+# image's agents.toml names the same file by its path from the image root). Without the project
+# root on the path, the first pytest run in a new project fails on the import rather than on
+# anything the author wrote.
 pythonpath = ["."]
 asyncio_mode = "auto"
 """

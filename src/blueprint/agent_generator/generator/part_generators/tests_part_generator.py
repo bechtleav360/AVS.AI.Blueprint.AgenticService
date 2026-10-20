@@ -39,8 +39,9 @@ class TestsPartGenerator(PartGeneratorBase):
     def _conftest(self) -> str:
         """Put the project root on the path, so the tests need no pytest configuration at all.
 
-        ``test_declaration.py`` imports ``src.main`` -- the same import ``agents.toml`` names and
-        the container entry point performs -- which needs the project root importable. That can
+        ``test_declaration.py`` imports ``src.main`` -- the module this agent's own Dockerfile
+        serves, and the file a group image's map names by its path -- which needs the project root
+        importable. That can
         come from ``pythonpath`` in ``pyproject.toml``, but a scaffolded project is scaffolded
         *into* a project that already exists and already has a ``pyproject.toml`` of its own, and
         editing somebody's build configuration to make generated tests run is not this tool's
@@ -48,8 +49,9 @@ class TestsPartGenerator(PartGeneratorBase):
         """
         return '''"""Make the project root importable, so `from src.main import agent` resolves.
 
-`src.main` is what `agents.toml` names and what `python -m blueprint.agents.entrypoint` imports,
-so the tests import it the same way the runtime does rather than a way of their own.
+`src.main` is what this agent's own Dockerfile serves (`uvicorn src.main:create_app --factory`).
+A group image's `agents.toml` names the same file by its path from the image root
+(`agents.<path>.src.main:agent`); either way it is one declaration, imported as a module.
 """
 
 import sys
@@ -79,24 +81,43 @@ the host is supposed to decide, and passing an already-constructed component
 namespace exists, so it belongs to the root for ever.
 """
 
+import importlib
+import sys
+
+import pytest
+
 from blueprint.agents.app_builder import AppBuilder
 
-from src.main import agent
+
+@pytest.fixture
+def agent() -> AppBuilder:
+    """``src.main`` as importing it leaves it, whatever ran before in this session.
+
+    Imported afresh, because ``create_app()`` builds the module's own ``agent`` -- so a test that
+    served the application earlier in the same run would otherwise hand these tests a built one.
+    The module already imported is put back, so nothing else sees a difference.
+    """
+    imported = sys.modules.pop("src.main", None)
+    try:
+        return importlib.import_module("src.main").agent
+    finally:
+        if imported is not None:
+            sys.modules["src.main"] = imported
 
 
-def test_main_declares_an_unbuilt_builder() -> None:
+def test_main_declares_an_unbuilt_builder(agent: AppBuilder) -> None:
     assert isinstance(agent, AppBuilder)
     assert not agent.is_built, "main.py built the application on import; the host builds it"
 
 
-def test_nothing_is_constructed_on_import() -> None:
+def test_nothing_is_constructed_on_import(agent: AppBuilder) -> None:
     """A declaration records; it does not create. Instances here would carry the root namespace."""
     constructed = [declaration.kind for declaration in agent.declarations if declaration.is_built]
 
     assert not constructed, f"main.py passes already-built {{constructed}} to the builder; pass the class instead"
 
 
-def test_every_component_is_declared() -> None:
+def test_every_component_is_declared(agent: AppBuilder) -> None:
     """Rename or remove a component and this is what tells you main.py was not updated."""
     kinds = [declaration.kind for declaration in agent.declarations]
 
@@ -104,7 +125,7 @@ def test_every_component_is_declared() -> None:
     assert "handler" in kinds
 
 
-def test_the_services_this_project_ships_are_declared() -> None:
+def test_the_services_this_project_ships_are_declared(agent: AppBuilder) -> None:
     declared = {{
         getattr(declaration.target, "__name__", type(declaration.target).__name__)
         for declaration in agent.declarations

@@ -179,19 +179,19 @@ def _declares(entry_point: Path, name: str) -> bool:
     return False
 
 
-def _dev_agent_name(args: Namespace) -> str:
-    """Return the name this agent runs under while developing.
+def _dev_agent_name(requested: str) -> str:
+    """Return the name this agent runs under while developing: ``--name``, as a namespace.
 
-    ``--name`` -- only asked for when it was given; without it the agent is served at the root.
-    The agent itself does not carry a name: it is its identity on the broker, in telemetry and in
-    its routes, and who supplies it depends on who is hosting it -- a group image's map, or this.
+    Only called when ``--name`` was given; without it the agent is served alone, at the root, and
+    has no name to derive -- the directory's name is deliberately not one. The agent itself does
+    not carry a name: it is its identity on the broker, in telemetry and in its routes, and who
+    supplies it depends on who is hosting it -- a group image's map, or this.
 
     Raises:
-        SystemExit: if neither yields a legal namespace, because a repaired name would be a
-            different agent under the same directory.
+        SystemExit: if the name is not a legal namespace once dashes and spaces become
+            underscores, because a further-repaired name would be a different agent.
     """
-    requested = (getattr(args, "name", "") or "").strip() or Path.cwd().name
-    candidate = re.sub(r"[-\s]+", "_", requested).lower()
+    candidate = re.sub(r"[-\s]+", "_", requested.strip()).lower()
     try:
         return validate_namespace(candidate)
     except ValueError as exc:
@@ -207,7 +207,7 @@ def _temporary_agent_map(args: Namespace) -> Path:
     leave behind exactly the file an agent must not carry, and a developer who then committed it
     would have an agent that names itself.
     """
-    name = _dev_agent_name(args)
+    name = _dev_agent_name(getattr(args, "name", "") or "")
     handle = tempfile.NamedTemporaryFile("w", suffix="-agents.toml", delete=False, encoding="utf-8")
     with handle as written:
         written.write(f'[agents.{name}]\nroot   = "."\nmodule = "src.main:agent"\n')
