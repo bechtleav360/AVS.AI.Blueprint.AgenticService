@@ -45,7 +45,7 @@ class MyHandler(EventHandlerBase):
 
 ## Priority
 
-The `priority` argument controls execution order. Handlers with a **lower** numeric priority value are evaluated first. If two handlers share the same priority, ordering is non-deterministic.
+The `priority` argument controls execution order. Handlers with a **lower** numeric priority value are evaluated first. Handlers of the same priority are asked in the order they were declared, whether passed as a class or as an instance.
 
 ```python
 super().__init__(priority=10)   # Runs early
@@ -234,8 +234,8 @@ class OrderHandler(EventHandlerBase):
 
 ## Registration
 
-Register handlers with `AppBuilder` by passing the **class** -- an instance is refused in a group,
-because it would be constructed before any namespace exists. In `src/main.py` (a declaration; see
+Register handlers with `AppBuilder` by passing the **class** -- an instance is refused by a group
+and by `create_app()`, because it would be constructed before any namespace exists. In `src/main.py` (a declaration; see
 [agents](agents.md) and the `create_app()` that `asbs setup` writes):
 
 ```python
@@ -248,7 +248,7 @@ agent = (
 )
 ```
 
-Services must be registered before the handlers that depend on them.
+The order of the two calls does not matter for resolving: every component is constructed before any `on_startup()` runs, and services are started before handlers.
 
 ## Full Example
 
@@ -322,17 +322,21 @@ delivery (nak and redeliver, or terminate for `InvalidEventError`). If the domai
 
 ## Testing
 
-Use a mock registry to unit test handlers in isolation.
+Use a mock registry to unit test handlers in isolation. A component registers itself when it is constructed and reads `self.registry` from the shared registry, so the fixture installs the mock as that, as the [testing guide](../guides/testing.md) does.
 
 ```python
 import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+from blueprint.agents.component.component import Component
+from blueprint.agents.component.registry import Registry
 from blueprint.agents.models.events import GenericCloudEvent
 
 
 @pytest.fixture
 def mock_registry():
-    registry = MagicMock()
+    """Install a mock registry for every component constructed while the test runs."""
+    registry = MagicMock(spec=Registry)
     invoice_service = AsyncMock()
     invoice_service.generate_invoice.return_value = {
         "invoice_id": "INV-TEST",
@@ -340,13 +344,14 @@ def mock_registry():
         "total": 50.00,
     }
     registry.get_service.return_value = invoice_service
-    return registry
+    Component.shared_registry = registry
+    yield registry
+    Component.reset_shared_state()
 
 
 @pytest.fixture
 async def handler(mock_registry):
     h = InvoiceHandler()
-    h._registry = mock_registry
     await h.on_startup()
     return h
 

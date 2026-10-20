@@ -11,7 +11,8 @@ Two things shape everything below, and both are recent:
 - **More than one replica is now safe**, under conditions this guide states. Core NATS
   subscriptions join a queue group, JetStream consumers are durable and share a deliver group, every
   delivery is acknowledged, naked or terminated explicitly, a cron tick fires once across replicas
-  in both scheduler modes, and event deduplication is available. What you have to decide is listed
+  in both scheduler modes (in `in_process` mode only on a shared Redis cache), and event
+  deduplication is available. What you have to decide is listed
   under [Running more than one replica](#running-more-than-one-replica).
 
 > **The delivery behaviour is tested against a real NATS server** (`tests/integration`, a
@@ -31,38 +32,41 @@ writes a single-agent image that serves one declaration directly -- `uvicorn src
 the one below. The same agent directory is built by either without editing a line; what differs
 is what gets copied and what serves it.
 
-The group image's production stage:
+The group image's runtime stage, as `asbs setup --group` writes it (comments shortened):
 
 ```dockerfile
-FROM python:3.13-slim-bookworm AS final
+FROM python:3.13-slim-bookworm AS runtime
+
+RUN useradd --create-home --shell /bin/bash appuser
 
 WORKDIR /app
 
 COPY --from=builder /usr/local/lib/python3.13/site-packages /usr/local/lib/python3.13/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
-COPY --chown=appuser:appuser src ./src
+
+# The agents, each in the directory its entry in agents.toml points at with `root`.
+COPY --chown=appuser:appuser agents ./agents
 COPY --chown=appuser:appuser settings.toml ./
 COPY --chown=appuser:appuser agents.toml ./
 
 # The disk cache backend writes here and cannot create it itself: WORKDIR made /app root-owned.
 RUN mkdir -p /app/.cache && chown -R appuser:appuser /app/.cache
 
-ENV PYTHONPATH="/app/src" \
-    DYNACONF_APP_ENVIRONMENT="production" \
+ENV DYNACONF_APP_ENVIRONMENT="production" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
 USER appuser
 
+EXPOSE 8000
+
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD ["python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health/live', timeout=4).status == 200 else 1)"]
-
-EXPOSE 8000
 
 ENTRYPOINT ["python", "-m", "blueprint.agents.entrypoint"]
 ```
 
-Three things about it are load-bearing:
+Five things about it are load-bearing:
 
 - **`agents.toml` is copied in; the group file is not.** The map says what the image *contains*, and
   changes only when an agent is added or removed -- which is a rebuild anyway. Which agents a
@@ -74,10 +78,14 @@ Three things about it are load-bearing:
   this process's group, builds it and serves it. A project from before the split, whose `main.py`
   builds its own application, keeps `uvicorn src.main:app` and keeps working.
 - **`.secrets.toml` is never copied in.** Mount it, or supply the values as environment variables.
+  The `agents/` tree is copied whole, so it is the `.dockerignore` that `asbs setup --group` writes
+  that keeps each agent's own `.secrets.toml` out of the image.
 - **`app_environment` defaults to `development`, and a deployment sets `production` itself.** The
   variable is `DYNACONF_APP_ENVIRONMENT` (`<PREFIX>_APP_ENVIRONMENT` with a custom `envvar_prefix`);
-  `DYNACONF_ENVIRONMENT` selects nothing. Left at `development`, a process falls back to a localhost
-  broker when `nats_url` is unset, logs as in development and runs asyncio in debug mode.
+  `DYNACONF_ENVIRONMENT` selects nothing. Left at `development`, a process logs a WARNING at startup
+  that it runs in development mode, falls back to a localhost broker (with a WARNING) when
+  `nats_url` is unset, and serves one uvicorn worker at log level `debug`. Asyncio debug mode is
+  not part of it: that is `event_loop_debug`, off unless set.
 - **The health check is Python, not `curl`:** the slim base image has no `curl`, so a `curl` check
   fails for ever and the container never turns healthy.
 
@@ -344,7 +352,7 @@ scaling out and regrouping are independent of each other.
 | Outcome | Disposition |
 |---|---|
 | Handled, skipped (`HandlerResult.skipped`), or no handler matched it | **ack** -- none of them is a failure |
-| A retryable failure | **nak**, redelivered after `nats_ack_wait` |
+| A retryable failure | **nak**, redelivered at once (no delay is set) |
 | A run that exceeded `nats_handler_timeout` | cancelled and **nak**'d for immediate redelivery |
 | A poison payload, or a `CriticalHandlerError` | **term**, and dead-lettered |
 | `nats_max_deliver` attempts exhausted | dead-lettered |
@@ -356,7 +364,7 @@ setting on its own.
   `in_progress` every third of it (`nats_heartbeat_enabled`, on by default), so a long run is not
   redelivered while it runs. What the heartbeat does not cover is a message that is still waiting in
   the client's queue -- bound that with `nats_max_ack_pending`. With the heartbeat switched off,
-  `nats_ack_wait` must exceed your p99 handler duration.
+  `nats_ack_wait` must exceed your p99 handler duration (and dedup warns at startup; see below).
 - **`nats_handler_timeout`** bounds a single run; set it above the longest legitimate run.
 - **`nats_max_ack_pending`** is the in-flight limit **across every replica sharing the consumer**,
   not per replica. Set it deliberately: it decides how many messages all replicas together work on
@@ -393,9 +401,15 @@ prevent. Too long only costs cache entries. If you raise `nats_ack_wait` or `nat
 raise this with them.
 
 Two limits to know: dedup needs the agent to declare `with_cache()` -- the marker lives in that
-agent's own cache -- and the claim is atomic only across replicas that share a Redis cache. A disk
-cache's claim holds within one process: two processes on one directory -- several `app_workers`, or
-replicas on a shared volume -- can both win it, so they can both run one event or one tick.
+agent's own cache, and without one startup fails -- and the claim is atomic only across replicas
+that share a Redis cache. A disk cache's claim holds within one process: replicas sharing a cache
+directory (or `uvicorn --workers N` run by hand) can both win it, so they can both run one event or
+one tick.
+
+A marker has no "in progress" state, so dedup relies on the broker not redelivering a run that is
+still going. Where nothing guarantees that -- NATS with `nats_heartbeat_enabled = false`, or Dapr,
+which has no heartbeat -- the agent logs a WARNING at startup: keep runs well under `nats_ack_wait`
+or the sidecar's app-call timeout.
 
 **Grouped Dapr is the exception that wants dedup on.** A group has one Dapr endpoint: it publishes
 the union of every agent's topics and fans each delivery out to the agents that declared it, and the
@@ -457,13 +471,15 @@ timer beside a neighbour driven by external ticks.
 ### `scheduler_mode = "in_process"`
 
 An APScheduler timer runs in every replica, and each tick is **claimed** in the agent's own cache --
-a marker keyed on `(scheduler, minute)` -- so the replica that stores it runs the tick and the rest
-do not. Nothing is elected and nothing is held, so there is no lease to renew and none to be left
-behind by a replica that dies.
+a marker keyed on the scheduler and the minute the tick was scheduled for (not the clock when it
+ran) -- so the replica that stores it runs the tick and the rest do not. Nothing is elected and
+nothing is held, so there is no lease to renew and none to be left behind by a replica that dies.
 
-It needs `.with_cache()` on that agent. Without one the claim has nowhere to go and **every replica
-runs every tick**; the framework logs this at startup and `asbs validate` reports it. Right for local
-development, plain Docker, and a single-replica deployment.
+It needs `.with_cache()` on that agent, and a Redis cache shared by the replicas. Without a cache the
+claim has nowhere to go and **every replica runs every tick**; the framework logs this at startup and
+`asbs validate` reports it. A disk cache's claim holds within one process only, so with a per-pod
+disk cache every replica runs every tick too. Right for local development, plain Docker, and a
+single-replica deployment.
 
 ### `scheduler_mode = "event"`
 
@@ -695,7 +711,8 @@ docker run \
 Getting this wrong is quiet: `DYNACONF_APP__PORT` creates a nested `app.port` that nothing reads,
 and the process keeps its default. Most of the framework's own keys are **flat** -- `app_port`,
 `log_level`, `log_format`, `event_bus`, `nats_url`, `model_provider`, `idempotency_enabled`,
-`scheduler_mode`, `readiness_policy`. The sectioned ones are `cache.*` and `runtimes.<name>.*`.
+`scheduler_mode`, `readiness_policy`. The sectioned ones are `cache.*`, `event_publishing.*` and
+`runtimes.<name>.*` (with its legacy singular `runtime.<name>.*`).
 
 #### Choosing your own prefix
 
@@ -791,10 +808,12 @@ stringData:
 Later sources override earlier ones:
 
 1. `settings.toml` -- base configuration, baked into the image
-2. each agent's own `settings.toml`, merged under that agent's scope -- filling gaps only, so the
-   group's file and any `DYNACONF_<AGENT>__KEY` win over it
-3. `.secrets.toml` -- local development only; never copied into the image
-4. environment variables -- the ConfigMap and Secret above
+2. `.secrets.toml` beside it -- mounted at runtime, never copied into the image
+3. environment variables -- the ConfigMap and Secret above
+
+Each agent's own files are merged under that agent's scope after these, filling gaps only -- so
+everything above, `DYNACONF_<AGENT>__KEY` included, wins over them. Its `.secrets.toml` is merged
+first and so wins over its `settings.toml`; no value from it is logged.
 
 ---
 

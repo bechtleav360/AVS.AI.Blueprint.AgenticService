@@ -50,46 +50,48 @@ tests/
 
 ## Creating a Mock Registry
 
-Many components depend on the service registry to access other services. Create a reusable mock registry fixture in `tests/conftest.py`:
+Many components depend on the registry to access other services. A component's `registry` is a
+read-only property that reads the class-level shared registry, so a mock is installed there --
+before the component under test is constructed -- and removed afterwards. Create a reusable fixture
+in `tests/conftest.py`:
 
 ```python
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
+
+from blueprint.agents.component.component import Component
+from blueprint.agents.component.registry import Registry
 
 
 @pytest.fixture
-def mock_registry():
-    """Create a mock registry with common services pre-configured."""
-    registry = MagicMock()
-    registry.get_service = MagicMock()
-
-    # Pre-configure commonly needed services
-    mock_cache = AsyncMock()
-    mock_cache.get = AsyncMock(return_value=None)
-    mock_cache.set = AsyncMock()
-    registry.get_service.side_effect = lambda name: {
-        "cache": mock_cache,
-    }.get(name)
-
-    return registry
+def mock_cache():
+    """A stand-in for the agent's cache. The cache API is synchronous, so MagicMock, not AsyncMock."""
+    cache = MagicMock()
+    cache.get.return_value = None
+    return cache
 
 
 @pytest.fixture
-def mock_cache(mock_registry):
-    """Access the mock cache service from the registry."""
-    return mock_registry.get_service("cache")
+def mock_registry(mock_cache):
+    """Install a mock registry for every component constructed while the test runs."""
+    registry = MagicMock(spec=Registry)
+    registry.get_cache.return_value = mock_cache
+    Component.shared_registry = registry
+    yield registry
+    Component.reset_shared_state()
 ```
 
-To add additional mock services, extend the dictionary in the `side_effect` lambda:
+To add mock services, answer `get_service` by name:
 
 ```python
-mock_llm = AsyncMock()
-mock_llm.generate = AsyncMock(return_value="LLM response")
+from unittest.mock import AsyncMock
 
-registry.get_service.side_effect = lambda name: {
-    "cache": mock_cache,
-    "llm_provider": mock_llm,
-}.get(name)
+mock_pricing = AsyncMock()
+mock_pricing.quote = AsyncMock(return_value=49.99)
+
+mock_registry.get_service.side_effect = lambda name, namespace=None: {
+    "pricing_engine": mock_pricing,
+}[name]
 ```
 
 ---
@@ -98,12 +100,12 @@ registry.get_service.side_effect = lambda name: {
 
 ### Testing Event Handlers
 
-Event handlers have two key methods to test: `can_handle_event` for routing logic and `handle_event` for processing logic.
+Event handlers have two key methods to test: `can_handle_event` for routing logic and `handle_event` for processing logic. Both take the event, a `CloudEvent`, and the processing context.
 
 ```python
 # tests/unit/test_handlers.py
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from blueprint.agents.models.events import create_cloud_event
 from src.handlers.order_processor import OrderProcessorHandler
 
 
@@ -111,29 +113,27 @@ class TestOrderProcessorHandler:
 
     @pytest.fixture
     def handler(self, mock_registry):
-        handler = OrderProcessorHandler()
-        handler.registry = mock_registry
-        return handler
+        return OrderProcessorHandler()
 
     async def test_can_handle_matching_event(self, handler):
-        event = {"type": "order.created", "data": {"order_id": "123"}}
-        result = await handler.can_handle_event(event)
+        event = create_cloud_event("order.created", {"order_id": "123"})
+        result = await handler.can_handle_event(event, {})
         assert result is True
 
     async def test_cannot_handle_non_matching_event(self, handler):
-        event = {"type": "user.updated", "data": {}}
-        result = await handler.can_handle_event(event)
+        event = create_cloud_event("user.updated", {})
+        result = await handler.can_handle_event(event, {})
         assert result is False
 
     async def test_handle_event_processes_order(self, handler):
-        event = {"type": "order.created", "data": {"order_id": "123", "total": 99.99}}
-        result = await handler.handle_event(event)
+        event = create_cloud_event("order.created", {"order_id": "123", "total": 99.99})
+        result = await handler.handle_event(event, {})
         assert result["status"] == "processed"
 
     async def test_handle_event_with_missing_data(self, handler):
-        event = {"type": "order.created", "data": {}}
+        event = create_cloud_event("order.created", {})
         with pytest.raises(ValueError, match="order_id is required"):
-            await handler.handle_event(event)
+            await handler.handle_event(event, {})
 ```
 
 ### Testing Services
@@ -143,7 +143,6 @@ Services typically interact with caches, external APIs, or other services. Mock 
 ```python
 # tests/unit/test_services.py
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 from src.services.pricing_engine import PricingEngineService
 
 
@@ -151,9 +150,7 @@ class TestPricingEngineService:
 
     @pytest.fixture
     def service(self, mock_registry):
-        svc = PricingEngineService()
-        svc.registry = mock_registry
-        return svc
+        return PricingEngineService()
 
     async def test_calculate_price_with_no_cache(self, service, mock_cache):
         mock_cache.get.return_value = None
@@ -185,7 +182,6 @@ Use `httpx.AsyncClient` with the FastAPI test client to test API endpoints witho
 # tests/unit/test_apis.py
 import pytest
 from httpx import AsyncClient, ASGITransport
-from unittest.mock import AsyncMock, MagicMock
 from fastapi import FastAPI
 from src.api.product_catalog import ProductCatalogApi
 
@@ -197,8 +193,7 @@ class TestProductCatalogApi:
         """Create a FastAPI app with the API routes registered."""
         app = FastAPI()
         api = ProductCatalogApi()      # wires its decorated routes on construction
-        api.registry = mock_registry
-        app.include_router(api.router)
+        app.include_router(api.router)  # mounted bare: the application would add /api
         return app
 
     @pytest.fixture
@@ -275,72 +270,82 @@ class TestResearchAssistantAgent:
 
 Integration tests verify that the full application starts correctly and that endpoints respond as expected.
 
+### The application fixture
+
+`src/main.py` declares the agent; `create_app()` builds it. A declaration builds **once per
+process** -- a second `create_app()` raises `RuntimeError: This AppBuilder has already been built`
+-- so build the application once per test session, in `tests/integration/conftest.py`, and share
+it. `TestClient` used as a context manager runs the application's startup and shutdown, which is
+what initialises the health checks; an `httpx.ASGITransport` client does not, and `/health/ready`
+then answers `503` with `Health check cache not initialized`.
+
+Run the integration tests in a pytest run of their own (`pytest tests/integration/`): once the
+application is built, the declaration reads as built for the rest of the process, and the
+generated `tests/test_declaration.py` asserts that it is not.
+
+```python
+# tests/integration/conftest.py
+import pytest
+from fastapi.testclient import TestClient
+
+from src.main import create_app
+
+
+@pytest.fixture(scope="session")
+def client():
+    with TestClient(create_app()) as client:
+        yield client
+```
+
 ### Testing the Full Application
 
 ```python
 # tests/integration/test_app.py
-import pytest
-from httpx import AsyncClient, ASGITransport
-from src.main import app
 
 
-class TestAppIntegration:
+def test_health_liveness(client):
+    response = client.get("/health/live")
+    assert response.status_code == 200
+    assert response.json()["status"] == "UP"
 
-    @pytest.fixture
-    async def client(self):
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            yield client
 
-    async def test_health_liveness(self, client):
-        response = await client.get("/health/live")
-        assert response.status_code == 200
-        assert response.json()["status"] == "UP"
+def _readiness_body(response):
+    # 200 returns the payload; 503 (any check unhealthy -- no reachable model or broker in a
+    # test environment, say) returns the same payload under "detail".
+    assert response.status_code in (200, 503)
+    return response.json() if response.status_code == 200 else response.json()["detail"]
 
-    async def test_health_readiness(self, client):
-        # 503 when any check is unhealthy, and the body is the same shape either way.
-        response = await client.get("/health/ready")
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "UP"
-        assert "components" in data
 
-    async def test_readiness_has_no_group_fields(self, client):
-        # A standalone agent's payload is status and components; "policy" and "namespaces"
-        # appear only when the process hosts a group of agents.
-        response = await client.get("/health/ready")
-        assert set(response.json()) == {"status", "components"}
+def test_health_readiness(client):
+    body = _readiness_body(client.get("/health/ready"))
+    assert "components" in body
+
+
+def test_readiness_has_no_group_fields(client):
+    # A standalone agent's payload is status and components; "policy" and "namespaces"
+    # appear only when the process hosts a group of agents.
+    body = _readiness_body(client.get("/health/ready"))
+    assert set(body) == {"status", "components"}
 ```
 
 ### Testing Endpoint Behavior
 
+Served on its own, an agent's routes are under `/api`, as its API declares them:
+
 ```python
 # tests/integration/test_endpoints.py
-import pytest
-from httpx import AsyncClient, ASGITransport
-from src.main import app
 
 
-class TestEndpoints:
+def test_product_lifecycle(client):
+    # Create a product
+    create_response = client.post("/api/products", json={"name": "Widget", "price": 9.99})
+    assert create_response.status_code == 200
 
-    @pytest.fixture
-    async def client(self):
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            yield client
-
-    async def test_product_lifecycle(self, client):
-        # Create a product
-        create_response = await client.post(
-            "/products", json={"name": "Widget", "price": 9.99}
-        )
-        assert create_response.status_code == 200
-
-        # Verify it appears in the list
-        list_response = await client.get("/products")
-        assert list_response.status_code == 200
-        products = list_response.json()["products"]
-        assert len(products) > 0
+    # Verify it appears in the list
+    list_response = client.get("/api/products")
+    assert list_response.status_code == 200
+    products = list_response.json()["products"]
+    assert len(products) > 0
 ```
 
 ---
@@ -350,8 +355,8 @@ class TestEndpoints:
 ### Basic Test Execution
 
 ```bash
-# Run all tests
-pytest
+# Run everything but the integration tests, which want a run of their own (see above)
+pytest --ignore=tests/integration
 
 # Run with verbose output
 pytest -v

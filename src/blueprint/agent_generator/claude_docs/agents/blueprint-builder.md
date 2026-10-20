@@ -252,7 +252,7 @@ Add to `settings.toml`:
 7. **Every public method needs a docstring**
 8. **Services contain ALL business logic** — one method per responsibility, not one giant method
 9. **Handlers and APIs are thin delegation layers** — `can_handle_event` routes on the envelope only; `handle_event` makes exactly one service call; relevance checks live in the service and come back as `HandlerResult.skipped(reason)`; handlers never call the LLM
-13. **No run state on `self`** — components serve concurrent runs; per-event values stay in locals and parameters
-10. **Context managers for HTTP clients, files, DB connections**
-11. **Secrets in `.secrets.toml`** — never hardcoded
-12. **System prompt is static** (no dynamic inputs) — **instruction prompt has dynamic inputs**
+10. **No run state on `self`** — components serve concurrent runs; per-event values stay in locals and parameters
+11. **Context managers for HTTP clients, files, DB connections**
+12. **Secrets in `.secrets.toml`** — never hardcoded
+13. **System prompt is static** (no dynamic inputs) — **instruction prompt has dynamic inputs**

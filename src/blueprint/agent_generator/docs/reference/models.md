@@ -82,14 +82,22 @@ Model provider and runtime settings resolved from a `[default.runtimes.<name>]` 
 
 **Module:** `blueprint.agents.models.config`
 
-Disk cache settings.
+Cache settings, for the disk and the Redis backend.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `cache_dir` | `str` | `".cache/blueprint"` | Directory for cache files. |
-| `size_limit` | `int` | `1000000000` | Maximum cache size in bytes. |
-| `eviction_policy` | `str` | `"least-recently-used"` | Eviction strategy. |
+| `backend` | `str` | `"disk"` | `"disk"` or `"redis"`. |
+| `cache_dir` | `str` | `".cache/blueprint"` | Directory for cache files. Disk only. |
+| `size_limit` | `int` | `1000000000` | Maximum cache size in bytes. Disk only. |
+| `eviction_policy` | `str` | `"least-recently-used"` | Eviction strategy. Disk only. |
 | `default_ttl` | `int` | `3600` | Default entry TTL in seconds. |
+| `key_prefix` | `str` | `""` | Prefix of every Redis key. |
+| `redis_url` | `str \| None` | `None` | Redis connection URL; `None` connects to `redis://localhost:6379/0`. |
+| `redis_password` | `str \| None` | `None` | Redis password. |
+| `redis_db` | `int` | `0` | Redis database index. |
+| `redis_tls` | `bool` | `False` | Connect with TLS. |
+| `fallback_to_local` | `bool` | `False` | Use a disk cache when Redis is unavailable at startup. |
+| `redis_socket_timeout` | `float \| None` | `None` | Seconds a Redis call may block, the connect included; `None` keeps redis-py's default (5 s). |
 
 ---
 
@@ -116,7 +124,8 @@ OpenTelemetry and logging configuration.
 |-------|------|---------|-------------|
 | `otel_enabled` | `bool` | `False` | Whether OpenTelemetry export is enabled. |
 | `otel_endpoint` | `str \| None` | `None` | OTLP collector endpoint. |
-| `otel_service_name` | `str \| None` | `None` | Service name for telemetry. |
+| `otel_service_name` | `str` | `"agent-service"` | Service name for telemetry. `Config.get_observability_config()` fills it with `otel_service_name`, else `app_name`, for the root, and with the agent's name for an agent. |
+| `token_metrics_enabled` | `bool` | `True` | Whether token usage and latency metrics are recorded. |
 | `log_level` | `str` | `"INFO"` | Log level for the application. |
 
 ---

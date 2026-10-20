@@ -29,7 +29,8 @@ asbs docs components/event-handlers --cat      # writing a handler
 pod restart, a rolling deploy. Either make the service it calls safe to repeat, or set **both**
 `idempotency_enabled = true` and `idempotency_ttl = <seconds>`; the framework then skips an event
 whose id and source it has already dispatched, within that window (per named connection, when the
-event came from one). It is off by default on purpose - only you know whether replaying your side
+event came from one). It needs `.with_cache()` (startup fails without one), and a Redis cache to
+hold across replicas (a disk cache's claim holds within one process). It is off by default on purpose - only you know whether replaying your side
 effects is acceptable. State your service keeps per event (an "already ingested" marker, a cache
 entry) is keyed by `context.get("nats_connection")` too: each named connection is its own data source.
 

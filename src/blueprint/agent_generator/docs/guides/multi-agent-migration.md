@@ -61,7 +61,7 @@ belong to the process that hosts the declaration.
 
 If you are passing **instances** anywhere -- `with_rest_api(OrderApi())` -- change them to classes.
 An instance is constructed at that line, before any namespace exists, so it belongs to the root for
-ever; a group refuses one at assembly and names the agent and the fix.
+ever; a group refuses one at assembly and names the agent and the fix, and so does `create_app()`.
 
 ## 2. `Dockerfile` -- one command
 
@@ -75,6 +75,10 @@ and copy the map into the image beside your settings:
 ```dockerfile
 COPY --chown=appuser:appuser agents.toml ./
 ```
+
+If the `Dockerfile` sets `DYNACONF_ENVIRONMENT`, rename it to `DYNACONF_APP_ENVIRONMENT`
+(`<PREFIX>_APP_ENVIRONMENT` with your own `envvar_prefix`). `DYNACONF_ENVIRONMENT` selects
+nothing, so an image that sets only it runs in `development`.
 
 **That command is not sufficient on its own, and copying the map does not complete it.** Where
 `uvicorn src.main:app` named the application it served, the entry point has to be *told* which
@@ -225,7 +229,8 @@ asbs validate --group . --agent-map deploy/agents.toml
 
 `--group` resolves every `root`, reports which `settings.toml` each agent actually reads, refuses a
 file sitting where the framework will not look for it, and names process-wide keys left in an
-agent. Neither imports your project.
+agent. Neither runs your project: `--group` imports none of it, and plain `asbs validate` imports
+only the parent packages of a `nats_connection_source`, to find that module.
 
 ## One declaration, three ways to run it
 

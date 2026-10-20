@@ -22,7 +22,8 @@ Provider Issues, Component Registration Errors, Health Check Failures, Cache Iss
 asbs validate
 ```
 
-It reads files only - it never imports the project - and grades what it finds: **issues** (will not
+It reads files and starts nothing - the one import is locating a configured
+`nats_connection_source`, which imports that module's parent packages - and grades what it finds: **issues** (will not
 start, exit 1), **warnings** (will start, something is missing), **notices** (a decision the
 framework will not make for you). It catches most misconfiguration before a stack trace does.
 
@@ -33,8 +34,8 @@ framework will not make for you). It catches most misconfiguration before a stac
 | `AttributeError` on `self.registry` or `self.config` | Accessed in `__init__`. Resolve in `on_startup()` |
 | Component not found at runtime | Registered after its dependent. Services go before handlers, agents and APIs |
 | Scheduler never fires | `scheduler_mode` unset, or an overridden `on_startup` that never calls `await super().on_startup()` |
-| Every replica runs every scheduled tick | `scheduler_mode = "in_process"` without `.with_cache()` |
-| The same event processed twice | At-least-once delivery. Make it repeatable, or set both `idempotency_enabled` and `idempotency_ttl` |
+| Every replica runs every scheduled tick | `scheduler_mode = "in_process"` without `.with_cache()`, or with a disk cache: across replicas the claim needs Redis |
+| The same event processed twice | At-least-once delivery. Make it repeatable, or set both `idempotency_enabled` and `idempotency_ttl` with `.with_cache()` (on Redis across replicas) |
 | Handler never reached | An earlier handler in the priority chain returned a `HandlerResult` and stopped the chain |
 | Events vanish after a rename | The agent namespace is part of every durable name - see `blueprint-multi-agent` |
 | Cache fails at startup | The disk backend needs a writable volume; a read-only root filesystem fails immediately |

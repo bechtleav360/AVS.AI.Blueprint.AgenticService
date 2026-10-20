@@ -29,20 +29,22 @@ Blueprint Agents gives you a component-based toolkit for building intelligent mi
 # Install the framework
 pip install avs-blueprint-agents
 
-# Scaffold a new project
+# Scaffold a new project -- asbs setup writes into the current directory
+mkdir my-agent && cd my-agent
 asbs setup my-agent
 
 # Start developing
-cd my-agent
 pip install -e .
 asbs dev
 ```
 
 Your service is now running at `http://localhost:8000` with interactive API docs at `/docs`,
-and this agent's routes under `/api/my-agent`.
+and this agent's routes under `/api` -- served alone, at the root. `asbs dev --name my_agent`
+serves it under the namespace a group image would give it, with its routes under `/api/my_agent`.
 
-`asbs setup` writes your project's `main.py` as a **declaration** -- an `AppBuilder` that is never built --
-plus an `agents.toml` naming it. That is what lets the same project run on its own and be hosted
+`asbs setup` writes your project's `main.py` as a **declaration** -- an `AppBuilder` that is never
+built -- and a `create_app()` that builds it. It writes no `agents.toml`: that map belongs to an
+image that hosts several agents. That is what lets the same project run on its own and be hosted
 alongside other agents without changing a line. See
 [Running one agent, or several](#running-one-agent-or-several).
 
@@ -118,9 +120,9 @@ Blueprint Agents uses five composable component types, wired together with the `
 ```python
 from blueprint.agents import AppBuilder
 
-from src.handlers.order_handler import OrderHandler
-from src.services.order_service import OrderService
-from src.api.routes import OrderApi
+from .handlers.order_handler import OrderHandler
+from .services.order_service import OrderService
+from .api.routes import OrderApi
 
 agent = (
     AppBuilder()
@@ -138,7 +140,8 @@ Two things about that chain are worth knowing up front:
   each component is built in.
 - **Pass classes, not instances.** `with_rest_api(OrderApi)` rather than `with_rest_api(OrderApi())`.
   An instance created on the `with_*` line exists before any namespace does, so it belongs to the
-  process root for ever. Instances still work for a single standalone agent; a group refuses them.
+  process root for ever. A group refuses them, and so do `agent.build(config)` and the
+  `create_app()` that calls it; only the old `AppBuilder(config)...build()` shape still accepts them.
 
 ### The Five Components
 
@@ -190,14 +193,17 @@ before this existed. Nothing reads `agents.toml` unless you run the entry point.
 
 ### Hosted in a group
 
-Name each agent and the module its declaration lives in, in `agents.toml`:
+Name each agent, its directory (`root`, relative to the image root) and the module its
+declaration lives in, in the image's `agents.toml`. Both keys are required:
 
 ```toml
 [agents.orders]
-module = "src.main:agent"
+root   = "agents/orders"
+module = "agents.orders.src.main:agent"
 
 [agents.billing]
-module = "billing.main:agent"
+root   = "agents/billing"
+module = "agents.billing.src.main:agent"
 ```
 
 The image contains those agents; the **deployment** decides which of them a given process runs:
@@ -321,14 +327,17 @@ See the [Configuration Reference](https://github.com/bechtleav360/AVS.AI.Bluepri
 The `asbs` CLI scaffolds projects and components:
 
 ```bash
-asbs setup <project-name>                         # Create a new project
+asbs setup <project-name>                         # Create a new agent, in the current directory
+asbs setup --group                                # Create an image's files (agent map, group Dockerfile)
 asbs create handler <name> [--event-type <type>]  # Add an event handler
 asbs create service <name>                        # Add a business service
 asbs create api <name>                            # Add a REST API
 asbs create agent <name>                          # Add an AI agent
 asbs create scheduler <name> [--cron <expr>]      # Add a scheduler
-asbs validate                                     # Validate project structure
-asbs dev [--port <port>]                          # Run development server
+asbs validate [--group]                           # Validate one agent, or a whole image
+asbs dev [--name <agent>] [--port <port>]         # Run development server
+asbs docs [<topic>] [--cat]                       # Locate the bundled documentation
+asbs claude                                       # Install the Claude Code files into a project
 ```
 
 See the full [CLI Reference](https://github.com/bechtleav360/AVS.AI.Blueprint.AgenticService/blob/develop/src/blueprint/agent_generator/docs/guides/cli-reference.md).

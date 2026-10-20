@@ -43,7 +43,7 @@ its own resource:
 | Attribute | Value |
 |---|---|
 | `service.name` | The agent's own name. `otel_service_name` for the root namespace. |
-| `deployment.group` | `BLUEPRINT_GROUP`. Absent when no group is set -- a single-agent application belongs to none. Set by the framework; no supported API exposes it to an agent (C6). |
+| `deployment.group` | The group the process resolved -- `BLUEPRINT_GROUP`, or the one group a mounted group file declares. Absent for a standalone agent and for a group nothing named (`BLUEPRINT_AGENTS` alone). Set by the framework; no supported API exposes it to an agent (C6). |
 | `service.instance.id` | `POD_NAME`, else `HOSTNAME`, else the host name. When none can be told, the framework sets nothing and the OpenTelemetry SDK's own default applies. |
 
 **What the deployment declares wins.** A key set in `OTEL_RESOURCE_ATTRIBUTES` (or
@@ -122,6 +122,8 @@ An exception propagating out of the method sets the span status to `ERROR` befor
 | `blueprint.events.skipped` | counter | Events whose responsible handler returned `HandlerResult.skipped` -- the agent's own relevance rule, not a too-broad subscription. Carries `agent` and `topic`. |
 | `blueprint.nats.connection.bound` | gauge | `1` while a named NATS connection is bound and delivering, `0` otherwise. Carries `agent` and `connection`. |
 | `blueprint.nats.connection.permission_violations` | counter | Permission violations the broker reported on a named connection. Carries `agent` and `connection`. |
+| `blueprint.events.dead_lettered` | counter | NATS deliveries the framework gave up on. Carries `agent`, `reason` (`terminal-failure` or `deliveries-exhausted`) and `kept` (whether the payload reached the dead-letter subject). |
+| `blueprint.scheduler.tick_age_seconds` | gauge | Seconds since a scheduler last ticked, `-1` before its first tick. Carries `scheduler`, `agent` and `mode`. See [schedulers.md](../components/schedulers.md). |
 | `llm.tokens.count` | counter | Tokens consumed, by an agent's model calls. |
 | `llm.response.latency` | histogram | Model call duration. |
 
@@ -131,7 +133,7 @@ counted as `<undeclared>`; a declared one keeps its name. With `dapr_declarative
 the framework knows no topic list, and every topic counts as `<undeclared>`. The real topic stays in
 the log line. Under NATS every topic is one the agent subscribed, so the label is always the name.
 
-The first two are recorded on the agent's own meter provider, so they arrive with that agent's
+`blueprint.namespace.up` and `blueprint.namespace.inflight` are recorded on the agent's own meter provider, so they arrive with that agent's
 `service.name` as well as with the `agent` attribute -- a dashboard can group on either, and one
 of them survives a collector that drops resource attributes.
 
@@ -251,9 +253,10 @@ Two agents may both call theirs `database`; they appear as `orders.database` and
 `billing.database`. Two checks that would still collide on one entry name are refused at
 registration rather than silently reduced to one.
 
-The framework registers checks of its own: one per transport client, and one per declared cache
-(`cache`, or `cache:<name>` for a named one). A check of yours under one of those names replaces
-the framework's, with a WARNING at startup -- the way to override a built-in check.
+The framework registers checks of its own: one per transport client, one per declared cache
+(`cache`, or `cache:<name>` for a named one), and with a `nats_connection_source` one more per
+client, `<client>:connections` (below). A check of yours under one of those names replaces the
+framework's, with a WARNING at startup -- the way to override a built-in check.
 
 ### Named NATS connections
 
@@ -294,8 +297,10 @@ mechanisms.
    removed the pod restart that used to be the alert, so the alert is emitted deliberately.
 2. **It stops consuming.** Readiness gates HTTP only -- a pod removed from service rotation still
    holds its subscriptions -- so for an event-driven agent the probe alone changes nothing. Under
-   NATS the agent's subscriptions are drained, which lets already-queued messages finish and
-   acknowledge while new ones go to a healthy replica. Under Dapr the sidecar delivers whatever
+   NATS the agent's subscriptions are drained: runs already in progress finish and acknowledge,
+   and new deliveries go to a healthy replica. A JetStream delivery that still reaches the paused
+   agent is nak'd at once, so it redelivers elsewhere; Core NATS cannot nak, so what the drain
+   lets through still runs. Under Dapr the sidecar delivers whatever
    the application thinks, so the fan-out answers `RETRY` for that agent without dispatching.
    Under `event_bus = "sessions"` the job stream is closed, so the agent's jobs stay pending for a
    healthy replica; jobs already running finish. The connection is kept open, because a closed client reports itself unhealthy for ever and the

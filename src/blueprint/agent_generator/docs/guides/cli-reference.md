@@ -57,7 +57,7 @@ asbs create agent <name>                           # Add AgentRuntime
 asbs create scheduler <name> [--cron CRON]         # Add Scheduler
 asbs validate                                      # Validate project structure
 asbs validate --group [--agent-map PATH]           # Validate an image and every agent it maps
-asbs dev [--port 8000]                             # Run dev server
+asbs dev [--name AGENT] [--port 8000]              # Run dev server (alone, or under AGENT)
 asbs docs [topic] [--cat]                          # Read the packaged documentation
 asbs claude [--overwrite]                          # Install Claude Code resources
 ```

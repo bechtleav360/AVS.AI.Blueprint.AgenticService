@@ -35,9 +35,11 @@ scaffolder that generates projects against it. Inside the framework:
 | `config/` | `Config` (Dynaconf), the logging manager |
 | `models/` | Pydantic models: events, configuration, API payloads, status |
 
-Prose for users lives in `docs/`: `src/blueprint/agent_generator/docs/concepts/architecture.md` for the assembly model,
-`src/blueprint/agent_generator/docs/concepts/event-processing.md` for the dispatch pipeline, `src/blueprint/agent_generator/docs/concepts/configuration.md`
-for settings, `docs/guides/` for deployment, testing and the CLI. Specifications and plans are in
+Prose for users lives in `src/blueprint/agent_generator/docs/`:
+`src/blueprint/agent_generator/docs/concepts/architecture.md` for the assembly model,
+`src/blueprint/agent_generator/docs/concepts/event-processing.md` for the dispatch pipeline,
+`src/blueprint/agent_generator/docs/concepts/configuration.md` for settings,
+`src/blueprint/agent_generator/docs/guides/` for deployment, testing and the CLI. Specifications and plans are in
 `docs/specs/` and `docs/plans/`; a feature's changelog beside its plan is the running record of
 what was done and why.
 
@@ -105,8 +107,10 @@ is simply absent from that surface, and only in the deployment shape nobody test
 `Component.configure`'s "already set" error, which names neither the builder nor the second call
 and sends the reader into framework internals.
 
-**Group policy belongs to the collector.** Standalone stays permissive; the group refuses what it
-cannot honour, at assembly, naming the agent and the fix. *Failure:* restrictions scattered into
+**Group policy belongs to the collector.** The host refuses what a group cannot honour, at
+assembly, naming the agent and the fix -- a group, and `build(config)` (what `create_app()` calls),
+because a declaration served alone is the shape a group hosts. Only the old
+`AppBuilder(config)...build()` shape stays permissive. *Failure:* restrictions scattered into
 the builder punish the single-agent case for constraints that only a group has.
 
 ### Namespaces and isolation

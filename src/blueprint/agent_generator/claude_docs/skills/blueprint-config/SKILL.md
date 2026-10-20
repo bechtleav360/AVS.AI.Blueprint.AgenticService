@@ -41,11 +41,14 @@ These fail at startup rather than guess, so they must be set deliberately:
 
 - **`scheduler_mode`** - required once any scheduler is registered. `"in_process"` runs an
   APScheduler timer in *every* replica and claims each tick through the cache, so it needs
-  `.with_cache()` or every replica runs every tick. `"event"` starts no timer: the tick arrives as
+  `.with_cache()` or every replica runs every tick -- on Redis once more than one process runs
+  it, since a disk cache's claim holds within one process only. `"event"` starts no timer: the tick arrives as
   an event on `<agent>.scheduler.<scheduler_name>` (`app_name` instead of the agent at the root), so it needs `event_bus` set.
 - **`idempotency_enabled` and `idempotency_ttl`** - both, or neither. Delivery is at-least-once;
   deduplication is off by default because only you know whether replaying your side effects is
-  acceptable. The TTL must outlast the broker redelivery window.
+  acceptable. The TTL must outlast the broker redelivery window. Dedup needs `.with_cache()`
+  (startup fails without one), and a Redis cache to hold across replicas: a disk cache's claim
+  holds within one process.
 - **`event_publishing_enabled`** - consuming and publishing are separate concerns. A handler implies
   a transport client; a scheduler does not.
 

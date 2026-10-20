@@ -19,7 +19,7 @@ Full migration path, including the one decision to get right before the first de
   - `/api/<agent>/<name>/trigger` becomes `/api/<agent>/scheduler/<name>/trigger`.
   - Cache endpoints stay at `/api/<agent>/cache/*`.
   - Every operation of a grouped agent is tagged with exactly the agent's name, replacing declared
-    tags and tagging untagged ones. In 0.9.0 an agent was split into `<agent>.<tag>` groups
+    tags and tagging untagged ones. In the 0.9.0 alphas an agent was split into `<agent>.<tag>` groups
     interleaved with other agents', and its untagged routes sat under "default" beside everyone
     else's.
   - `nats`, `cache` and `scheduler` under `/api/<agent>/` are reserved: a grouped agent's own route
@@ -47,7 +47,7 @@ Full migration path, including the one decision to get right before the first de
   defaults for deployments that had configured nothing. `nats_ack_wait`, `nats_max_ack_pending` and
   `nats_max_deliver` are now applied only when set; unset, the server's default stands (NATS: 30 s,
   1000, unlimited). With `nats_max_deliver` unset, a message that keeps failing is retried without
-  limit and never dead-lettered, as before 0.9.0 -- set it to bound retries. Consumers that already
+  limit and never dead-lettered, as in 0.8 -- set it to bound retries. Consumers that already
   exist keep their settings, and an unset key is not reported as a difference.
 - **`ClientBase.subscribe()` callbacks take the delivery subject.** The contract is now
   `DeliveryCallback = Callable[[CloudEvent, str], Awaitable[None]]` (in `clients/client_base.py`):
@@ -63,20 +63,20 @@ Full migration path, including the one decision to get right before the first de
 - **A process in development mode logs a WARNING at startup** that it is not suitable for
   production. `app_environment` defaults to `"development"`, so a deployment that sets nothing now
   says so in its own log.
-- **`root` is required in `agents.toml`.** Every existing entry needs one line added; a map
-  without it refuses to start rather than guessing. For an image that copied one agent to `/app`,
-  that is `root = "."`.
-- **The standalone image no longer runs the group entry point.** It serves
+- **`root` is required in `agents.toml`.** Every entry of a map written for a 0.9.0 alpha needs
+  one line added; a map without it refuses to start rather than guessing. For an image that copied
+  one agent to `/app`, that is `root = "."`.
+- **The standalone image does not run the group entry point** (the 0.9.0 alphas' did). It serves
   `src.main:create_app` directly. An existing project keeps working: `uvicorn src.main:app` is
   still served for a pre-split `main.py`, and a project that wants the old command can keep it.
 - **`agents.toml` inside an agent is refused unconditionally**, with no exception for an agent
-  mapped at the image root. That shape only existed to let a standalone agent be a group of one,
-  which it no longer has to be.
-- **`asbs setup` no longer writes `agents.toml` into an agent.** The map says which agents an
-  *image* contains, which is a packaging decision -- an agent carrying one is an agent that knows
-  whether it is running alone. The single-agent `Dockerfile` writes a one-agent map into its own
-  image instead. Existing projects keep working; delete the file when the agent joins a group,
-  where it is refused.
+  mapped at the image root. That shape only existed in the 0.9.0 alphas, to let a standalone agent
+  be a group of one, which it no longer has to be.
+- **`asbs setup` writes no `agents.toml` into an agent** (the 0.9.0 alphas did). The map says which
+  agents an *image* contains, which is a packaging decision -- an agent carrying one is an agent
+  that knows whether it is running alone. The single-agent `Dockerfile` reads no map either: it
+  serves `create_app()` at the root. An agent scaffolded by an alpha should delete the file; in a
+  group it is refused.
 - **The `src/<agent>/main.py` group layout is retired.** An agent is now the same directory alone
   or in a group -- `<agent>/settings.toml` beside `<agent>/src/` -- which is what lets it move
   between repositories untouched. Multi-agent grouping has only ever shipped in 0.9.0 alphas, so
@@ -85,8 +85,9 @@ Full migration path, including the one decision to get right before the first de
   `agent_namespace` helper moved to `PartGeneratorBase`.
 
 1. **`scheduler_mode` is required.** A project that registers a scheduler and does not set it fails
-   at `build()`, with an error naming both values and what each costs. `"in_process"` reproduces
-   today's behaviour exactly and is the no-op migration; `"event"` is the one that fixes #73.
+   at `build()`, with an error naming both values and what each costs. `"in_process"` keeps 0.8's
+   in-process timer and is the smallest migration (it now claims each tick, see 13); `"event"` is
+   the one that fixes #73.
    Defaulting the key would either keep firing a timer per replica or silently stop ticking a
    service with no broker, and neither is safe to inherit.
 2. **A subject-unsafe `app_name` or `nats_queue_group` now fails at startup** instead of being
@@ -119,8 +120,9 @@ Full migration path, including the one decision to get right before the first de
 7. **Four declaration surfaces are deleted**: `AgentRegistration`, `RegisteredComponent`,
    `NamespaceBuilder`, and `AppBuilder.with_namespace` / `with_registration`. `AppBuilder` is the one
    declaration surface; `AgentGroup` collects named declarations into a process. Passing an
-   already-built component instance (`with_service(MyService())`) still works for a single standalone
-   agent and is refused in a group — pass the class, or a zero-argument factory.
+   already-built component instance (`with_service(MyService())`) still works in the old
+   `AppBuilder(config)...build()` shape, and is refused by `build(config)` -- what `create_app()`
+   calls -- and in a group: pass the class, or a zero-argument factory.
 8. **`ClientBase.subscribe` changed from `(topic, callback)` to `(topic_callbacks)`**, and
    `EventHandlingBase.subscribe` and `POST /nats/subscribe/{topic}` are removed. This affects
    third-party transport implementations; both in-repo clients are updated.
@@ -151,7 +153,8 @@ Full migration path, including the one decision to get right before the first de
 13. **A scheduler tick runs in one replica, not in every one.** Before, every replica -- and every
     worker -- ran its own timer and each ran every tick. Now `scheduler_mode = "event"` delivers the
     tick through the queue group to one replica, and `"in_process"` claims each tick in the cache so
-    one replica runs it. A deployment that relied on every replica running a tick in parallel -- a
+    one replica runs it -- across replicas only on a Redis cache, since a disk cache's claim holds
+    within one process. A deployment that relied on every replica running a tick in parallel -- a
     per-pod cleanup, say -- now runs it once per tick; register the cache per pod, or do the per-pod
     work outside the scheduler. Without a registered cache, `"in_process"` still runs every tick in
     every replica, and says so with a WARNING at startup where it used to log an INFO.
@@ -275,8 +278,9 @@ Full migration path, including the one decision to get right before the first de
   and a group Dockerfile -- and creates no agent.
 - **`asbs validate --group`** validates an image: every `root`, each agent's layout, misplaced
   files, process-wide keys left in an agent, and which `settings.toml` each agent actually reads.
-- **`asbs dev --name`**, and `asbs dev` no longer needs an `agents.toml` in an agent's directory.
-  It writes the one-agent map outside the project for that run.
+- **`asbs dev --name`** serves an agent directory under the namespace a group image would give it,
+  writing the one-agent map outside the project for that run. Without `--name`, an agent directory
+  is served alone at the root through its `create_app()`; it needs no `agents.toml`.
 
 - **The documentation ships inside the package.** The user-facing guides moved from the repository
   root to `src/blueprint/agent_generator/docs/` and are now installed with the wheel, so a
@@ -310,8 +314,9 @@ Full migration path, including the one decision to get right before the first de
 - **Per-agent observability.** `service.name` per agent, `blueprint_namespace_up{agent}`, a
   readiness entry and health checks attributed per agent, `blueprint.scheduler.tick_age_seconds`,
   `blueprint.events.dead_lettered`, `blueprint.events.unhandled` and `blueprint.events.duplicate`.
-- **`CacheService.claim`** — set-if-absent, atomic on both backends (`add` on disk, `SET NX EX` on
-  Redis). This is the compare-and-set primitive the deduplication work flagged as missing.
+- **`CacheService.claim`** — set-if-absent: atomic on Redis (`SET NX EX`), and on disk (`add`)
+  atomic within one process only. This is the compare-and-set primitive the deduplication work
+  flagged as missing.
 - **Named caches.** `with_cache(name=...)`, `/cache/*` endpoints take `?name=`, and `/readiness`
   gains a `cache:<name>` entry per named cache.
 - **Opt-in event deduplication** — `idempotency_enabled` and a required `idempotency_ttl`. Off by
@@ -320,13 +325,13 @@ Full migration path, including the one decision to get right before the first de
   with `nats_publish_subjects` for subjects not already in `event_publishing.topic_mapping`. Unset,
   it follows `nats_use_jetstream`, so nothing existing changes.
 - **`run_app`**, so a project can serve itself from its own settings.
-- **Scaffolding**: `asbs setup` now writes `agents.toml`, a `pyproject.toml` and two tests, so
+- **Scaffolding**: `asbs setup` now writes a `pyproject.toml` and two tests, so
   `asbs setup` → `pytest` → `asbs validate` closes; `asbs validate` reports what a project has not
   said about grouping and about idempotency; the CLI no longer crashes on a Windows console.
 - New config keys: `event_client_drain_timeout`, `dapr_pubsub_name`,
   `dapr_declarative_subscriptions`, `idempotency_enabled`, `idempotency_ttl`, `scheduler_mode`,
   `event_publishing_enabled`, `nats_publish_mode`, `nats_publish_subjects`. All default to current
-  behaviour except `scheduler_mode`, which is required — see below.
+  behaviour except `scheduler_mode`, which is required — see **Breaking**.
 - `pyyaml>=6.0` is now a declared dependency (it reads the group file). Already present in every
   environment via `uvicorn[standard]`, so no installed set changes.
 
@@ -380,9 +385,10 @@ Full migration path, including the one decision to get right before the first de
 - **`diskcache-rs` 0.4.10 is the minimum, and a disk cache's claim is documented as per-process**
   (S23). 0.4.9 and earlier refused a second process the cache directory ("Database already open").
   0.4.10 lets several open it, but its set-if-absent is not atomic between them: four processes
-  claiming one key at once each won in 297 of 300 rounds. Deduplication and the in-process tick
-  claim therefore hold across replicas, and across several `app_workers`, only with Redis; the docs no
-  longer say "a disk cache on a shared volume".
+  claiming one key at once each won in 297 of 300 rounds. A disk cache's claim therefore holds
+  within one process: replicas sharing a cache directory (or `uvicorn --workers N` run by hand) can
+  both win one deduplication marker or one in-process tick, and a claim across replicas needs
+  Redis. The docs no longer say "a disk cache on a shared volume".
 
 - **A standalone application written for 0.8 builds again** (S20). Three 0.8 shapes were refused
   or changed:
@@ -494,6 +500,18 @@ Full migration path, including the one decision to get right before the first de
   runtime reads it (`"Event"`), counts environment overrides, refuses an `event_bus` that cannot deliver
   a tick, reports a missing `event_bus` as a notice (it is a process-wide key and may be set elsewhere),
   and `--group` runs the scheduler checks per agent.
+
+- **`asbs validate` reads settings the way the process does, for one environment.** The target is
+  `--environment`, else `DYNACONF_APP_ENVIRONMENT` (or `<PREFIX>_APP_ENVIRONMENT`), else
+  `production` -- what the scaffolded Dockerfiles set; use `--environment development` for what
+  `asbs dev` runs. A key set only in another environment's section counts as unset, and a key
+  written outside any section is warned about (the process loads none of them). Each agent's
+  `.secrets.toml` and `settings.toml` are layered as the runtime layers them, and `--group`
+  resolves the group file as the runtime does (`--group-config`, `--group-name`). Newly reported:
+  crontab and timezone errors, deduplication without a ttl or a cache, a missing `nats_url`
+  outside development, a non-boolean heartbeat or `event_loop_debug`, an empty agent map, and the
+  runtime's group-file refusals in its own words. Of 19 cases measured on fresh scaffolds where the
+  process refuses to start or warns, the validator used to report 1; it reports all 19.
 
 - **A grouped scheduler's tick subject and trigger route name the agent once.** Both were built from the
   scheduler's qualified name, so the subject was `orders.scheduler.orders_nightly` and the route
@@ -700,8 +718,9 @@ Full migration path, including the one decision to get right before the first de
   same value to `build()` as a keyword as well is refused.
 - **Event deduplication claims atomically.** The handler chain checked for the marker with
   `exists()` and then wrote it with `set()`, so two replicas handed the same event at the same moment
-  both passed the check and both dispatched. It now uses the cache's atomic `claim()`, which already
-  existed for the scheduler's tick claim.
+  both passed the check and both dispatched. It now uses the cache's `claim()`, which already
+  existed for the scheduler's tick claim -- atomic across replicas on Redis, and within one process
+  on a disk cache.
 - **A handler result that fails to publish fails the delivery.** `publish_handler_event` caught
   every exception and logged a WARNING, so the inbound event was acknowledged and the handler's
   output was lost. The failure now naks the event -- the handler runs again on redelivery -- and the
@@ -808,7 +827,8 @@ Full migration path, including the one decision to get right before the first de
   consistently. Configurable via `event_client_max_retries` and `event_client_retry_delay`.
 - **Schedulers no longer fire duplicate cron ticks under multiple replicas or workers** (#73).
   `scheduler_mode = "event"` delivers the tick as an ordinary event, so the queue group picks one
-  replica; `"in_process"` claims each tick in the shared cache so one replica runs it.
+  replica; `"in_process"` claims each tick in the shared cache so one replica runs it (across
+  replicas, a Redis cache: a disk cache's claim holds within one process).
 - **Schedulers no longer start twice** (#43), on both causes: a second `build()` pass no longer
   starts a second timer, and `SchedulerBase` sitting in the REST-API lifespan loop as well as the
   scheduler loop no longer creates two `AsyncIOScheduler` instances per scheduler. The manual
@@ -867,6 +887,16 @@ Full migration path, including the one decision to get right before the first de
   operational task the framework does not perform.
 - `size` in the cache statistics counts TTL metadata entries, so a cache holding two values reports
   `4`. Documented as-is rather than changed, because a reported metric is somebody's dashboard.
+- **A named connection whose binding names a stream that does not exist is retried, not refused.**
+  It reads `retrying` in `<agent>.nats_client:connections` and stops nothing else. With
+  `manage_consumer = false` the client sends no JetStream request, so a missing consumer is not
+  detected at all: the binding reads as bound and receives nothing. Whether either becomes fatal --
+  at once, or after a grace period for provisioning -- is still open.
+- **A disk cache's claim holds within one process only.** Two processes on one cache directory --
+  replicas sharing a cache directory, or `uvicorn --workers N` run by hand -- can both win one
+  deduplication marker or one in-process tick, with no error raised (diskcache-rs 0.4.10). A claim
+  across replicas needs Redis. How this is resolved -- an OS file lock around the claim, or a startup
+  warning -- is still open.
 
 ### Upgrading a standalone agent from 0.8
 
@@ -890,8 +920,9 @@ What the code sees change:
 - **Components are constructed by `build()`, not by the `with_*()` call.** `with_handler(MyHandler)`
   records the class; `build()` constructs it, in declaration order. Code that looked a component up
   in the registry between a `with_*()` call and `build()` finds nothing, and an error a constructor
-  raises -- a missing configuration key, say -- is raised by `build()`. An instance passed to
-  `with_*()` is the caller's own and is used as it is.
+  raises -- a missing configuration key, say -- is raised by `build()`. In 0.8's
+  `AppBuilder(config)...build()` shape an instance passed to `with_*()` is the caller's own and is
+  used as it is; `build(config)` and a group refuse instances (Breaking 7).
 
 ### Rolling back to 0.8
 

@@ -8,6 +8,7 @@
 | **Related** | #33 (lazy heavy imports), #34 / #74 (dependency slimming), #36 (concurrency bounds + benchmark), #43 (scheduler double-start), #6 (config service) |
 | **Amended by** | `docs/plans/2026-09-10-builder-unification.md` -- decided 2026-09-10, folded into sec. 2, 4, 5.3, 8, 9, 10 and 11 below. |
 | **Amended by** | `docs/plans/2026-09-28-grouped-http-surface.md` -- decided 2026-09-28, folded into sec. 10 and 11.2 below. |
+| **Amended by** | PR #96 review, 2026-10-19 -- brought in line with the implementation: C1 (root/agent durable clash), C2 (resolved group, per-provider metric readers, declared OTel keys), C4 (pause instead of close), sec. 2 and 11 (standalone agents at the root), 4.1 and 9 (`AgentGroup.resolve` / `from_config` / `assemble`), 4.2 (handler order restored, not refused), 5.1 (further group-file refusals), 5.3 (config refusals; process-scope keys dropped with a WARNING), 6 (resolved group; history), 7.1 and 7.2 (history; `SKIPPED`; `<undeclared>`; `max_deliver` optional), 7.4 (dedup key), 7.5 (no default mode; claim atomic on Redis only; slot from the fire time; crontab rules; `scheduler_timezone`), 9.1 (no agent left), 10 (instances refused by `build(config)`), 11.1 (`event_loop_debug`, watchdog), 12 (claim criteria scoped to Redis). Each change is marked in place. |
 | **Deferred out of** | `docs/plans/2026-09-10-config-validation-unification.md` -- configuration validation is not part of this feature. |
 
 Requirement keywords (**MUST**, **MUST NOT**, **SHOULD**, **MAY**) are used in the RFC 2119 sense.
@@ -46,7 +47,7 @@ into processes a deployment-time parameter rather than a code-time one.
 | Term | Meaning |
 |---|---|
 | **Agent** | A unit of business capability: handlers, services, prompts, optionally a REST API and scheduler. Authored as one directory. |
-| **Namespace** | The registry partition an agent's components live in. Equal to the agent name. `""` is the root namespace and means "pre-migration single-agent app". |
+| **Namespace** | The registry partition an agent's components live in. Equal to the agent name. `""` is the root namespace: where a standalone application runs -- a pre-migration single-agent app, or any agent served on its own (sec. 11). *(Amended 2026-10-19, PR #96 review: a scaffolded agent served standalone runs at the root too.)* |
 | **Group** | The set of agents loaded into one process, and therefore into one pod. |
 | **Declaration** | An `AppBuilder` whose `build()` has not been called -- component classes recorded without instantiation. |
 | **Root** | Namespace `""`, holding process-wide shared components. |
@@ -67,9 +68,10 @@ other deployment identifier.
 
 - Queue group: `namespace`, or `nats_queue_group` (default `app_name`) when the namespace is `""`.
   It **MUST NOT** be the empty string.
-- JetStream durable: `f"{namespace}-{topic}-durable"`, or the configured `nats_durable_name`
-  when the namespace is `""`. Only the topic is rewritten to suit a consumer name; the namespace
-  reaches it as declared.
+- JetStream durable: `f"{namespace}-{topic}-durable"`; when the namespace is `""`, the configured
+  `nats_durable_name` (one topic only), else `f"{topic}-durable"`. Only the topic is rewritten to
+  suit a consumer name; the namespace reaches it as declared. *(Amended 2026-10-19, PR #96
+  review: the root's bare form stated.)*
 - Namespace alphabet: a namespace **MUST** be `""` or match `[a-z][a-z0-9_]*`, and **MUST** be
   validated where it enters the framework rather than by each consumer of it. It becomes a
   registry key prefix, a queue group, part of a durable name and a telemetry `service.name`, and
@@ -78,6 +80,13 @@ other deployment identifier.
   - `-` is the separator in the durable name above. With it allowed, namespace `orders-eu` on
     topic `created` and namespace `orders` on topic `eu-created` produce one durable name, so two
     agents would bind one JetStream consumer and consume each other's events.
+    The exclusion separates agents from each other, not the root from an agent: the root's bare
+    `f"{topic}-durable"` has no namespace segment, so root topic `orders-created` and agent
+    `orders` on topic `created` still derive one name (`orders-created-durable`). That clash
+    **MUST** fail rather than share a consumer: the client refuses to bind a durable whose filter
+    is another subject (`JetStreamBindingError`), naming the consumer and the fix. *(Amended
+    2026-10-19, PR #96 review: the root/agent clash is not prevented by the alphabet, and is
+    refused at bind.)*
   - `<` and `>` keep the sec. 6 connection-name placeholders unforgeable. `>` is a NATS wildcard
     and illegal in a consumer name in any case.
 
@@ -95,7 +104,9 @@ Two rewrites are permitted, and only these:
 
 - The **topic** portion of a durable name. Dots are idiomatic in subjects and illegal in consumer
   names, so there is no alternative; it is bounded by the requirement that two topics resolving to
-  one durable name is an error, and the mapping is documented.
+  one durable name is an error, and the mapping is documented. Within one client the clash is
+  refused when the durables are resolved; between the root and an agent it is refused at bind
+  (above). *(Amended 2026-10-19, PR #96 review.)*
 - The **connection name** (sec. 6), which exists for attribution and which C1 forbids anything
   from deriving from, so no external party can depend on its spelling.
 
@@ -110,11 +121,32 @@ namespace-owned in phase 2.
 ### C2 -- Telemetry identity derives from the agent
 
 Each namespace **MUST** have its own `TracerProvider` and `MeterProvider` with
-`Resource({"service.name": <namespace>, "deployment.group": <group>, "service.instance.id": <pod>})`.
-All providers **SHOULD** share one exporter and one `BatchSpanProcessor`.
+`Resource({"service.name": <namespace>, "deployment.group": <group>, "service.instance.id": <pod>})`,
+subject to the declared keys below. `<group>` is the group the process resolved --
+`BLUEPRINT_GROUP`, or the one group a group file declares -- and `deployment.group` is absent when
+no group was resolved; `service.instance.id` is absent when the pod cannot be determined.
+*(Amended 2026-10-19, PR #96 review: the group is the resolved one, not only the variable, and the
+resource carries no placeholders.)*
+
+All providers share one `BatchSpanProcessor` per exporter. Metric readers cannot be shared -- the
+SDK binds a reader to the provider that registered it -- so each provider has its own reader over
+the one shared metric exporter. The shared processor and exporter count the providers holding them
+and are shut down by the last one; shutdown runs the agents' providers first and the root's last,
+because the root's is the global provider. *(Amended 2026-10-19, PR #96 review: replaces "SHOULD
+share one exporter and one `BatchSpanProcessor`"; per-provider readers and reference-counted
+shutdown as implemented.)*
 
 When the namespace is `""`, the provider **MUST** use `otel_service_name` from config, reproducing
 current behaviour exactly (`io/telemetry/telemetry.py:39-41`).
+
+**Keys the deployment declares.** *(Amended 2026-10-19, PR #96 review: describes the current
+behaviour; decision D23 (c) in `docs/plans/2026-10-16-pr96-review-fixes.md` is open and may change
+it.)* A key set in `OTEL_RESOURCE_ATTRIBUTES` or by `OTEL_SERVICE_NAME` is used as declared and
+replaces the framework's value, on every provider. The one exception is `OTEL_SERVICE_NAME` in a
+group: every agent's provider keeps `service.name = <namespace>`, the root's provider takes the
+declared name, and one startup WARNING names the value and says it applies to the root only. A
+`service.name` given only in `OTEL_RESOURCE_ATTRIBUTES` is not excepted, so it currently names
+every agent of a group alike.
 
 ### C3 -- Liveness is never namespace-dependent
 
@@ -140,7 +172,13 @@ generalises this to every path that stops a namespace serving, not only the ones
 
 Readiness gates HTTP only; a not-ready pod still holds subscriptions. A namespace that becomes
 degraded **MUST** stop consuming its events so they redeliver to a healthy replica. With
-per-namespace transports (sec. 6) this is closing that namespace's client.
+per-namespace transports (sec. 6) this is pausing that namespace's consumption, not closing its
+client: its NATS client drains its own subscriptions and keeps its connection open, its sessions
+job stream (`SessionsBus`) is paused likewise, and both resume when the namespace's health checks
+pass again. A JetStream delivery that still reaches a paused namespace is nak'd without running;
+under Dapr the event is not offered to the paused agent and is answered `RETRY`. *(Amended
+2026-10-19, PR #96 review: paused and resumed rather than closed -- a closed client reports
+unhealthy for ever, so the pause could never end, and publishing stays available.)*
 
 ### C5 -- Configuration is namespace-scoped
 
@@ -191,7 +229,10 @@ What remains available is attribution, so attribution is normative:
   indistinguishable across a group's agents, and the grouping dial cannot be turned in response.
 - **Blocked loop.** The dev-mode slow-callback threshold (sec. 11.1) **SHOULD** also run in
   production at a higher threshold, logging the namespace of the executing handler. This is the one
-  group-wide failure class that is detectable from inside the process.
+  group-wide failure class that is detectable from inside the process. *(Amended 2026-10-19, PR #96
+  review: met by the loop watchdog, on by default in every environment; it names the agents with
+  work in flight, since the blocking callback has returned by the time it runs. asyncio's debug
+  mode is opt-in, sec. 11.1.)*
 
 Grouping removes the pod restart that used to serve as the alert, so the alert **MUST** be emitted
 deliberately rather than inferred from a restart.
@@ -202,22 +243,30 @@ deliberately rather than inferred from a restart.
 
 ### 4.1 New
 
+*(Amended 2026-10-19, PR #96 review: the names as implemented. `AgentGroup(config)` /
+`.add()` / `.with_group()` / `.from_group()` / `.build()` became a constructor over named
+declarations, `from_config`, `resolve` and `assemble`.)*
+
 ```python
 class AgentGroup:
-    """Collects one declaration per agent and wires them into a single application."""
-    def __init__(self, config: Config) -> None: ...
-    def add(self, namespace: str, agent: AppBuilder) -> "AgentGroup"
-    def with_group(self, group: GroupConfig) -> "AgentGroup"     # import each module, add each
-    def build(self) -> FastAPI
+    """The agents one process hosts, and the single application they become."""
+    def __init__(self, name: str, agents: Mapping[str, AppBuilder], *,
+                 settings=None, secrets=None, roots=None, critical=None) -> None: ...
 
     @classmethod
-    def from_group(cls, config: Config) -> "AgentGroup"          # resolve + with_group
+    def resolve(cls, config: Config) -> "AgentGroup"          # GroupConfig.resolve + from_config
+
+    @classmethod
+    def from_config(cls, group: GroupConfig) -> "AgentGroup"  # import each module the group names
+
+    def assemble(self, config: Config) -> FastAPI             # one root builder, one build()
 
 
 class GroupConfig:
     """Resolved group composition. A value object; performs no I/O once constructed."""
     name: str
-    agents: tuple[AgentSpec, ...]      # name, critical flag, module path
+    agents: tuple[AgentSpec, ...]      # name, module path, root, critical flag
+    image_root: Path
     # No cache list: an agent may use only the caches it declared itself (sec. 8).
 
     @classmethod
@@ -228,15 +277,19 @@ class GroupConfig:
 def run_app(app: FastAPI, config: Config) -> None: ...
 ```
 
-`GroupConfig.resolve` is the only member that reads the environment or the filesystem.
-`AgentGroup.with_group` **MUST NOT** read either -- importing the agent modules a `GroupConfig`
-names is not a configuration read -- so tests can construct a `GroupConfig` literally.
+`GroupConfig.resolve` is the only member that reads the environment, the group file or the agent
+map. `AgentGroup.from_config` **MUST NOT** read the environment -- importing the agent modules a
+`GroupConfig` names is not a configuration read -- so tests can construct a `GroupConfig`
+literally. *(Amended 2026-10-19, PR #96 review: `from_config` replaces `with_group`; besides the
+imports it checks each agent's directory layout and whether `settings.toml` / `.secrets.toml`
+exist there, and `assemble` reads those files, sec. 5.3.)*
 
 **Collection is its own class, and `AppBuilder` MUST NOT know it can be collected.** An
 `AppBuilder` never absorbs another builder and exposes no group concept; `AgentGroup` constructs
 its own and replays what each agent recorded. This is what keeps one fluent surface honest: the
 group's restrictions belong to the thing imposing them, so `AppBuilder` stays permissive and every
-refusal in sec. 4.2 is raised by `AgentGroup`.
+refusal in sec. 4.2 is raised by `AgentGroup` -- except the instance refusal, which
+`AppBuilder.build(config)` applies too (sec. 10). *(Amended 2026-10-19, PR #96 review.)*
 
 ### 4.2 Changed
 
@@ -270,8 +323,9 @@ needs to exist.
 and no `namespace` parameter on any `with_*` method: standalone has no namespace to name, and an
 agent's name lives only in the group configuration (sec. 11).
 
-**Configuration resolution order, highest first:** `build(config)`, then `AppBuilder(config)`, then
-the default settings files. `AgentGroup` **MUST** refuse a builder that carries its own
+**Configuration resolution:** `build(config)` or `AppBuilder(config)` -- giving both **MUST** be
+refused -- else the default settings files. *(Amended 2026-10-19, PR #96 review: `build()` raises
+when a configuration is given twice; there is no precedence between the two.)* `AgentGroup` **MUST** refuse a builder that carries its own
 configuration -- one process has one settings tree and one port -- and **MUST** wire each agent
 with that agent's own scoped view (C5).
 
@@ -295,7 +349,12 @@ collected.
 source line, a class during `build()`, so an instance recorded *after* a class would register
 *before* it -- which can flip equal-priority handler tie-breaking, resolved by registration order
 today. `build()` knows both the recorded order and which entries were instances, and **MUST**
-raise on that combination rather than silently reordering.
+register the handlers in declaration order: after the replay it puts them back into the
+registry slots they already hold, in the order they were declared, so nothing else the registry
+holds moves. *(Amended 2026-10-19, PR #96 review: replaces "MUST raise on that combination rather
+than silently reordering" -- restoring the declared order keeps tie-breaking as written without
+refusing a valid declaration. The case arises only where instances are accepted -- `AppBuilder(config).build()`,
+or `build()` with no argument; `build(config)` and a group refuse instances.)*
 
 **`with_cache` is the one place where the obvious design breaks compatibility.** The current
 signature is `with_cache(enabled: bool = True, enable_locking: bool = True)`
@@ -335,6 +394,14 @@ routed through Dynaconf. Hence the `BLUEPRINT_` prefix rather than Dynaconf's `D
 **Precedence: environment variables override the file, key by key.** The resolved value of every
 key, and its source, **MUST** be logged at startup.
 
+Resolution **MUST** fail with `GroupConfigError`, naming the file or variable and the fix, when:
+a group file declares one group name more than once; `agents` or `critical_agents` in the file
+is not a list (a scalar is refused, not split); a group names one agent twice; or the critical
+names (`critical_agents` / `BLUEPRINT_CRITICAL_AGENTS`) include an agent the group does not run
+-- once critical names are given, every agent they do not name is non-critical, so a misspelt
+name would make the whole group non-critical. *(Amended 2026-10-19, PR #96 review: refusals as
+implemented.)*
+
 Both mechanisms **MUST** be supported; neither is preferred. The file suits ConfigMap mounts and
 local development, env vars suit `docker run` and CI, and env values live in the pod template so
 changing them triggers a rolling update on their own.
@@ -368,14 +435,34 @@ plain top-level keys in their own directory's `settings.toml` (`model_name = "..
 resolves it, without the author knowing the scope exists.
 
 An agent may therefore set any key for itself, and **MUST NOT** be able to change what another
-agent or the process sees. There is consequently no collision to report: a fragment and a root key
-never occupy the same slot, and a default restated in an agent's fragment is simply that agent's
-own value.
+agent or the process sees. A fragment and a root key never occupy the same slot, and a default
+restated in an agent's fragment is simply that agent's own value. Where a slot *could* be
+shared, the framework **MUST** refuse rather than merge or resolve, naming the agent and the key:
+*(Amended 2026-10-19, PR #96 review: replaces "there is consequently no collision to report" --
+these cases exist and are refused.)*
 
-Process-scope keys in an agent fragment **MUST** raise at startup, from an explicit list
-(`app_port`, `event_bus`, `envvar_prefix`, `nats_stream_name`). Scoped, such a key is read by
-nothing and reported by nothing -- C7's failure mode in configuration form -- and its author has
-no way to discover that the value they set is inert.
+- a root key named like the agent whose value is not a section -- merging the fragment would
+  replace that value for the whole process (`ConfigError`);
+- an agent named like a configuration section the process shares (`cache`, `event_publishing`,
+  `runtimes`, `runtime`) -- refused by namespace validation, since its fragment would be merged
+  into that shared section;
+- a bare key naming another agent, read through an agent's view -- at the root it is that agent's
+  whole section (`ValueError`), as is a dotted key outside the shared nested sections;
+- a fragment that scopes its keys under the agent's own name (`[default.<agent>]`), which would
+  nest as `<agent>.<agent>.*` and be read by nothing (`ConfigError`).
+
+Process-scope keys in an agent fragment **MUST** be dropped at startup with a WARNING per key
+naming the agent, the key, the file and the value the process uses instead (a secrets file's
+values are not logged), from an explicit list: `PROCESS_SCOPE_KEYS` (`app_port`, `app_host`,
+`app_workers`, `app_environment`, `envvar_prefix`, `event_bus`, `log_level`, `log_format`,
+`suppress_noisy_loggers`, `health_check_interval_seconds`, `startup_retry_interval_seconds`,
+`readiness_policy`, `dot_placeholder`, `nats_stream_name`, `nats_connection_source`,
+`nats_extra_runs_per_process`) plus the deployment-identity keys (`blueprint_group`, `pod_name`,
+`hostname`). Scoped, such a key is read by nothing and reported by nothing -- C7's failure mode
+in configuration form -- and the WARNING is what lets its author discover that the value they set
+is inert. *(Amended 2026-10-19, PR #96 review: replaces "MUST raise" -- every example project
+declares `app_port` and `app_environment` in its settings file, so raising would bar any existing
+project from a group until edited; the list is longer than the four keys first named.)*
 
 What happens when a *required* key is absent is deliberately not specified here. It is
 `docs/plans/2026-09-10-config-validation-unification.md`, kept out of this feature so that the
@@ -406,10 +493,10 @@ to the namespace model. This is justified by three things, in order of weight:
 2. **Slow-consumer disconnects are confined.** The broker kicks a connection whose pending buffer
    overflows. Shared, one flooding agent takes down the group's transport and triggers a
    re-subscribe storm across all namespaces (`clients/io/nats_client.py:265-280`).
-3. **Attribution.** `nats.connect()` is currently called with no `name=`
-   (`clients/io/nats_client.py:93`), so every connection this framework opens is anonymous in
-   `/connz`. Per-namespace named connections make a pod's contents legible in connection-oriented
-   tooling.
+3. **Attribution.** When this spec was written, `nats.connect()` was called with no `name=`, so
+   every connection the framework opened was anonymous in `/connz`. Per-namespace named
+   connections make a pod's contents legible in connection-oriented tooling. *(Amended
+   2026-10-19, PR #96 review: implemented; the defect is history.)*
 
 **Durability is not among the three, and the topology MUST NOT be justified by it.** JetStream
 pending state lives on the server, keyed by consumer and stream sequence; an ack is a message
@@ -426,9 +513,10 @@ separate process (#32). Protecting a few MB with a knob nobody should use is not
 maintenance surface. 100 agents at 2 replicas is ~200 connections, which is not a practical
 constraint against a self-operated broker's default `max_connections`. The number **SHOULD** be
 checked before a large rollout only where the cap is issued externally per account -- a managed
-broker, or an operator-mode account whose JWT carries a `conn` limit set by someone else. No such
-authentication is currently wired: `nats.connect()` is called with URL and reconnect parameters
-only (`clients/io/nats_client.py:93`).
+broker, or an operator-mode account whose JWT carries a `conn` limit set by someone else. Such
+authentication is wired: user and password, token, an nkey seed and a credentials file
+(`nats_creds_file`) reach `nats.connect()`. *(Amended 2026-10-19, PR #96 review: "no such
+authentication is currently wired" is history.)*
 
 A namespace that neither subscribes to anything nor publishes anything **MUST NOT** be given a
 client. A pure-scheduler agent on `scheduler_mode = "in_process"` that does not opt into publishing
@@ -438,13 +526,17 @@ deployment may have no access to. The cost argument above justifies a connection
 that uses one*; it does not justify one per namespace that does not.
 
 Connection name **MUST** be `f"{namespace}.{group}.{pod}"`, and **MUST NOT** feed C1 naming.
-**Exception -- a standalone agent** (namespace `""` and no `BLUEPRINT_GROUP`): the name **MUST** be
+**Exception -- a standalone agent** (namespace `""` and no resolved group): the name **MUST** be
 the pod alone, and **MUST** be omitted when the pod cannot be determined. Neither a namespace nor a
 group exists for it, and `<root>.<ungrouped>.<pod>` would imply a grouping that is not there; an
-omitted name is what a standalone agent sent before this feature. The root of a *grouped* process
-keeps the full form.
+omitted name is what a standalone agent sent before this feature. The root of a process whose
+group is named keeps the full form.
+The group is the one the process resolved: `BLUEPRINT_GROUP`, or the one group a group file
+declares when the variable is unset. *(Amended 2026-10-19, PR #96 review: the resolved group, not
+only the variable -- a group named by the file alone reached neither the connection name nor the
+telemetry resource.)*
 An absent segment **MUST** be filled with a placeholder rather than left empty -- `<root>` for the
-root namespace, `<ungrouped>` for an unset `BLUEPRINT_GROUP`, `<unknown-pod>` when the replica
+root namespace, `<ungrouped>` when no group was resolved, `<unknown-pod>` when the replica
 cannot be identified -- so all three positions always carry a value, a name never degenerates into
 `..pod-7`, and "no group" stays distinguishable from a group whose name happens to be empty.
 
@@ -464,8 +556,10 @@ introduced to remove. Two rules give that:
 `EventPublishingService` **MUST** publish on its own namespace's client; otherwise outbound
 traffic is unattributable and reason 3 is defeated.
 
-Per-namespace clients also make C4 a client close rather than selective unsubscription, and give
+Per-namespace clients also make C4 a per-client pause -- the client drains its own subscriptions
+and keeps its connection -- rather than selective unsubscription on a shared client, and give
 `ClientHealthChecker` per-agent health entries that feed `readiness_policy = "critical"` directly.
+*(Amended 2026-10-19, PR #96 review: a pause, not a close; see C4.)*
 
 ---
 
@@ -476,23 +570,28 @@ Per-namespace clients also make C4 a client close rather than selective unsubscr
 With N replicas of a group, exactly one replica **MUST** process any given event. Core NATS
 subscriptions **MUST** pass a queue group; JetStream consumers **MUST** share a durable per C1.
 
-The current code does neither: `nats_client.py:250` subscribes with no `queue=`, and JetStream is
-off by default (`nats_client.py:102`). Setting `replicas: 2` today therefore doubles every side
-effect and every inference bill. This is a defect independent of grouping (see #20, #35).
+When this spec was written the code did neither: core subscriptions passed no `queue=`, so
+`replicas: 2` doubled every side effect and every inference bill -- a defect independent of
+grouping (see #20, #35). Core subscriptions now pass the queue group (C1) and JetStream consumers
+share their durable with a deliver group; JetStream stays off by default (`nats_use_jetstream`).
+*(Amended 2026-10-19, PR #96 review: the defect is history.)*
 
 ### 7.2 Acknowledgement
 
-`nats_client.py:242-247` subscribes with `manual_ack=True` and **no `msg.ack()` call exists
-anywhere in the codebase**, so every JetStream message redelivers until `max_deliver`. Already a
-defect at one replica.
+When this spec was written, JetStream subscriptions used `manual_ack=True` and **no `msg.ack()`
+call existed anywhere in the codebase**, so every JetStream message redelivered until
+`max_deliver` -- already a defect at one replica. Every JetStream delivery is now settled
+(`ack`, `nak` or `term`) per the table below. *(Amended 2026-10-19, PR #96 review: the defect is
+history.)*
 
 **Decision: ack after the handler completes.** The alternative (ack first) converts a connection
 blip from duplicate work into *lost* work, which is worse for expensive, side-effecting inference.
 Consequently at-least-once is permanent, and sec. 7.4 applies.
 
 **The contract is that a normal return acknowledges and a raised exception does not.**
-`ProcessingStatus` carries no failure value -- it is `PROCESSED` or `NO_HANDLER_FOUND` -- so every
-failure already reaches the transport as an exception. The transport edge **MUST NOT** inspect
+`ProcessingStatus` carries no failure value -- it is `PROCESSED`, `NO_HANDLER_FOUND` or `SKIPPED`
+-- so every failure already reaches the transport as an exception. *(Amended 2026-10-19, PR #96
+review: `SKIPPED` added, see below.)* The transport edge **MUST NOT** inspect
 `ProcessingResult` to decide acknowledgement: `ProcessingResult` is a reporting object and **MUST**
 remain independent of delivery control.
 
@@ -507,8 +606,9 @@ remain independent of delivery control.
 
 **`NO_HANDLER_FOUND` MUST acknowledge.** An event that matches no handler's conditions has nothing
 to do, and redelivery cannot make a handler appear: a nak is a pointless loop until `max_deliver`,
-and under a queue group a loop that visits every replica in turn. `dapr.py:75` returns `RETRY` for
-this case today and **MUST** change.
+and under a queue group a loop that visits every replica in turn. When this spec was written the
+Dapr endpoint returned `RETRY` for this case; it now answers `SUCCESS`. *(Amended 2026-10-19,
+PR #96 review: the defect is history.)*
 
 **An unmatched event is acknowledged, and it is reported as a probable misconfiguration
 (changed 2026-10-15).** Deciding there is nothing to do is the handler's job: a handler that is
@@ -524,7 +624,11 @@ because "nothing to do" could only be said by declining; the chain logged a WARN
 
 It **MUST** be counted per namespace and topic, for one purpose: the *proportion* of received
 events a namespace declines is how a too-broad subscription shows up (sec. 7.7). A high count is a
-question about the subject filter, not about the handler.
+question about the subject filter, not about the handler. Under Dapr, a topic the agent did not
+declare is counted under the topic label `<undeclared>` (every topic is, with
+`dapr_declarative_subscriptions`), and the real topic stays in the log line; the same label
+applies to the duplicate and skipped counters. *(Amended 2026-10-19, PR #96 review: the label is
+what keeps a caller-chosen URL path from minting one time series per request.)*
 
 **A skip is the selected handler's own "nothing to do" (added 2026-10-15).** A handler that is
 responsible for an event -- `can_handle_event` routed it there -- and finds that this particular
@@ -537,12 +641,17 @@ with the reason as message.
 
 **Both transports MUST map the same outcome to the same disposition.** Dapr's response dict *is*
 its acknowledgement, so the table above is normative for `dapr.py` and
-`event_handling_base.handle_event` exactly as it is for `nats_client.py`. They disagree in two
-places today: `NO_HANDLER_FOUND` as above, and `CriticalHandlerError`, which `dapr.py:102` retries
--- a critical error is not made less critical by being delivered again.
+`event_handling_base.handle_event` exactly as it is for `nats_client.py`. When this spec was
+written they disagreed in two places: `NO_HANDLER_FOUND` as above, and `CriticalHandlerError`,
+which the Dapr endpoint retried -- a critical error is not made less critical by being delivered
+again. Both now map per the table. *(Amended 2026-10-19, PR #96 review: the defect is history.)*
 
-`max_deliver` and a dead-letter destination **MUST** be configured, because nak on an unexpected
-exception otherwise redelivers indefinitely.
+`max_deliver` **SHOULD** be configured, because nak on an unexpected exception otherwise
+redelivers indefinitely. `nats_max_deliver` is optional: unset, the server's default applies
+(NATS: unlimited) and nothing is ever dead-lettered; `-1` asks for unlimited explicitly and is
+warned about at startup. The dead-letter destination needs no configuration: it defaults to
+`<queue group>.dead-letter` (sec. 5.2). *(Amended 2026-10-19, PR #96 review: replaces "MUST be
+configured" -- the framework sets no consumer limits a deployment did not configure, sec. 5.2.)*
 
 The nak on the last delivery `max_deliver` permits **MUST** be rendered as a dead letter followed
 by a term, not as a nak. The broker will not redeliver it, so a nak there differs from a term only
@@ -587,8 +696,15 @@ Whether deduplication is *correct* depends on the product built on the blueprint
 operations are naturally idempotent, others need business-level reconciliation the framework
 cannot see. The framework therefore **MUST NOT** silently enforce dedup, and **MUST**:
 
-- provide an opt-in dedup mechanism keyed on the CloudEvent `id`, backed by the namespace's cache
-  with a TTL, applied in the handler chain before dispatch (`idempotency_enabled`);
+- provide an opt-in dedup mechanism keyed on the CloudEvent `(source, id)` -- plus the connection
+  name for a delivery from a named connection (`nats_connection`) -- backed by the namespace's
+  cache with a TTL, applied in the handler chain before dispatch (`idempotency_enabled`). The
+  marker is claimed atomically before dispatch and kept only when the delivery is acknowledged
+  as a success; every other outcome releases it so the redelivery can run, and only the delivery
+  that won the claim releases it, never a duplicate. *(Amended 2026-10-19, PR #96 review: an `id`
+  is unique only within a source, and the same producer behind two connections emits the same
+  ids for different data; marker lifetime as implemented. Atomic across processes on Redis only,
+  sec. 7.5.)*
 - **flag the requirement explicitly to the agent author** -- a comment in the scaffolded handler,
   a line in the generated README, and an `asbs validate` notice when a handler is registered with
   `idempotency_enabled = false`. The author must make a decision, not inherit a default silently.
@@ -603,7 +719,7 @@ Two modes, selected by `scheduler_mode`:
 
 | Mode | Behaviour |
 |---|---|
-| `"event"` | **Default.** No in-process timer. An external scheduler (Kubernetes `CronJob`) publishes an event; the agent handles it through its normal event path. |
+| `"event"` | No in-process timer. *(Amended 2026-10-19, PR #96 review: "Default" removed -- neither mode is the default, below.)* An external scheduler (Kubernetes `CronJob`) publishes an event; the agent handles it through its normal event path. |
 | `"in_process"` | `AsyncIOScheduler` in every replica, with each tick claimed in the shared cache so one replica runs it. For un-orchestrated Docker and local development. |
 
 `scheduler_mode` **MUST NOT** have a default: registering a scheduler without it **MUST** fail
@@ -641,19 +757,30 @@ Because manifests belong to a deployment group rather than to a single project o
 serves the platform (sec. 6, and the entrypoint model), the generator's input **SHOULD** be the
 group's agent map rather than one project's source tree.
 
-Independently of the manifest, the declared crontab **MUST** be validated in `"event"` mode. That
-mode builds no `CronTrigger`, so nothing else parses the expression, and an invalid one otherwise
-presents as a scheduler that reports itself healthy and never ticks. It **MUST** be the five
-standard cron fields: an external scheduler reads those, and apscheduler's extensions -- a leading
-seconds field in particular -- are not portable to one.
+Independently of the manifest, the declared crontab **MUST** be validated in both modes, before
+the port is bound. `"event"` mode builds no `CronTrigger`, so nothing else parses the expression,
+and an invalid one otherwise presents as a scheduler that reports itself healthy and never ticks;
+`"in_process"` mode parses it only at startup and does not read it as an external cron would. It
+**MUST** be the five standard cron fields: an external scheduler reads those, and apscheduler's
+extensions -- a leading seconds field in particular -- are not portable to one.
+
+The day of the week is numbered as apscheduler numbers it, `0` = Monday to `6` = Sunday, which
+disagrees with a standard cron (`0` = Sunday) on every number. Day `7` **MUST** be refused in both
+modes (Sunday to cron, nothing to apscheduler). In `"event"` mode, where an external cron fires
+the tick, a day of the week given by number -- including `*/n`, which steps from day `0` -- **MUST**
+be refused: names (`mon-fri`, `sun`) read the same to both. *(Amended 2026-10-19, PR #96 review:
+replaces "validated in `"event"` mode" -- validation runs in both modes, and the weekday rules are
+added.)*
 
 **In-process coordination is a per-tick claim, not a leader lease.** An earlier form of this
 section called for a NATS KV or cache-backed leader lease. A slot claim satisfies the same
 requirement and is preferred, because it removes rather than answers the failover question: every
 replica's timer fires, each tries to store a marker keyed on `(scheduler, minute)` in the agent's
-own cache -- shared across that agent's replicas, and per sec. 8 invisible to every other agent, so
-two agents each running a scheduler of the same name cannot claim each other's slots -- and the
-replica that stores it runs the tick. Nothing is elected and nothing is held, so there
+own cache -- shared across that agent's replicas when the cache is Redis, and per sec. 8 invisible
+to every other agent, so two agents each running a scheduler of the same name cannot claim each
+other's slots -- and the replica that stores it runs the tick. *(Amended 2026-10-19, PR #96
+review: a disk cache is not shared across processes in a way the claim can rely on, below.)*
+Nothing is elected and nothing is held, so there
 is no renewal task to schedule (and therefore none to leak, C7), no lease left behind by a replica
 that dies holding one, and no takeover bound to specify -- the next slot is claimed from scratch by
 whoever is alive.
@@ -662,11 +789,22 @@ The claim **MUST** use a set-if-absent primitive rather than a read followed by 
 `CacheService.claim`. Two replicas racing on an `exists`-then-`set` pair both pass the check and
 both tick, which is the failure this mechanism exists to prevent.
 
+`CacheService.claim` is atomic across processes only on the Redis backend. A disk cache's claim
+holds within one process: processes sharing one cache directory -- replicas on a shared volume,
+or `uvicorn --workers N` run by hand -- can each win the same key. Coordinating replicas therefore
+needs Redis. *(Amended 2026-10-19, PR #96 review: measured with diskcache-rs 0.4.10, several
+processes on one directory each won one key; how to proceed beyond documenting it is open, D22.)*
+
 The key **MUST** be derived from the scheduled slot rather than from the scheduler alone. Cron
 granularity is one minute, so replicas firing for the same scheduled time derive the same key and
 the next scheduled time derives a different one -- which is what keeps set-if-absent sufficient.
-Replicas whose clocks differ enough to straddle a minute boundary derive different slots and both
-tick; sec. 7.4 covers that, as it covers every other repeat.
+The slot is the trigger's latest scheduled fire time at or before the current time, as a UTC
+minute, not the clock at run time: a run that starts late, or on a replica whose clock is a little
+ahead, still claims the slot it was scheduled for, and fire times that passed without a run are
+walked over rather than claimed late. Without a trigger, or before its first fire time, the clock
+decides. Clock skew therefore splits a slot only when it outlasts the marker (300 s); sec. 7.4
+covers that, as it covers every other repeat. *(Amended 2026-10-19, PR #96 review: replaces the
+clock-minute key, whose straddle of a minute boundary let two replicas both tick.)*
 
 With no cache registered there is nothing to claim with. The timer **MUST** still run -- the mode
 exists for local development, where requiring a cache would be gratuitous -- and startup **MUST**
@@ -676,7 +814,11 @@ Neither mode is exactly-once: `CronJob` is at-least-once (controller restart, mi
 `startingDeadlineSeconds`), and a claim fails open when the cache is unreachable, so every replica
 ticks. Sec. 7.4 therefore applies in both modes. `concurrencyPolicy: Forbid` **SHOULD** be set, and
 `CronJob` `timeZone` **MUST** be reconciled with apscheduler's timezone handling so the two modes
-do not diverge.
+do not diverge. The reconciliation point is the opt-in `scheduler_timezone` (an IANA name, per
+namespace): the `"in_process"` timer runs in it, and unset it keeps the host's local time as
+before. In `"event"` mode the external cron's own timezone decides and the key changes nothing,
+so the deployment sets `CronJob` `timeZone` to the same zone. *(Amended 2026-10-19, PR #96 review:
+how the reconciliation is done; CronJob generation is deferred, sec. 12.)*
 
 **Publishing and consuming are separate decisions.** A scheduler that emits a result event is a
 legitimate shape and **MUST NOT** require the agent to consume anything: an application that opts
@@ -725,7 +867,8 @@ publishing, so publisher and consumer cannot drift.
 
 Two rules keep this non-breaking, and both are load-bearing, because **no handler in the framework
 or in any scaffolded project declares anything today**: `get_subscribed_topics()` is overridden
-nowhere, the generated handler template selects purely inside `can_handle_event`, and
+only by the framework's own `SchedulerTickHandler`, the generated handler template selects purely
+inside `can_handle_event`, and
 `nats_subscriptions` appears in no generated settings file. Any design that treats declarations as
 authoritative therefore describes an empty set.
 
@@ -790,10 +933,15 @@ cache in the root namespace.
 1. `GroupConfig.resolve(config)` -- file, then env overrides; log provenance.
 2. Validate every agent name against the in-image agent map. Fail with the group and the missing
    agent named.
-3. Import each agent module lazily; read its module-level `registration`.
-4. `AgentGroup(config).with_group(group)` -- one recorded declaration added per agent.
-5. `build()`, then `run_app(app, config)`. Every component is constructed here, inside its own
-   namespace scope; steps 1-4 construct nothing.
+3. Import each agent module lazily; read the declaration the agent map names
+   (`module = "pkg.mod:attribute"`).
+4. `AgentGroup.from_config(group)` -- one unbuilt declaration per agent. Steps 1-4 together are
+   `AgentGroup.resolve(config)`.
+5. `assemble(config)`, then `run_app(app, config)`. Every component is constructed here, inside
+   its own namespace scope; steps 1-4 construct nothing.
+
+*(Amended 2026-10-19, PR #96 review: `with_group` / `build()` are `from_config` / `assemble()`, sec.
+4.1; the declaration's attribute name comes from the agent map.)*
 
 Resolution **MUST** complete before the first `Component.__init__`, because namespace injection
 happens through a `ContextVar` read during construction. No incremental resolution.
@@ -808,6 +956,10 @@ There is no partial build: one process, one `build()`. The `critical` flag is th
 | Agent missing from the agent map | exit non-zero | log ERROR, skip |
 | Module import raises | exit non-zero | log ERROR, skip |
 | `on_startup` raises | exit non-zero | mark namespace down, pause consumers (C4), continue; retry (below) |
+| No agent left after the skips above | exit non-zero | exit non-zero |
+
+*(Amended 2026-10-19, PR #96 review: last row added -- a pod with no agent passes its probes while
+it consumes nothing, which is the failure criticality exists to prevent.)*
 
 Exit **MUST** happen before the port is bound, so Kubernetes crash-loops with a readable message
 rather than reporting a healthy pod that is silently short-staffed.
@@ -842,7 +994,7 @@ change, and `uvicorn src.main:app` as its entrypoint. Specifically:
 | Concern | Guarantee |
 |---|---|
 | `AppBuilder` fluent API | Unchanged. `AppBuilder(config)...build()` behaves as today, and no `namespace` parameter is added to anything. |
-| Passing a constructed instance to `with_*` | Unchanged standalone; refused only when the builder is collected into a group (sec. 4.2). |
+| Passing a constructed instance to `with_*` | Unchanged for an application that builds itself (`AppBuilder(config)...build()`, or `build()` with no argument). Refused when the builder is collected into a group (sec. 4.2), and by `build(config)` -- which the scaffolded `create_app()` calls -- because a declaration built by a host has the shape a group hosts. *(Amended 2026-10-19, PR #96 review: was "refused only in a group".)* |
 | Component construction timing | Deferred to `build()`. Reading a component out of the registry between `with_*` calls was never supported -- collaborators resolve in `on_startup` -- and now breaks. |
 | `with_health_checker` keys | Bare name at the root, so an existing readiness payload is unchanged; qualified per agent in a group. |
 | OpenAPI tags and paths | Unchanged at the root: tags as the framework and the developer declare them, untagged routes under "default", every path as served today. Rewritten only per agent in a group (sec. 11.2). |
@@ -898,20 +1050,26 @@ nothing else:
 
 ```python
 def create_app():           # uvicorn src.main:create_app --factory --reload
-    return agent.build()
+    return agent.build(Config(settings_files=["settings.toml", ".secrets.toml"], root_path=...))
 ```
 
 The component list appears **once** either way. The dual-branch `main.py` of an earlier draft --
 the same components repeated under `if __name__ == "__main__"` and `else:` -- **MUST NOT** be
 used; two copies to keep in sync is itself a leak of the grouping model.
 
-`asbs dev agents/<name>` runs one agent as a group of one, using its **real** namespace. Local
-routes are therefore `/api/order/orders/{id}`, identical to production, and local consumer
-identity is the production queue group. A dev mode that ran at `namespace=""` would give every
-developer local URLs and integration tests that differ from production.
+`asbs dev` in an image directory (one with an `agents.toml`) hosts that image's agents under
+their **real** namespaces, as the deployment does. In an agent directory it serves the agent on
+its own, at the root namespace, as the agent's own Dockerfile and `create_app()` do; `asbs dev
+--name <agent>` serves it as a group of one under that namespace instead, so local routes are
+`/api/<agent>/...` and local consumer identity is the production queue group, identical to a
+grouped deployment.
 
-Consequently `namespace=""` is reserved for pre-migration agents. Every newly scaffolded agent
-**MUST** have a real namespace in every environment.
+An agent therefore runs at its real namespace wherever a group hosts it, and at the root when it
+is served on its own. `namespace=""` is not reserved for pre-migration agents. *(Amended
+2026-10-19, PR #96 review: replaces "`asbs dev agents/<name>` runs one agent as a group of one"
+and "every newly scaffolded agent MUST have a real namespace in every environment" -- an agent
+directory carries no name of its own, the name comes from whoever hosts it, and `--name`
+reproduces the grouped shape locally.)*
 
 ### 11.1 What cannot be hidden
 
@@ -920,7 +1078,7 @@ mechanically, because a rule that cannot be violated locally will not be followe
 
 | Mistake | Detection |
 |---|---|
-| Blocking the event loop | dev mode sets `loop.set_debug(True)` with a slow-callback threshold; production **SHOULD** keep a higher-threshold watchdog that names the executing namespace (C7) |
+| Blocking the event loop | `event_loop_debug = true` (read as a boolean, in any environment; off unless set) sets `loop.set_debug(True)` with a slow-callback threshold; otherwise a loop watchdog, on by default in every environment, reports a block above its threshold and names the agents with work in flight (C7) *(Amended 2026-10-19, PR #96 review: debug mode is no longer on by default in development -- its overhead is too high to be a default)* |
 | Module-level side effects (clients built at import, `basicConfig()`) | CI: import each agent module, assert the registry is empty and the root logger has no handlers |
 | Non-idempotent handlers | explicit flag at scaffold time and in `asbs validate` (sec. 7.4) |
 
@@ -991,9 +1149,11 @@ unticked box is not done, and says why.
 - [x] File-only, env-only and combined resolution produce identical groups; env overrides the file
       key by key -- `tests/unit/agents/test_group_config.py`: `TestFromTheGroupFile`,
       `TestFromTheEnvironmentAlone`, `TestPrecedence`.
-- [x] `CacheService.claim` is set-if-absent on both backends: of N concurrent callers on one key
-      exactly one is told it stored the value (sec. 7.5) -- `TestClaim` in both
-      `test_disk_cache_service.py` and `test_redis_cache_service.py`.
+- [x] `CacheService.claim` is set-if-absent: of N concurrent callers on one key exactly one is
+      told it stored the value (sec. 7.5) -- `TestClaim` in both `test_disk_cache_service.py` and
+      `test_redis_cache_service.py`. Across processes this holds on Redis only; the disk
+      backend's claim holds within one process. *(Amended 2026-10-19, PR #96 review: scoped to
+      Redis.)*
 - [x] An `"in_process"` scheduler with no cache still ticks, and warns at startup that its ticks
       are uncoordinated (sec. 7.5) -- `test_without_a_cache_every_replica_ticks` and
       `test_in_process_mode_without_a_cache_says_every_replica_runs_every_tick`.
@@ -1032,8 +1192,10 @@ unticked box is not done, and says why.
       `tests/integration/test_grouped_agents.py` is the version that settles it.
 - [~] Two replicas of a two-agent group: each event processed exactly once per agent. Whether a
       queue group merges overlapping subscriptions is the broker's behaviour, not ours.
-- [~] Cron fires once across three replicas in both `scheduler_mode` values (#73). The claim is
-      atomic on both cache backends by unit test; three real replicas contending is not.
+- [~] Cron fires once across three replicas in both `scheduler_mode` values (#73) -- in
+      `"in_process"` mode with a Redis cache. The claim is atomic on Redis by unit test; three
+      real replicas contending is not. On a disk cache the claim does not hold across processes
+      (sec. 7.5). *(Amended 2026-10-19, PR #96 review: scoped to Redis.)*
 
 ### Not done
 

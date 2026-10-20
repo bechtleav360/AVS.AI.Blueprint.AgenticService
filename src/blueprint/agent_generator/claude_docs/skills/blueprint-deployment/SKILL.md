@@ -62,7 +62,10 @@ that is short a consumer.
 ## The two that break under replicas
 
 - **Schedulers.** `scheduler_mode = "in_process"` runs a timer in *every* replica and relies on the
-  cache to claim each tick, so without `.with_cache()` every replica runs every tick.
+  cache to claim each tick, so without `.with_cache()` every replica runs every tick. Across
+  replicas the claim holds only on Redis: a disk cache's claim holds within one process, so
+  replicas sharing a cache directory can both win a tick, and with a per-pod disk cache every
+  replica runs every tick.
   `scheduler_mode = "event"` starts no timer at all - an external `CronJob` publishes the tick and
   the queue group already guarantees one consumer. Read *Schedulers* and *Running more than one
   replica* together before scaling past one.

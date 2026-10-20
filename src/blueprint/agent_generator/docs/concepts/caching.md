@@ -75,7 +75,11 @@ class DeduplicationHandler(EventHandlerBase):
 ```
 
 **The cache interface is synchronous.** `get`, `set` and the rest are ordinary methods; they are
-not awaited, even inside `async def`. Operations are sub-millisecond on both backends.
+not awaited, even inside `async def`, and they block the thread that calls them. On disk that is
+short. On Redis a call waits for the server, and one that stops answering holds the call until
+`redis_socket_timeout` (redis-py's own default, 5 s, when unset). The framework's own claims -- event
+deduplication and the scheduler tick -- run in a worker thread for that reason; a component calling
+the cache from `async def` blocks the event loop for as long as the call takes.
 
 `self.registry` answers for the component's own agent, so `get_cache("sessions")` reaches this
 agent's `sessions` cache and cannot reach anyone else's.
@@ -100,12 +104,17 @@ agent's `sessions` cache and cannot reach anyone else's.
 `exists` followed by `set` is not a lock. Two callers racing on the same key both pass the
 `exists` check before either `set` lands, and both then believe they hold it. `claim` is the
 set-if-absent primitive that closes the race -- `SET NX EX` on Redis, `add` on a lock-protected
-disk cache -- and it is what event deduplication and the scheduler tick use to pick one winner
-among several replicas.
+disk cache -- and it is what event deduplication and the scheduler tick use to pick one winner.
+
+**How far a claim holds depends on the backend.** On Redis it is atomic across every process that
+shares the server, so it picks one winner among replicas. On disk it is atomic between the threads
+of one process only. Several processes may open one directory -- replicas sharing a cache volume, or
+`uvicorn --workers N` run by hand -- and see each other's entries, but two of them claiming one key
+at the same moment can both win. A claim that must hold across replicas needs the Redis backend.
 
 ```python
 if not self.cache.claim(event.id, "processing", namespace="dedup", ttl=600):
-    return None          # another replica got there first
+    return None          # another caller got there first
 ```
 
 ### Keys and namespaces
@@ -194,7 +203,7 @@ default_ttl = 3600                       # seconds
 | `eviction_policy` | `str` | `"least-recently-used"` | disk |
 | `default_ttl` | `int` | `3600` | both |
 | `key_prefix` | `str` | `""` | redis |
-| `redis_url` | `str \| None` | `redis://localhost:6379/0` | redis |
+| `redis_url` | `str \| None` | unset -- connects to `redis://localhost:6379/0` | redis |
 | `redis_password` | `str \| None` | `None` | redis -- read it from a secrets file |
 | `redis_db` | `int` | `0` | redis |
 | `redis_tls` | `bool` | `false` | redis |
@@ -221,9 +230,10 @@ key_prefix = "orders-api"
 ### Disk (default)
 
 Backed by `diskcache-rs`, a Rust implementation of the diskcache format. Persists to
-`cache_dir`, survives restarts, and uses file-based locking so replicas sharing one mounted
-directory can read and write it safely. Nothing has to be installed and nothing has to be
-configured.
+`cache_dir`, survives restarts, and needs nothing installed or configured. Several processes may
+open one directory (a volume shared by replicas, or `uvicorn --workers N` run by hand) and they see each
+other's entries, but a `claim` is not atomic between them -- see
+[`claim`](#claim-deciding-which-process-does-the-work).
 
 ### Redis
 

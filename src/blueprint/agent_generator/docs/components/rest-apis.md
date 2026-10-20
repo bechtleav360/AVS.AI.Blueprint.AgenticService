@@ -166,7 +166,7 @@ async def get_order(self, order_id: str):
 
 ## Registration
 
-Register API instances with the application builder. `with_rest_api` receives an instance or the class:
+Register APIs with the application builder. Pass the **class** (constructor arguments as keyword arguments) or a zero-argument factory: an already-built instance is refused by a group and by `create_app()`, because it was constructed before its agent's namespace existed:
 
 ```python
 from blueprint.agents import AppBuilder
@@ -225,6 +225,12 @@ class OrderService(ServiceBase):
     async def cancel_order(self, order_id: str) -> dict:
         ...
 
+    async def on_startup(self) -> None:
+        pass
+
+    async def on_shutdown(self) -> None:
+        pass
+
 
 # --- API ---
 
@@ -237,6 +243,9 @@ class OrderApi(RestApiBase):
 
     async def on_startup(self) -> None:
         self._order_service = self.registry.get_service(OrderService)
+
+    async def on_shutdown(self) -> None:
+        pass
 
     @RestApiBase.post(
         "/orders",
@@ -322,13 +331,23 @@ Use FastAPI's `TestClient` or `httpx.AsyncClient` for integration tests. For uni
 ```python
 import pytest
 from unittest.mock import AsyncMock, MagicMock
-from fastapi.testclient import TestClient
+from fastapi import HTTPException
+
+from blueprint.agents.component.component import Component
+from blueprint.agents.component.registry import Registry
 
 
 @pytest.fixture
-def order_api():
-    api = OrderApi()
-    mock_registry = MagicMock()
+def mock_registry():
+    """Install a mock registry for every component constructed while the test runs."""
+    registry = MagicMock(spec=Registry)
+    Component.shared_registry = registry
+    yield registry
+    Component.reset_shared_state()
+
+
+@pytest.fixture
+async def order_api(mock_registry):
 
     mock_service = AsyncMock()
     mock_service.create_order.return_value = {
@@ -346,13 +365,13 @@ def order_api():
     mock_service.list_orders.return_value = []
 
     mock_registry.get_service.return_value = mock_service
-    api.registry = mock_registry
+    api = OrderApi()
+    await api.on_startup()
     return api
 
 
 @pytest.mark.asyncio
 async def test_create_order(order_api):
-    await order_api.on_startup()
     request = CreateOrderRequest(
         customer_id="CUST-1",
         items=[{"sku": "A", "quantity": 1, "unit_price": 99.99}],
@@ -364,7 +383,6 @@ async def test_create_order(order_api):
 
 @pytest.mark.asyncio
 async def test_get_order_not_found(order_api):
-    await order_api.on_startup()
     order_api._order_service.get_order.return_value = None
 
     with pytest.raises(HTTPException) as exc_info:

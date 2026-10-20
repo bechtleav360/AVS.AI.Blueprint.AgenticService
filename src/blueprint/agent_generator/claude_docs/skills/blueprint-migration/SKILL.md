@@ -21,7 +21,8 @@ whether the move is actually wanted before starting it.
 The agent's name in `agents.toml` becomes its queue group, its JetStream durables, its cache
 directory and Redis prefix, its telemetry `service.name` and its `/api/<agent>` route prefix.
 Renaming it after the first grouped deploy is a consumer migration, not a rename. The alphabet is
-`[a-z][a-z0-9_]*` - **no dashes**; a name outside it is refused, never repaired. See
+`[a-z][a-z0-9_]*` - **no dashes** - and `cache`, `event_publishing`, `runtimes` and `runtime` are
+reserved; a name outside it is refused, never repaired. See
 `blueprint-multi-agent` for why.
 
 ## What changes
@@ -41,7 +42,7 @@ Nothing inside the agent's directory moves. Its `settings.toml` stays beside `sr
 ## Rules that bite
 
 - **Classes, not instances.** `with_rest_api(OrderApi())` is built before any namespace exists; a
-  group refuses it. Pass `OrderApi`.
+  group refuses it, and so does `create_app()`. Pass `OrderApi`.
 - **Nothing at import time.** The module is imported into a shared runtime: no client construction,
   no `logging.basicConfig()`.
 - **Still serving it alone?** Add `def create_app(): return agent.build(Config(...))` and run

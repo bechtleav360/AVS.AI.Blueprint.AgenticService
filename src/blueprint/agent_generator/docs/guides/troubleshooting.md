@@ -64,24 +64,25 @@ pip install avs-blueprint-agents==0.6.0a3 \
 
 ### ConfigError on Startup
 
-**Symptom:** Application crashes immediately with a `ConfigError` or `ValidationError`.
+**Symptom:** Application crashes immediately with a `ConfigError`.
 
 ```
-blueprint.agents.exceptions.ConfigError: Missing required configuration: 'app.name'
+blueprint.agents.config.config.ConfigError: Invalid app port: 70000
 ```
 
-**Cause:** Required settings are missing from `settings.toml` or have not been provided via environment variables.
+**Cause:** A setting failed validation at startup -- an `app_port` outside 1-65535, the `vllm`
+provider without `model_api_key`, an agent settings file that cannot be parsed, an invalid
+`envvar_prefix`. The message names the key or the file.
 
-**Solution:** Verify that `settings.toml` contains all required keys:
+**Solution:** Correct the setting the message names. The framework's keys are **flat** keys under
+`[default]`, not tables of their own:
 
 ```toml
-[app]
-name = "my-ai-service"
-port = 8000
-
-[llm]
-provider = "openai"
-model = "gpt-4"
+[default]
+app_name = "my-ai-service"
+app_port = 8000
+model_provider = "openai"
+model_name = "gpt-4.1-mini"
 ```
 
 Check which settings are required by running validation:
@@ -99,9 +100,12 @@ asbs validate
 **Solution:** Check the component's documentation or source code for required settings. Use Dynaconf environment variable overrides if you cannot modify `settings.toml`:
 
 ```bash
-export DYNACONF_LLM__API_KEY="sk-..."
-export DYNACONF_LLM__PROVIDER="openai"
+export DYNACONF_MODEL_API_KEY="sk-..."
+export DYNACONF_MODEL_PROVIDER="openai"
 ```
+
+A top-level key takes one underscore after the prefix; `__` is nesting, so `DYNACONF_LLM__API_KEY`
+would create an `llm.api_key` that nothing reads.
 
 ### Invalid Port Configuration
 
@@ -116,8 +120,8 @@ export DYNACONF_LLM__PROVIDER="openai"
 **Solution:** Use a non-privileged port in `settings.toml`:
 
 ```toml
-[app]
-port = 8000
+[default]
+app_port = 8000
 ```
 
 Or check for port conflicts:
@@ -182,7 +186,9 @@ In Kubernetes, verify the NATS service is deployed and the Dapr component config
 **Refused against `localhost:4222` inside a pod?** The process is in development mode: `app_environment` is
 unset or `"development"`, and `nats_url` is unset, so it fell back to localhost. The log says so twice -- a
 WARNING that the service is running in development mode, and one naming the fallback. Set `app_environment`
-and `nats_url` for the deployment.
+and `nats_url` for the deployment. An image that sets only `DYNACONF_ENVIRONMENT` (the variable older
+Dockerfiles used) stays in development: that variable selects nothing, and has to be renamed to
+`DYNACONF_APP_ENVIRONMENT` (`<PREFIX>_APP_ENVIRONMENT` with your own `envvar_prefix`).
 
 ### `'nats_url' is not set` on Startup
 
@@ -212,21 +218,41 @@ enabled for the account the connection authenticates as.
 **Solution:** Enable JetStream for that server and account, or set `nats_use_jetstream = false`
 if the agent is meant to run on Core NATS. The framework does not fall back on its own.
 
+### `JetStreamBindingError`: a consumer that `belongs to another subscription`
+
+**Symptom:** One topic of an agent never receives events, and the log repeats:
+
+```
+JetStreamBindingError: JetStream consumer 'orders-created-durable' on stream ... filters 'orders-created', not 'created', so it belongs to another subscription and is not bound. ...
+```
+
+**Cause:** A durable of that name already exists on the stream for another subject. A root topic and
+an agent's topic can derive one durable name -- root topic `orders-created` and agent `orders` on
+topic `created` both give `orders-created-durable`. The framework never rebinds or rewrites a
+consumer that filters another subject, and keeps retrying the binding.
+
+**Solution:** Rename one of the two topics, or delete the consumer if it is stale.
+
 ### Topic Mapping Mismatches
 
 **Symptom:** Events are published but handlers never receive them.
 
-**Cause:** The topic name in the handler's `event_type` does not match the topic used by the publisher.
+**Cause:** The topic the handler subscribes to, or the event type it accepts, does not match what the
+publisher sends.
 
-**Solution:** Verify that the event types match exactly between publisher and subscriber:
+**Solution:** Verify that topic and event type match exactly between publisher and subscriber:
 
 ```python
-# Publisher
-await event_bus.publish(topic="order.created", data=order_data)
+# Publisher (EventPublishingService)
+await publisher.publish_event(event, topic="order.created")
 
-# Handler -- event_type must match exactly
+# Handler -- the subscribed topic and the accepted type must match exactly
 class OrderHandler(EventHandlerBase):
-    event_type = "order.created"  # Must match the publish topic
+    def get_subscribed_topics(self) -> list[str]:
+        return ["order.created"]
+
+    async def can_handle_event(self, event, context) -> bool:
+        return event.type == "order.created"
 ```
 
 Check the Dapr subscription configuration to ensure topic mappings are correct.
@@ -237,25 +263,26 @@ Check the Dapr subscription configuration to ensure topic mappings are correct.
 
 ### Missing API Key
 
-**Symptom:** Agent calls fail with an authentication error.
+**Symptom:** Startup or the first agent call fails with an authentication error from the provider's
+client, for the `openai` provider:
 
 ```
-AuthenticationError: No API key provided. Set DYNACONF_LLM__API_KEY or add it to .secrets.toml.
+openai.OpenAIError: The api_key client option must be set either by passing api_key to the client or by setting the OPENAI_API_KEY environment variable
 ```
 
-**Cause:** The LLM provider API key is not configured.
+**Cause:** `model_api_key` is not configured.
 
-**Solution:** Set the API key in `.secrets.toml` (for local development) or via an environment variable (for production):
+**Solution:** Set it in `.secrets.toml` (for local development) or via an environment variable (for production):
 
 ```toml
 # .secrets.toml (local only -- do not commit)
-[llm]
-api_key = "sk-..."
+[default]
+model_api_key = "YOUR_API_KEY_HERE"
 ```
 
 ```bash
 # Environment variable
-export DYNACONF_LLM__API_KEY="sk-..."
+export DYNACONF_MODEL_API_KEY="YOUR_API_KEY_HERE"
 ```
 
 ### Invalid Model Name
@@ -271,9 +298,9 @@ InvalidRequestError: The model 'gpt-5-turbo' does not exist
 **Solution:** Verify the model name against the provider's documentation:
 
 ```toml
-[llm]
-provider = "openai"
-model = "gpt-4"  # Use a valid model identifier
+[default]
+model_provider = "openai"
+model_name = "gpt-4.1-mini"  # Use a valid model identifier
 ```
 
 ### Timeout Errors
@@ -281,16 +308,16 @@ model = "gpt-4"  # Use a valid model identifier
 **Symptom:** LLM calls fail intermittently with timeout errors.
 
 ```
-TimeoutError: Request timed out after 30.0 seconds
+openai.APITimeoutError: Request timed out.
 ```
 
 **Cause:** The LLM provider is taking longer than the configured timeout to respond. This is common with complex prompts or during high provider load.
 
-**Solution:** Increase the timeout in configuration:
+**Solution:** Increase the timeout in configuration (unset, the provider SDK's own default applies):
 
 ```toml
-[llm]
-timeout = 60  # seconds
+[default]
+model_timeout = 60  # seconds, per model request
 ```
 
 Alternatively, consider breaking complex prompts into smaller steps or implementing retry logic in your service.
@@ -300,18 +327,17 @@ Alternatively, consider breaking complex prompts into smaller steps or implement
 **Symptom:** Application raises an error about an unsupported LLM provider.
 
 ```
-ValueError: LLM provider 'anthropic_legacy' is not supported
+ValueError: Unsupported provider: 'anthropic'. Supported: ['vllm', 'openai']
 ```
 
-**Cause:** The provider name in configuration does not match any registered provider.
+**Cause:** `model_provider` names a provider the framework has no client for.
 
 **Solution:** Use a supported provider name:
 
 ```toml
-[llm]
-provider = "openai"     # OpenAI API
-# provider = "azure"    # Azure OpenAI
-# provider = "anthropic" # Anthropic Claude
+[default]
+model_provider = "openai"   # OpenAI API
+# model_provider = "vllm"   # a vLLM server at model_base_url; model_api_key is required
 ```
 
 ---
@@ -323,19 +349,21 @@ provider = "openai"     # OpenAI API
 **Symptom:** Application fails to start with a duplicate registration error.
 
 ```
-RegistrationError: Component 'order_handler' is already registered
+ValueError: Component with name order_handler already exists
 ```
 
-**Cause:** Two components share the same `name` attribute.
+**Cause:** Two components resolve to the same registry name. A component is named after its class
+(`OrderHandler` becomes `order_handler`) unless its `with_*` call passes `name=`, so registering one
+class twice, or passing one `name=` twice, collides. In a group the message names the agent too.
 
-**Solution:** Ensure every component has a unique `name`:
+**Solution:** Give the second registration a name of its own:
 
 ```python
-class OrderCreatedHandler(EventHandlerBase):
-    name = "order_created_handler"  # Must be unique
-
-class OrderUpdatedHandler(EventHandlerBase):
-    name = "order_updated_handler"  # Must be unique
+agent = (
+    AppBuilder()
+    .with_service(PricingService)
+    .with_service(PricingService, name="eu_pricing_service")  # a second instance, its own name
+)
 ```
 
 Run validation to detect duplicates:
@@ -344,47 +372,35 @@ Run validation to detect duplicates:
 asbs validate
 ```
 
-### Missing Dependencies in on_startup
+### Looking Up Components in __init__
 
-**Symptom:** A service raises a `KeyError` or `None` reference when trying to access another service during startup.
+**Symptom:** A service fails when trying to access another service during construction.
 
 ```
-KeyError: 'pricing_engine'
+ValueError: Component with name pricing_engine does not exist
 ```
 
-**Cause:** The service is trying to access a dependency from the registry before that dependency has been registered and started.
+**Cause:** The service is looking up a dependency before that dependency has been constructed and
+registered. Components are constructed one by one in declaration order inside `build()`, so a
+lookup in `__init__()` finds only the components declared before this one.
 
-**Solution:** Access dependencies from the registry only within `on_startup()` or during request handling, not in `__init__()`. The framework calls `on_startup()` after all components are registered:
+**Solution:** Access dependencies from the registry only within `on_startup()` or during request
+handling, not in `__init__()`. The framework calls `on_startup()` after all components are
+registered:
 
 ```python
 class OrderService(ServiceBase):
-    name = "order_service"
+    def __init__(self):
+        super().__init__()
+        self.pricing = None  # Do NOT look up other components here
 
     async def on_startup(self) -> None:
         # Safe -- all components are registered by this point
         self.pricing = self.registry.get_service("pricing_engine")
-```
+        self.cache = self.registry.get_cache()  # only if the agent declares .with_cache()
 
-### Accessing Registry in __init__
-
-**Symptom:** `AttributeError: 'NoneType' object has no attribute 'get_service'` during component construction.
-
-**Cause:** The registry is not available during `__init__()`. It is injected after construction.
-
-**Solution:** Move all registry access to `on_startup()`:
-
-```python
-class MyService(ServiceBase):
-    name = "my_service"
-
-    def __init__(self):
-        # Do NOT access self.registry here -- it is not set yet
-        self._client = None
-
-    async def on_startup(self) -> None:
-        # Registry is available here
-        cache = self.registry.get_service("cache")
-        self._client = await self._create_client()
+    async def on_shutdown(self) -> None:
+        pass
 ```
 
 ---
@@ -397,25 +413,24 @@ class MyService(ServiceBase):
 
 ```json
 {
-    "status": "unhealthy",
-    "components": {
-        "llm_provider": {"status": "unhealthy", "error": "Connection refused"}
+    "detail": {
+        "status": "DOWN",
+        "components": {
+            "nats_client": {"status": "unhealthy", "message": "Unhealthy: ..."}
+        }
     }
 }
 ```
 
-**Cause:** The external service that the health checker is testing is unreachable.
+The probe answers `503`, and the payload is wrapped in `detail`.
 
-**Solution:** Verify the external service is running and accessible from the application. Check network policies and firewall rules in Kubernetes. Review the health checker configuration:
+**Cause:** The external service behind that entry is unreachable. The framework registers one entry
+per client (named after the client), one per cache (`cache`, `cache:<name>`) and one per NATS client
+with named connections (`<client>:connections`); in a group each is prefixed with the agent
+(`orders.nats_client`).
 
-```python
-# Verify the health check endpoint is correct
-health_checker = ClientHealthChecker(
-    name="llm_provider",
-    url="https://api.openai.com/v1/models",
-    timeout=5
-)
-```
+**Solution:** Verify the external service is running and accessible from the application. Check
+network policies and firewall rules in Kubernetes. The entry's `message` is the client's own report.
 
 ### Custom Health Checkers
 
@@ -424,19 +439,28 @@ health_checker = ClientHealthChecker(
 **Solution:** Implement a custom health checker and register it with the application:
 
 ```python
-from blueprint.agents.health import HealthCheckerBase
+from blueprint.agents import AppBuilder
+from blueprint.agents.io.api.actuators.health import HealthCheckerBase
+from blueprint.agents.models.api import ComponentHealth
 
 
 class DatabaseHealthChecker(HealthCheckerBase):
-    name = "database"
+    def __init__(self, db):
+        self._db = db
 
-    async def check(self) -> dict:
+    async def health_check(self) -> ComponentHealth:
         try:
-            await self.db.ping()
-            return {"status": "healthy"}
+            await self._db.ping()
+            return ComponentHealth(status="healthy", message="database reachable")
         except Exception as e:
-            return {"status": "unhealthy", "error": str(e)}
+            return ComponentHealth(status="unhealthy", message=str(e))
+
+
+agent = AppBuilder().with_health_checker("database", DatabaseHealthChecker(db))
 ```
+
+A check named like a built-in entry (`cache`, say) replaces it, with a WARNING; two of your own
+checks under one name are refused at startup.
 
 ---
 
@@ -444,21 +468,23 @@ class DatabaseHealthChecker(HealthCheckerBase):
 
 ### Permission Errors on Cache Directory
 
-**Symptom:** Cache operations fail with permission errors.
+**Symptom:** Startup fails because the cache directory cannot be created.
 
 ```
-PermissionError: [Errno 13] Permission denied: '/app/.cache/data.db'
+RuntimeError: Cache directory '.cache/blueprint' could not be created (Permission denied). ...
 ```
 
-**Cause:** The application process does not have write permissions to the cache directory.
+**Cause:** The application process does not have write permissions where the cache directory
+(`cache.cache_dir`) is.
 
-**Solution:** In Docker, ensure the cache directory is writable:
+**Solution:** In Docker, create the directory at build time and hand it to the user the process runs
+as, as the generated `Dockerfile` does:
 
 ```dockerfile
-RUN mkdir -p /app/.cache && chmod 777 /app/.cache
+RUN mkdir -p /app/.cache && chown -R appuser:appuser /app/.cache
 ```
 
-In Kubernetes, use an `emptyDir` volume:
+With a read-only root filesystem, mount an `emptyDir` volume there:
 
 ```yaml
 volumes:
@@ -482,9 +508,9 @@ OSError: [Errno 28] No space left on device
 **Solution:** Configure a cache size limit in `settings.toml`:
 
 ```toml
-[cache]
-max_size_mb = 500
-ttl = 3600  # Entries expire after 1 hour
+[default.cache]
+size_limit = 500_000_000  # bytes; the default is 1 GB
+default_ttl = 3600        # seconds an entry lives unless set() gives a ttl
 ```
 
 In Kubernetes, set a size limit on the `emptyDir` volume:
@@ -505,15 +531,15 @@ volumes:
 **Solution:** Reduce the TTL or clear the cache manually:
 
 ```toml
-[cache]
-ttl = 300  # 5 minutes
+[default.cache]
+default_ttl = 300  # 5 minutes
 ```
 
-To clear the cache programmatically:
+To clear the cache programmatically (the cache API is synchronous):
 
 ```python
-cache = self.registry.get_service("cache")
-await cache.clear()
+cache = self.registry.get_cache()
+cache.clear()
 ```
 
 ---
@@ -545,31 +571,32 @@ With `asyncio_mode = "auto"`, all async test functions are detected automaticall
 
 **Cause:** The registry was not mocked or injected into the component under test.
 
-**Solution:** Create a mock registry fixture and assign it to the component:
+**Solution:** `registry` is a read-only property that reads the class-level shared registry, so
+install the mock there before the component is constructed, and reset it afterwards:
 
 ```python
 import pytest
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import MagicMock
+
+from blueprint.agents.component.component import Component
+from blueprint.agents.component.registry import Registry
 
 
 @pytest.fixture
 def mock_registry():
-    registry = MagicMock()
-    mock_cache = AsyncMock()
-    mock_cache.get = AsyncMock(return_value=None)
-    mock_cache.set = AsyncMock()
-    registry.get_service = MagicMock(side_effect=lambda name: {
-        "cache": mock_cache,
-    }.get(name))
-    return registry
+    registry = MagicMock(spec=Registry)
+    mock_cache = MagicMock()  # the cache API is synchronous
+    mock_cache.get.return_value = None
+    registry.get_cache.return_value = mock_cache
+    Component.shared_registry = registry
+    yield registry
+    Component.reset_shared_state()
 
 
 @pytest.fixture
 def my_service(mock_registry):
     from src.services.my_service import MyService
-    svc = MyService()
-    svc.registry = mock_registry
-    return svc
+    return MyService()
 ```
 
 ### Missing pytest-asyncio

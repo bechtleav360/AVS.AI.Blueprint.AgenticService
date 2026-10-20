@@ -80,7 +80,7 @@ async def on_startup(self) -> None:
     self._cache = self.registry.cache_service
 ```
 
-The cache service is always available once the application has started. Use it for in-memory or distributed caching depending on your deployment configuration.
+The cache exists only when the application declares one with `.with_cache()`; without it `cache_service` raises. Its backend is a local disk store or Redis, chosen by configuration, and its interface is synchronous -- see [caching](../concepts/caching.md).
 
 ## Accessing Configuration
 
@@ -111,7 +111,7 @@ agent = (
 )
 ```
 
-Note that `with_service` receives the **class**: a group refuses an instance, because it would be constructed before any namespace exists.
+Note that `with_service` receives the **class**: a group and `create_app()` refuse an instance, because it would be constructed before any namespace exists.
 
 ## Best Practices
 
@@ -156,6 +156,9 @@ class PricingService(ServiceBase):
     async def on_startup(self) -> None:
         self._discount_threshold = self.config.get("discount_threshold", 100.0)
 
+    async def on_shutdown(self) -> None:
+        pass
+
     def calculate_total(self, items: list[OrderItem]) -> float:
         subtotal = sum(item.quantity * item.unit_price for item in items)
         if subtotal >= self._discount_threshold:
@@ -175,7 +178,10 @@ class OrderService(ServiceBase):
     async def on_startup(self) -> None:
         self._pricing = self.registry.get_service(PricingService)
         self._summarizer = self.registry.get_agent("order_summarizer")
-        self._cache = self.registry.cache_service
+        self._cache = self.registry.cache_service   # needs .with_cache()
+
+    async def on_shutdown(self) -> None:
+        pass
 
     async def create_order(self, customer_id: str, items: list[dict]) -> Order:
         """Create a new order with calculated pricing."""
@@ -193,14 +199,14 @@ class OrderService(ServiceBase):
 
         # Cache the order for quick retrieval
         if self._cache:
-            await self._cache.set(f"order:{order.order_id}", order.model_dump())
+            self._cache.set(f"order:{order.order_id}", order.model_dump())   # synchronous
 
         return order
 
     async def get_order(self, order_id: str) -> Order | None:
         """Retrieve an order, checking cache first."""
         if self._cache:
-            cached = await self._cache.get(f"order:{order_id}")
+            cached = self._cache.get(f"order:{order_id}")
             if cached:
                 return Order(**cached)
         return None
@@ -211,7 +217,7 @@ class OrderService(ServiceBase):
         result = await self._summarizer.run(
             f"Summarize this order: {order.model_dump_json()}"
         )
-        return result.data
+        return result.output
 
     def _generate_id(self) -> str:
         import uuid
@@ -220,32 +226,39 @@ class OrderService(ServiceBase):
 
 ## Testing
 
-Services are straightforward to test because they are plain Python classes. Mock the registry and any dependencies.
+Services are straightforward to test because they are plain Python classes. Mock the registry and any dependencies. A component registers itself when it is constructed and reads `self.registry` from the shared registry, so install a mock one for the test, as the [testing guide](../guides/testing.md) does:
 
 ```python
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-
-@pytest.fixture
-def pricing_service():
-    service = PricingService()
-    service.config = MagicMock()
-    service.config.get.return_value = 100.0
-    return service
+from blueprint.agents.component.component import Component
+from blueprint.agents.component.registry import Registry
 
 
 @pytest.fixture
-async def order_service(pricing_service):
-    mock_registry = MagicMock()
+def mock_registry():
+    """Install a mock registry for every component constructed while the test runs."""
+    registry = MagicMock(spec=Registry)
+    Component.shared_registry = registry
+    yield registry
+    Component.reset_shared_state()
+
+
+@pytest.fixture
+def pricing_service(mock_registry):
+    # on_startup() would read discount_threshold from config; the constructor default (100.0) is enough here
+    return PricingService()
+
+
+@pytest.fixture
+async def order_service(mock_registry, pricing_service):
     mock_registry.get_service.return_value = pricing_service
     mock_registry.get_agent.return_value = AsyncMock()
-    mock_registry.cache_service = AsyncMock()
+    mock_registry.cache_service = MagicMock()   # the cache interface is synchronous
     mock_registry.cache_service.get.return_value = None
 
     service = OrderService()
-    service.registry = mock_registry
-    await pricing_service.on_startup()
     await service.on_startup()
     return service
 

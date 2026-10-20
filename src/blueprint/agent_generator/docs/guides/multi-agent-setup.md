@@ -15,15 +15,13 @@ a runtime setting rather than an architectural commitment.
 
 ---
 
----
-
 ## Read this first: which of the two are you doing?
 
 Everything below splits along one question, and the answers differ in ways that matter:
 
 | | You are here if | What changes |
 |---|---|---|
-| **A. A new project** | You are running `asbs setup` today | Nothing to migrate. Your agent has a real namespace from the first run |
+| **A. A new project** | You are running `asbs setup` today | Nothing to migrate. The same directory runs on its own or in a group image without editing a line |
 | **B. An existing single-agent project** | You have a `main.py` that builds and serves an application | Three files change, and your **broker-side identity changes once** -- see [Migrating an Existing Agent into a Group](multi-agent-migration.md) |
 
 A third answer is legitimate and costs nothing: **do nothing.** An existing project that is
@@ -34,8 +32,8 @@ deployed on its own keeps working, unchanged, indefinitely. There is no deprecat
 ## A. A new project
 
 ```bash
-asbs setup order-processor
-cd OrderProcessor
+mkdir order-processor && cd order-processor
+asbs setup order-processor      # writes into the current directory
 ```
 
 Two of the files it writes are what make the project hostable:
@@ -62,7 +60,8 @@ There is no `Config` and no `build()`. Every `with_*` call *records* what the ag
 nothing is constructed until whoever hosts this file calls `build()`, which is what lets the same
 file be served alone and be hosted beside other agents. Note that components are registered as
 **classes**, not instances: a component constructed on the `with_*` line is constructed before any
-namespace exists and belongs to the root for ever, which is why a group refuses one.
+namespace exists and belongs to the root for ever, which is why a group refuses one, and so does
+`create_app()`.
 
 **The agent carries no `agents.toml`, and that is the point.**
 
@@ -75,7 +74,7 @@ Whoever hosts the agent supplies its name:
 
 | Host | Where the name comes from |
 |---|---|
-| Its own `Dockerfile` | a one-agent map written into the image, with `root = "."` |
+| Its own `Dockerfile` | nobody: it serves `create_app()` at the root namespace |
 | A group image | an entry in the repository's `agents.toml` |
 | `asbs dev` | `--name`; without it the agent is served on its own, at the root namespace |
 
@@ -86,19 +85,21 @@ instead, which reads that image's map, works out this process's group, and serve
 ### Running it
 
 ```bash
-asbs dev                      # every agent in agents.toml, with hot reload
-asbs dev --agents order_processor
-asbs validate                 # what this project has not said yet
+asbs dev                          # this agent alone, at the root namespace, with hot reload
+asbs dev --name order_processor   # under the namespace a group image gives it
+asbs validate                     # what this project has not said yet
 ```
 
-In an image directory `asbs dev` runs your agents under their **real** namespaces, so a local route is
-`/api/order_processor/orders/{id}` -- byte-identical to production -- and the local consumer
-identity is the production queue group. A development server at the root namespace would give every
-developer URLs and integration tests that differ from the deployed ones, in a way nothing reports.
+Without `--name`, an agent directory is served the way its own `Dockerfile` serves it: at the root
+namespace, with the routes the API declares. With `--name`, or in an image directory (one with an
+`agents.toml`, where `--agents` picks a subset), `asbs dev` runs agents under their **real**
+namespaces, so a local route is `/api/order_processor/orders/{id}` -- byte-identical to a grouped
+deployment -- and the local consumer identity is the production queue group. Develop with the
+shape you deploy: root routes and URLs differ from grouped ones, in a way nothing reports.
 
 ```bash
 docker build -t order-processor .
-docker run -e BLUEPRINT_AGENTS=order_processor -p 8000:8000 order-processor
+docker run -p 8000:8000 order-processor
 ```
 
 ### Adding a second agent to the same image
@@ -114,7 +115,8 @@ asbs setup --group
 ```
 
 That writes the image's files and nothing else: an empty `agents.toml`, a `settings.toml` for
-the process-wide keys, and a group `Dockerfile`. No agent is created and none is named.
+the process-wide keys, a group `Dockerfile`, `.gitignore`, `.dockerignore`, and a `pyproject.toml`
+unless one is already there. No agent is created and none is named.
 
 Then each agent, in its own directory, at whatever depth suits the repository:
 
@@ -409,9 +411,9 @@ Whichever shape, the file must stay out of the build context -- see the scaffold
 `.dockerignore`, which excludes the default name and says why a different path needs a line of
 its own.
 
-If the group cannot be resolved -- no agents named, a group that is not in the file, an agent the
-image does not contain -- the process **stops before binding its port** and prints one line saying
-which. Kubernetes then crash-loops the pod with something an operator can act on, rather than
+If the group cannot be resolved -- no agents named, a group that is not in the file, a critical
+agent the image does not contain -- the process **stops before binding its port** and prints one
+line saying which. A non-critical agent the image lacks is skipped with an ERROR instead. Kubernetes then crash-loops the pod with something an operator can act on, rather than
 reporting a healthy replica that is quietly short one consumer.
 
 ### What agent code can see of all this
@@ -433,14 +435,26 @@ If you would rather write the composition yourself than use the entry point -- a
 that wants its own `main.py` -- `AgentGroup` is the class that does it:
 
 ```python
+from pathlib import Path
+
 from blueprint.agents import AgentGroup, Config
 
-from src.order.main import agent as order
-from src.billing.main import agent as billing
+from agents.order.src.main import agent as order
+from agents.billing.src.main import agent as billing
 
-config = Config(settings_files=["settings.toml"])
-app = AgentGroup("checkout", {"order": order, "billing": billing}).assemble(config)
+config = Config(settings_files=["settings.toml", ".secrets.toml"])
+app = AgentGroup(
+    "checkout",
+    {"order": order, "billing": billing},
+    settings={"order": Path("agents/order/settings.toml"), "billing": Path("agents/billing/settings.toml")},
+    roots={"order": Path("agents/order"), "billing": Path("agents/billing")},
+).assemble(config)
 ```
+
+A group constructed this way reads only the files it is given: without `settings=`, `secrets=` and
+`roots=` no agent's own `settings.toml` or `.secrets.toml` is merged and each agent's prompts are
+looked for under the process's working directory. `AgentGroup.resolve(config)` is what the entry
+point uses, and it takes all three from the map.
 
 `AgentGroup` is a different class from `AppBuilder` on purpose: an `AppBuilder` never absorbs
 another builder and never learns it can be collected, so every refusal a group has to make lives in
@@ -464,8 +478,9 @@ the pause would latch and a transient fault would take the agent off its topics 
 
 **Schedulers.** `scheduler_mode` resolves per agent, so one agent may run an in-process timer beside
 a neighbour driven by external ticks. Both modes need something of the agent's own: `in_process`
-claims each tick in a cache **that agent declared**, and `event` needs `event_bus`, which is the
-group's to set.
+claims each tick in a cache **that agent declared** -- a Redis cache once more than one process runs
+it, since a disk cache's claim holds within one process only -- and `event` needs `event_bus`,
+which is the group's to set.
 
 **Dapr.** A group has one Dapr endpoint, which publishes the union of every agent's topics and fans
 each delivery out to the agents that declared it; the single acknowledgement is their combination.

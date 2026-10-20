@@ -36,7 +36,7 @@ AppBuilder(config: Config | None = None)
 | `with_rest_api(api, *, name=None)` | `AppBuilder` | Register a REST API controller. |
 | `with_scheduler(scheduler, *, name=None)` | `AppBuilder` | Register a scheduled task. |
 | `with_cache(enabled=True, enable_locking=True, *, name="default")` | `AppBuilder` | Declare a cache; call again with another `name` for several. |
-| `with_health_checker(name, checker)` | `AppBuilder` | Add a named health-check probe. |
+| `with_health_checker(name, checker)` | `AppBuilder` | Add a named health-check probe. A name a built-in check uses (`cache`, `cache:<name>`, a client's name, `<client>:connections`) replaces the built-in, with a WARNING; two of the application's own that land on one readiness entry are refused. |
 | `build(config=None)` | `FastAPI` | Construct everything declared and return the FastAPI application. Single use. |
 
 ### Usage
@@ -56,8 +56,10 @@ agent = (                      # src/main.py: a declaration
 app = agent.build(Config(settings_files=["settings.toml", ".secrets.toml"]))  # what create_app() does
 ```
 
-Components are registered as **classes**: a group refuses an instance, because it would be
-constructed before any namespace exists.
+Components are registered as **classes** (constructor arguments as keyword arguments) or
+zero-argument factories: a group and `build(config)` -- what `create_app()` calls -- refuse an
+instance, because it would be constructed before any namespace exists. Only the older
+`AppBuilder(config)...build()` form, which carries its own configuration, still accepts one.
 
 ---
 
@@ -204,10 +206,10 @@ EventHandlerBase(priority=100)
 
 ```python
 class MyHandler(EventHandlerBase):
-    def can_handle_event(self, event, context):
+    async def can_handle_event(self, event, context):
         return event.type == "my.event.v1"
 
-    def handle_event(self, event, context):
+    async def handle_event(self, event, context):
         # process event
         return HandlerResult(event_type="my.result.v1", data={"ok": True})
 ```
@@ -230,8 +232,8 @@ ServiceBase()
 
 | Member | Type | Description |
 |--------|------|-------------|
-| `self.registry` | `Registry` | Access to the shared component registry. |
-| `self.config` | `Config` | Application configuration. |
+| `self.registry` | `Registry` | The component registry, as a view for this component's agent (the registry itself at the root). |
+| `self.config` | `Config` | Application configuration, as a view for this component's agent. |
 | `on_startup()` | method | Called when the application starts. Override for initialization logic. |
 | `on_shutdown()` | method | Called when the application shuts down. Override for cleanup logic. |
 
@@ -307,12 +309,16 @@ Base class for cron-scheduled tasks. Each scheduler automatically exposes a manu
 ### Constructor
 
 ```python
-SchedulerBase(crontab: str)
+SchedulerBase(crontab: str, *, topic: str | None = None)
 ```
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `crontab` | `str` | Cron expression defining the schedule (e.g., `"*/5 * * * *"`). |
+| `crontab` | `str` | Five-field cron expression defining the schedule (e.g., `"*/5 * * * *"`). The day of the week counts `0` as Monday; `7` is refused, and in `event` mode so is a day given by number -- use names. |
+| `topic` | `str \| None` | Replaces the derived tick subject `<agent>.scheduler.<name>` in `event` mode. |
+
+`scheduler_mode` (`"event"` or `"in_process"`) is required and has no default. See
+[schedulers](../components/schedulers.md).
 
 ### Abstract Methods
 
@@ -339,17 +345,23 @@ served at `/api/{name}/trigger` standalone and at `/api/<agent>/scheduler/{name}
 
 Central component registry. Provides lookup for services, agents, and other components by name or class.
 
+A component's `self.registry` is a **view** for its own agent (the registry itself at the root).
+On a view an omitted `namespace` means this agent: its own component first, then the root's. On
+the registry itself it means every agent. A view may name its own namespace or the root
+(`namespace=""`); naming another agent raises.
+
 ### Methods
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `get_service(name_or_class)` | `ServiceBase` | Retrieve a registered service by name (str) or class. |
-| `get_agent(name)` | `AgentRuntime` | Retrieve a registered agent by name. |
-| `get_component(name_or_class)` | `Component` | Retrieve any registered component by name or class. |
+| `get_service(name_or_class, namespace=None)` | `ServiceBase` | Retrieve a registered service by name (str) or class. |
+| `get_agent(name, namespace=None)` | `AgentRuntime` | Retrieve a registered agent by name. |
+| `get_component(name_or_class, namespace=None)` | `Component` | Retrieve any registered component by name or class. |
+| `get_cache(name="default", *, namespace=None)` | `CacheService` | The agent's cache declared under `name`. No fallback to another name, the root or a neighbour: an undeclared name raises. |
 
 ### Properties
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `cache_service` | `CacheService` | The shared cache service instance. |
+| `cache_service` | `CacheService` | The agent's default cache, as `get_cache()`. Raises when the agent declared none. |
 | `correlation_context` | `CorrelationContext` | The current correlation/trace context. |

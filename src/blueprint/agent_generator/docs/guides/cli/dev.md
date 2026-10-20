@@ -1,29 +1,34 @@
 # asbs dev
 
-Run this project's agents in development mode with hot reload, **under the namespaces they are
-deployed under**. A development server at the root namespace would serve `/api/orders/{id}` where
-production serves `/api/order/orders/{id}`, and would consume under a different queue group, so
-every local URL and every local integration test would differ from the deployed one.
+Run this project's agents in development mode with hot reload. What it serves depends on the
+directory it is run in:
 
-With an `agents.toml`, it serves the group through
-`uvicorn blueprint.agents.entrypoint:create_group_app --factory --reload`. Without one -- a project
-written before the agent map, which builds its own application -- it serves `src.main:app` exactly
-as it always did.
+- **An image directory** (one with an `agents.toml`): the agents the map names, under their
+  namespaces, through `uvicorn blueprint.agents.entrypoint:create_group_app --factory --reload` --
+  the routes and queue groups a grouped deployment has.
+- **An agent directory** (no `agents.toml`): the agent alone, at the root namespace, through
+  `uvicorn src.main:create_app --factory --reload` -- as its own Dockerfile serves it -- unless
+  `--name` gives it the namespace a group image would (see
+  [Running a single agent](#running-a-single-agent)). A project from before the declaration split,
+  whose `src/main.py` builds its own `app` and defines no `create_app`, is served as
+  `src.main:app`, as it always was.
 
 ```bash
-asbs dev [--agents <a,b>] [--host <host>] [--port <port>]
+asbs dev [--name <agent>] [--agents <a,b>] [--host <host>] [--port <port>]
 ```
 
 ## Options
 
 | Flag               | Description                                                 | Default          |
 |--------------------|-------------------------------------------------------------|------------------|
-| `--agents <a,b>`   | Comma-separated agents to host                              | every agent in `agents.toml` |
+| `--name <agent>`   | Serve the agent in this directory under that name, as a group image would | served on its own, at the root |
+| `--agents <a,b>`   | Comma-separated agents to host, in an image directory       | every agent in `agents.toml` |
 | `--host <host>`    | Host to bind the server to                                  | `127.0.0.1`      |
 | `--port <port>`    | Port to bind the server to                                  | `8000`           |
 
-`BLUEPRINT_GROUP` or `BLUEPRINT_AGENTS` already set in the environment always wins: a developer
-reproducing a particular deployment is not overridden by a default read out of the agent map.
+`BLUEPRINT_GROUP` or `BLUEPRINT_AGENTS` already set in the environment always wins over the map
+and `--agents`: a developer reproducing a particular deployment is not overridden by a default
+read out of the agent map.
 
 ## Example
 
@@ -31,13 +36,20 @@ reproducing a particular deployment is not overridden by a default read out of t
 asbs dev --port 9000
 ```
 
+In an agent directory:
+
 ```
-INFO:     Blueprint Agents dev server starting...
-INFO:     Uvicorn running on http://0.0.0.0:9000 (Press CTRL+C to quit)
-INFO:     Started reloader process
+Serving this agent on its own (src.main:create_app), at the root namespace.
+Use --name <agent> to serve it under the namespace a group image would give it.
+Starting development server on 127.0.0.1:9000
+Press Ctrl+C to stop
+
+INFO:     Uvicorn running on http://127.0.0.1:9000 (Press CTRL+C to quit)
+INFO:     Started reloader process [...]
 ```
 
-The development server watches for file changes in the `src/` directory and automatically restarts when modifications are detected.
+uvicorn's reloader watches the directory `asbs dev` was started in and restarts the server when a
+file changes.
 
 ---
 

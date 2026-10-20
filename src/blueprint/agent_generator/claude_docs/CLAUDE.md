@@ -80,7 +80,8 @@ def create_app():
 ```
 
 - Never build the `AgentBuilder` yourself and never pass an instance to a `with_*` call: a group
-  refuses instances, because a component constructed on that line exists before any namespace does.
+  and `create_app()` (`agent.build(config)`) refuse instances, because a component constructed on
+  that line exists before any namespace does.
 - Keep one registration per line in dependency order (services, agents, handlers, APIs,
   schedulers) -- `asbs create` rewrites the chain line by line.
 
@@ -115,7 +116,7 @@ class OrderHandler(EventHandlerBase):
   stops, the delivery is acknowledged, the reason is logged at INFO, nothing is published.
   `None` → the event is offered to the next handler; if none takes it, the framework logs
   "No handler processed event".
-- **Delivery is at-least-once.** The same event can reach `handle_event` more than once (lost ack, pod restart, rolling deploy). The *service* must be safe to repeat (check before you act, upsert rather than insert), or set `idempotency_enabled = true` **and** `idempotency_ttl = <seconds>` in `settings.toml` -- the framework then skips an event whose id and source it has already dispatched, within that window. Off by default on purpose: only you know whether replaying your side effects is acceptable.
+- **Delivery is at-least-once.** The same event can reach `handle_event` more than once (lost ack, pod restart, rolling deploy). The *service* must be safe to repeat (check before you act, upsert rather than insert), or set `idempotency_enabled = true` **and** `idempotency_ttl = <seconds>` in `settings.toml` -- the framework then skips an event whose id and source (and named connection, when it came from one) it has already dispatched, within that window. Dedup needs `.with_cache()` -- startup fails without one -- and holds across replicas only on a Redis cache: a disk cache's claim holds within one process, so replicas sharing a cache directory can both win it. Off by default on purpose: only you know whether replaying your side effects is acceptable.
 - **`self.extract_payload(event, ModelType)`** — validates `event.data` against a Pydantic model and returns a typed instance. Raises `InvalidEventError` if data is missing or invalid (the framework handles this automatically).
 - **The service gets no CloudEvent and no DTO.** Translate the payload into domain values (ids, domain models) in the handler; that is what lets a REST API call the same service method.
 - **`context["runtime"]`** holds the agent runtime the chain bound for this handler. It is there for
@@ -209,9 +210,9 @@ class CleanupScheduler(SchedulerBase):
         await self._service.cleanup()
 ```
 
-- **Override `on_startup` only if you also call `super().on_startup()`.** The base class is
-  what starts the timer, wires the tick handler and registers `POST /api/<name>/trigger`
-  (`/api/<agent>/scheduler/<name>/trigger` in a group).
+- **Override `on_startup` only if you also call `super().on_startup()`.** `build()` wires the
+  tick handler and registers `POST /api/<name>/trigger` (`/api/<agent>/scheduler/<name>/trigger`
+  in a group); `super().on_startup()` starts the in-process timer and the tick-age gauge.
 - **`scheduler_mode` decides what calls `tick()`, and it is required.** It has no default:
   registering a scheduler without setting it fails at startup, because neither value is safe to
   inherit silently. `"event"` starts no timer in the process -- the tick arrives as an ordinary
@@ -219,8 +220,11 @@ class CleanupScheduler(SchedulerBase):
   queue group already guarantees that exactly one replica runs it; it needs `event_bus` set to
   `"dapr"` or `"nats"`. `"in_process"` runs an APScheduler timer in **every** replica and
   claims each tick in the cache so one replica runs it -- so it needs `.with_cache()` to fire a
-  tick once. Without a cache every replica runs every tick, and startup says so.
-- The crontab stays declared here in both modes; it is what the `CronJob` is generated from.
+  tick once, and a Redis cache once more than one replica runs it: a disk cache's claim holds
+  within one process only, so replicas sharing a cache directory can both win a tick. Without a
+  cache every replica runs every tick, and startup says so.
+- The crontab stays declared here in both modes. In `"event"` mode the external `CronJob` must
+  publish on that schedule; nothing generates it.
 - **A scheduler that wants to *publish* an event needs `event_publishing_enabled = true`.** Consuming and publishing are separate: a handler implies a transport client, a scheduler does not. The key creates the client and subscribes to nothing, and it needs `event_bus` set.
 
 ### AgentRuntime (via AgentBuilder)
@@ -312,8 +316,8 @@ asbs create service <name>                         # Add Service
 asbs create api <name>                             # Add RestApi
 asbs create agent <name>                           # Add AgentRuntime
 asbs create scheduler <name> [--cron CRON]         # Add Scheduler
-asbs validate                                      # Validate project structure
-asbs dev [--port 8000]                             # Run dev server
+asbs validate [--group]                            # Validate one agent, or a whole image
+asbs dev [--name NAME] [--port 8000]               # Run dev server (--name: under a group namespace)
 asbs docs [<topic>] [--cat]                        # Locate the framework documentation
 ```
 

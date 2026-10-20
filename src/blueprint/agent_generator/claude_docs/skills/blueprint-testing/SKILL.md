@@ -36,8 +36,9 @@ dependencies in `on_startup()`. So a unit test must **call `on_startup()` itself
 the mock registry - constructing the component is not enough, and a test that skips it will fail on
 an attribute that production code sets correctly.
 
-Schedulers additionally require `await super().on_startup()` inside any overridden `on_startup`; the
-base class is what starts the timer and registers the trigger route.
+Schedulers additionally require `await super().on_startup()` inside any overridden `on_startup`; it
+starts the in-process timer and the tick-age gauge (`build()` registers the trigger route and the
+tick handler).
 
 ## Running
 

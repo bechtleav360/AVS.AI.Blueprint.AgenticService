@@ -18,7 +18,7 @@ asbs create handler <name> [--event-type <type>] [--priority <int>] [--output-di
 
 | Flag                    | Description                                        | Default          |
 |-------------------------|----------------------------------------------------|------------------|
-| `--event-type <type>`   | The event type this handler will respond to        | (prompt)         |
+| `--event-type <type>`   | The event type, named in the handler's description | (prompt)         |
 | `--priority <int>`      | Handler priority (lower numbers execute first)     | `10`             |
 | `--output-dir <dir>`    | Where the handler module is written                | `src/handlers`   |
 
@@ -61,31 +61,43 @@ Handlers with lower priority numbers execute first in the chain.
 
 #### Handler Generated Code
 
-The generated handler includes:
+The generated handler includes (docstrings and comments shortened):
 
 ```python
+from typing import Any
+
 from blueprint.agents.handler import EventHandlerBase
+from blueprint.agents.models import GenericCloudEvent, HandlerResult
+
 
 class OrderPlacedHandler(EventHandlerBase):
     def __init__(self) -> None:
         super().__init__(priority=10)
+        self._input_event_type: str = ""
 
     async def on_startup(self) -> None:
-        # Initialize resources from registry
-        pass
+        # Reads [default.order_placed_handler] input_event_type, which `create handler` writes
+        self._input_event_type = self.config.get("order_placed_handler", {}).get("input_event_type", )
+        if self._input_event_type == "":
+            raise ValueError("input_event_type is not set in config")
 
     async def on_shutdown(self) -> None:
-        # Clean up resources
-        pass
+        """Clean up handler resources on shutdown."""
 
     async def can_handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> bool:
-        return event.type == "order.placed"
+        # Example:
+        # return event.type == "order.placed"
+        raise NotImplementedError()
 
     async def handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> HandlerResult | None:
-        # Return None to pass to next handler
-        # Return HandlerResult(...) to publish and stop chain
-        return None
+        # Return a HandlerResult to publish, HandlerResult.skipped("reason") when there is
+        # nothing to do, or None to offer the event to the next handler.
+        raise NotImplementedError()
 ```
+
+`--event-type` goes into the generated description and into `settings.toml` as
+`[default.<handler>] input_event_type`; an existing section of that name is left alone. Routing is
+still yours to write in `can_handle_event`.
 
 ---
 
@@ -140,28 +152,30 @@ The generated service includes:
 ```python
 from blueprint.agents.services import ServiceBase
 
+from pydantic import BaseModel
+
+
 class InvoiceProcessorService(ServiceBase):
+    def __init__(self) -> None:
+        super().__init__()
+
     async def on_startup(self) -> None:
-        # Initialize resources, fetch dependencies from registry
-        # Example: self._cache = self.registry.cache_service
-        # Example: self._agent = self.registry.get_agent("analyzer")
-        pass
+        """Initialize the service by getting dependencies from the registry."""
 
     async def on_shutdown(self) -> None:
-        # Clean up resources
-        pass
+        """Clean up service resources on shutdown."""
 
-    async def process(self, data: dict) -> dict:
-        """Process invoice data.
+    async def process(self, base_model: BaseModel) -> BaseModel:
+        """This method contains business logic of this microservice.
 
         Args:
-            data: Invoice information
+            base_model (BaseModel): The incoming data, parsed into the domain input model.
 
         Returns:
-            Processing result
+            BaseModel: The processed data parsed into the domain output model.
         """
-        # TODO: Implement business logic
-        pass
+
+        raise NotImplementedError()
 ```
 
 ---
@@ -229,19 +243,26 @@ Creates:
 
 #### API Generated Code
 
-The generated API includes:
+The generated API includes (bodies shortened):
 
 ```python
 """REST API for order_management operations."""
 
 from fastapi import HTTPException, status
+
 from blueprint.agents.io.api.rest_api_base import RestApiBase
-from src.models.order_management.dto import OrderManagementRequest, OrderManagementResponse
+
+from ..models.order_management.dto import OrderManagementRequest, OrderManagementResponse
+
 
 class OrderManagementApi(RestApiBase):
+    def __init__(self) -> None:
+        super().__init__()
+        self._service = None
+
     async def on_startup(self) -> None:
-        # Initialize dependencies from registry
-        # Example: self._service = self.registry.get_service(OrderService)
+        # TODO: Get services from registry
+        # Example: self._service = self.registry.get_service("some_service")
         pass
 
     async def on_shutdown(self) -> None:
@@ -311,7 +332,7 @@ separate module to hold.
 2. **Instruction prompt** (`src/prompts/<runtime>_instruction.prompt`) -- a template with
    `{placeholders}` for runtime input, with example content
 3. **Settings** (`settings.toml`) -- a `[default.runtimes.<runtime>]` section and a
-   `[default.runtimes.<runtime>.models]` section beneath it
+   `[default.runtimes.<runtime>.model_settings]` section beneath it
 
 ### Auto-Registration
 
@@ -364,7 +385,7 @@ model_name = "gpt-5-mini"
 model_temperature = 0.7
 model_max_tokens = 2000
 
-[default.runtimes.document_analyzer_agent.models]
+[default.runtimes.document_analyzer_agent.model_settings]
 openai_reasoning_effort = "low"
 openai_reasoning_summary = "detailed"
 ```
@@ -399,7 +420,9 @@ asbs create scheduler <name> [--cron <expr>] [--output-dir <dir>]
 
 A registered scheduler with no `scheduler_mode` in `settings.toml` fails at `build()`. The key has
 no default because neither value is safe to inherit: `in_process` runs a timer in every replica and
-claims each tick in the agent's own cache, so it needs `.with_cache()`; `event` starts no timer at
+claims each tick in the agent's own cache, so it needs `.with_cache()` -- and a Redis cache once
+more than one replica runs it, since a disk cache's claim holds within one process only; `event`
+starts no timer at
 all and waits for a tick published by an external `CronJob`, so it needs `event_bus` -- and nothing
 in this project generates that `CronJob`. `asbs validate` reports both.
 
@@ -465,13 +488,15 @@ Creates a scheduler that runs daily at 2:00 AM.
 
 #### Scheduler Generated Code
 
-The generated scheduler includes:
+The generated scheduler includes (docstrings shortened):
 
 ```python
 """Scheduler for cleanup operations."""
 
 import logging
+
 from blueprint.agents.io.api.scheduling.scheduler import SchedulerBase
+
 
 logger = logging.getLogger(__name__)
 
@@ -480,23 +505,28 @@ class CleanupScheduler(SchedulerBase):
     """Scheduler for cleanup operations."""
 
     def __init__(self) -> None:
-        """Initialize the scheduler."""
+        """Declare the schedule; 'scheduler_mode' in settings.toml decides what calls tick()."""
         super().__init__(crontab="0 2 * * *")
 
     async def on_startup(self) -> None:
-        """Initialize the scheduler."""
+        """Resolve dependencies, then let the base class wire the scheduler."""
+
         # TODO: Get services from registry
-        # Example: self._service = self.registry.get_service(CleanupService)
+        # Example: self._service = self.registry.get_service(MyService)
+
+        # Required. The base class starts the timer (in_process mode), wires the tick
+        # handler (event mode) and registers the manual trigger route. Drop this call
+        # and the scheduler is registered but never runs.
+        await super().on_startup()
 
     async def on_shutdown(self) -> None:
         """Cleanup when shutting down."""
 
+        await super().on_shutdown()
+
     async def tick(self) -> None:
-        """Execute scheduled task."""
-        try:
-            # TODO: Implement your scheduled task here
-            # Example: await self._service.cleanup()
-        except Exception as e:
-            logger.exception("Error during %s scheduler tick: %s", __name__, e)
-            raise
+        """Execute scheduled task. Let exceptions out: in event mode they decide the delivery."""
+
+        # TODO: Implement your scheduled task here
+        # Example: await self._service.do_work()
 ```

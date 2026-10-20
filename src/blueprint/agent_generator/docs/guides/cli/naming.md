@@ -78,6 +78,6 @@ If auto-registration fails (e.g., `src/main.py` not found), the CLI displays a c
 $ asbs create handler order_placed
 ✓ Created handler: src/handlers/order_placed_handler.py
 ✓ Auto-registered in src/main.py
-  - Added import: from src.handlers.order_placed_handler import OrderPlacedHandler
+  - Added import: from .handlers.order_placed_handler import OrderPlacedHandler
   - Added registration: .with_handler(OrderPlacedHandler)
 ```

@@ -35,7 +35,8 @@ my_agent/
 
 It carries **no `agents.toml`**. The map says which agents an *image* contains; an agent holding
 one would be an agent that knows whether it is running alone. Whoever hosts it supplies the name:
-a group image's map, a single-agent image's Dockerfile, or `asbs dev --name`.
+a group image's map, or `asbs dev --name`. A single-agent image's Dockerfile supplies none: it
+serves `create_app()` at the root.
 
 The image, at the top of the repository:
 
@@ -84,7 +85,8 @@ Renaming it after the first grouped deploy is a **consumer migration** - new dur
 still pending on the old ones - not a rename. Choose it once, before deploying.
 
 The namespace alphabet is **`[a-z][a-z0-9_]*`**: lower case, leading letter, underscores allowed,
-**no dashes**. A name outside it is refused, never repaired. The dash is excluded because it
+**no dashes**, and not one of the reserved names `cache`, `event_publishing`, `runtimes`, `runtime`
+(configuration sections the whole process shares). A name outside it is refused, never repaired. The dash is excluded because it
 separates the parts of a durable name, so `orders-eu` on topic `created` and `orders` on topic
 `eu-created` would otherwise produce the same durable and two agents would eat each other's events.
 
@@ -165,10 +167,14 @@ sole group is taken silently whatever it turns out to contain.
 context. A group file baked into a layer makes the image serve the group that happened to be on
 disk when it was built, which is the opposite of the point.
 
-If the group cannot be resolved -- nothing naming agents, a group absent from the file, an agent
-the image does not contain -- the process prints one line and **exits before binding its port**,
-so an orchestrator restarts it with something actionable rather than reporting a healthy replica
-that is quietly short a consumer.
+If the group cannot be resolved -- nothing naming agents, a group absent from the file, a group
+name declared twice in it, `agents` or `critical_agents` written as a scalar instead of a list, a
+critical name that is not among the agents the group runs (`BLUEPRINT_AGENTS` included), a
+critical agent the image does not contain, or no agent left to run -- the process prints one line
+and **exits before binding its port**, so an orchestrator restarts it with something actionable
+rather than reporting a healthy replica that is quietly short a consumer. Without
+`critical_agents` every agent is critical; a non-critical agent the image lacks is skipped with an
+ERROR instead.
 
 ## Before promising the move is free
 
@@ -177,5 +183,6 @@ its broker-side identity once, and its cache starts cold. Both are set out under
 what does not* in `guides/multi-agent-setup` - read that section before telling anyone the migration
 is invisible, because for a migrated agent it is not.
 
-Run `asbs validate` after migrating. It reads files only, never imports the project, and checks the
-namespace alphabet, the agent map and the module attribute.
+Run `asbs validate` after migrating. It reads files and starts nothing (it imports only the parent
+packages of a configured `nats_connection_source`), and checks the namespace alphabet, the agent
+map and the module attribute.

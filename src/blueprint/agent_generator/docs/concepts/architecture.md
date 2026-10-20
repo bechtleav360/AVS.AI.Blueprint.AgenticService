@@ -58,11 +58,11 @@ def create_app():
 ### Builder Methods
 
 Every `with_*` call records; nothing is constructed until `build()`. Components are passed as
-**classes** -- a group refuses an instance, because it would exist before any namespace does.
+**classes** -- a group and `create_app()` refuse an instance, because it would exist before any namespace does.
 
 - `.with_service(ServiceClass)` -- Register a service. Services start before handlers and agents, so they are available for dependency resolution.
 - `.with_agent(agent_builder, name="...")` -- Register an AI agent runtime from an unbuilt `AgentBuilder`. The name is the registry key services resolve it by.
-- `.with_handler(HandlerClass)` -- Register an event handler. Handlers are sorted by priority at runtime.
+- `.with_handler(HandlerClass)` -- Register an event handler. Handlers are sorted by priority at runtime; equal priorities keep declaration order.
 - `.with_rest_api(ApiClass)` -- Register a REST API module. Routes are mounted on the shared FastAPI instance.
 - `.with_scheduler(SchedulerClass)` -- Register a scheduled task. Schedulers start after the APIs and stop before them.
 - `.with_cache()` -- Enable the built-in cache service. Once enabled, it is accessible through the registry.
@@ -98,7 +98,7 @@ class EmbeddingService(ServiceBase):
 |---|---|
 | `self.registry.get_service(ServiceClass)` | Resolve a service instance by its class type |
 | `self.registry.get_agent(name)` | Resolve an agent runtime by its registered name |
-| `self.registry.cache_service` | Access the shared cache service instance |
+| `self.registry.cache_service` | This agent's default cache (declared with `.with_cache()`) |
 
 ## Component Lifecycle
 

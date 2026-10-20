@@ -358,7 +358,10 @@ class TicketService(ServiceBase):
         self._classifier = None
 
     async def on_startup(self) -> None:
-        self._classifier = self.registry.get_component("ticket_classifier")
+        self._classifier = self.registry.get_agent("ticket_classifier")
+
+    async def on_shutdown(self) -> None:
+        pass
 
     async def classify_ticket(self, ticket_text: str) -> dict:
         if self._classifier:
@@ -375,8 +378,8 @@ class TicketService(ServiceBase):
 
             return {
                 "category": result.output.category,
-                "confidence": result.data.confidence,
-                "subcategories": result.data.subcategories,
+                "confidence": result.output.confidence,
+                "subcategories": result.output.subcategories,
             }
 ```
 
@@ -445,27 +448,38 @@ Mock the agent runtime to test services and handlers independently of the LLM.
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
+from blueprint.agents.component.component import Component
+from blueprint.agents.component.registry import Registry
+
+
+@pytest.fixture
+def mock_registry():
+    """Install a mock registry for every component constructed while the test runs."""
+    registry = MagicMock(spec=Registry)
+    Component.shared_registry = registry
+    yield registry
+    Component.reset_shared_state()
+
 
 @pytest.fixture
 def mock_classifier():
     classifier = AsyncMock()
+    classifier.get_prompt = MagicMock(return_value="Classify: {ticket_text}")
     result = MagicMock()
-    result.data = MagicMock()
-    result.data.category = "billing"
-    result.data.confidence = 0.92
-    result.data.subcategories = ["invoice", "payment"]
+    result.output = MagicMock()
+    result.output.category = "billing"
+    result.output.confidence = 0.92
+    result.output.subcategories = ["invoice", "payment"]
     classifier.run.return_value = result
     classifier.record_metrics = MagicMock()
     return classifier
 
 
 @pytest.fixture
-async def ticket_service(mock_classifier):
-    mock_registry = MagicMock()
+async def ticket_service(mock_registry, mock_classifier):
     mock_registry.get_agent.return_value = mock_classifier
 
     service = TicketService()
-    service.registry = mock_registry
     await service.on_startup()
     return service
 
@@ -481,7 +495,7 @@ async def test_classify_ticket(ticket_service, mock_classifier):
 
 
 @pytest.mark.asyncio
-async def test_handler_delegates_to_service(mock_classifier):
+async def test_handler_delegates_to_service(mock_registry):
     mock_service = AsyncMock()
     mock_service.classify_ticket.return_value = {
         "category": "technical",
@@ -489,11 +503,9 @@ async def test_handler_delegates_to_service(mock_classifier):
         "subcategories": ["bug"],
     }
 
-    mock_registry = MagicMock()
     mock_registry.get_service.return_value = mock_service
 
     handler = TicketClassificationHandler()
-    handler.registry = mock_registry
     await handler.on_startup()
 
     event = MagicMock()

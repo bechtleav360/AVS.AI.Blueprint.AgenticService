@@ -297,7 +297,7 @@ lost -- nothing redelivers it and nothing records it.
 |---------|-------------|
 | The handler chain returned and every result was published, including "no handler matched" | `ack` |
 | A result could not be published | `nak` -- the handler runs again on redelivery; with deduplication on, its marker is released first |
-| `RetryableHandlerError`, or any unexpected exception | `nak` -- redelivered after `nats_ack_wait` |
+| `RetryableHandlerError`, or any unexpected exception | `nak` -- redelivered at once, not after `nats_ack_wait` |
 | `InvalidEventError` or `CriticalHandlerError` | dead-lettered, then `term` |
 | The payload is not a parseable CloudEvent | dead-lettered, then `term` |
 | The last delivery `nats_max_deliver` allows failed again (only when `nats_max_deliver` is set) | dead-lettered, then `term` |
@@ -338,9 +338,15 @@ for immediate redelivery, up to `nats_max_deliver` attempts. Whether the limit w
 the run's own timer: a `TimeoutError` raised by the handler is an ordinary failure.
 
 An existing consumer is never rewritten. Its filter subject and deliver group are broker-side
-state that the stream's redelivery bookkeeping hangs off, so changing them is a migration: the
-client logs which settings differ and keeps consuming with the ones the broker already has. Apply
-new values by deleting the consumer during a maintenance window.
+state that the stream's redelivery bookkeeping hangs off, so changing them is a migration. A
+consumer whose deliver group, `ack_wait`, `max_ack_pending` or `max_deliver` differs from the
+configuration is kept: the client logs a WARNING naming the differences and consumes with the
+values the broker already has. Apply new values by deleting the consumer during a maintenance
+window. A consumer of that durable name whose filter is **another subject** is not bound at all,
+because it belongs to another subscription: the client raises `JetStreamBindingError` into the
+connection's retry loop and keeps retrying. A root topic and an agent's topic can derive one
+durable name (root `orders-created`, agent `orders` on `created`); rename one of the topics, or
+delete the consumer if it is stale.
 
 ## Broker Startup Resilience
 
@@ -375,7 +381,9 @@ event_client_retry_delay = 2.0
 | `event_client_max_retries` | `-1` | `-1` = retry indefinitely. `0` = single attempt. `N` = N retries after the first failure. |
 | `event_client_retry_delay` | `5.0` | Seconds between attempts. |
 
-When all retries are exhausted (i.e. `event_client_max_retries >= 0` and the limit is reached), the error is logged at `ERROR` level with a full traceback. The application remains live but permanently not-ready.
+Under NATS the first connect of each attempt is bounded even with unlimited reconnects (`nats_max_reconnect_attempts = -1`, the default), so an absent broker fails the attempt instead of holding it for ever, and the retry loop decides what follows. Once connected, `nats_max_reconnect_attempts` governs reconnects.
+
+When all retries are exhausted (i.e. `event_client_max_retries >= 0` and the limit is reached), one `ERROR` line names the agent and the error, with credentials redacted and no traceback. The application remains live but permanently not-ready.
 
 ### Kubernetes probe recommendations
 

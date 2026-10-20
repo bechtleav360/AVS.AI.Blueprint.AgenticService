@@ -56,13 +56,16 @@ This installs:
 ### Run All Tests
 
 ```bash
-python pytest tests/
+python -m pytest tests/
 ```
 
 ### Run Tests with Coverage
 
+`--cov` comes from `pytest-cov`, which no extra of this package installs:
+
 ```bash
-python pytest tests/ --cov=blueprint.agents --cov-report=html
+pip install pytest-cov
+python -m pytest tests/ --cov=blueprint.agents --cov-report=html
 ```
 
 This generates an HTML coverage report in `htmlcov/index.html`.
@@ -70,7 +73,7 @@ This generates an HTML coverage report in `htmlcov/index.html`.
 ### Run Tests for a Specific Module
 
 ```bash
-python pytest tests/unit/test_agent_builder.py
+python -m pytest tests/unit/agents/agent/test_agent_builder.py
 ```
 
 ### Run Tests in Watch Mode (with pytest-watch)
@@ -96,7 +99,7 @@ pytest tests/ -v
 ### Run a Specific Test
 
 ```bash
-pytest tests/unit/test_agent_builder.py::TestAgentBuilder::test_with_model_sets_model_name -v
+pytest tests/unit/agents/agent/test_agent_builder.py::TestFluentSetters::test_with_tool_appends -v
 ```
 
 ## Building the Package Locally
@@ -142,7 +145,7 @@ You should see entries like:
 blueprint/agents/__init__.py
 blueprint/agents/agent/__init__.py
 blueprint/agents/agent/agent_builder.py
-blueprint/agents/api/__init__.py
+blueprint/agents/app_builder.py
 blueprint/agents/config/__init__.py
 ...
 ```
