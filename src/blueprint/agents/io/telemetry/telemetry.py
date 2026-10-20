@@ -8,8 +8,9 @@ configures **one provider per namespace**, each with its own ``Resource``:
 ``service.name``         The agent's name -- ``otel_service_name`` for the root namespace, so a
                          single-agent application's traces are identical to what it produced
                          before any of this existed.
-``deployment.group``     Which group this pod runs, from the environment. Set by the framework
-                         and readable through no supported API (C6). Absent without a group.
+``deployment.group``     Which group this pod runs: the group the process resolved, from
+                         ``BLUEPRINT_GROUP`` or a one-group file (S19). Set by the framework and
+                         readable through no supported API (C6). Absent without a named group.
 ``service.instance.id``  Which replica this is. Absent when it cannot be told.
 ======================== ======================================================================
 

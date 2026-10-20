@@ -512,7 +512,12 @@ class HandlerChain(Component):
         """
         bus = str(self.config.get("event_bus", "") or "").strip().lower()
         agent = self.namespace or ROOT_LABEL
-        if bus == "nats" and self.config.get("nats_heartbeat_enabled", True) is False:
+        try:
+            heartbeat = parse_bool(self.config.get("nats_heartbeat_enabled", True), "nats_heartbeat_enabled")
+        except ValueError:
+            # Not ours to refuse: the NATS client fails startup on the same value, naming it.
+            heartbeat = True
+        if bus == "nats" and not heartbeat:
             logger.warning(
                 "Agent '%s' deduplicates events with 'nats_heartbeat_enabled = false': a run that outlasts ack_wait is "
                 "redelivered while it runs, the redelivery is skipped as a duplicate and acknowledged, and if the "

@@ -1872,9 +1872,10 @@ class NATSClient(IOClientBase):
         """Drain this agent's subscriptions so its events redeliver elsewhere (C4).
 
         Drained rather than unsubscribed, for the same reason shutdown drains: a drain stops
-        new deliveries while letting the ones already in the client's buffer reach their
-        handler and be acknowledged over the connection that delivered them. An unsubscribe
-        strands those, and every one of them redelivers.
+        new deliveries and lets the runs in progress settle over the connection that delivered
+        them. A JetStream delivery still in the client's buffer reaches the message handler with
+        the pause already set and is nak'd, so it redelivers to a healthy replica (N4); Core NATS
+        runs what the drain lets through.
 
         The connection stays open. See :meth:`IOClientBase.pause_consumption` for why closing
         it would make the pause permanent, and :meth:`health_check` for the other half of that.

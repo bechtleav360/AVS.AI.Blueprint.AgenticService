@@ -132,7 +132,7 @@ class Declaration:
 
         An already-built component was constructed at the caller's own source line, so it is in
         the registry before ``build()`` runs, while a class or factory is constructed during the
-        replay. That difference is what ``AppBuilder._check_declaration_order`` inspects, and
+        replay. That difference is what ``AppBuilder._restore_declaration_order`` evens out, and
         what a group refuses outright.
         """
         return isinstance(self.target, Component)
@@ -232,8 +232,8 @@ class AppBuilder:
       ``on_startup``, which is the framework's convention anyway.
     - **An already-built instance is the exception**, because the caller constructed it at its
       own source line. It is in the registry before ``build()`` runs, so an instance recorded
-      after a class registers before it -- see :meth:`_check_declaration_order`, which refuses
-      the one case where that changes behaviour.
+      after a class would register before it -- :meth:`_restore_declaration_order` puts the
+      handlers back in declaration order (S20).
 
     The configuration may be given here or to ``build()``, but not both. Given here it is
     adopted immediately, which is what an existing ``AppBuilder(config)...build()`` chain does
@@ -866,10 +866,6 @@ class AppBuilder:
 
         Args:
             config: The application's configuration, handed to the declarations that take one.
-
-        Raises:
-            ValueError: if the recorded order cannot be reproduced. See
-                :meth:`_check_declaration_order`.
         """
         built: list[tuple[Declaration, Any]] = []
         for entry in self._declarations:
@@ -927,8 +923,7 @@ class AppBuilder:
             The application.
 
         Raises:
-            ValueError: if a configuration was given twice, or if the recorded order cannot be
-                reproduced (see :meth:`_check_declaration_order`).
+            ValueError: if a configuration was given twice.
             RuntimeError: if this builder has already been built.
         """
         if self._built:

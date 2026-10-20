@@ -238,10 +238,11 @@ class AgentGroup:
     def from_config(cls, group: GroupConfig) -> "AgentGroup":
         """Import each agent named by ``group``, and return the group they form.
 
-        **Reads no environment and no files.** Importing an agent's module is the one thing
-        here that reaches outside, and it is driven entirely by the ``module`` strings the
-        group carries -- so a test points them at test modules and controls neither the
-        environment nor the filesystem to do it. Imports happen per group, so cold start is
+        **Reads no environment, and touches the filesystem only through the group.** Importing
+        an agent's module is driven entirely by the ``module`` strings the group carries, and
+        the only files looked at are the ones under each agent's ``root``: its layout is
+        checked, and its ``settings.toml`` and ``.secrets.toml`` are found if they exist -- so
+        a test points the group at test modules and a temporary root. Imports happen per group, so cold start is
         proportional to the number of agents this process actually hosts rather than to the
         number the image contains.
 

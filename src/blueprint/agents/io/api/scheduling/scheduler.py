@@ -14,9 +14,10 @@ via ``with_scheduler()``. What calls ``tick()`` depends on ``scheduler_mode``
 ``"in_process"``
     An APScheduler timer in every replica, for un-orchestrated Docker and local
     development where no external scheduler exists. Every replica's timer fires, and
-    each tick is claimed in the shared cache so exactly one replica runs it. With no
-    cache registered there is nothing to claim with and every replica runs every tick,
-    which startup warns about.
+    each tick is claimed in the agent's cache so one replica runs it -- across replicas
+    only when that cache is Redis: a disk cache's claim holds within one process (S23).
+    With no cache registered there is nothing to claim with and every replica runs every
+    tick, which startup warns about.
 
 The key has **no default**: registering a scheduler without it fails at startup. Neither
 value is safe to inherit silently, and which one applies depends on the deployment rather
@@ -301,7 +302,8 @@ class SchedulerBase(RestApiBase):
     ``scheduler_mode`` (str, **required**, no default): ``"event"`` starts no timer and
     expects the tick as an event on :attr:`tick_topic`, which needs ``event_bus`` set to
     one of ``TOPIC_TRANSPORTS``; ``"in_process"`` runs an APScheduler timer in every
-    replica, with each tick claimed in the cache so one replica runs it. See
+    replica, with each tick claimed in the cache so one replica runs it (on Redis; a disk
+    cache claims within one process). See
     :meth:`_resolve_mode` for why there is no default.
 
     Args:
@@ -462,7 +464,7 @@ class SchedulerBase(RestApiBase):
                 f"Set it to '{SCHEDULER_MODE_EVENT}' to take the tick as an event on '{self.tick_topic}', published "
                 f"by an external CronJob -- exactly one replica then runs it. Set it to '{SCHEDULER_MODE_IN_PROCESS}' "
                 "to run an APScheduler timer inside the process, which is correct for local development and plain "
-                "Docker but fires once per replica."
+                "Docker but fires once per replica unless a Redis cache claims each tick."
             )
         if mode not in SCHEDULER_MODES:
             raise ValueError(f"Config key 'scheduler_mode' must be one of {', '.join(SCHEDULER_MODES)}, got {raw!r}.")
@@ -611,7 +613,8 @@ class SchedulerBase(RestApiBase):
 
         if self.registry.has_cache():
             logger.info(
-                "Scheduler '%s' started an in-process timer with crontab '%s'; each tick is claimed in the cache, so one replica runs it",
+                "Scheduler '%s' started an in-process timer with crontab '%s'; each tick is claimed in the cache "
+                "(across replicas only on Redis)",
                 self.name,
                 self._crontab,
             )
@@ -726,9 +729,9 @@ class SchedulerBase(RestApiBase):
         slot needs only set-if-absent, which is what :meth:`CacheService.claim` provides
         atomically.
 
-        The consequence to be aware of: replicas whose clocks differ enough to straddle a
-        minute boundary derive different slots and both tick. Container clock skew is
-        milliseconds, and a repeated tick is what dedup covers.
+        The slot is the minute the tick was scheduled for (:meth:`_tick_slot`), not the clock's,
+        so replicas firing for one scheduled time derive one slot even with skewed clocks. The
+        claim is atomic across replicas only on Redis; a disk cache's holds within one process.
         """
         if not self.registry.has_cache():
             return True

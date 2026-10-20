@@ -223,8 +223,8 @@ class DiskCacheService(_CacheKeyMixin, CacheService):
         self._default_ttl = default_ttl
         self._lock = threading.RLock()  # Reentrant lock for thread-safe operations
 
-        # Initialize diskcache-rs Cache with file locking for multi-process access
-        # use_file_locking=True allows multiple processes to safely access the same cache
+        # File locking lets several processes open one directory (diskcache-rs >= 0.4.10) and see
+        # each other's entries; it does not make claim() atomic between them (S23, see claim()).
         self._cache = Cache(str(self.cache_dir), use_file_locking=True)
 
         logger.info(

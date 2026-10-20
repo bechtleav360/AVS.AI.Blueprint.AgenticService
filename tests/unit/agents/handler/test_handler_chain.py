@@ -610,6 +610,16 @@ class TestDedupWithoutAHeartbeatWarns:
             await chain.on_startup()
         assert "nats_heartbeat_enabled = false" in caplog.text
 
+    async def test_an_environment_string_false_warns_too(
+        self, chain: HandlerChain, mock_registry: MagicMock, mock_config: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An environment override arrives as text; 'false' must count as off, as the NATS client reads it."""
+        self._settings(mock_config, event_bus="nats", nats_heartbeat_enabled="false")
+        _wire_handlers(mock_registry, [])
+        with caplog.at_level("WARNING"):
+            await chain.on_startup()
+        assert "nats_heartbeat_enabled = false" in caplog.text
+
     async def test_dapr_warns_naming_the_app_call_timeout(
         self, chain: HandlerChain, mock_registry: MagicMock, mock_config: MagicMock, caplog: pytest.LogCaptureFixture
     ) -> None:
