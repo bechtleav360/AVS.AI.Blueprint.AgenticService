@@ -284,6 +284,14 @@ framework endpoints (`nats`, `cache`, `scheduler`), one Swagger tag per agent, a
   replaced by generic ones (`acme.agent.<tenant>.<agent>`, "the first consumer") in the named-connections
   plan, the accounts broker config, its connection source and three unit tests. Tree only; the
   published history keeps them (D1). The named-connection broker tests pass with the new subjects.
+- Step 3, history (D1 revised 2026-10-21): the names are gone from the history as well -- the first
+  consumer's names on this branch, and two other projects' names that came in from `main` (the
+  job-scoped session-key spec and the release changelog). `git filter-repo` replaced them in file
+  contents and eight commit messages of `main`, `develop` and this branch from 2026-08-24 on, so each
+  of those commits has a new SHA and the release tags `v0.7.0` to `v0.9.0a17` moved with them. Author,
+  dates and the files each commit touches are unchanged. The plans' references to rewritten commits
+  name the new SHAs; older versions of those files keep the old ones. A review for project names before
+  every commit (a `CLAUDE.md` rule and a Claude Code hook) goes to `develop` in a pull request of its own.
 
 **Measured against a real broker** (`tests/integration`, NATS 2.10 with JetStream, plus an
 accounts broker): acknowledgement exactly once, redelivery after `ack_wait`, concurrent runs,

@@ -30,7 +30,7 @@ yet, so nothing has to be migrated.
   framework has (dispositions, dead letter, drain budget, telemetry) and had to re-implement the
   rest (settlement, heartbeat, run limit, degraded pause).
 - **Concurrency.** Measured 2026-10-14: runs were strictly one at a time per subscription and
-  process in both implementations. `19c4c48` fixed the framework's path
+  process in both implementations. `a20a2b7` fixed the framework's path
   (`nats_max_concurrent_runs`, heartbeat); this plan carries it over to every connection.
 
 ---
@@ -195,7 +195,7 @@ All taken on 2026-10-14; each entry starts with the decision, followed by the an
     pairs in the process (`"33%"`), recomputed when connections are added or removed. The owner's
     sizing: K up to about a third of the pairs.
   - Defaults keep today's behaviour: K unset = one run at a time *per subscription* (what every
-    agent did before; corrected in step 1 -- `19c4c48` had made it one per agent), pool unset
+    agent did before; corrected in step 1 -- `a20a2b7` had made it one per agent), pool unset
     (unlimited). With K set, the subscriptions of a pair share its K runs.
   - Order of acquisition is fixed (the pair's slot, then the pool), so there is no deadlock; waiters
     are served first come, first served, so no pair starves.
@@ -204,7 +204,7 @@ All taken on 2026-10-14; each entry starts with the decision, followed by the an
   - Per-connection K from the binding (a large tenant gets more) is not built; it can be added later
     without reshaping anything.
   The analysis that led here: `nats_max_concurrent_runs` becomes per (agent, connection) -- it was per agent
-  in `19c4c48`, which is unpushed and unused -- plus a new process-scope cap
+  in `a20a2b7`, which is unpushed and unused -- plus a new process-scope cap
   `nats_max_concurrent_runs_per_process` across every agent and connection. Defaults: 1 and unset
   (no cap) to keep N6; the deployment sets both.
 - **D8 -- Core NATS on named connections. Decided 2026-10-14: (a), JetStream only.** A binding
@@ -220,7 +220,7 @@ All taken on 2026-10-14; each entry starts with the decision, followed by the an
   itself is an ordinary failure (the run's own timer is checked, not the exception type). The run's
   slot is freed only when its task has actually ended -- a handler that swallows the cancellation
   keeps holding its slot, logged, instead of running unseen beside its redelivery. The heartbeat
-  (`19c4c48`) already exists and stops before the nak. The analysis that led here:
+  (`a20a2b7`) already exists and stops before the nak. The analysis that led here:
   Part A's hard limit (`nats_handler_timeout`, cancel + nak) is in
   the first consumer today and in the handler-time-bounds draft spec. Include it in this plan
   **(recommended)** -- "everything works as it does now" requires it.
@@ -258,7 +258,7 @@ One step, one reviewable commit. Each step names its acceptance.
    JetStream context, subscriptions, slots, in-flight, ack-wait map) moves into a `_Connection`
    object; the client holds a default one. No behaviour change, with one addition decided
    2026-10-14: `nats_heartbeat_enabled` (bool, agent-scoped, default `true`) switches the heartbeat
-   of `19c4c48` off per agent, as in handler-time-bounds sec. 4.1.
+   of `a20a2b7` off per agent, as in handler-time-bounds sec. 4.1.
    *Acceptance:* unit and integration suites unchanged; the 2026-10-14 probe (B1-B5, K1-K3) gives
    the same results.
 2. **Binding mode.** A `_Connection` can bind with a `JetStreamBinding`: no stream provisioning,
@@ -270,7 +270,7 @@ One step, one reviewable commit. Each step names its acceptance.
    validation hook (N2), empty Context per run, `nats_connection` context key, run scope hook (D3),
    per-connection slots and per-process cap (D7), handler timeout (D9).
    *Acceptance:* isolation test below; mismatch -> term; limits respected (measured overlap).
-4. **Connection source, dynamic. Done 2026-10-15 (4a `3c16c10`, 4b).** Add, change, remove at runtime; drain on remove; never delete a
+4. **Connection source, dynamic. Done 2026-10-15 (4a `c8ec35a`, 4b).** Add, change, remove at runtime; drain on remove; never delete a
    foreign consumer. Built on the rules of `docs/specs/2026-09-23-dynamic-subscriptions.md`, for whole
    connections only (no selectors, no REST API), with building blocks that spec can reuse later:
    - a change and a reconnect never interleave (one lock per agent, spec 7.2);

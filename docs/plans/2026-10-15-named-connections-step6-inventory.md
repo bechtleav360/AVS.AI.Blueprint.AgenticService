@@ -29,7 +29,7 @@ changed or why nothing was, and what is still open. Checked against the code on
 
 ## Checked, unchanged
 
-- **W5**: already fixed by `519566f` (the second `CLAUDE.md` was removed).
+- **W5**: already fixed by `9b4560c` (the second `CLAUDE.md` was removed).
 - `AGENTS.md`, `CLAUDE.md` (repository): no statement about delivery, handlers or `main.py` that
   disagrees with the code.
 - `docs/guides/multi-agent-setup.md`, `multi-agent-migration.md`: already show the declaration;
@@ -57,11 +57,11 @@ changed or why nothing was, and what is still open. Checked against the code on
 ## Done after the first pass (2026-10-15)
 
 - `webhook_relay` and `order_event_pipeline`: one handler per event type, one service call
-  (`46d5db4`, `d698836`); `document_summarizer` without `assert` (`df8c3f3`).
-- The named-connection example `examples/site_readings` (`639f2fa`), run live against a broker with
+  (`f72c84a`, `1d40fdc`); `document_summarizer` without `assert` (`4cbc3c2`).
+- The named-connection example `examples/site_readings` (`30f14e7`), run live against a broker with
   accounts.
-- Spec sec. 7.2 now matches the WARNING for an event no handler takes (`b81d5b9`, own commit).
-- `nats_delivery_attempt` / `nats_max_deliver` in the handler context (`7e90ab4`).
+- Spec sec. 7.2 now matches the WARNING for an event no handler takes (`ad771f0`, own commit).
+- `nats_delivery_attempt` / `nats_max_deliver` in the handler context (`b7586e3`).
 
 ## Open
 
