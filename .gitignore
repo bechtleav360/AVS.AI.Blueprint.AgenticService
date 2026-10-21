@@ -153,8 +153,10 @@ uv.lock
 # PyCharm stuff
 .idea/
 
-# Claude Code local config
-.claude/
+# Claude Code: local config stays local; the shared settings and hooks are committed
+.claude/*
+!.claude/settings.json
+!.claude/hooks/
 
 
 ARCHITECTURE_DECISIONS.md
