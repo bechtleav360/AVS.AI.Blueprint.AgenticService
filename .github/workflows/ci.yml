@@ -31,3 +31,25 @@ jobs:
 
       - name: Run unit tests
         run: python -m pytest tests/unit -v --tb=short
+
+  replaced-history:
+    name: No replaced history
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The history from 2026-08-24 on was rewritten on 2026-10-21 to remove internal project names.
+      # Every replaced commit descends from REPLACED_ROOT, so a branch that still carries the old
+      # history contains it -- and merging such a branch would bring the names back.
+      - name: Refuse the replaced history
+        env:
+          REPLACED_ROOT: 1c2098c131ea654c850dccd2c7c627dab2e26f4a
+        run: |
+          if git cat-file -e "$REPLACED_ROOT^{commit}" 2>/dev/null && git merge-base --is-ancestor "$REPLACED_ROOT" HEAD; then
+            echo "::error::This branch contains history that was replaced on 2026-10-21 (it descends from $REPLACED_ROOT). Move its own commits onto the new history -- see 'Replaced history' in CLAUDE.md."
+            exit 1
+          fi
+          echo "No replaced history."

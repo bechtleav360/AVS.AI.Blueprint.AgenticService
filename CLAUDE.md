@@ -83,3 +83,26 @@ which is how such names got into this history before.
 This rule holds whether or not hooks run. In Claude Code, `.claude/hooks/project-name-review.sh`
 additionally holds every `git commit` until the command carries `PROJECT_NAMES_REVIEWED=1` -- add it
 only after doing the review above.
+
+## Replaced history
+
+On 2026-10-21 the history of `main`, `develop` and `feature/multi-agent-namespaces` from 2026-08-24 on
+was rewritten to remove internal project names: every commit since then has a new SHA. A branch that
+started after 2026-08-24 and was not rewritten with them still carries the old history -- it descends
+from `1c2098c` -- and must never be pushed or merged. CI refuses it (job "No replaced history"), and in
+Claude Code `.claude/hooks/replaced-history-guard.sh` refuses to push it.
+
+To keep such a branch's own work, move its commits onto the new history (merge commits inside the
+branch are flattened):
+
+```bash
+git fetch origin
+git rebase --onto origin/<base> "$(git merge-base <branch> <old tip>)" <branch>
+git merge-base --is-ancestor 1c2098c <branch> || echo "clean"   # must print "clean" before a push
+```
+
+| The branch started from | `<base>` | `<old tip>` |
+|---|---|---|
+| `develop` | `develop` | `2291538` |
+| `main` | `main` | `57090de` |
+| `feature/multi-agent-namespaces` | `feature/multi-agent-namespaces` | `3c25741` |
