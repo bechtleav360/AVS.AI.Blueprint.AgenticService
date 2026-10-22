@@ -21,18 +21,23 @@ REPLACED_ROOT=1c2098c131ea654c850dccd2c7c627dab2e26f4a
 
 input=$(cat)
 
+# One shell word in the JSON input: bare, in single quotes, or in double quotes (JSON-escaped:
+# \"...\"). Quoted, it may contain spaces, and it is taken whole.
+word='(\\"[^"]*\\"|'\''[^'\'']*'\''|[^[:space:];&|"'\''\\][^[:space:];&|"'\'']*)'
+
 # `git push`, also after global options (`git -C dir push`, `git -c k=v push`).
 printf '%s' "$input" |
-  grep -Eq 'git(([[:space:]]+-[Cc][[:space:]]+[^[:space:]]+)|([[:space:]]+--?[A-Za-z][-A-Za-z]*(=[^[:space:]]+)?))*[[:space:]]+push([[:space:]]|$|["'\'';&|)])' ||
+  grep -Eq 'git(([[:space:]]+-[Cc][[:space:]]+('"$word"'|[^[:space:]]+))|([[:space:]]+--?[A-Za-z][-A-Za-z]*(=[^[:space:]]+)?))*[[:space:]]+push([[:space:]]|$|["'\'';&|)])' ||
   exit 0
 
 root=$(cd "${CLAUDE_PROJECT_DIR:-.}" 2>/dev/null && pwd -P) || exit 0
 
-# The repository: `git -C <dir>`, else a leading `cd <dir>`, else the project. JSON-escaped
-# backslashes (Windows paths) become slashes; paths with spaces are not recognised (-> the project).
-dir=$(printf '%s' "$input" | grep -Eo 'git[[:space:]]+-C[[:space:]]+[^[:space:];&|]+' | head -n 1 | sed -E 's/^git[[:space:]]+-C[[:space:]]+//')
-[ -n "$dir" ] || dir=$(printf '%s' "$input" | grep -Eo '"command":[[:space:]]*"cd[[:space:]]+[^[:space:];&|]+' | head -n 1 | sed -E 's/^"command":[[:space:]]*"cd[[:space:]]+//')
-dir=$(printf '%s' "$dir" | sed 's#\\\\#/#g' | tr -d '"'\')
+# The repository: `git -C <dir>`, else a leading `cd <dir>`, else the project. A path that does not
+# resolve is let through below, so a quoted one must be taken whole, quotes and all, then unquoted.
+# JSON-escaped backslashes (Windows paths) become slashes; a line break ends a bare path.
+dir=$(printf '%s' "$input" | grep -Eo "git[[:space:]]+-C[[:space:]]+$word" | head -n 1 | sed -E 's/^git[[:space:]]+-C[[:space:]]+//')
+[ -n "$dir" ] || dir=$(printf '%s' "$input" | grep -Eo "\"command\":[[:space:]]*\"cd[[:space:]]+$word" | head -n 1 | sed -E 's/^"command":[[:space:]]*"cd[[:space:]]+//')
+dir=$(printf '%s' "$dir" | sed -e 's/^\\"\(.*\)\\"$/\1/' -e "s/^'\(.*\)'\$/\1/" -e 's#\\\\#/#g' -e 's/\\n.*//')
 if [ -n "$dir" ]; then
   dir=$(cd "$dir" 2>/dev/null && pwd -P) || exit 0
   case "$dir/" in

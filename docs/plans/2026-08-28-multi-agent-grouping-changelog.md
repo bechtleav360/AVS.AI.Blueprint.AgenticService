@@ -292,6 +292,16 @@ framework endpoints (`nats`, `cache`, `scheduler`), one Swagger tag per agent, a
   dates and the files each commit touches are unchanged. The plans' references to rewritten commits
   name the new SHAs; older versions of those files keep the old ones. A review for project names before
   every commit (a `CLAUDE.md` rule and a Claude Code hook) goes to `develop` in a pull request of its own.
+- Guards from `develop` (#108, merged into this branch): the commit review hook, the push guard against
+  the replaced history and the CI job "No replaced history". Tried live here, the push guard let an
+  old-history branch through whenever the command named the repository in double quotes
+  (`cd "C:/..." && git push`, `git -C "..." push`) or as `cd <dir>` followed by a line break: the
+  extracted path kept the JSON-escaped quote or the `\n`, did not resolve, and an unresolved path is
+  let through. A quoted `-C` path with a space was not even recognised as a push. Fixed in
+  `.claude/hooks/replaced-history-guard.sh` (a quoted path is taken whole, then unquoted; a line break
+  ends a bare one), with regression tests in `tests/unit/hooks/` that now run in CI. Control, 18 ways to
+  name the repository: the old hook refused 5, the fixed one 18; live with `--dry-run`, the three shapes
+  that got through are refused and a clean branch still goes through.
 
 **Measured against a real broker** (`tests/integration`, NATS 2.10 with JetStream, plus an
 accounts broker): acknowledgement exactly once, redelivery after `ack_wait`, concurrent runs,
