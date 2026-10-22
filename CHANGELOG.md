@@ -188,6 +188,12 @@ Full migration path, including the one decision to get right before the first de
     `JetStreamBindingError` for the clash), `StreamConflictError`, `JetStreamPermissionError`,
     `TenancyError`; `JetStreamUnavailableError` is one too. A missing binding-mode stream is still
     retried (Known issues).
+19. **An orphaned agent takes the pod out, whatever `readiness_policy` says.** An agent latched down
+    -- its startup failed and recovery retries it, or its transport failed for good -- now gates
+    readiness under `"critical"` and `"any"` too: it consumes nothing for a reason that is not
+    transient. And an agent whose resume after a degradation keeps failing, or whose connection loop
+    gave up (`event_client_max_retries`), fails liveness until it consumes again, logged CRITICAL: it
+    reported healthy while paused, so readiness read UP while nothing was consumed.
 20. **A failed JetStream delivery comes back after a delay.** A `RetryableHandlerError`, any
     unexpected exception and `nats_handler_timeout` used to nak for immediate redelivery, so every
     attempt was used up within a few hundred milliseconds -- measured: 5 attempts in 0.3 s -- and a
@@ -199,12 +205,6 @@ Full migration path, including the one decision to get right before the first de
     binding filters or delivers to: the route has no authentication, and an event put into a
     tenant's stream ran under that tenant's identity. `operator_routes_enabled = false` (process
     scope) leaves the publish route and the cache routes out altogether.
-19. **An orphaned agent takes the pod out, whatever `readiness_policy` says.** An agent latched down
-    -- its startup failed and recovery retries it, or its transport failed for good -- now gates
-    readiness under `"critical"` and `"any"` too: it consumes nothing for a reason that is not
-    transient. And an agent whose resume after a degradation keeps failing, or whose connection loop
-    gave up (`event_client_max_retries`), fails liveness until it consumes again, logged CRITICAL: it
-    reported healthy while paused, so readiness read UP while nothing was consumed.
 
 ### Added
 
@@ -976,6 +976,10 @@ What the broker sees change when an agent that ran on 0.8 starts on this version
   through JetStream, the publish subjects.
 - **Core NATS subscriptions join a queue group** (`nats_queue_group`, else `app_name`), so each
   message reaches one replica instead of every one.
+- **A failed JetStream delivery is redelivered after a delay**, not at once: `nats_nak_delay`
+  defaults to 1 s, 5 s, 15 s, 30 s, then 60 s per redelivery, so with `nats_max_deliver = 5` a
+  failing message is dead-lettered after about 50 s instead of a fraction of a second.
+  `nats_nak_delay = 0` restores 0.8's immediate redelivery (Breaking 20).
 
 What the code sees change:
 

@@ -302,6 +302,9 @@ framework endpoints (`nats`, `cache`, `scheduler`), one Swagger tag per agent, a
   ends a bare one), with regression tests in `tests/unit/hooks/` that now run in CI. Control, 18 ways to
   name the repository: the old hook refused 5, the fixed one 18; live with `--dry-run`, the three shapes
   that got through are refused and a clean branch still goes through.
+- Re-review of 2026-10-21, before the merge into `develop`: `CHANGELOG.md`'s Breaking items run 18-21
+  in order again (19 had landed after 21), and the standalone upgrade notes name `nats_nak_delay`,
+  which changes redelivery timing for a standalone agent too.
 
 **Measured against a real broker** (`tests/integration`, NATS 2.10 with JetStream, plus an
 accounts broker): acknowledgement exactly once, redelivery after `ack_wait`, concurrent runs,
