@@ -1,0 +1,3 @@
+# The code owners' review is requested automatically on every pull request. It becomes mandatory
+# once a ruleset or branch protection on main/develop requires a review from code owners.
+* @bechtleav360/data-practice

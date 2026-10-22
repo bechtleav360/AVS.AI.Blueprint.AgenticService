@@ -78,6 +78,25 @@ jobs:
           name: python-package-distributions
           path: dist/
 
+      # CycloneDX SBOM of the release: the wheel installed into a clean venv, i.e. the dependency
+      # versions it resolves to at release time. Kept out of dist/, which goes to PyPI as is.
+      - name: Generate SBOM
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          python -m venv "$RUNNER_TEMP/sbom-env"
+          "$RUNNER_TEMP/sbom-env/bin/pip" install --quiet dist/*.whl
+          pip install cyclonedx-bom==7.5.0
+          mkdir sbom
+          cyclonedx-py environment --pyproject pyproject.toml --mc-type library \
+            --of JSON -o "sbom/avs-blueprint-agents-$VERSION.cdx.json" "$RUNNER_TEMP/sbom-env"
+
+      - name: Store SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom/
+
       # Make release metadata available to downstream jobs via an artifact
       - name: Store release metadata
         run: |
@@ -157,6 +176,12 @@ jobs:
           name: python-package-distributions
           path: dist/
 
+      - name: Download SBOM
+        uses: actions/download-artifact@v4
+        with:
+          name: sbom
+          path: sbom/
+
       - name: Download release metadata
         uses: actions/download-artifact@v4
         with:
@@ -173,5 +198,7 @@ jobs:
           tag_name: ${{ steps.meta.outputs.tag }}
           name: ${{ steps.meta.outputs.version }}
           prerelease: ${{ steps.meta.outputs.prerelease }}
-          files: dist/*
+          files: |
+            dist/*
+            sbom/*
           generate_release_notes: true

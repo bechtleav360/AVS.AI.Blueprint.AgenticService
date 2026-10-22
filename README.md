@@ -3,7 +3,7 @@
 [![PyPI version](https://img.shields.io/pypi/v/avs-blueprint-agents)](https://pypi.org/project/avs-blueprint-agents/)
 [![Python 3.13+](https://img.shields.io/badge/python-3.13%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![CI](https://github.com/2SpeakAI/blueprint-agents/actions/workflows/ci.yml/badge.svg)](https://github.com/2SpeakAI/blueprint-agents/actions)
+[![CI](https://github.com/bechtleav360/AVS.AI.Blueprint.AgenticService/actions/workflows/ci.yml/badge.svg)](https://github.com/bechtleav360/AVS.AI.Blueprint.AgenticService/actions/workflows/ci.yml)
 
 **A Python framework for building production-ready AI agent microservices with event-driven architecture.**
 
@@ -297,11 +297,13 @@ See the [Deployment Guide](docs/guides/deployment.md) for detailed instructions.
 
 ## Contributing
 
-We welcome contributions! See [CONTRIBUTE.md](CONTRIBUTE.md) for guidelines on:
+We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on:
 
 - Setting up the development environment
 - Running tests and linting
 - Submitting pull requests
+
+To report a security vulnerability, follow [SECURITY.md](SECURITY.md).
 
 ---
 

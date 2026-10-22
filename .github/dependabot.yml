@@ -1,0 +1,29 @@
+# Weekly update PRs against the default branch (develop): the Python dependencies in
+# pyproject.toml and the actions used by the workflows and the composite action.
+# Minor and patch updates are grouped into one PR per ecosystem; major updates get their own.
+version: 2
+
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directories:
+      - /
+      - /.github/actions/*
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+      include: scope
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
