@@ -30,6 +30,13 @@ class ServicePartGenerator(PartGeneratorBase):
         """
 
         lines = []
+        service = self.config["service_layer"][self.service_name]
+        # Each import only where it is used (N9): AgentRuntime sat unused in every service that
+        # holds no agent, and a service with no domain models named its types nowhere.
+        if service.get("uses_agents"):
+            lines.append("from blueprint.agents.agent import AgentRuntime")
+        if service.get("type_imports"):
+            lines.append(service["type_imports"])
         if self.config["service_layer"][self.service_name]["uses_domain_models"]:
             if len(self.config["service_layer"][self.service_name]["uses_domain_models"]) < 4:
                 lines.append(

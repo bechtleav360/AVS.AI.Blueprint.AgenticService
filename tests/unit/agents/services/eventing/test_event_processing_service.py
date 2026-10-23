@@ -1,12 +1,22 @@
 """Unit tests for EventProcessingService."""
 
-from unittest.mock import AsyncMock
+import asyncio
+import traceback
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from pydantic import ValidationError
 
+from blueprint.agents.component.namespace import ROOT_NAMESPACE
+from blueprint.agents.handler.handler_chain import DUPLICATE_CONTEXT_KEY, IDEMPOTENCY_CACHE_NAMESPACE
 from blueprint.agents.models.events import GenericCloudEvent, HandlerResult
 from blueprint.agents.models.result import ProcessingStatus
 from blueprint.agents.services.eventing.event_processing_service import EventProcessingService
+from blueprint.agents.services.infrastructure.cache_service import DiskCacheService
+from tests.unit.agents.handler.conftest import StubHandler
+
+_SECRET = "PLACEHOLDER-SECRET-VALUE"
 
 # ---------------------------------------------------------------------------
 # _extract_handler_results (static — no instance needed)
@@ -63,6 +73,10 @@ class TestBuildResult:
         result = EventProcessingService._build_result("req-2", [], ProcessingStatus.NO_HANDLER_FOUND)
         assert result.message == "No handler processed this event"
 
+    def test_skipped_message_names_the_reason(self) -> None:
+        result = EventProcessingService._build_result("req-3", [HandlerResult.skipped("status unchanged")], ProcessingStatus.SKIPPED)
+        assert result.message == "Skipped: status unchanged"
+
     def test_result_contains_request_id(self) -> None:
         result = EventProcessingService._build_result("req-42", [], ProcessingStatus.PROCESSED)
         assert result.request_id == "req-42"
@@ -113,18 +127,81 @@ class TestUnwrapDaprEvent:
         with pytest.raises(RuntimeError, match="Unsupported inner Dapr event payload type"):
             event_processing_service._unwrap_dapr_event(outer)
 
+    def test_an_inner_event_without_type_is_not_logged(
+        self, event_processing_service: EventProcessingService, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """B2 -- the inner event is the payload; the error is raised, and the caller logs it."""
+        outer = GenericCloudEvent(id="outer-1", type="com.dapr.event.sent", source="dapr", data={"id": "inner-1", "token": _SECRET})
+        with caplog.at_level("DEBUG"), pytest.raises(RuntimeError) as caught:
+            event_processing_service._unwrap_dapr_event(outer)
+        assert _SECRET not in caplog.text
+        assert _SECRET not in "".join(traceback.format_exception(caught.value))
+
+    def test_an_invalid_inner_event_names_the_field_but_not_the_value(
+        self, event_processing_service: EventProcessingService, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """B2 -- pydantic's rendering embeds the input; the caller logs the traceback with its cause chain."""
+        outer = GenericCloudEvent(
+            id="outer-1", type="com.dapr.event.sent", source="dapr", data={"id": {"token": _SECRET}, "type": "t", "source": "s"}
+        )
+        with caplog.at_level("DEBUG"), pytest.raises(RuntimeError, match="id: string_type") as caught:
+            event_processing_service._unwrap_dapr_event(outer)
+        assert _SECRET not in caplog.text
+        assert _SECRET not in "".join(traceback.format_exception(caught.value))
+
 
 # ---------------------------------------------------------------------------
 # Lifecycle
 # ---------------------------------------------------------------------------
 
 
+class StubbedHandler:
+    """Just enough handler for the chain map: a namespace, an ordering, and no declarations.
+
+    A bare ``MagicMock`` will not do any more: a chain builds its dispatch index at startup,
+    which sorts the handlers and reads their declarations.
+    """
+
+    def __init__(self, namespace: str) -> None:
+        self.namespace = namespace
+        self.name = f"{namespace}_handler"
+
+    def __lt__(self, other: "StubbedHandler") -> bool:
+        return False
+
+    def get_handled_event_types(self) -> list[str]:
+        return []
+
+
 class TestLifecycle:
-    async def test_on_startup_is_noop(self, event_processing_service: EventProcessingService) -> None:
+    async def test_on_startup_starts_the_root_chain(self, event_processing_service: EventProcessingService) -> None:
+        chain = MagicMock()
+        chain.on_startup = AsyncMock()
+        event_processing_service._handler_chains = {ROOT_NAMESPACE: chain}
+
         await event_processing_service.on_startup()
 
-    async def test_on_shutdown_is_noop(self, event_processing_service: EventProcessingService) -> None:
+        chain.on_startup.assert_awaited_once()
+
+    async def test_on_startup_builds_a_chain_for_every_namespace_with_handlers(
+        self, event_processing_service: EventProcessingService, mock_registry: MagicMock
+    ) -> None:
+        """Built at startup, not on first delivery: a bad dedup window must fail the pod."""
+        mock_registry.get_event_handler.return_value = [StubbedHandler("orders"), StubbedHandler("billing")]
+
+        await event_processing_service.on_startup()
+
+        assert sorted(event_processing_service._handler_chains) == [ROOT_NAMESPACE, "billing", "orders"]
+
+    async def test_on_shutdown_stops_every_chain(self, event_processing_service: EventProcessingService) -> None:
+        root, orders = MagicMock(), MagicMock()
+        root.on_shutdown, orders.on_shutdown = AsyncMock(), AsyncMock()
+        event_processing_service._handler_chains = {ROOT_NAMESPACE: root, "orders": orders}
+
         await event_processing_service.on_shutdown()
+
+        root.on_shutdown.assert_awaited_once()
+        orders.on_shutdown.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -157,3 +234,204 @@ class TestProcessRestRequest:
         event_processing_service.process_event = _capture
         await event_processing_service.process_rest_request({})
         assert captured["event"].type == "rest.request"
+
+
+class TestAFailedResultPublish:
+    """#1 -- the delivery fails, and the dedup marker is released so the redelivery runs."""
+
+    @staticmethod
+    def _wire(service: EventProcessingService, mock_registry: MagicMock, results: list[HandlerResult]) -> tuple[MagicMock, MagicMock]:
+        chain = MagicMock()
+        chain.process = AsyncMock(return_value=results)
+        chain.release = AsyncMock()
+        service._handler_chains[ROOT_NAMESPACE] = chain
+        publisher = MagicMock()
+        publisher.publish_handler_event = AsyncMock()
+        mock_registry.get_component.return_value = publisher
+        return chain, publisher
+
+    async def test_it_fails_the_delivery_and_releases_the_marker(
+        self, event_processing_service: EventProcessingService, mock_registry: MagicMock
+    ) -> None:
+        chain, publisher = self._wire(event_processing_service, mock_registry, [HandlerResult(event_type="done", data={})])
+        publisher.publish_handler_event.side_effect = ConnectionError("broker gone")
+        event = GenericCloudEvent(id="e1", type="t", source="s")
+
+        with pytest.raises(ConnectionError):
+            await event_processing_service.process_event(event)
+        chain.release.assert_awaited_once()
+        assert chain.release.call_args.args[0].id == "e1"
+
+    async def test_a_successful_publish_keeps_the_marker(
+        self, event_processing_service: EventProcessingService, mock_registry: MagicMock
+    ) -> None:
+        chain, _ = self._wire(event_processing_service, mock_registry, [HandlerResult(event_type="done", data={})])
+        await event_processing_service.process_event(GenericCloudEvent(id="e1", type="t", source="s"))
+        chain.release.assert_not_awaited()
+
+    async def test_each_result_is_published_with_its_position(
+        self, event_processing_service: EventProcessingService, mock_registry: MagicMock
+    ) -> None:
+        results = [HandlerResult(event_type="a", data={}), HandlerResult(event_type="b", data={})]
+        _, publisher = self._wire(event_processing_service, mock_registry, results)
+        await event_processing_service.process_event(GenericCloudEvent(id="e1", type="t", source="s"))
+        assert [call.kwargs["index"] for call in publisher.publish_handler_event.await_args_list] == [0, 1]
+
+
+class TestASkippedRun:
+    """``HandlerResult.skipped``: acknowledged as SKIPPED, nothing published."""
+
+    @staticmethod
+    def _wire(service: EventProcessingService, mock_registry: MagicMock, results: object) -> MagicMock:
+        chain = MagicMock()
+        chain.process = AsyncMock(return_value=results)
+        chain.release = AsyncMock()
+        service._handler_chains[ROOT_NAMESPACE] = chain
+        publisher = MagicMock()
+        publisher.publish_handler_event = AsyncMock()
+        mock_registry.get_component.return_value = publisher
+        return publisher
+
+    async def test_a_skip_is_reported_as_skipped_and_publishes_nothing(
+        self, event_processing_service: EventProcessingService, mock_registry: MagicMock
+    ) -> None:
+        publisher = self._wire(event_processing_service, mock_registry, HandlerResult.skipped("status unchanged"))
+        result = await event_processing_service.process_event(GenericCloudEvent(id="e1", type="t", source="s"))
+        assert result.status is ProcessingStatus.SKIPPED
+        assert result.message == "Skipped: status unchanged"
+        publisher.publish_handler_event.assert_not_awaited()
+
+    async def test_a_list_mixing_a_skip_with_real_results_is_processed_and_publishes_the_real_ones(
+        self, event_processing_service: EventProcessingService, mock_registry: MagicMock
+    ) -> None:
+        """Only a run whose every result is a skip counts as skipped; a skip in a list publishes nothing."""
+        results = [HandlerResult.skipped("nothing for a"), HandlerResult(event_type="b", data={})]
+        publisher = self._wire(event_processing_service, mock_registry, results)
+        result = await event_processing_service.process_event(GenericCloudEvent(id="e1", type="t", source="s"))
+        assert result.status is ProcessingStatus.PROCESSED
+        assert [call.kwargs["event_type"] for call in publisher.publish_handler_event.await_args_list] == ["b"]
+
+
+class TestTheRequestIdIsKept:
+    """#13 -- process_event replaced the caller's request_id with a new uuid4."""
+
+    async def test_a_callers_id_survives_processing(self, event_processing_service: EventProcessingService) -> None:
+        chain = MagicMock()
+        chain.process = AsyncMock(return_value=None)
+        chain.release = AsyncMock()
+        event_processing_service._handler_chains[ROOT_NAMESPACE] = chain
+        context = {"request_id": "rest-123"}
+
+        result = await event_processing_service.process_event(GenericCloudEvent(id="e1", type="t", source="s"), context)
+
+        assert context["request_id"] == "rest-123"
+        assert result.request_id == "rest-123"
+
+    async def test_without_one_an_id_is_made(self, event_processing_service: EventProcessingService) -> None:
+        chain = MagicMock()
+        chain.process = AsyncMock(return_value=None)
+        chain.release = AsyncMock()
+        event_processing_service._handler_chains[ROOT_NAMESPACE] = chain
+        context: dict = {}
+
+        await event_processing_service.process_event(GenericCloudEvent(id="e1", type="t", source="s"), context)
+
+        assert context["request_id"]
+
+
+class TestTheDedupBracket:
+    """B1, M11 (PR #96) -- a delivery that is not acknowledged gives its dedup marker back.
+
+    The marker is claimed before dispatch and is only right to keep once the delivery is settled
+    as a success. Every other way out -- a handler timeout or a shutdown cancelling the run, a
+    failure after the handler returned -- naks or abandons the delivery, and a marker left behind
+    turns the redelivery into a skipped duplicate that acknowledges: the event is lost with no
+    handler having finished it. A real chain and a real cache, because the property is "the
+    marker is not in the cache afterwards", which a mocked chain cannot show.
+    """
+
+    KEY = {"id": "e1", "source": "s"}
+
+    @staticmethod
+    def _wire(mock_registry: MagicMock, mock_config: MagicMock, tmp_path: Path, handler: StubHandler) -> DiskCacheService:
+        settings = {"idempotency_enabled": True, "idempotency_ttl": 60}
+        mock_config.get.side_effect = lambda key, default=None: settings.get(key, default)
+        cache = DiskCacheService(cache_dir=str(tmp_path / "cache"))
+        mock_registry.has_cache.return_value = True
+        mock_registry.cache_service = cache
+        mock_registry.get_event_handler.return_value = [handler]
+        return cache
+
+    def _marker_held(self, cache: DiskCacheService) -> bool:
+        return cache.exists(self.KEY, namespace=IDEMPOTENCY_CACHE_NAMESPACE)
+
+    async def test_a_handler_cut_off_by_its_timeout_gives_the_marker_back(
+        self, event_processing_service: EventProcessingService, mock_registry: MagicMock, mock_config: MagicMock, tmp_path: Path
+    ) -> None:
+        """B1 -- ``nats_handler_timeout`` cancels the run with CancelledError, which ``except Exception`` never saw."""
+        runs: list[str] = []
+
+        class SlowOnce(StubHandler):
+            async def handle_event(self, event, context):
+                runs.append(event.id)
+                if len(runs) == 1:
+                    await asyncio.sleep(10)
+                return HandlerResult(data={})
+
+        cache = self._wire(mock_registry, mock_config, tmp_path, SlowOnce())
+        event = GenericCloudEvent(id="e1", type="t", source="s")
+
+        with pytest.raises(TimeoutError):
+            async with asyncio.timeout(0.05):
+                await event_processing_service.process_event(event)
+        assert not self._marker_held(cache)
+
+        result = await event_processing_service.process_event(event)
+        assert result.status == ProcessingStatus.PROCESSED
+        assert runs == ["e1", "e1"]
+
+    async def test_a_handler_that_swallows_the_cancellation_gives_the_marker_back(
+        self, event_processing_service: EventProcessingService, mock_registry: MagicMock, mock_config: MagicMock, tmp_path: Path
+    ) -> None:
+        """B1 -- the run returns normally, but past its limit, and the NATS edge naks it all the same."""
+
+        class Stubborn(StubHandler):
+            async def handle_event(self, event, context):
+                try:
+                    await asyncio.sleep(10)
+                except asyncio.CancelledError:
+                    pass
+                return HandlerResult(data={})
+
+        cache = self._wire(mock_registry, mock_config, tmp_path, Stubborn())
+
+        async with asyncio.timeout(0.05):
+            await event_processing_service.process_event(GenericCloudEvent(id="e1", type="t", source="s"))
+
+        assert not self._marker_held(cache)
+
+    async def test_a_return_value_that_fails_after_dispatch_gives_the_marker_back(
+        self, event_processing_service: EventProcessingService, mock_registry: MagicMock, mock_config: MagicMock, tmp_path: Path
+    ) -> None:
+        """M11 -- a scalar return fails HandlerResult validation after the chain kept its claim."""
+        cache = self._wire(mock_registry, mock_config, tmp_path, StubHandler(result=5))
+
+        with pytest.raises(ValidationError):
+            await event_processing_service.process_event(GenericCloudEvent(id="e1", type="t", source="s"))
+
+        assert not self._marker_held(cache)
+
+    async def test_an_acknowledged_delivery_keeps_the_marker(
+        self, event_processing_service: EventProcessingService, mock_registry: MagicMock, mock_config: MagicMock, tmp_path: Path
+    ) -> None:
+        """The control: a delivery that succeeded keeps its marker, so its redelivery is a duplicate."""
+        cache = self._wire(mock_registry, mock_config, tmp_path, StubHandler(result=HandlerResult(data={})))
+        event = GenericCloudEvent(id="e1", type="t", source="s")
+
+        await event_processing_service.process_event(event)
+        assert self._marker_held(cache)
+
+        context: dict = {}
+        result = await event_processing_service.process_event(event, context)
+        assert result.status == ProcessingStatus.NO_HANDLER_FOUND
+        assert context[DUPLICATE_CONTEXT_KEY] is True

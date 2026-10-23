@@ -1,0 +1,2 @@
+# Shell scripts run under sh, also on Windows checkouts: keep LF
+*.sh text eol=lf

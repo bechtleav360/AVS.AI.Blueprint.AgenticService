@@ -111,6 +111,8 @@ asbs create handler <Name> --event-type <type>
 
 - **Every component must have a clear, single responsibility**
 - **Services contain ALL business logic** — handlers and APIs are thin wrappers
+- **Plan one service entry point per event type** — the handler routes on the envelope, extracts the payload and calls exactly that method; relevance checks ("does this event need work?") are part of it and come back as `HandlerResult.skipped(reason)`
+- **LLM calls belong to services** — never to handlers
 - **One handler per event type** (or closely related group)
 - **One RestApi per resource** (or closely related group)
 - **Agent names must be unique** and match their runtime config section

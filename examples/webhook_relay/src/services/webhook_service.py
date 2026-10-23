@@ -1,4 +1,4 @@
-"""Business logic for webhook normalisation and deduplication."""
+"""Business logic of the relay: deduplication, normalisation, content filtering and enrichment."""
 
 from __future__ import annotations
 
@@ -9,12 +9,23 @@ from typing import Any
 from blueprint.agents.services.service_base import ServiceBase
 from blueprint.agents.services.infrastructure.cache_service import CacheService
 
-from ..models.schemas import NormalizedEvent, WebhookPayload
+from ..models.domain_models import IncomingWebhook, NormalizedEvent, RelayOutcome
 
 logger = logging.getLogger(__name__)
 
 WEBHOOK_NAMESPACE = "webhooks"
 RECENT_NAMESPACE = "webhooks_recent"
+
+# Simple priority scoring by event category keyword (higher = more important).
+_PRIORITY_KEYWORDS: dict[str, int] = {
+    "security": 90,
+    "payment": 80,
+    "deploy": 70,
+    "release": 60,
+    "push": 50,
+    "pull_request": 40,
+    "issue": 30,
+}
 
 
 class WebhookService(ServiceBase):
@@ -36,10 +47,68 @@ class WebhookService(ServiceBase):
         """Nothing to tear down."""
 
     # ------------------------------------------------------------------
+    # Entry point
+    # ------------------------------------------------------------------
+
+    async def relay(self, webhook: IncomingWebhook) -> RelayOutcome:
+        """Decide what happens to one webhook: the one method the handler calls.
+
+        Duplicate -> nothing to do. A content rule matches -> filtered, with the reason. Otherwise
+        normalised, enriched, recorded for deduplication and the recent list, and returned for
+        publishing.
+        """
+        if self.is_duplicate(webhook.webhook_id):
+            return RelayOutcome(kind="duplicate", reason=f"webhook {webhook.webhook_id} already relayed")
+        normalized = self.normalize_payload(webhook)
+        reason = self.filter_reason(normalized)
+        if reason is not None:
+            logger.info("Webhook %s filtered: %s", webhook.webhook_id, reason)
+            return RelayOutcome(kind="filtered", reason=reason, data={"reason": reason, "webhook_id": webhook.webhook_id})
+        enriched = self.enrich(normalized, webhook.webhook_id)
+        self.mark_processed(webhook.webhook_id)
+        self.store_recent(webhook.webhook_id, enriched)
+        logger.info("Relayed webhook %s (priority=%s)", webhook.webhook_id, enriched["priority_score"])
+        return RelayOutcome(kind="processed", data=enriched)
+
+    # ------------------------------------------------------------------
+    # Filtering and enrichment
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def filter_reason(normalized: NormalizedEvent) -> str | None:
+        """Why this event is dropped, or ``None`` to relay it.
+
+        GitHub: an actor containing ``[bot]``. Stripe: an event category starting with ``test_``.
+        """
+        actor = normalized.actor or ""
+        if normalized.original_source == "github" and "[bot]" in actor:
+            return f"Filtered GitHub bot event from {actor}"
+        if normalized.original_source == "stripe" and normalized.event_category.startswith("test_"):
+            return f"Filtered Stripe test event: {normalized.event_category}"
+        return None
+
+    @staticmethod
+    def score_priority(event_category: str) -> int:
+        """Return a numeric priority score (higher = more important)."""
+        lower = event_category.lower()
+        for keyword, score in _PRIORITY_KEYWORDS.items():
+            if keyword in lower:
+                return score
+        return 10
+
+    def enrich(self, normalized: NormalizedEvent, webhook_id: str) -> dict[str, Any]:
+        """The event to publish: the normalised fields plus priority score, timestamp and id."""
+        enriched: dict[str, Any] = normalized.model_dump()
+        enriched["priority_score"] = self.score_priority(normalized.event_category)
+        enriched["processed_at"] = datetime.now(UTC).isoformat()
+        enriched["webhook_id"] = webhook_id
+        return enriched
+
+    # ------------------------------------------------------------------
     # Normalisation
     # ------------------------------------------------------------------
 
-    def normalize_payload(self, payload: WebhookPayload) -> NormalizedEvent:
+    def normalize_payload(self, payload: IncomingWebhook) -> NormalizedEvent:
         """Convert a source-specific webhook into a NormalizedEvent."""
         if payload.source == "github":
             return self._normalize_github(payload)
@@ -48,7 +117,7 @@ class WebhookService(ServiceBase):
         return self._normalize_generic(payload)
 
     @staticmethod
-    def _normalize_github(payload: WebhookPayload) -> NormalizedEvent:
+    def _normalize_github(payload: IncomingWebhook) -> NormalizedEvent:
         data = payload.payload
         action = data.get("action", payload.event_type)
         sender = data.get("sender", {})
@@ -68,7 +137,7 @@ class WebhookService(ServiceBase):
         )
 
     @staticmethod
-    def _normalize_stripe(payload: WebhookPayload) -> NormalizedEvent:
+    def _normalize_stripe(payload: IncomingWebhook) -> NormalizedEvent:
         data = payload.payload
         event_type_parts = data.get("type", payload.event_type).rsplit(".", 1)
         category = event_type_parts[0] if len(event_type_parts) > 1 else payload.event_type
@@ -87,7 +156,7 @@ class WebhookService(ServiceBase):
         )
 
     @staticmethod
-    def _normalize_generic(payload: WebhookPayload) -> NormalizedEvent:
+    def _normalize_generic(payload: IncomingWebhook) -> NormalizedEvent:
         return NormalizedEvent(
             original_source=payload.source,
             event_category=payload.event_type,

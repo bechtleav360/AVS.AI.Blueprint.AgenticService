@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from blueprint.agents.services.service_base import ServiceBase
 from blueprint.agents.services.infrastructure.cache_service import CacheService
 
-from ..models.schemas import OrderPayload, ValidationError
+from ..models.domain_models import Order, OrderOutcome, ValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,24 @@ class OrderService(ServiceBase):
     async def on_shutdown(self) -> None:
         """No-op shutdown."""
 
-    def validate_order(self, payload: OrderPayload) -> tuple[bool, list[ValidationError]]:
+    async def process_order(self, order: Order) -> OrderOutcome:
+        """Validate, then enrich: the one method the handler calls for an order.created event.
+
+        An invalid order is cached as ``rejected`` and comes back with its errors; a valid one is
+        enriched, cached as ``validated`` and comes back with the enriched data.
+        """
+        is_valid, errors = self.validate_order(order)
+        if not is_valid:
+            error_dicts = [error.model_dump() for error in errors]
+            logger.warning("Order %s rejected: %s", order.order_id, error_dicts)
+            self.cache_order_status(order.order_id, "rejected", {"errors": error_dicts})
+            return OrderOutcome(status="rejected", data={"order_id": order.order_id, "errors": error_dicts})
+        enriched = self.enrich_order(order)
+        self.cache_order_status(order.order_id, "validated", enriched)
+        logger.info("Order %s validated and enriched", order.order_id)
+        return OrderOutcome(status="validated", data=enriched)
+
+    def validate_order(self, payload: Order) -> tuple[bool, list[ValidationError]]:
         """Validate an order payload.
 
         Checks:
@@ -51,7 +68,7 @@ class OrderService(ServiceBase):
         is_valid = len(errors) == 0
         return is_valid, errors
 
-    def enrich_order(self, payload: OrderPayload) -> dict:
+    def enrich_order(self, payload: Order) -> dict:
         """Enrich a validated order with computed fields.
 
         Adds:

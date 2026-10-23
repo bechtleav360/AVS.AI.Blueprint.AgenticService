@@ -34,18 +34,43 @@ class EnvironmentStatus(BaseModel):
         description="Current environment name.",
         examples=["development", "production"],
     )
+    envvar_prefix: str | None = Field(
+        default=None,
+        description=(
+            "Prefix an environment variable must carry to override a setting. Null means the "
+            "prefix is disabled and the whole process environment is read unprefixed."
+        ),
+        examples=["DYNACONF", "ORDERS"],
+    )
     settings: dict[str, Any] = Field(
         ...,
-        description="Sanitized configuration settings.",
+        description="Sanitized configuration the root namespace resolves.",
+    )
+    namespaces: dict[str, dict[str, Any]] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "Sanitized configuration each co-hosted agent resolves, flattened as that agent "
+            "reads it -- inherited root keys included. Present only when the process hosts a group "
+            "of agents."
+        ),
     )
 
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
                 "environment": "development",
+                "envvar_prefix": "DYNACONF",
                 "settings": {
                     "app_name": "agent-service",
                     "api_key": "***",
+                },
+                "namespaces": {
+                    "orders": {
+                        "app_name": "orders",
+                        "model_name": "gpt-4",
+                        "api_key": "***",
+                    }
                 },
             }
         }

@@ -13,6 +13,7 @@ import httpx
 
 from cachetools import TTLCache
 
+from ...component.namespace import ROOT_NAMESPACE
 from ..service_base import ServiceBase
 
 logger = logging.getLogger(__name__)
@@ -46,8 +47,15 @@ class SessionKeyProvider(ServiceBase):
         agent_id = "..."  # required when session_key_source = "job"
     """
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, namespace: str = ROOT_NAMESPACE) -> None:
+        """Initialize the key provider for one agent.
+
+        Args:
+            namespace: The agent this provider belongs to; ``""`` is the root, which is the
+                whole of a single-agent application. Named by ``AppBuilder.build()``, which
+                creates one per agent using the sessions transport; a project never passes it.
+        """
+        super().__init__(namespace=namespace)
         self._cache: TTLCache[str, str] | None = None
         self._source: str = "env"
         self._env_var: str = "SESSION_KEY"

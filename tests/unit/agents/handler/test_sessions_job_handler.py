@@ -819,3 +819,58 @@ class TestFailJobRetry:
         assert kwargs["error"]["message"] == "bad input"
         assert kwargs["error"]["code"] == "ValueError"
         assert job_id in handler._seen
+
+
+class TestTheReplayGuardIsBounded:
+    """#14 -- the set of finished job ids grew by one UUID per job for the life of the process."""
+
+    def test_an_id_is_remembered(self) -> None:
+        from uuid import uuid4
+
+        from blueprint.agents.handler.sessions_job_handler import RecentJobIds
+
+        seen = RecentJobIds(ttl=60, max_entries=10)
+        job = uuid4()
+        seen.add(job)
+        assert job in seen
+
+    def test_the_oldest_is_forgotten_past_the_cap(self) -> None:
+        from uuid import uuid4
+
+        from blueprint.agents.handler.sessions_job_handler import RecentJobIds
+
+        seen = RecentJobIds(ttl=60, max_entries=3)
+        jobs = [uuid4() for _ in range(5)]
+        for job in jobs:
+            seen.add(job)
+        assert len(seen) == 3
+        assert jobs[0] not in seen and jobs[1] not in seen
+        assert all(job in seen for job in jobs[2:])
+
+    def test_an_id_is_forgotten_after_the_ttl(self, monkeypatch) -> None:
+        from uuid import uuid4
+
+        from blueprint.agents.handler import sessions_job_handler
+
+        clock = [1000.0]
+        monkeypatch.setattr(sessions_job_handler.time, "monotonic", lambda: clock[0])
+        seen = sessions_job_handler.RecentJobIds(ttl=60, max_entries=10)
+        job = uuid4()
+        seen.add(job)
+        clock[0] += 61
+        assert job not in seen
+        assert len(seen) == 0
+
+
+class TestTheDeclarationFollowsTheSelector:
+    """S10 -- the auto-declared job type narrowed a subclass that widened can_handle_event."""
+
+    def test_the_job_type_is_declared(self, mock_config: MagicMock, mock_registry: MagicMock) -> None:
+        assert _Handler().get_handled_event_types() == ["sessions.job.created.demo"]
+
+    def test_a_widened_selector_declares_nothing(self, mock_config: MagicMock, mock_registry: MagicMock) -> None:
+        class Widened(_Handler):
+            async def can_handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> bool:
+                return event.type.startswith("sessions.job.created.")
+
+        assert Widened().get_handled_event_types() == []

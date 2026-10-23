@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.models.schemas import CreateProductRequest, UpdateProductRequest
+from src.models.domain_models import NewProduct, ProductChanges
 from src.services.inventory_service import InventoryService
 
 
@@ -42,8 +42,8 @@ def service(mock_cache: MagicMock) -> InventoryService:
 
 
 @pytest.fixture
-def sample_request() -> CreateProductRequest:
-    return CreateProductRequest(
+def sample_request() -> NewProduct:
+    return NewProduct(
         name="Widget",
         description="A useful widget",
         price=9.99,
@@ -53,7 +53,7 @@ def sample_request() -> CreateProductRequest:
 
 
 class TestCreateProduct:
-    def test_create_returns_product_with_id(self, service: InventoryService, sample_request: CreateProductRequest) -> None:
+    def test_create_returns_product_with_id(self, service: InventoryService, sample_request: NewProduct) -> None:
         product = service.create_product(sample_request)
         assert product.id is not None
         assert product.name == "Widget"
@@ -62,13 +62,13 @@ class TestCreateProduct:
         assert product.category == "tools"
         assert product.created_at is not None
 
-    def test_create_stores_product(self, service: InventoryService, sample_request: CreateProductRequest) -> None:
+    def test_create_stores_product(self, service: InventoryService, sample_request: NewProduct) -> None:
         product = service.create_product(sample_request)
         assert service.get_product(product.id) is not None
 
 
 class TestGetProduct:
-    def test_get_existing_product(self, service: InventoryService, sample_request: CreateProductRequest) -> None:
+    def test_get_existing_product(self, service: InventoryService, sample_request: NewProduct) -> None:
         product = service.create_product(sample_request)
         fetched = service.get_product(product.id)
         assert fetched is not None
@@ -79,9 +79,9 @@ class TestGetProduct:
 
 
 class TestUpdateProduct:
-    def test_update_existing_product(self, service: InventoryService, sample_request: CreateProductRequest) -> None:
+    def test_update_existing_product(self, service: InventoryService, sample_request: NewProduct) -> None:
         product = service.create_product(sample_request)
-        update = UpdateProductRequest(price=19.99, name="Super Widget")
+        update = ProductChanges(price=19.99, name="Super Widget")
         updated = service.update_product(product.id, update)
         assert updated is not None
         assert updated.price == 19.99
@@ -89,12 +89,12 @@ class TestUpdateProduct:
         assert updated.description == "A useful widget"  # unchanged
 
     def test_update_nonexistent_product(self, service: InventoryService) -> None:
-        update = UpdateProductRequest(price=5.0)
+        update = ProductChanges(price=5.0)
         assert service.update_product("nonexistent-id", update) is None
 
 
 class TestDeleteProduct:
-    def test_delete_existing_product(self, service: InventoryService, sample_request: CreateProductRequest) -> None:
+    def test_delete_existing_product(self, service: InventoryService, sample_request: NewProduct) -> None:
         product = service.create_product(sample_request)
         assert service.delete_product(product.id) is True
         assert service.get_product(product.id) is None
@@ -104,29 +104,29 @@ class TestDeleteProduct:
 
 
 class TestSearchProducts:
-    def test_search_by_name(self, service: InventoryService, sample_request: CreateProductRequest) -> None:
+    def test_search_by_name(self, service: InventoryService, sample_request: NewProduct) -> None:
         service.create_product(sample_request)
         result = service.search_products("widget")
-        assert result.total == 1
-        assert result.products[0].name == "Widget"
+        assert len(result) == 1
+        assert result[0].name == "Widget"
 
-    def test_search_by_description(self, service: InventoryService, sample_request: CreateProductRequest) -> None:
+    def test_search_by_description(self, service: InventoryService, sample_request: NewProduct) -> None:
         service.create_product(sample_request)
         result = service.search_products("useful")
-        assert result.total == 1
+        assert len(result) == 1
 
-    def test_search_no_match(self, service: InventoryService, sample_request: CreateProductRequest) -> None:
+    def test_search_no_match(self, service: InventoryService, sample_request: NewProduct) -> None:
         service.create_product(sample_request)
         result = service.search_products("nonexistent")
-        assert result.total == 0
-        assert result.products == []
+        assert len(result) == 0
+        assert result == []
 
 
 class TestListProducts:
-    def test_list_all(self, service: InventoryService, sample_request: CreateProductRequest) -> None:
+    def test_list_all(self, service: InventoryService, sample_request: NewProduct) -> None:
         service.create_product(sample_request)
         service.create_product(
-            CreateProductRequest(
+            NewProduct(
                 name="Gadget",
                 description="A handy gadget",
                 price=14.99,
@@ -137,10 +137,10 @@ class TestListProducts:
         products = service.list_products()
         assert len(products) == 2
 
-    def test_list_filtered_by_category(self, service: InventoryService, sample_request: CreateProductRequest) -> None:
+    def test_list_filtered_by_category(self, service: InventoryService, sample_request: NewProduct) -> None:
         service.create_product(sample_request)
         service.create_product(
-            CreateProductRequest(
+            NewProduct(
                 name="Gadget",
                 description="A handy gadget",
                 price=14.99,
@@ -154,13 +154,13 @@ class TestListProducts:
 
 
 class TestUpdateStock:
-    def test_increase_stock(self, service: InventoryService, sample_request: CreateProductRequest) -> None:
+    def test_increase_stock(self, service: InventoryService, sample_request: NewProduct) -> None:
         product = service.create_product(sample_request)
         updated = service.update_stock(product.id, 25)
         assert updated is not None
         assert updated.stock == 125
 
-    def test_decrease_stock(self, service: InventoryService, sample_request: CreateProductRequest) -> None:
+    def test_decrease_stock(self, service: InventoryService, sample_request: NewProduct) -> None:
         product = service.create_product(sample_request)
         updated = service.update_stock(product.id, -10)
         assert updated is not None

@@ -5,25 +5,14 @@ from __future__ import annotations
 import logging
 
 from fastapi import HTTPException
-from pydantic import BaseModel
 
 from blueprint.agents.io.api.rest_api_base import RestApiBase
 
-from src.models.schemas import (
-    CreateProductRequest,
-    Product,
-    ProductSearchResult,
-    UpdateProductRequest,
-)
+from src.models.domain_models import NewProduct, Product, ProductChanges
+from src.models.dto import CreateProductRequest, ProductSearchResult, StockAdjustment, UpdateProductRequest
 from src.services.inventory_service import InventoryService
 
 logger = logging.getLogger(__name__)
-
-
-class StockAdjustment(BaseModel):
-    """Request body for stock adjustment."""
-
-    quantity: int
 
 
 class InventoryApi(RestApiBase):
@@ -66,7 +55,8 @@ class InventoryApi(RestApiBase):
     )
     async def search_products(self, q: str) -> ProductSearchResult:
         """Search products by name or description."""
-        return self.service.search_products(q)
+        matches = self.service.search_products(q)
+        return ProductSearchResult(products=matches, total=len(matches))
 
     @RestApiBase.get(
         "/products/{product_id}",
@@ -90,7 +80,7 @@ class InventoryApi(RestApiBase):
     )
     async def create_product(self, request: CreateProductRequest) -> Product:
         """Create a new product."""
-        return self.service.create_product(request)
+        return self.service.create_product(NewProduct(**request.model_dump()))
 
     @RestApiBase.put(
         "/products/{product_id}",
@@ -100,7 +90,7 @@ class InventoryApi(RestApiBase):
     )
     async def update_product(self, product_id: str, request: UpdateProductRequest) -> Product:
         """Update an existing product."""
-        product = self.service.update_product(product_id, request)
+        product = self.service.update_product(product_id, ProductChanges(**request.model_dump(exclude_unset=True)))
         if product is None:
             raise HTTPException(status_code=404, detail=f"Product {product_id} not found")
         return product

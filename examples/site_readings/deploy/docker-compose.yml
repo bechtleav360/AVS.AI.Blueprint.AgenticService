@@ -1,0 +1,17 @@
+# The example broker with one account per site. Local example only.
+#
+#   export EXAMPLE_NATS_PASSWORD=<any local value>
+#   docker compose -f deploy/docker-compose.yml up -d
+#   python deploy/provision.py          # streams and consumers, as each site's admin
+services:
+  nats:
+    image: nats:2.10-alpine
+    container_name: site-readings-nats
+    command: ["-c", "/etc/nats/accounts.conf"]
+    environment:
+      EXAMPLE_NATS_PASSWORD: ${EXAMPLE_NATS_PASSWORD:?set EXAMPLE_NATS_PASSWORD}
+    volumes:
+      - ./nats-accounts.conf:/etc/nats/accounts.conf:ro
+    ports:
+      - "4224:4222"
+      - "8224:8222"

@@ -333,3 +333,127 @@ class TestLifecycle:
             stats = redis_cache_service.get_stats()
         assert stats["redis_url"] == "<SAFE_REDIS_URL_MARKER>"
         assert "supersecret" not in stats["redis_url"]
+
+
+class TestClaim:
+    """`SET NX EX` is one server-side operation, so there is no stale-takeover branch."""
+
+    def test_first_claim_succeeds(self, redis_cache_service: RedisCacheService) -> None:
+        assert redis_cache_service.claim("slot", {"by": "a"}) is True
+
+    def test_second_claim_on_the_same_key_fails(self, redis_cache_service: RedisCacheService) -> None:
+        redis_cache_service.claim("slot", {"by": "a"})
+        assert redis_cache_service.claim("slot", {"by": "b"}) is False
+
+    def test_the_loser_does_not_overwrite_the_winner(self, redis_cache_service: RedisCacheService) -> None:
+        redis_cache_service.claim("slot", {"by": "a"})
+        redis_cache_service.claim("slot", {"by": "b"})
+        assert redis_cache_service.get("slot") == {"by": "a"}
+
+    def test_exactly_one_of_many_callers_wins(self, redis_cache_service: RedisCacheService) -> None:
+        results = [redis_cache_service.claim("slot", {"by": index}) for index in range(5)]
+        assert results.count(True) == 1
+
+    def test_ttl_is_applied_to_the_claim(self, redis_cache_service: RedisCacheService) -> None:
+        redis_cache_service.claim("slot", 1, ttl=60)
+        assert 0 < redis_cache_service._client.ttl(redis_cache_service._full_key("slot", "default")) <= 60
+
+    def test_namespace_isolates_claims(self, redis_cache_service: RedisCacheService) -> None:
+        assert redis_cache_service.claim("slot", 1, namespace="ns-a") is True
+        assert redis_cache_service.claim("slot", 1, namespace="ns-b") is True
+
+    def test_an_unreachable_cache_fails_open(self, redis_cache_service: RedisCacheService) -> None:
+        with patch.object(redis_cache_service._client, "set", side_effect=ConnectionError("redis gone")):
+            assert redis_cache_service.claim("slot", 1) is True
+
+
+def _store(client: "fakeredis.FakeRedis", prefix: str) -> RedisCacheService:
+    """A store on a shared fake Redis, as the factory builds them: one per cache, nested by prefix."""
+    svc = RedisCacheService.__new__(RedisCacheService)
+    svc._client = client
+    svc._key_prefix = prefix
+    svc._default_ttl = None
+    svc._fallback_to_local = False
+    svc._redis_url = "redis://fake:6379/0"
+    svc._safe_redis_url = "redis://fake:6379/0"
+    svc._password = None
+    svc._db = 0
+    svc._tls = False
+    return svc
+
+
+class TestTheRootStoreLeavesNestedStoresAlone:
+    """M6 -- every named and agent cache nests under the root store's prefix, so its scans found them all."""
+
+    @pytest.fixture
+    def stores(self, mock_registry, mock_config) -> Generator[tuple[RedisCacheService, RedisCacheService, "fakeredis.FakeRedis"]]:
+        client = fakeredis.FakeRedis(decode_responses=True)
+        root, orders = _store(client, "app"), _store(client, "app:orders.default")
+        root.set("k", "root-value")
+        orders.set("k", "orders-value")
+        orders.set("k", "orders-session", namespace="sessions")
+        yield root, orders, client
+        client.close()
+
+    def test_clearing_the_root_keeps_an_agents_cache(self, stores) -> None:
+        root, orders, _ = stores
+        root.clear()
+        assert root.get("k") is None
+        assert orders.get("k") == "orders-value"
+        assert orders.get("k", namespace="sessions") == "orders-session"
+
+    def test_clearing_a_root_namespace_keeps_a_store_of_that_name(self, stores) -> None:
+        """A root cache named 'sessions' and the root store's namespace 'sessions' share a scan pattern."""
+        root, _, client = stores
+        sessions = _store(client, "app:sessions")
+        sessions.set("k", "named-cache")
+        root.set("k", "root-session", namespace="sessions")
+
+        root.clear(namespace="sessions")
+
+        assert sessions.get("k") == "named-cache"
+        assert root.get("k", namespace="sessions") is None
+
+    def test_the_roots_namespaces_are_its_own(self, stores) -> None:
+        root, orders, _ = stores
+        assert root.list_namespaces() == ["default"]
+        assert orders.list_namespaces() == ["default", "sessions"]
+
+    def test_without_a_prefix_only_this_stores_keys_are_cleared(self, mock_registry, mock_config, caplog: pytest.LogCaptureFixture) -> None:
+        """key_prefix = "" scans the whole database: other users' keys must survive, and the clear warns."""
+        client = fakeredis.FakeRedis(decode_responses=True)
+        root = _store(client, "")
+        root.set("k", "root-value")
+        client.set("someone:else", "theirs")
+        client.set("orders.default:default:" + "a" * 64, "nested")
+
+        with caplog.at_level("WARNING"):
+            root.clear()
+
+        assert client.get("someone:else") == "theirs"
+        assert client.get("orders.default:default:" + "a" * 64) == "nested"
+        assert root.get("k") is None
+        assert "no key_prefix" in caplog.text
+        client.close()
+
+
+class TestSocketTimeout:
+    """S7 -- an opt-in bound on every Redis call; unset keeps redis-py's own (5 s since redis-py 8, the minimum)."""
+
+    def test_a_configured_timeout_reaches_the_connection(self, mock_registry, mock_config) -> None:
+        svc = RedisCacheService(redis_url="redis://127.0.0.1:1/0", socket_timeout=1.5)
+        kwargs = svc._client.connection_pool.connection_kwargs
+        assert (kwargs["socket_timeout"], kwargs["socket_connect_timeout"]) == (1.5, 1.5)
+        svc.close()
+
+    def test_unset_keeps_the_library_default_which_is_bounded(self, mock_registry, mock_config) -> None:
+        svc = RedisCacheService(redis_url="redis://127.0.0.1:1/0")
+        kwargs = svc._client.connection_pool.connection_kwargs
+        assert kwargs.get("socket_timeout", 5) is not None
+        svc.close()
+
+    def test_the_cache_config_carries_the_key(self, tmp_path) -> None:
+        from blueprint.agents.config import Config
+
+        (tmp_path / "settings.toml").write_text('[default]\napp_environment = "development"\n[default.cache]\nredis_socket_timeout = 2.5\n')
+        assert Config(settings_files=["settings.toml"], root_path=str(tmp_path)).get_cache_config().redis_socket_timeout == 2.5

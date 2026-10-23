@@ -9,12 +9,7 @@ from uuid import uuid4
 from blueprint.agents.services.service_base import ServiceBase
 from blueprint.agents.services.infrastructure.cache_service import CacheService
 
-from src.models.schemas import (
-    CreateProductRequest,
-    Product,
-    ProductSearchResult,
-    UpdateProductRequest,
-)
+from src.models.domain_models import NewProduct, Product, ProductChanges
 
 logger = logging.getLogger(__name__)
 
@@ -65,15 +60,15 @@ class InventoryService(ServiceBase):
             )
         return product
 
-    def create_product(self, request: CreateProductRequest) -> Product:
+    def create_product(self, new: NewProduct) -> Product:
         """Create a new product with a generated UUID and timestamp."""
         product = Product(
             id=str(uuid4()),
-            name=request.name,
-            description=request.description,
-            price=request.price,
-            stock=request.stock,
-            category=request.category,
+            name=new.name,
+            description=new.description,
+            price=new.price,
+            stock=new.stock,
+            category=new.category,
             created_at=datetime.now(UTC),
         )
         self._products[product.id] = product
@@ -88,13 +83,13 @@ class InventoryService(ServiceBase):
         logger.info("Created product %s (%s)", product.id, product.name)
         return product
 
-    def update_product(self, product_id: str, request: UpdateProductRequest) -> Product | None:
+    def update_product(self, product_id: str, changes: ProductChanges) -> Product | None:
         """Update an existing product. Returns None if not found."""
         product = self._products.get(product_id)
         if product is None:
             return None
 
-        update_data = request.model_dump(exclude_unset=True)
+        update_data = changes.model_dump(exclude_unset=True)
         updated = product.model_copy(update=update_data)
         self._products[product_id] = updated
 
@@ -121,11 +116,10 @@ class InventoryService(ServiceBase):
         logger.info("Deleted product %s", product_id)
         return True
 
-    def search_products(self, query: str) -> ProductSearchResult:
+    def search_products(self, query: str) -> list[Product]:
         """Search products by name or description (case-insensitive)."""
         q = query.lower()
-        matches = [p for p in self._products.values() if q in p.name.lower() or q in p.description.lower()]
-        return ProductSearchResult(products=matches, total=len(matches))
+        return [p for p in self._products.values() if q in p.name.lower() or q in p.description.lower()]
 
     def update_stock(self, product_id: str, quantity: int) -> Product | None:
         """Adjust the stock level of a product by the given quantity.

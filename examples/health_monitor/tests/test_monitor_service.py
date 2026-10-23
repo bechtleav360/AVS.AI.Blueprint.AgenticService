@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.models.schemas import EndpointConfig, HealthResult
+from src.models.domain_models import EndpointConfig, HealthResult
 from src.services.monitor_service import MonitorService
 
 
@@ -223,3 +223,15 @@ class TestGenerateReport:
 
         report = await service.generate_report()
         assert report.overall_healthy is False
+
+
+class TestRunChecks:
+    @pytest.mark.asyncio
+    async def test_checks_every_endpoint_and_stores_each_result(self) -> None:
+        """The facade the scheduler calls: check, then store each result."""
+        service = MonitorService.__new__(MonitorService)
+        results = [object(), object()]
+        service.check_all_endpoints = AsyncMock(return_value=results)  # type: ignore[method-assign]
+        service.store_result = AsyncMock()  # type: ignore[method-assign]
+        assert await service.run_checks() == results
+        assert service.store_result.await_count == 2

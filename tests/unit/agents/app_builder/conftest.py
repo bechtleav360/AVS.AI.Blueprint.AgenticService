@@ -37,13 +37,15 @@ def reset_component_state() -> Generator[None]:
         return_value=MagicMock(),
     ):
         yield
-    Component.shared_config = None
-    Component.shared_registry = None
+    Component.reset_shared_state()
 
 
 @pytest.fixture
 def mock_config() -> MagicMock:
     config = MagicMock(spec=Config)
+    # A namespaced component reads through Config.for_namespace(); the mock stands in for
+    # both the loader and its views, so a test controls one object rather than two.
+    config.for_namespace.return_value = config
     Component.configure(config)
     return config
 
@@ -57,25 +59,28 @@ def mock_registry() -> MagicMock:
 
 @pytest.fixture
 def builder(mock_config: MagicMock) -> AppBuilder:
-    """AppBuilder with shared_config pre-configured — for fluent-setter tests."""
+    """AppBuilder with the shared config pre-configured — for fluent-setter tests."""
     return AppBuilder(mock_config)
 
 
 @pytest.fixture
 def build_config() -> MagicMock:
-    """Config for build() tests — NOT pre-configured in Component.shared_config.
+    """Config for build() tests — NOT pre-configured in Component._shared_config.
 
     build() calls Component.configure(self._config) internally; injecting via
     mock_config first would make that call raise 'already configured'.
     """
     config = MagicMock(spec=Config)
     config.get.return_value = ""  # safe default for all config.get() calls
+    # build() reads per-agent keys through Config.for_namespace(); the mock stands in for
+    # both the loader and its views, as mock_config does, so a test controls one object.
+    config.for_namespace.return_value = config
     return config
 
 
 @pytest.fixture
 def builder_for_build(build_config: MagicMock, mock_registry: MagicMock) -> AppBuilder:
-    """AppBuilder ready for build() — shared_config is still None."""
+    """AppBuilder ready for build() — no config has been injected yet."""
     return AppBuilder(build_config)
 
 
@@ -120,10 +125,24 @@ def all_build_mocks():
         )
 
 
+def realize(builder: AppBuilder) -> AppBuilder:
+    """Construct everything ``builder`` has recorded, and nothing else.
+
+    ``with_*()`` records rather than constructs, so a test asserting on the registry has to say
+    when construction happens. ``build()`` would do it, but it also creates the actuator, the
+    root API and a FastAPI application, and those components would drown the one or two the
+    test is about. This runs the same replay pass ``build()`` runs, on its own, against the
+    configuration the builder was given.
+    """
+    builder._construct_declarations(builder._require_config())
+    return builder
+
+
 def wire_empty_registry(mock_registry: MagicMock) -> None:
     """Set all registry collection methods to return empty lists/False."""
     mock_registry.get_event_handler.return_value = []
     mock_registry.get_io_clients.return_value = []
     mock_registry.get_clients.return_value = []
     mock_registry.get_rest_apis.return_value = []
+    mock_registry.get_schedulers.return_value = []
     mock_registry.has_cache.return_value = False

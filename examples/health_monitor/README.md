@@ -28,7 +28,7 @@ asbs dev
 Or directly with uvicorn:
 
 ```bash
-uvicorn src.main:app --reload
+uvicorn src.main:create_app --factory --reload
 ```
 
 The API will be available at `http://localhost:8000`. Interactive docs at `http://localhost:8000/docs`.

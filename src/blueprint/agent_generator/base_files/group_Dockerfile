@@ -1,0 +1,84 @@
+# syntax=docker/dockerfile:1.7
+
+# ============================================================================
+# Group image - hosts several agents in one process
+# ============================================================================
+#
+# The two images run differently. An agent's own Dockerfile serves its one declaration directly
+# (uvicorn src.main:create_app --factory), at the root namespace, with no map and no group. This
+# one runs the group entry point, which reads agents.toml and hosts each agent the deployment
+# names under its own namespace (/api/<agent>). The agent directories are copied as they are,
+# beside the map that names them.
+#
+# Each agent directory is exactly what `asbs setup <name>` wrote -- its own settings.toml and
+# src/ -- and carries no agents.toml. That is what lets the same directory be built by its own
+# Dockerfile as a single-agent image without editing anything. Its .secrets.toml is NOT copied
+# (.dockerignore excludes every one): mount it at runtime beside the agent's src, at
+# /app/<root>/.secrets.toml, where <root> is the agent's `root` in agents.toml -- for example
+#   docker run -v ./agents/billing/.secrets.toml:/app/agents/billing/.secrets.toml:ro <image>
+# or supply single keys as environment variables (DYNACONF_<AGENT>__MODEL_API_KEY=...).
+
+FROM python:3.13-bookworm AS builder
+
+RUN pip install --no-cache-dir --upgrade pip uv
+
+WORKDIR /app
+
+COPY pyproject.toml ./
+RUN uv pip install --system --no-cache .
+
+# ============================================================================
+# Runtime
+# ============================================================================
+FROM python:3.13-slim-bookworm AS runtime
+
+RUN useradd --create-home --shell /bin/bash appuser
+
+WORKDIR /app
+
+COPY --from=builder /usr/local/lib/python3.13/site-packages /usr/local/lib/python3.13/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+
+# The agents, each in the directory its entry in agents.toml points at with `root`. Copy the
+# directories this image actually contains; a blanket `COPY . .` would bake in whatever else
+# the repository holds, including other images' build context.
+COPY --chown=appuser:appuser agents ./agents
+
+# The image's own settings: the process-wide keys -- app_port, app_host, event_bus, log_level
+# and the rest. One process has one of each, so an agent that sets them in its own settings
+# file has them dropped before the merge, with a warning naming the value the process uses.
+COPY --chown=appuser:appuser settings.toml ./
+
+# The map: which agents this image contains, and where each one's files are. The group file
+# does NOT belong here -- which of these agents a process runs is a deployment decision, so it
+# arrives as a mount or as BLUEPRINT_AGENTS.
+COPY --chown=appuser:appuser agents.toml ./
+
+# The disk cache backend writes here and cannot create it itself: WORKDIR made /app
+# root-owned, so mkdir() as appuser fails with EACCES. Created and handed over at build time.
+RUN mkdir -p /app/.cache && chown -R appuser:appuser /app/.cache
+
+# app_environment selects the settings section, and it defaults to development. The variable is
+# DYNACONF_APP_ENVIRONMENT -- DYNACONF_ENVIRONMENT selects nothing -- and a project that sets its own
+# envvar_prefix renames it to <PREFIX>_APP_ENVIRONMENT.
+ENV DYNACONF_APP_ENVIRONMENT="production" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+USER appuser
+
+EXPOSE 8000
+
+# Python, not curl: the slim base image has no curl, so a curl check failed for ever and the
+# container never turned healthy.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD ["python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health/live', timeout=4).status == 200 else 1)"]
+
+# Which agents this process runs is the deployment's to say:
+#
+#   docker run -e BLUEPRINT_AGENTS=order_processor,billing <image>
+#   docker run -v ./deployment-groups.yaml:/app/deployment-groups.yaml:ro \
+#              -e BLUEPRINT_GROUP=<group> <image>
+#
+# Nothing in the image names a group, so one image serves every one of them.
+ENTRYPOINT ["python", "-m", "blueprint.agents.entrypoint"]

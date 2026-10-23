@@ -11,7 +11,7 @@ import httpx
 from blueprint.agents.services.service_base import ServiceBase
 from blueprint.agents.services.infrastructure.cache_service import CacheService
 
-from src.models.schemas import EndpointConfig, EndpointStatus, HealthResult, UptimeReport
+from src.models.domain_models import EndpointConfig, EndpointStatus, HealthResult, UptimeReport
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +97,13 @@ class MonitorService(ServiceBase):
         for endpoint in self._endpoints:
             result = await self.check_endpoint(endpoint)
             results.append(result)
+        return results
+
+    async def run_checks(self) -> list[HealthResult]:
+        """Check every endpoint and store each result: the one method the scheduler calls."""
+        results = await self.check_all_endpoints()
+        for result in results:
+            await self.store_result(result)
         return results
 
     async def store_result(self, result: HealthResult) -> None:

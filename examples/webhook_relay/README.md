@@ -8,18 +8,18 @@ events over NATS.
 
 ## Architecture
 
-The processing pipeline is built as a **handler chain** with three stages:
+One handler, one service -- the shape every Blueprint agent follows:
 
-| Priority | Handler              | Responsibility                                      |
-|----------|----------------------|-----------------------------------------------------|
-| 5        | WebhookNormalizer    | Parse raw payload, deduplicate, normalize structure  |
-| 10       | ContentFilter        | Drop bot events, test events, and other noise        |
-| 15       | MetadataEnricher     | Add priority scores, timestamps, publish final event |
+| Component | Responsibility |
+|---|---|
+| `WebhookHandler` | Routes `webhook.received` (envelope only), extracts the `WebhookPayload` DTO, turns it into an `IncomingWebhook` domain value and calls `WebhookService.relay()` **once**. Translates the answer into a result. |
+| `WebhookService.relay()` | Every decision: duplicate? (cache), normalise per source, content filter (GitHub bots, Stripe test events), enrich (priority score, timestamp), record for dedup and the recent list. |
 
-Lower priority numbers execute first. Each handler can:
+The handler's results:
 
-- Return `None` to pass the event to the next handler in the chain.
-- Return a `HandlerResult` to publish an event and stop processing.
+- `HandlerResult(event_type="webhook.processed", ...)` -- relayed and enriched.
+- `HandlerResult(event_type="webhook.filtered", ...)` -- dropped by a content rule, with the reason.
+- `HandlerResult.skipped(reason)` -- a duplicate: nothing to do, acknowledged, logged at INFO.
 
 ## Event Flow
 
@@ -27,17 +27,11 @@ Lower priority numbers execute first. Each handler can:
 POST /api/webhooks
       |
       v
-[webhook.received]  -->  WebhookNormalizer (5)
-                              |
-                              v  (stores normalized_event in context)
-                         ContentFilter (10)
-                              |
-                              v  (filters bots / test events)
-                         MetadataEnricher (15)
-                              |
-                              v
-                    [webhook.processed]  -->  NATS topic: webhooks-processed
-                    [webhook.filtered]   -->  NATS topic: webhooks-filtered
+[webhook.received]  -->  WebhookHandler  -->  WebhookService.relay()
+                                                 |
+                       duplicate  <--------------+--> filtered -> [webhook.filtered]  -> webhooks-filtered
+                       (skipped)                 |
+                                                 +--> processed -> [webhook.processed] -> webhooks-processed
 ```
 
 ## NATS Configuration
@@ -69,17 +63,17 @@ nats_url = "nats://localhost:4222"
 
    ```bash
    pip install -e .
-   uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
+   uvicorn src.main:create_app --factory --host 0.0.0.0 --port 8000 --reload
    ```
 
 ### Without NATS (handlers still execute, publishing is a no-op)
 
 ```bash
 pip install -e .
-uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn src.main:create_app --factory --host 0.0.0.0 --port 8000 --reload
 ```
 
-The handler chain processes events locally. Published events will log a warning
+The handler and service process events locally. Published events will log a warning
 if NATS is unreachable but will not crash the service.
 
 ### Testing the endpoint
@@ -124,11 +118,10 @@ webhook_relay/
   src/
     main.py              # AppBuilder wiring
     models/
-      schemas.py         # Pydantic models
+      dto.py             # DTO: WebhookPayload (REST body and event data)
+      domain_models.py   # Domain: IncomingWebhook, NormalizedEvent, RelayOutcome
     handlers/
-      webhook_normalizer.py
-      content_filter.py
-      metadata_enricher.py
+      webhook_handler.py # webhook.received -> WebhookService.relay()
     services/
       webhook_service.py # Business logic and caching
     api/

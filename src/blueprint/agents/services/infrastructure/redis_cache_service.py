@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 import logging
 from collections.abc import Iterator
 from typing import Any
@@ -18,6 +19,9 @@ from .cache_key_mixin import _CacheKeyMixin
 from .cache_service import CacheService
 
 logger = logging.getLogger(__name__)
+
+_DIGEST = re.compile(r"[0-9a-f]{64}")
+"""The last segment of every key this class writes: the SHA-256 of the cache key (``CacheKeyMixin.hash``)."""
 
 
 class RedisCacheService(_CacheKeyMixin, CacheService):
@@ -36,8 +40,13 @@ class RedisCacheService(_CacheKeyMixin, CacheService):
         key_prefix: str = "",
         default_ttl: int | None = None,
         fallback_to_local: bool = False,
+        component_name: str | None = None,
+        socket_timeout: float | None = None,
     ) -> None:
-        super().__init__()
+        # component_name: registry name to use instead of the derived 'redis_cache_service'.
+        # A process may hold several named caches (spec sec. 8), and two instances of this
+        # class would otherwise collide on the one derived name. None keeps the existing key.
+        super().__init__(name=component_name)
         self._redis_url = redis_url
         # Cached credential-free variant for logs, /readiness payloads, and stats.
         self._safe_redis_url = _sanitize_redis_url(redis_url)
@@ -54,11 +63,17 @@ class RedisCacheService(_CacheKeyMixin, CacheService):
             effective_url = "rediss://" + redis_url[len("redis://") :]
         # Typed as Any: redis-py's sync methods are statically declared as ``Awaitable | T``
         # (the same Redis class is used for sync and async), which trips mypy on every call.
+        # socket_timeout bounds every call, the connect included (S7). Unset leaves redis-py's
+        # default, which is 5 s since redis-py 8 -- the minimum this package requires, because
+        # before it the default was no timeout, and a Redis that stopped answering held the call
+        # (and, through the claim, a delivery) for ever.
+        timeouts = {} if socket_timeout is None else {"socket_timeout": socket_timeout, "socket_connect_timeout": socket_timeout}
         self._client: Any = redis.Redis.from_url(
             effective_url,
             password=password,
             db=db,
             decode_responses=True,
+            **timeouts,
         )
 
     async def ping(self) -> None:
@@ -102,15 +117,30 @@ class RedisCacheService(_CacheKeyMixin, CacheService):
         return f"{self._key_prefix}:*" if self._key_prefix else "*"
 
     def _parse_namespace(self, redis_key: str) -> str | None:
-        """Extract namespace from a Redis key, accounting for optional key_prefix."""
+        """The namespace of one of this store's own keys; ``None`` for any other key (see :meth:`_owns`)."""
+        if not self._owns(redis_key):
+            return None
+        key = redis_key[len(self._key_prefix) + 1 :] if self._key_prefix else redis_key
+        return key.split(":", 1)[0]
+
+    def _owns(self, redis_key: str) -> bool:
+        """Whether ``redis_key`` is this store's own: ``<prefix>:<namespace>:<sha256>``, nothing deeper (M6).
+
+        Every other store of the process nests under this one's prefix -- a named cache, every
+        agent's cache: ``<prefix>:<storage>:<namespace>:<sha256>``. A scan of ``<prefix>:*``
+        therefore found them all, so clearing the root cache emptied every agent's, and listing
+        it reported their storage names as namespaces. One segment too many marks a child's key,
+        and a last segment that is not this class's digest marks a key someone else wrote -- with
+        ``key_prefix = ""`` the scan covers the whole database.
+        """
         key = redis_key
         if self._key_prefix:
             prefix = f"{self._key_prefix}:"
             if not key.startswith(prefix):
-                return None
+                return False
             key = key[len(prefix) :]
-        parts = key.split(":", 1)
-        return parts[0] if len(parts) >= 2 else None
+        parts = key.split(":")
+        return len(parts) == 2 and _DIGEST.fullmatch(parts[1]) is not None
 
     def get(self, key: str | list[str] | dict[str, Any], namespace: str = "default") -> Any | None:
         try:
@@ -147,6 +177,26 @@ class RedisCacheService(_CacheKeyMixin, CacheService):
         except Exception as e:
             logger.warning("Error setting Redis cache: %s", e)
 
+    def claim(self, key: str | list[str] | dict[str, Any], value: Any, namespace: str = "default", ttl: int | None = None) -> bool:
+        """Store a value only if the key is absent, and report whether we stored it.
+
+        ``SET key value NX EX ttl`` is a single server-side operation, so unlike the disk
+        backend there is no stale-takeover branch: expiry is the server's job and an expired
+        key simply is not there. Redis returns ``None`` rather than ``False`` when ``NX``
+        refuses, hence the truthiness check.
+        """
+        try:
+            full_key = self._full_key(key, namespace)
+            effective_ttl = ttl if ttl is not None else self._default_ttl
+            stored = self._client.set(full_key, json.dumps(value), nx=True, ex=effective_ttl)
+            logger.debug("Cache claim on %s: %s", full_key, bool(stored))
+            return bool(stored)
+        except Exception as e:
+            # Fails open, matching every other operation here: an unreachable cache must not
+            # stop the caller from doing its work.
+            logger.warning("Error claiming Redis cache key: %s", e)
+            return True
+
     def delete(self, key: str | list[str] | dict[str, Any], namespace: str = "default") -> bool:
         try:
             full_key = self._full_key(key, namespace)
@@ -168,14 +218,23 @@ class RedisCacheService(_CacheKeyMixin, CacheService):
 
     def clear(self, namespace: str | None = None) -> None:
         try:
+            if not namespace and not self._key_prefix:
+                logger.warning(
+                    "Clearing a Redis cache with no key_prefix: its keys share the database with whatever else uses it. "
+                    "Only keys of this store's own form are deleted; set 'cache.key_prefix' to give the process a space "
+                    "of its own."
+                )
             pattern = self._namespace_scan_pattern(namespace) if namespace else self._all_scan_pattern()
             cursor = 0
             deleted_count = 0
             while True:
                 cursor, keys = self._client.scan(cursor=cursor, match=pattern, count=500)
-                if keys:
-                    self._client.delete(*keys)
-                    deleted_count += len(keys)
+                # Only this store's keys: the pattern also matches every store nested under this
+                # one's prefix -- every named and every agent cache (M6).
+                own = [key for key in keys if self._owns(key)]
+                if own:
+                    self._client.delete(*own)
+                    deleted_count += len(own)
                 if cursor == 0:
                     break
             if namespace:
@@ -232,6 +291,8 @@ class RedisCacheService(_CacheKeyMixin, CacheService):
             while True:
                 cursor, batch = self._client.scan(cursor=cursor, match=pattern, count=500)
                 for key in batch:
+                    if not self._owns(key):
+                        continue  # a nested store's key whose storage name equals this namespace
                     if skipped < offset:
                         skipped += 1
                         continue

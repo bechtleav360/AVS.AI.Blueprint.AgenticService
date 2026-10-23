@@ -8,7 +8,7 @@ from blueprint.agents.services.service_base import ServiceBase
 from blueprint.agents.agent.agent_runtime import AgentRuntime
 from blueprint.agents.services.infrastructure.cache_service import CacheService
 
-from src.models.schemas import DocumentRequest, DocumentSummary, SummarizeResponse
+from src.models.domain_models import Document, DocumentSummary, SummaryRecord
 
 logger = logging.getLogger(__name__)
 
@@ -37,34 +37,35 @@ class SummarizerService(ServiceBase):
     # Public API
     # ------------------------------------------------------------------
 
-    async def summarize(self, request: DocumentRequest) -> SummarizeResponse:
+    async def summarize(self, document: Document) -> SummaryRecord:
         """Summarize a document, returning a cached result when available.
 
         Args:
-            request: The document to summarize.
+            document: The document to summarize.
 
         Returns:
-            A SummarizeResponse containing the document_id and structured summary.
+            The summary and the document_id it is stored under.
         """
-        document_id = self._hash_content(request.content)
+        document_id = self._hash_content(document.content)
 
         # Check cache
         if self._cache is not None:
             cached: dict[str, Any] | None = self._cache.get(document_id, namespace=CACHE_NAMESPACE)
             if cached is not None:
                 logger.info("Cache hit for document_id=%s", document_id)
-                return SummarizeResponse(
+                return SummaryRecord(
                     document_id=document_id,
                     summary=DocumentSummary(**cached),
                 )
 
         # Build user prompt
-        user_prompt = request.content
-        if request.title:
-            user_prompt = f"Title: {request.title}\n\n{request.content}"
+        user_prompt = document.content
+        if document.title:
+            user_prompt = f"Title: {document.title}\n\n{document.content}"
 
         # Run the agent
-        assert self._agent is not None, "Agent not initialised — was on_startup called?"
+        if self._agent is None:
+            raise RuntimeError("SummarizerService used before on_startup resolved its agent")
         result = await self._agent.run(user_prompt)
         summary: DocumentSummary = result.data  # type: ignore[assignment]
 
@@ -77,16 +78,16 @@ class SummarizerService(ServiceBase):
             )
             logger.info("Cached summary for document_id=%s", document_id)
 
-        return SummarizeResponse(document_id=document_id, summary=summary)
+        return SummaryRecord(document_id=document_id, summary=summary)
 
-    async def get_summary(self, document_id: str) -> SummarizeResponse | None:
+    async def get_summary(self, document_id: str) -> SummaryRecord | None:
         """Retrieve a previously cached summary by document ID.
 
         Args:
             document_id: The hash-based identifier of the document.
 
         Returns:
-            The cached SummarizeResponse, or None if not found.
+            The cached summary record, or None if not found.
         """
         if self._cache is None:
             return None
@@ -95,7 +96,7 @@ class SummarizerService(ServiceBase):
         if cached is None:
             return None
 
-        return SummarizeResponse(
+        return SummaryRecord(
             document_id=document_id,
             summary=DocumentSummary(**cached),
         )

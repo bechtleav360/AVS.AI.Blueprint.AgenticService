@@ -56,13 +56,16 @@ This installs:
 ### Run All Tests
 
 ```bash
-python pytest tests/
+python -m pytest tests/
 ```
 
 ### Run Tests with Coverage
 
+`--cov` comes from `pytest-cov`, which no extra of this package installs:
+
 ```bash
-python pytest tests/ --cov=blueprint.agents --cov-report=html
+pip install pytest-cov
+python -m pytest tests/ --cov=blueprint.agents --cov-report=html
 ```
 
 This generates an HTML coverage report in `htmlcov/index.html`.
@@ -70,7 +73,7 @@ This generates an HTML coverage report in `htmlcov/index.html`.
 ### Run Tests for a Specific Module
 
 ```bash
-python pytest tests/unit/test_agent_builder.py
+python -m pytest tests/unit/agents/agent/test_agent_builder.py
 ```
 
 ### Run Tests in Watch Mode (with pytest-watch)
@@ -96,7 +99,7 @@ pytest tests/ -v
 ### Run a Specific Test
 
 ```bash
-pytest tests/unit/test_agent_builder.py::TestAgentBuilder::test_with_model_sets_model_name -v
+pytest tests/unit/agents/agent/test_agent_builder.py::TestFluentSetters::test_with_tool_appends -v
 ```
 
 ## Building the Package Locally
@@ -142,7 +145,7 @@ You should see entries like:
 blueprint/agents/__init__.py
 blueprint/agents/agent/__init__.py
 blueprint/agents/agent/agent_builder.py
-blueprint/agents/api/__init__.py
+blueprint/agents/app_builder.py
 blueprint/agents/config/__init__.py
 ...
 ```
@@ -206,16 +209,34 @@ mypy src/
 black src/ tests/ && ruff check src/ tests/ && mypy src/
 ```
 
-## Pre-commit & Pre-push Hooks
+## Commit Messages
 
-Set up both commit and push hooks:
+Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/): a subject line
+of `<type>(<scope>): <description>`, where the type is one of `feat`, `fix`, `docs`, `style`,
+`refactor`, `perf`, `test`, `build`, `ci`, `chore` or `revert`. The commitizen hook configured in
+`.pre-commit-config.yaml` checks this at the `commit-msg` stage, so it only runs if you install
+that stage (see below).
+
+```
+fix(eventing): join a queue group on Core NATS subscriptions
+
+Without queue= every replica received every message, so two replicas
+doubled every side effect.
+```
+
+## Pre-commit, Commit-msg & Pre-push Hooks
+
+Install all three hook stages -- `pre-commit install` on its own installs only the first, which
+leaves the commit-message check inactive:
 
 ```bash
 pre-commit install
+pre-commit install --hook-type commit-msg
 pre-commit install --hook-type pre-push
 ```
 
 - **Pre-commit** runs linting and formatting checks on staged files before each commit.
+- **Commit-msg** validates the commit message against Conventional Commits.
 - **Pre-push** runs the unit test suite before pushing, so CI won't fail on basic issues.
 
 ## Troubleshooting
@@ -270,7 +291,7 @@ Publishing is handled by the CI/CD pipeline. See `.github/workflows/publish.yml`
 
 If you encounter issues, please:
 
-1. Check the [Troubleshooting Guide](docs/guides/troubleshooting.md) for known issues
+1. Check the [Troubleshooting Guide](src/blueprint/agent_generator/docs/guides/troubleshooting.md) for known issues
 2. Review the test output carefully for error messages
 3. Open an issue on GitHub with details about your environment and the error
 
