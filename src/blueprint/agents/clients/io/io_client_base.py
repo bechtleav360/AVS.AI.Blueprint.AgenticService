@@ -126,13 +126,13 @@ def subject_is_covered_by(subject: str, pattern: str) -> bool:
     pattern_tokens = pattern.split(".")
     subject_tokens = subject.split(".")
 
-    for index, token in enumerate(pattern_tokens):
-        if token == ">":
+    for index, segment in enumerate(pattern_tokens):
+        if segment == ">":
             # Matches the rest, and there has to be a rest: 'a.>' does not match 'a'.
             return index < len(subject_tokens)
         if index >= len(subject_tokens):
             return False
-        if token != "*" and token != subject_tokens[index]:
+        if segment != "*" and segment != subject_tokens[index]:
             return False
 
     return len(pattern_tokens) == len(subject_tokens)

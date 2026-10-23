@@ -367,6 +367,9 @@ Full migration path, including the one decision to get right before the first de
   behaviour except `scheduler_mode`, which is required — see **Breaking**.
 - `pyyaml>=6.0` is now a declared dependency (it reads the group file). Already present in every
   environment via `uvicorn[standard]`, so no installed set changes.
+- **The package declares its licence: MIT.** `pyproject.toml` sets `license = "MIT"` and ships
+  `LICENSE` in the wheel and the sdist, so the published metadata states the licence the README
+  names.
 
 ### Changed
 

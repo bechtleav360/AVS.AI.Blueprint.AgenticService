@@ -414,11 +414,13 @@ hand. The links below are the same pages on GitHub, for browsing.
 
 ## Contributing
 
-We welcome contributions! See [CONTRIBUTE.md](https://github.com/bechtleav360/AVS.AI.Blueprint.AgenticService/blob/develop/CONTRIBUTE.md) for guidelines on:
+We welcome contributions! See [CONTRIBUTING.md](https://github.com/bechtleav360/AVS.AI.Blueprint.AgenticService/blob/develop/CONTRIBUTING.md) for guidelines on:
 
 - Setting up the development environment
 - Running tests and linting
 - Submitting pull requests
+
+To report a security vulnerability, follow [SECURITY.md](https://github.com/bechtleav360/AVS.AI.Blueprint.AgenticService/blob/develop/SECURITY.md).
 
 ---
 

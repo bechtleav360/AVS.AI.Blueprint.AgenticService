@@ -908,7 +908,8 @@ class Config:
                 application's own configuration, and this view's own scope on a view.
 
         Raises:
-            RuntimeError: if a view is asked for a namespace other than its own.
+            RuntimeError: if a view is asked for a namespace other than its own, or has no loader
+                to resolve itself with.
         """
         if self._is_view:
             if namespace and namespace != self._agent_scope:
@@ -916,7 +917,8 @@ class Config:
                     f"Namespace '{self._agent_scope}' asked its own view to resolve configuration for namespace "
                     f"'{namespace}'. A view resolves itself; it is not a window on another agent's configuration."
                 )
-            assert self._loader is not None, "a view without the loader that made it cannot resolve itself"
+            if self._loader is None:
+                raise RuntimeError(f"The view of namespace '{self._agent_scope}' has no loader, so it cannot resolve itself.")
             return self._loader.resolved_settings(self._agent_scope or "")
 
         tree: dict[str, Any] = dict(self._settings.as_dict())

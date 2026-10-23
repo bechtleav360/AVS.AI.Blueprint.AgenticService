@@ -1,0 +1,35 @@
+name: Security
+
+on:
+  push:
+    branches:
+      - '**'
+    tags-ignore:
+      - 'v*'
+  pull_request:
+    branches:
+      - '**'
+  # New advisories appear without any change to the code: audit the default branch weekly.
+  schedule:
+    - cron: '0 6 * * 1'
+
+jobs:
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-python-env
+
+      # Same settings as the bandit hook in .pre-commit-config.yaml
+      - name: bandit
+        run: uvx bandit@1.9.4 -r src --skip B404,B603,B113
+
+      # Known vulnerabilities in the resolved dependencies; the package itself is installed
+      # editable and left out.
+      - name: pip-audit
+        run: |
+          uv pip freeze --exclude-editable > "$RUNNER_TEMP/requirements.txt"
+          uvx pip-audit@2.10.1 -r "$RUNNER_TEMP/requirements.txt" --no-deps --disable-pip
