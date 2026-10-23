@@ -59,6 +59,9 @@ class EventProcessingService(ServiceBase):
         # every application that exists today -- behaves exactly as it did.
         self._handler_chains: dict[str, HandlerChain] = {ROOT_NAMESPACE: HandlerChain()}
         self._correlation_context = self.registry.correlation_context
+        # Agents already warned that their handlers' events have nowhere to go: once per agent,
+        # because in sessions mode every successful job would repeat it.
+        self._unpublished_warned: set[str] = set()
 
     async def on_startup(self) -> None:
         """Start one handler chain per namespace that has handlers registered in it.
@@ -194,7 +197,10 @@ class EventProcessingService(ServiceBase):
                     # unscoped lookup this used to be: with one publishing service per
                     # namespace (P6) that finds several and refuses to choose, so a grouped
                     # process would fail on the first handler that returns an event_type.
-                    publisher = self.registry.get_component(EventPublishingService, namespace=namespace)
+                    publisher = self._publisher_for(namespace)
+                    if publisher is None:
+                        self._log_unpublished(namespace, result.event_type)
+                        continue
                     await publisher.publish_handler_event(
                         event_type=result.event_type,
                         data=result.data,
@@ -259,6 +265,40 @@ class EventProcessingService(ServiceBase):
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _publisher_for(self, namespace: str) -> EventPublishingService | None:
+        """Return the agent's publishing service, else the root's, or ``None`` when neither exists.
+
+        A publishing service exists only beside an event-bus client. A process without one --
+        ``event_bus = "sessions"``, or no event bus at all -- has none, and a handler that returns
+        an ``event_type`` there has nothing to publish on (#40). Absence is checked here rather
+        than by catching the registry's ``ValueError``, because that error also reports two
+        publishing services at one level, and ambiguity must still fail the delivery.
+        """
+        own = self.registry.get_components_by_type(EventPublishingService, namespace)
+        if not own and not self.registry.get_components_by_type(EventPublishingService, ROOT_NAMESPACE):
+            return None
+        publisher: EventPublishingService = self.registry.get_component(EventPublishingService, namespace=namespace)
+        return publisher
+
+    def _log_unpublished(self, namespace: str, event_type: str) -> None:
+        """Say that a handler's event is not published: WARNING once per agent, DEBUG after that.
+
+        The handler's own work is done by now; only the follow-up event is dropped. Before #40 the
+        lookup raised instead and the transport logged the delivery as failed after it had
+        succeeded -- an ERROR on every successful sessions job.
+        """
+        agent = namespace or ROOT_LABEL
+        if namespace in self._unpublished_warned:
+            logger.debug("Not publishing event_type '%s' for agent '%s': no event publishing service", event_type, agent)
+            return
+        self._unpublished_warned.add(namespace)
+        logger.warning(
+            "Agent '%s' returned event_type '%s', but it has no event-bus client to publish on, so handler events are not "
+            "published. Logged once per agent.",
+            agent,
+            event_type,
+        )
 
     @staticmethod
     def _extract_handler_results(handler_result: Any) -> list[HandlerResult]:

@@ -1,6 +1,7 @@
 """Unit tests for EventProcessingService."""
 
 import asyncio
+import logging
 import traceback
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -8,11 +9,14 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from pydantic import ValidationError
 
+from blueprint.agents.component.component import Component
 from blueprint.agents.component.namespace import ROOT_NAMESPACE
+from blueprint.agents.component.registry import Registry
 from blueprint.agents.handler.handler_chain import DUPLICATE_CONTEXT_KEY, IDEMPOTENCY_CACHE_NAMESPACE
 from blueprint.agents.models.events import GenericCloudEvent, HandlerResult
 from blueprint.agents.models.result import ProcessingStatus
 from blueprint.agents.services.eventing.event_processing_service import EventProcessingService
+from blueprint.agents.services.eventing.event_publishing_service import EventPublishingService
 from blueprint.agents.services.infrastructure.cache_service import DiskCacheService
 from tests.unit.agents.handler.conftest import StubHandler
 
@@ -276,6 +280,69 @@ class TestAFailedResultPublish:
         _, publisher = self._wire(event_processing_service, mock_registry, results)
         await event_processing_service.process_event(GenericCloudEvent(id="e1", type="t", source="s"))
         assert [call.kwargs["index"] for call in publisher.publish_handler_event.await_args_list] == [0, 1]
+
+
+class TestNoPublishingService:
+    """#40 -- a process without an event-bus client (sessions mode) has no publishing service.
+
+    A real Registry, not the mocked one: the question is what the registry holds, and a MagicMock
+    answers every lookup with something.
+    """
+
+    @staticmethod
+    def _publisher(namespace: str = ROOT_NAMESPACE) -> MagicMock:
+        publisher = MagicMock(spec=EventPublishingService)
+        publisher.namespace = namespace
+        publisher.publish_handler_event = AsyncMock()
+        return publisher
+
+    @staticmethod
+    def _wire(
+        service: EventProcessingService, monkeypatch: pytest.MonkeyPatch, publishers: list[MagicMock], namespace: str = ROOT_NAMESPACE
+    ) -> MagicMock:
+        registry = Registry(object)
+        for position, publisher in enumerate(publishers):
+            registry.add_component(f"publisher-{position}", publisher)
+        monkeypatch.setattr(Component, "shared_registry", registry)
+        chain = MagicMock()
+        chain.process = AsyncMock(return_value=HandlerResult(event_type="classification.completed", data={}))
+        chain.release = AsyncMock()
+        service._handler_chains[namespace] = chain
+        return chain
+
+    async def test_the_delivery_succeeds_and_nothing_is_published(
+        self, event_processing_service: EventProcessingService, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        chain = self._wire(event_processing_service, monkeypatch, publishers=[])
+        result = await event_processing_service.process_event(GenericCloudEvent(id="e1", type="t", source="s"))
+        assert result.status is ProcessingStatus.PROCESSED
+        chain.release.assert_not_awaited()
+
+    async def test_it_warns_once_per_agent_and_then_logs_at_debug(
+        self, event_processing_service: EventProcessingService, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        self._wire(event_processing_service, monkeypatch, publishers=[])
+        with caplog.at_level(logging.DEBUG, logger="blueprint.agents.services.eventing.event_processing_service"):
+            for event_id in ("e1", "e2"):
+                await event_processing_service.process_event(GenericCloudEvent(id=event_id, type="t", source="s"))
+        about_it = [record for record in caplog.records if "classification.completed" in record.getMessage()]
+        assert [record.levelno for record in about_it] == [logging.WARNING, logging.DEBUG]
+
+    async def test_an_agent_without_its_own_publisher_uses_the_root_one(
+        self, event_processing_service: EventProcessingService, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root_publisher = self._publisher()
+        self._wire(event_processing_service, monkeypatch, publishers=[root_publisher], namespace="orders")
+        await event_processing_service.process_event(GenericCloudEvent(id="e1", type="t", source="s"), namespace="orders")
+        root_publisher.publish_handler_event.assert_awaited_once()
+
+    async def test_two_publishers_at_one_level_still_fail_the_delivery(
+        self, event_processing_service: EventProcessingService, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        chain = self._wire(event_processing_service, monkeypatch, publishers=[self._publisher(), self._publisher()])
+        with pytest.raises(ValueError, match="ambiguous"):
+            await event_processing_service.process_event(GenericCloudEvent(id="e1", type="t", source="s"))
+        chain.release.assert_awaited_once()
 
 
 class TestASkippedRun:

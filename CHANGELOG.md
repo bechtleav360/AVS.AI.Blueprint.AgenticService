@@ -405,6 +405,12 @@ Full migration path, including the one decision to get right before the first de
 
 ### Fixed
 
+- **A handler that returns an `event_type` no longer fails its delivery where nothing can publish
+  it** (#40). A publishing service exists only beside an event-bus client, so with
+  `event_bus = "sessions"`, or without an event bus, the lookup raised after the handler had
+  finished, and every successful job was logged as `Unexpected error processing job` at ERROR. The
+  event is now skipped: a WARNING names the agent and the `event_type` once, later ones log at
+  DEBUG, and the delivery counts as processed. Two publishing services at one level still fail it.
 - **The `/` service page lists the routes again** (#42). Since FastAPI 0.137, `include_router()`
   leaves a wrapper in `app.routes` instead of the routes, and the page found none of them: every
   route the framework mounts comes from an included router, so the table was empty. It is now built
