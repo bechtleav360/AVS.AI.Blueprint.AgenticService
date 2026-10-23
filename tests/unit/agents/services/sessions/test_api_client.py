@@ -74,6 +74,27 @@ class TestOnStartup:
         assert "Authorization" not in headers
         assert api_client._agent_token is None
 
+    async def test_bearer_header_uses_stripped_token(
+        self, api_client: SessionsApiClient, mock_config: MagicMock, sessions_config: dict
+    ) -> None:
+        # A token mounted from a secret file usually ends in a newline, which is not valid in a header.
+        mock_config.get.return_value = {**sessions_config, "agent_token": "  agent-jwt\n"}
+        with patch(_PATCH_TARGET) as mock_cls:
+            await api_client.on_startup()
+        headers = mock_cls.call_args[1]["headers"]
+        assert headers["Authorization"] == "Bearer agent-jwt"
+        assert api_client._agent_token == "agent-jwt"
+
+    async def test_whitespace_only_token_sends_no_bearer(
+        self, api_client: SessionsApiClient, mock_config: MagicMock, sessions_config: dict
+    ) -> None:
+        mock_config.get.return_value = {**sessions_config, "agent_token": "   \n"}
+        with patch(_PATCH_TARGET) as mock_cls:
+            await api_client.on_startup()
+        headers = mock_cls.call_args[1]["headers"]
+        assert "Authorization" not in headers
+        assert api_client._agent_token is None
+
 
 # ---------------------------------------------------------------------------
 # on_shutdown

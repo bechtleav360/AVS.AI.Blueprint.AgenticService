@@ -49,6 +49,10 @@ class _RoutedApi(RestApiBase):
     async def patch_item(self) -> dict:
         return {}
 
+    @RestApiBase.head("/items/{id}")
+    async def item_exists(self) -> None:
+        pass
+
 
 # ---------------------------------------------------------------------------
 # Route decorator tests
@@ -82,6 +86,11 @@ class TestRouteDecorators:
         assert verb == "patch"
         assert path == "/items/{id}"
 
+    def test_head_decorator_attaches_route_attr(self) -> None:
+        verb, path, _ = _RoutedApi.item_exists._route
+        assert verb == "head"
+        assert path == "/items/{id}"
+
     def test_decorator_stores_kwargs(self) -> None:
         @RestApiBase.get("/tagged", tags=["foo"], summary="bar")
         async def tagged_fn(self):
@@ -105,10 +114,10 @@ class TestWireRoutes:
         api = _RoutedApi()
         assert len(api.router.routes) > 0
 
-    def test_all_five_verbs_are_registered(self, mock_config: MagicMock) -> None:
+    def test_all_six_verbs_are_registered(self, mock_config: MagicMock) -> None:
         api = _RoutedApi()
         flat = {m for route in api.router.routes if hasattr(route, "methods") for m in route.methods}
-        assert {"GET", "POST", "PUT", "DELETE", "PATCH"}.issubset(flat)
+        assert {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"}.issubset(flat)
 
     def test_no_routes_when_no_decorated_methods(self, mock_config: MagicMock) -> None:
         api = _MinimalApi()

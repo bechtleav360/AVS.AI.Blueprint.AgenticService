@@ -62,7 +62,7 @@ After scaffolding, implement the component logic:
 - Resolve agent/cache dependencies in `on_startup()`
 
 ### RestApi
-- Use `@RestApiBase.get/post/put/delete/patch()` decorators
+- Use `@RestApiBase.get/post/put/delete/patch/head()` decorators
 - Use Pydantic models for request/response types
 - Resolve services in `on_startup()`
 

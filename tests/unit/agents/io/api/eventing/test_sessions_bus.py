@@ -136,6 +136,29 @@ class TestOnStartup:
         assert sessions_bus._agent_token is None
         sessions_bus._sse_task.cancel()
 
+    async def test_agent_token_stripped_on_read(self, sessions_bus: SessionsBus, mock_config: MagicMock, mock_registry: MagicMock) -> None:
+        # A token mounted from a secret file usually ends in a newline, which is not valid in a header.
+        mock_config.get.return_value = {**_make_sessions_config(), "agent_token": "  agent-jwt\n"}
+        mock_registry.get_service.return_value = MagicMock()
+
+        with patch.object(sessions_bus, "_consume_sse_stream", new=AsyncMock()):
+            await sessions_bus.on_startup()
+
+        assert sessions_bus._agent_token == "agent-jwt"
+        sessions_bus._sse_task.cancel()
+
+    async def test_whitespace_only_agent_token_treated_as_absent(
+        self, sessions_bus: SessionsBus, mock_config: MagicMock, mock_registry: MagicMock
+    ) -> None:
+        mock_config.get.return_value = {**_make_sessions_config(), "agent_token": "   \n"}
+        mock_registry.get_service.return_value = MagicMock()
+
+        with patch.object(sessions_bus, "_consume_sse_stream", new=AsyncMock()):
+            await sessions_bus.on_startup()
+
+        assert sessions_bus._agent_token is None
+        sessions_bus._sse_task.cancel()
+
 
 # ---------------------------------------------------------------------------
 # on_shutdown

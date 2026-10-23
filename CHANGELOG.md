@@ -1,4 +1,5 @@
 # Changelog
+
 ## [Unreleased]
 
 **Multi-agent grouping.** How many agents share a process becomes a *deployment* parameter rather
@@ -367,6 +368,9 @@ Full migration path, including the one decision to get right before the first de
   behaviour except `scheduler_mode`, which is required — see **Breaking**.
 - `pyyaml>=6.0` is now a declared dependency (it reads the group file). Already present in every
   environment via `uvicorn[standard]`, so no installed set changes.
+- **`@RestApiBase.head(path, **kwargs)`** registers a HEAD route, like the other verb decorators
+  (#63). A service that needed one, for a cheap existence check before a GET, had to write its own
+  decorator.
 
 ### Changed
 
@@ -401,6 +405,18 @@ Full migration path, including the one decision to get right before the first de
 
 ### Fixed
 
+- **A handler that returns an `event_type` no longer fails its delivery where nothing can publish
+  it** (#40). A publishing service exists only beside an event-bus client, so with
+  `event_bus = "sessions"`, or without an event bus, the lookup raised after the handler had
+  finished, and every successful job was logged as `Unexpected error processing job` at ERROR. The
+  event is now skipped: a WARNING names the agent and the `event_type` once, later ones log at
+  DEBUG, and the delivery counts as processed. Two publishing services at one level still fail it.
+- **The `/` service page lists the routes again** (#42). Since FastAPI 0.137, `include_router()`
+  leaves a wrapper in `app.routes` instead of the routes, and the page found none of them: every
+  route the framework mounts comes from an included router, so the table was empty. It is now built
+  from the OpenAPI schema, which works on every supported FastAPI version. A route declared with
+  `include_in_schema=False` is no longer listed, and an operation without a summary shows the one
+  FastAPI generates from the function name, as Swagger UI does.
 - **`asbs validate` no longer fails an image build on an unset `nats_url`.** Outside development
   it reported one as an issue, and an image that validates while it is built has no `nats_url` yet:
   the deployment injects it when the container starts. It is a notice now, as `event_bus` is; the

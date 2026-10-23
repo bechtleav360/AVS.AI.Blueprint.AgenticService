@@ -178,7 +178,7 @@ class OrderApi(RestApiBase):
         return await self._service.create(payload)
 ```
 
-Route decorators: `@RestApiBase.get()`, `.post()`, `.put()`, `.delete()`, `.patch()`.
+Route decorators: `@RestApiBase.get()`, `.post()`, `.put()`, `.delete()`, `.patch()`, `.head()`.
 
 **Creating CloudEvents from REST payloads** — use `create_cloud_event()` when an API endpoint needs to feed a payload into the event processing pipeline:
 
