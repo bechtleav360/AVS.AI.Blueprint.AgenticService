@@ -405,6 +405,12 @@ Full migration path, including the one decision to get right before the first de
 
 ### Fixed
 
+- **The `/` service page lists the routes again** (#42). Since FastAPI 0.137, `include_router()`
+  leaves a wrapper in `app.routes` instead of the routes, and the page found none of them: every
+  route the framework mounts comes from an included router, so the table was empty. It is now built
+  from the OpenAPI schema, which works on every supported FastAPI version. A route declared with
+  `include_in_schema=False` is no longer listed, and an operation without a summary shows the one
+  FastAPI generates from the function name, as Swagger UI does.
 - **`asbs validate` no longer fails an image build on an unset `nats_url`.** Outside development
   it reported one as an issue, and an image that validates while it is built has no `nats_url` yet:
   the deployment injects it when the container starts. It is a notice now, as `event_bus` is; the

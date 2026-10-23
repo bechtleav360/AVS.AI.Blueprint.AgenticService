@@ -3,7 +3,8 @@
 from unittest.mock import MagicMock
 
 import pytest
-from fastapi.routing import APIRoute
+from fastapi import APIRouter, FastAPI
+from starlette.responses import PlainTextResponse
 
 from blueprint.agents.io.api.utilities.root import RootApi
 
@@ -13,18 +14,22 @@ from blueprint.agents.io.api.utilities.root import RootApi
 
 
 async def _endpoint() -> None:
-    """Minimal async callable for building test APIRoute objects."""
+    """Minimal async callable for building test routes."""
 
 
-_GET_ROUTE = APIRoute("/items", _endpoint, methods=["GET"], summary="List items")
-_POST_ROUTE = APIRoute("/data", _endpoint, methods=["POST"], summary="Create data")
+_GET_ROUTE = ("/items", ["GET"], "List items")
+_POST_ROUTE = ("/data", ["POST"], "Create data")
 
 
-def _make_app(*, docs_url: str | None = "/docs", redoc_url: str | None = "/redoc", routes: list | None = None) -> MagicMock:
-    app = MagicMock()
-    app.docs_url = docs_url
-    app.redoc_url = redoc_url
-    app.routes = routes if routes is not None else []
+def _make_app(
+    *, docs_url: str | None = "/docs", redoc_url: str | None = "/redoc", routes: list[tuple[str, list[str], str]] | None = None
+) -> FastAPI:
+    """A real application whose routes come from an included router, as AppBuilder mounts them."""
+    app = FastAPI(docs_url=docs_url, redoc_url=redoc_url)
+    router = APIRouter()
+    for path, methods, summary in routes or []:
+        router.add_api_route(path, _endpoint, methods=methods, summary=summary)
+    app.include_router(router)
     return app
 
 
@@ -85,10 +90,38 @@ class TestHtmlContent:
 class TestRouteRendering:
     async def test_non_api_route_objects_are_skipped(self, mock_config: MagicMock, mock_registry: MagicMock) -> None:
         mock_config.get.return_value = "x"
-        api = RootApi(app=_make_app(routes=[MagicMock()]))  # not an APIRoute
+        app = _make_app()
+        app.add_route("/plain", lambda request: PlainTextResponse("x"))  # a Starlette route, not an APIRoute
+        api = RootApi(app=app)
         html = await api.root()
         tbody = html.split("<tbody>")[1].split("</tbody>")[0]
         assert "<tr>" not in tbody
+
+    async def test_routes_of_a_prefixed_included_router_are_listed(self, mock_config: MagicMock, mock_registry: MagicMock) -> None:
+        # #42: since FastAPI 0.137 app.routes holds a wrapper for an included router, not its routes.
+        mock_config.get.return_value = "x"
+        app = FastAPI()
+        inner = APIRouter(prefix="/reports")
+        inner.add_api_route("/daily", _endpoint, methods=["GET"], summary="Daily report")
+        nested = APIRouter()
+        nested.add_api_route("/rebuild", _endpoint, methods=["POST"], summary="Rebuild")
+        inner.include_router(nested, prefix="/admin")
+        app.include_router(inner, prefix="/api/agent")
+        api = RootApi(app=app)
+        html = await api.root()
+        assert '<a href="/api/agent/reports/daily">/api/agent/reports/daily</a>' in html
+        assert "/api/agent/reports/admin/rebuild" in html
+        assert "Daily report" in html
+        assert "Rebuild" in html
+
+    async def test_route_hidden_from_schema_is_not_listed(self, mock_config: MagicMock, mock_registry: MagicMock) -> None:
+        mock_config.get.return_value = "x"
+        app = _make_app(routes=[_GET_ROUTE])
+        app.add_api_route("/internal", _endpoint, methods=["GET"], include_in_schema=False)
+        api = RootApi(app=app)
+        html = await api.root()
+        assert "/items" in html
+        assert "/internal" not in html
 
     async def test_get_route_renders_direct_href_link(self, mock_config: MagicMock, mock_registry: MagicMock) -> None:
         mock_config.get.return_value = "x"
@@ -117,12 +150,25 @@ class TestRouteRendering:
         html = await api.root()
         assert "List items" in html
 
+    # One route serving GET and POST appears twice in the schema, and FastAPI derives both
+    # operation IDs from the route's first method only, so it warns that they collide. That is
+    # FastAPI's behaviour for any such route (RestApiBase's decorators never declare one), not
+    # something this test is about.
+    @pytest.mark.filterwarnings("ignore:Duplicate Operation ID")
     async def test_methods_appear_sorted_in_table_row(self, mock_config: MagicMock, mock_registry: MagicMock) -> None:
-        route = APIRoute("/multi", _endpoint, methods=["POST", "GET"], summary="Multi")
         mock_config.get.return_value = "x"
-        api = RootApi(app=_make_app(routes=[route]))
+        api = RootApi(app=_make_app(routes=[("/multi", ["POST", "GET"], "Multi")]))
         html = await api.root()
         assert "GET, POST" in html  # sorted order
+
+    async def test_two_routes_on_one_path_get_two_rows(self, mock_config: MagicMock, mock_registry: MagicMock) -> None:
+        mock_config.get.return_value = "x"
+        api = RootApi(app=_make_app(routes=[("/items", ["GET"], "List items"), ("/items", ["POST"], "Create an item")]))
+        html = await api.root()
+        tbody = html.split("<tbody>")[1].split("</tbody>")[0]
+        assert tbody.count("<tr>") == 2
+        assert "<td>GET</td>" in tbody
+        assert "<td>POST</td>" in tbody
 
 
 # ---------------------------------------------------------------------------

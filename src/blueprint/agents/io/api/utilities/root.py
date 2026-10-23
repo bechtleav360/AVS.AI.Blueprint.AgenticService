@@ -6,9 +6,11 @@ from typing import Any
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
-from fastapi.routing import APIRoute
 
 from ..rest_api_base import RestApiBase
+
+_HTTP_METHODS = frozenset({"GET", "PUT", "POST", "DELETE", "OPTIONS", "HEAD", "PATCH", "TRACE"})
+"""Keys of an OpenAPI path item that are operations; the others (``parameters``, ...) are not."""
 
 
 class RootApi(RestApiBase):
@@ -42,17 +44,13 @@ class RootApi(RestApiBase):
         doc_links = " | ".join(f'<a href="{url}">{label}</a>' for label, url in [("Swagger UI", docs_url), ("ReDoc", redoc_url)] if url)
 
         rows = []
-        for route in self._app.routes:
-            if not isinstance(route, APIRoute):
-                continue
-            route_methods = route.methods or set()
+        for path, route_methods, summary in self._operations():
             methods = ", ".join(sorted(route_methods))
-            summary = route.summary or ""
             if "GET" in route_methods:
-                path_cell = f'<a href="{route.path}">{route.path}</a>'
+                path_cell = f'<a href="{path}">{path}</a>'
             else:
-                anchor = route.path.replace("/", "-").strip("-")
-                path_cell = f'<a href="{docs_url}#{anchor}" title="Open in Swagger">{route.path}</a>' if docs_url else route.path
+                anchor = path.replace("/", "-").strip("-")
+                path_cell = f'<a href="{docs_url}#{anchor}" title="Open in Swagger">{path}</a>' if docs_url else path
             rows.append(f"<tr><td>{methods}</td><td>{path_cell}</td><td>{summary}</td></tr>")
 
         rows_html = "\n".join(rows)
@@ -87,3 +85,24 @@ class RootApi(RestApiBase):
 </body>
 </html>"""
         return self._html_cache
+
+    def _operations(self) -> list[tuple[str, set[str], str]]:
+        """Return ``(path, methods, summary)`` for every documented operation, in schema order.
+
+        Read from the OpenAPI schema rather than from ``app.routes``: since FastAPI 0.137,
+        ``include_router()`` leaves a lazy wrapper in ``app.routes`` instead of the routes
+        themselves, so every route of an included router -- which is every route this framework
+        mounts -- was missing from the table (#42). The schema is FastAPI's public view of the same
+        routes, under every version this package supports. It omits routes declared with
+        ``include_in_schema=False``, which the table therefore no longer lists either.
+
+        Operations on one path with the same summary share a row, as one route declared with
+        several methods always did.
+        """
+        rows: dict[tuple[str, str], set[str]] = {}
+        for path, operations in self._app.openapi().get("paths", {}).items():
+            for method, operation in operations.items():
+                if method.upper() not in _HTTP_METHODS:
+                    continue
+                rows.setdefault((path, operation.get("summary") or ""), set()).add(method.upper())
+        return [(path, methods, summary) for (path, summary), methods in rows.items()]
