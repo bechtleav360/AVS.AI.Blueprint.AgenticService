@@ -15,12 +15,8 @@ logger = logging.getLogger(__name__)
 class OrderApi(RestApiBase):
     """Exposes cached order data via REST endpoints."""
 
-    def __init__(self) -> None:
-        super().__init__()
-        self._order_service: OrderService | None = None
-
     async def on_startup(self) -> None:
-        self._order_service = self.registry.get_service(OrderService)  # type: ignore[assignment]
+        self._order_service: OrderService = self.registry.get_service(OrderService)  # type: ignore[assignment]
         logger.info("OrderApi started")
 
     async def on_shutdown(self) -> None:
@@ -33,7 +29,6 @@ class OrderApi(RestApiBase):
     )
     async def get_order(self, order_id: str) -> dict[str, Any]:
         """Return the cached status and data for a single order."""
-        assert self._order_service is not None
         result = self._order_service.get_cached_order(order_id)
         if result is None:
             raise HTTPException(status_code=404, detail=f"Order {order_id} not found")

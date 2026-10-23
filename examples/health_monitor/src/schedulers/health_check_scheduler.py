@@ -35,9 +35,7 @@ class HealthCheckScheduler(SchedulerBase):
             return
 
         logger.info("HealthCheckScheduler: running health checks")
-        results = await self._monitor_service.check_all_endpoints()
-        for result in results:
-            await self._monitor_service.store_result(result)
+        results = await self._monitor_service.run_checks()
         logger.info(
             "HealthCheckScheduler: completed %d checks, %d healthy",
             len(results),

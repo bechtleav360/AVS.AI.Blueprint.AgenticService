@@ -19,34 +19,67 @@ on_startup
 on_shutdown
 
     async def can_handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> bool:
-        """Determine if this handler should process the event.
+        """Route: is this handler the one for this kind of event?
 
-        This method should make all the necessary checks to determine if this handler should process the event.
+        Decide on the envelope only -- ``event.type``, ``event.source``, ``event.subject`` and the
+        context keys. No I/O and no service call here: whether *this* event needs work is the
+        service's decision, reported back through ``handle_event``.
 
         Args:
             event: The CloudEvent to potentially handle.
             context: Processing context dictionary.
 
         Returns:
-            True if this handler can process the event, False otherwise.
+            True if this handler is responsible for the event, False otherwise.
         """
-        # Simple example
-        # if event.type == self._input_event_type:
+        # Example:
+        # return event.type == "order.placed"
 
         raise NotImplementedError()
 
     async def handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> HandlerResult | None:
-        """Handles the event. This is where the main business logic is implemented. This can a part of a chain of
-        handlers. The chain continues based on the handlers priorities and until a handler returns a result.
+        """Translate the event into one service call and the service's answer into a result.
+
+        A handler translates, it never decides: three steps, nothing more.
+
+        1. ``payload = self.extract_payload(event, MyEventDto)`` -- the typed, validated payload.
+        2. **One** service call with domain values (ids, domain models; never the CloudEvent or
+           the DTO). All business logic lives behind it, including whether the event needs work
+           and the order of the steps; two service calls in a row are business logic already.
+        3. The answer as a result: ``HandlerResult(event_type=..., data=...)`` to publish,
+           ``HandlerResult.skipped("reason")`` when the service found nothing to do, or ``None``
+           only when another handler should be offered the event.
+
+        No LLM call here: the service resolves and runs its agent.
 
         Args:
             event: The CloudEvent to process.
-            context: Dictionary containing information from previous handlers. Can be extended to pass information to
-                the following handlers.
+            context: Processing context dictionary (transport keys such as ``nats_subject``).
 
         Returns:
-            HandlerResult: The resulting event to publish, when the handlers work is done.
+            The result to publish, a skip, or None to pass the event to the next handler.
         """
+        # DECIDE: can the service run twice on the same event?
+        #
+        # Delivery is at-least-once. A redelivery arrives whenever an acknowledgement is
+        # lost -- a pod restart, a rolling deploy, a connection blip mid-run -- and the side
+        # effects of the first attempt have already happened by then. Running twice is not an
+        # edge case; it is the normal behaviour of the transport.
+        #
+        # Make the *service* safe to repeat (upsert instead of insert, key the outbound request
+        # on event.id -- pass it as a parameter), or switch the framework dedup on:
+        #
+        #     settings.toml
+        #     idempotency_enabled = true
+        #     idempotency_ttl = 1500     # seconds; must outlast the redelivery window
+        #
+        #     src/main.py
+        #     .with_cache()              # the markers live in this agent's cache
+        #
+        # Startup fails without the ttl or without the cache.
+        #
+        # Dedup keys on the event id and source and is best-effort: it narrows the window,
+        # it does not close it. Whichever you choose, delete this comment once you have.
 
         logger.info("MyHandler processing event '%s'", event.type)
         raise NotImplementedError()

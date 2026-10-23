@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.models.schemas import DocumentRequest, DocumentSummary, SummarizeResponse
+from src.models.domain_models import Document, DocumentSummary, SummaryRecord
 from src.services.summarizer_service import SummarizerService, CACHE_NAMESPACE
 
 
@@ -21,8 +21,8 @@ def _make_summary() -> DocumentSummary:
     )
 
 
-def _make_request(content: str = "Some document content for testing.", title: str | None = None) -> DocumentRequest:
-    return DocumentRequest(content=content, title=title)
+def _make_request(content: str = "Some document content for testing.", title: str | None = None) -> Document:
+    return Document(content=content, title=title)
 
 
 class TestSummarize:
@@ -42,7 +42,7 @@ class TestSummarize:
         request = _make_request()
         response = await service.summarize(request)
 
-        assert isinstance(response, SummarizeResponse)
+        assert isinstance(response, SummaryRecord)
         assert response.summary == summary
         assert len(response.document_id) == 16
         service._agent.run.assert_awaited_once()

@@ -1,14 +1,14 @@
 """OpenAI client implementation."""
 
 import logging
-from collections.abc import Awaitable, Callable
 from typing import Any
 
-from openai import AsyncOpenAI
+from openai import NOT_GIVEN, AsyncOpenAI
 from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIResponsesModel, OpenAIResponsesModelSettings
 from pydantic_ai.providers.openai import OpenAIProvider
 
+from ..client_base import DeliveryCallback
 from .ai_client_base import AIClientBase
 from ...models.api import ComponentHealth
 from ...models.events import CloudEvent
@@ -30,7 +30,7 @@ class OpenAIClient(AIClientBase):
             await self._client.close()
             self._client = None
 
-    async def subscribe(self, topic: str, callback: Callable[[CloudEvent[Any]], Awaitable[None]]) -> None:
+    async def subscribe(self, topic_callbacks: dict[str, DeliveryCallback]) -> None:
         logger.warning("OpenAI client does not support subscriptions")
 
     async def publish(self, topic: str, event: CloudEvent[Any], routing_key: str | None = None) -> None:
@@ -42,7 +42,12 @@ class OpenAIClient(AIClientBase):
             raise RuntimeError("Model already created")
 
         ai_config = self.config.get_ai_config(self._runtime_name)
-        self._client = AsyncOpenAI(max_retries=3, api_key=ai_config.api_key)
+        # model_timeout applies here too when set; otherwise the SDK's own default stands.
+        self._client = AsyncOpenAI(
+            max_retries=3,
+            api_key=ai_config.api_key,
+            timeout=ai_config.timeout if ai_config.timeout is not None else NOT_GIVEN,
+        )
         settings = OpenAIResponsesModelSettings(**ai_config.model_settings)  # type: ignore[typeddict-item]
         provider = OpenAIProvider(openai_client=self._client)
         self._model = OpenAIResponsesModel(

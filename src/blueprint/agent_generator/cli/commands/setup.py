@@ -10,6 +10,7 @@ from typing import Any
 
 from ...generator.generator import AgentGenerator
 from ...generator.part_generators.part_generator_base import PartGeneratorBase
+from . import group_setup
 
 logger = logging.getLogger(__name__)
 
@@ -113,32 +114,57 @@ def run(args: Namespace) -> None:
         format="%(levelname)s: %(message)s",
     )
 
+    # Two modes writing disjoint sets of files, because they describe different things: an
+    # agent is a directory of code, settings and prompts; an image is a container for some
+    # number of agents plus the map naming them.
+    if getattr(args, "group", False):
+        group_setup.run(args)
+        return
+
     print("=== Blueprint Agents Project Setup ===")
     print("This will create a complete project structure with handlers, services, APIs, and agents.")
 
-    # Get project name, sanitizing it to a valid Python class name
+    # The name is this agent's *identity*, not a directory to create.
+    #
+    # `asbs` is installed into the project's own virtual environment, so by the time it can be
+    # run at all the project directory exists and somebody is standing in it. Scaffolding into a
+    # `<Name>/` subdirectory would put the source one level below the environment that has to
+    # import it. The name is what `create_basic_config` derives everything else from: `app_name`,
+    # the agent namespace in `agents.toml`, the class names and the prompt filenames.
+    #
+    # This used to compute a `project_path = output_dir / project_name`, guard `--overwrite`
+    # with it and print it as the location -- while handing the generator `output_dir`. So the
+    # directory it protected was never created, and the location it printed was never written to.
+    if not args.project_name:
+        print("Error: asbs setup needs the agent's name, or --group to create the image's files", file=sys.stderr)
+        sys.exit(1)
+
     project_name = PartGeneratorBase.to_class_name(args.project_name)
     output_dir = Path(args.output_dir).absolute()
-    project_path = output_dir / project_name
 
-    # Check if output directory exists
     if not output_dir.exists():
         print(f"Error: Output directory does not exist: {output_dir}", file=sys.stderr)
         sys.exit(1)
 
-    # Check if project already exists
-    if project_path.exists() and not args.overwrite:
-        print(f"Error: Project directory already exists: {project_path}", file=sys.stderr)
-        print("Use --overwrite to overwrite existing files", file=sys.stderr)
+    existing = [path.name for path in (output_dir / "src", output_dir / "settings.toml") if path.exists()]
+    if existing and not args.overwrite:
+        print(f"Error: {output_dir} already contains a scaffolded project ({', '.join(existing)})", file=sys.stderr)
+        print("Use --overwrite to write over it", file=sys.stderr)
         sys.exit(1)
 
-    print(f"\nCreating project: {project_name}")
-    print(f"Location: {project_path}")
+    # The name is checked before anything is written (N7): it was checked after generate(),
+    # so a name that cannot be a namespace left a whole project behind with the error.
+    config = create_basic_config(project_name)
+    try:
+        namespace = PartGeneratorBase.agent_namespace(config)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"\nScaffolding agent: {project_name}")
+    print(f"Location: {output_dir}")
 
     try:
-        # Create basic configuration
-        config = create_basic_config(project_name)
-
         # Create a temporary config file for the generator
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as f:
             json.dump(config, f, indent=2, ensure_ascii=False)
@@ -152,7 +178,7 @@ def run(args: Namespace) -> None:
 
             print("\n✓ Project created successfully!")
             print("\nProject structure:")
-            print(f"  {project_name}/")
+            print(f"  {output_dir.name}/   (this directory)")
             print("  ├── src/")
             print("  │   ├── main.py")
             print("  │   ├── handlers/")
@@ -160,19 +186,40 @@ def run(args: Namespace) -> None:
             print("  │   ├── api/")
             print("  │   ├── models/")
             print("  │   └── prompts/")
+            print("  ├── tests/")
+            print("  ├── pyproject.toml   (left alone when there already is one)")
             print("  ├── settings.toml")
-            print("  ├── secrets.toml")
+            print("  ├── .secrets.toml   (git- and docker-ignored: mount it, never bake it in)")
+            print("  ├── .secrets.toml.example")
             print("  ├── Dockerfile")
+            print("  ├── .dockerignore")
             print("  └── .gitignore")
 
             print("\nNext steps:")
-            print(f"  1. cd {project_name}")
-            print("  2. Review and edit the generated files")
-            print("  3. Add your LLM API key to secrets.toml")
-            print("     (A secrets.toml with a placeholder has been created for you)")
-            print("  4. Install dependencies: pip install -e .")
-            print("  5. Run the service: uvicorn src.main:app --reload")
-            print("  6. View API docs at: http://localhost:8000/docs")
+            print("  1. Review and edit the generated files")
+            print("  2. Add your LLM API key to .secrets.toml")
+            print("     (A .secrets.toml with a placeholder has been created for you)")
+            print("  3. Run the generated tests: pytest")
+            print("  4. Run the service: asbs dev")
+            print(
+                f"  5. View API docs at: http://localhost:8000/docs (served alone, this agent's routes are under /api; "
+                f"hosted in a group, under /api/{namespace})"
+            )
+
+            print("\nsrc/main.py declares this agent; it does not build an application.")
+            print("\nThis directory carries no agents.toml, and that is deliberate: the agent map says")
+            print("which agents an *image* contains, so an agent holding one would be an agent that")
+            print("knows whether it is running alone. Whoever hosts it supplies the name:")
+            print("  - its own Dockerfile serves it directly with uvicorn src.main:create_app --factory")
+            print("  - a group image maps it in the repository's agents.toml, with root and module")
+            print("  - asbs dev serves it on its own; asbs dev --name <agent> serves it under that name")
+            print("\nThat name is the agent's identity on the broker, in telemetry and in its routes")
+            print("(/api/<name>) -- change it now if you are going to, because changing it after the")
+            print("first deploy is a consumer migration.")
+            print("\nTo host it in a group, add to the repository's agents.toml:")
+            print(f"  [agents.{namespace}]")
+            print('  root   = "<path from the image root to this directory>"')
+            print('  module = "<that path as a dotted package>.src.main:agent"')
 
         finally:
             # Clean up temporary config file

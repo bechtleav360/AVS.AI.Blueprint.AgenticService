@@ -1,0 +1,350 @@
+# Configuration Keys Reference
+
+Complete reference for all `settings.toml` configuration keys in the Blueprint Agents framework.
+
+Settings are loaded from `settings.toml` (and optional environment-specific overrides). Environment variables can override any key using the prefix `DYNACONF_`, with double underscores for nesting (e.g., `DYNACONF_APP_PORT=9000`, `DYNACONF_CACHE__BACKEND=redis`). An `envvar_prefix` adds a second spelling beside it and wins for the same key; `DYNACONF_` keeps working. The `BLUEPRINT_` variables below are a separate set, read by the framework directly.
+
+---
+
+## Application
+
+Top-level application settings.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `app_name` | `str` | `"agent_blueprint"` | Application name. Used in logging, health checks, and OpenTelemetry service identification. |
+| `app_port` | `int` | `8000` | HTTP port the application listens on. |
+| `app_environment` | `str` | `"development"` | Deployment environment identifier (e.g., `"development"`, `"staging"`, `"production"`), which also selects the settings section that is layered over `[default]`. Set it with `DYNACONF_APP_ENVIRONMENT` or as a top-level key of the settings file, above every section: inside `[default]` it selects nothing, and a startup WARNING says so. Read through `Config`, the key always answers the environment that was loaded. `DYNACONF_ENVIRONMENT` is not read. `"development"` enables development fallbacks such as the localhost default for `nats_url`, and the process logs a WARNING at startup that it is not suitable for production. Being the default, a deployment that sets nothing runs in development mode: set it to anything else to deploy. |
+| `log_level` | `str` | `"INFO"` | Root log level. One of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. |
+| `log_format` | `str` | `"text"` | Log output format. `"text"` for human-readable, `"json"` for structured JSON logging. |
+| `startup_retry_interval_seconds` | `float` | `30` | Seconds between attempts to start again the components of a non-critical agent whose `on_startup` raised. The agent stays out of service, shown with a `reason` in `/health/ready`, until every failed component starts; it is retried indefinitely and never ends the process. Must be positive; startup fails otherwise. Process scope. |
+
+---
+
+## Event Bus
+
+Settings for the event bus transport layer.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `event_bus` | `str` | `""` | Event bus implementation. Set to `"dapr"` for Dapr pub/sub, `"nats"` for NATS, or `"sessions"` for the sessions service's job stream (which carries no topics). Empty string disables the event bus. Process scope. |
+| `nats_url` | `str` | none -- `"nats://localhost:4222"` in development only | NATS server URL. Only used when `event_bus = "nats"`. Unset, a process with `app_environment = "development"` connects to localhost and logs a WARNING saying so; in any other environment startup fails naming this key, because `localhost` is almost always wrong in a container and a client pointed at it retries forever while the pod looks healthy. A broker in the same pod is the exception: set `nats_url` to it explicitly. |
+| `nats_user` / `nats_password` | `str` | unset | Username and password for the NATS connection. Set both or neither. Put the password in `.secrets.toml` or the environment, never in `nats_url`: a URL carrying credentials is itself a secret. Only used when `event_bus = "nats"`. |
+| `nats_token` | `str` | unset | Token authentication for the NATS connection. |
+| `nats_creds_file` | `str` | unset | Path to a NATS credentials file (JWT + nkey), as issued for an account under decentralised auth. Startup fails if nothing is at that path. Requires the `nkeys` package. |
+| `nats_nkey_seed` | `str` | unset | An nkey seed, by value, for nkey authentication. Requires the `nkeys` package. |
+| `nats_inbox_prefix` | `str` | `"_INBOX"` | Prefix for request/reply and JetStream API reply subjects. Set it when the account's permissions do not allow `_INBOX.>` -- otherwise every JetStream call times out. No wildcards, no trailing dot. |
+| `dapr_pubsub_name` | `str` | `"pubsub"` | Dapr pub/sub component name, used when publishing and in the subscription document served at `GET /dapr/subscribe`. Only used when `event_bus = "dapr"`. |
+| `dapr_declarative_subscriptions` | `bool` | `false` | Set `true` when Dapr subscriptions are declared outside the application (Kubernetes `Subscription` resources or YAML). The discovery endpoint then serves an empty document, so the sidecar cannot subscribe twice. |
+| `nats_queue_group` | `str` | value of `app_name` | Queue group joined by every NATS subscription, so exactly one replica processes any given message. Identifies the agent, not the process: it must not contain a pod, container or replica name, or moving the agent between deployments would change which consumer it is. Startup fails if neither this key nor `app_name` yields a name. Applies to the root namespace only -- a client that belongs to a namespace uses the namespace name, so two agents sharing a process never share a group. Only used when `event_bus = "nats"`. |
+| `event_client_max_retries` | `int` | `-1` | Number of reconnection attempts if the broker is unavailable at startup. `-1` retries indefinitely until the broker becomes reachable. `0` makes a single attempt and logs a permanent error on failure. |
+| `event_client_retry_delay` | `float` | `5.0` | Seconds to wait between reconnection attempts. |
+| `event_client_drain_timeout` | `float` | `30.0` | Seconds allowed at shutdown for in-flight message handlers to finish before the broker connection is closed. Bounds the whole shutdown sequence, so keep it below the pod's termination grace period. |
+| `nats_max_reconnect_attempts` | `int` | `-1` -- unlimited | Reconnect attempts after the broker drops the connection, `nats_reconnect_time_wait` seconds apart. A finite value closes the connection after that many; the client then starts over (connect, then resubscribe). The first connect is bounded either way (two attempts when unlimited): a broker that is not there yet fails it, and `event_client_max_retries` decides what follows. |
+| `nats_use_jetstream` | `bool` | `false` | Consume through a durable JetStream consumer instead of Core NATS. The keys below apply only when this is `true`. **A declaration, enforced:** with `true`, a server that does not offer JetStream to the account fails the agent -- at startup through the startup failure policy, or, if the broker was unreachable then, when it first connects: the root or a critical agent shuts the process down, a non-critical agent is marked down. There is no fallback to Core NATS. With `false`, the server is not asked; Core NATS works on a JetStream-enabled server too. |
+| `nats_stream_name` | `str` | `"EVENTS"` | Stream the durable consumers are created on. The framework creates it if it is missing, and widens an existing one to cover every subscribed subject plus the dead-letter subject; it never removes a subject. |
+| `nats_durable_name` | `str` | `"<topic>-durable"` | Name of the durable consumer. Derived from the topic by default, with `.`, `*`, `>` and whitespace replaced by `_` because NATS rejects them in a consumer name. A client that belongs to a namespace prefixes it (`"<namespace>-<topic>-durable"`), so two agents subscribing to the same topic get a consumer each. Setting it explicitly is only valid with a single subscribed topic: a durable filters one subject, and under a namespace it must be scoped per namespace or every namespace binds to the same consumer. |
+| `nats_ack_wait` | `float` | unset -- the server's default (NATS: 30 s) | Seconds the broker waits for an acknowledgement before redelivering. **Must exceed the p99 duration of your slowest handler**, or long inference is redelivered to another replica while the first is still working. Handlers that call models usually need more than the NATS default, so set it. |
+| `nats_max_ack_pending` | `int` | unset -- the server's default (NATS: 1000) | Unacknowledged messages the consumer may have outstanding at once, counted across every replica sharing it. `-1` is unlimited. Keep it close to replicas x `nats_max_concurrent_runs`: whatever a pod receives beyond the runs it has started waits in the client's queue, unheartbeated, while its `nats_ack_wait` is already running down. |
+| `nats_max_concurrent_runs` | `int` or `"N%"` | unset -- one run at a time per subscription, as before the key existed | How many deliveries one (agent, connection) pair runs at once, per process. The pair's **first** run is always allowed and counts against no limit; every further run also needs a free slot of `nats_extra_runs_per_process`. A percentage is taken of the (agent, connection) pairs the process consumes on, at least 1. An agent that waits on a model or an API gains the most from raising it; every run shares the process's one event loop, so CPU-heavy handlers gain little. |
+| `nats_extra_runs_per_process` | `int` or `"N%"` | unset -- unlimited | **Process scope.** The pool of runs beyond each pair's guaranteed one, shared by every agent and connection of the process; a percentage is taken of the current number of pairs. It is what keeps a burst on many pairs from overloading the event loop while an idle pair still never waits. `0` allows no runs beyond the guaranteed ones. |
+| `nats_connection_source` | `str` | unset -- the agent consumes on its one connection, as before | **Process scope.** `"package.module:attribute"` naming a factory that is called with the process `Config` and returns a `ConnectionSource` (`blueprint.agents.clients.io.nats_connections`). The source lists named connections -- each with its own URL and account -- and, per agent and connection, a `JetStreamBinding`: which declared subjects the connection serves, the subject prefix, and the deployment's durable consumer with its wire values verbatim. Those subjects leave the agent's default connection. Each delivery from a named connection is checked by the source's `validate` before anything runs (a reason terminates it), runs in an empty context inside the source's `run_scope`, and is settled on the connection it arrived on; the handler sees the subject without the prefix and the connection's name under the context key `nats_connection`. JetStream only. An agent with named connections may not map handler results to topics. A source that also defines `watch(notify)` is followed at runtime: connections added, changed or removed are applied while the agent runs (`subscription_change_grace`); a changed connection keeps delivering on its old link until the new one is bound, however often it changes in between, and a change of its `tls` context alone is not applied. A subscription the broker refuses (a deliver subject the account may not subscribe to) reads as `retrying` with a permission violation and is retried, never as bound. A wrong path fails startup. |
+| `nats_nak_delay` | `float` or list of `float` | `[1, 5, 15, 30, 60]` | Seconds before a failed JetStream delivery is redelivered: one number for every redelivery, or one per redelivery with the last repeating. `0` redelivers at once, as before the key existed. Without a delay a backend restart, a 5xx or a short network fault used up every attempt within a few hundred milliseconds. A degraded agent still hands its buffered deliveries back at once. Agent scope. |
+| `nats_handler_timeout` | `float` | unset -- no limit | Seconds one run may take, on every connection of the agent. At the limit the run is cancelled and its delivery nak'd for redelivery after `nats_nak_delay`, so a hung model request no longer holds its slot forever; after `nats_max_deliver` attempts the delivery is given up as usual. A `TimeoutError` the handler raises itself is an ordinary failure. A handler that catches the cancellation and carries on keeps its slot until it returns, which is logged, and its delivery is nak'd all the same. Set it above the longest legitimate run. |
+| `subscription_change_grace` | `float` | `event_client_drain_timeout` | Seconds the runs of a named connection that is removed or replaced at runtime get to finish. A run still going after that is revoked: it is never acked or nak'd -- the delivery stays with the broker and returns after `ack_wait` -- its heartbeat stops, and a `publish` from it raises `DeliveryRevokedError`; it is not cancelled. |
+| `nats_connections_readiness` | `str` | `"never"` | Only with a `nats_connection_source`; agent scope. Whether the agent's named connections count for its readiness: `"never"` -- they never make it not ready; `"any"` -- ready while at least one named connection is bound (none at all counts as not ready); `"all"` -- ready only while every named connection is bound. Any other value fails startup, naming the key. **Readiness only, in every mode:** a named connection that is down never pauses the agent, so its other connections keep delivering. Each connection's state (`bound`, `connecting`, `reconnecting`, `retrying` with the last error, `paused`, and a permission violation if one was seen) is listed in the readiness entry `<agent>.nats_client:connections` in every mode, and the gauge `blueprint.nats.connection.bound` reports it. The agent's default connection keeps its behaviour. |
+| `nats_unclaimed_subjects` | `str` | `"fail"` | Only with a `nats_connection_source`. What happens to a declared subject the source does not `claims()` for the agent: `"fail"` -- the agent's startup fails, naming the subjects; `"default_connection"` -- consumed on the agent's own connection (the explicit hybrid mode; the process account must then be allowed to subscribe them). A claimed subject never goes to the default connection, even while no named connection serves it yet. |
+| `nats_heartbeat_enabled` | `bool` | `true` | Whether a running JetStream delivery reports `in_progress` every third of its consumer's `ack_wait`, so a run longer than `ack_wait` is not redelivered while it still runs. Switch it off only for an agent whose runs always finish well inside `ack_wait`; off, a long run is delivered again to another replica. Must be a boolean -- the string `"false"` is refused, because it would read as true. |
+| `nats_max_deliver` | `int` | unset -- the server's default (NATS: unlimited) | Delivery attempts before the message is dead-lettered. Unlimited -- the default, or `-1` -- means a permanently failing message is retried forever and never dead-lettered; the client logs a warning at startup if you set `-1` explicitly. Set a positive limit to bound retries. |
+| `nats_dead_letter_subject` | `str` | `"<nats_queue_group>.dead-letter"` | Subject a message is republished to when the framework gives up on it -- either a terminal failure (`InvalidEventError`, `CriticalHandlerError`, or a payload that is not a CloudEvent) or `nats_max_deliver` attempts spent. The original bytes are republished unchanged, with `Blueprint-Dead-Letter-Reason`, `Blueprint-Original-Subject`, `Blueprint-Delivery-Count` and `Blueprint-Event-Id` headers. Set to `""` to disable, which drops those messages and loses their payloads. Startup fails if the subject is a wildcard or is itself one of the subscribed subjects, since that would loop. |
+| `nats_subscriptions` | `list[str]` | `[]` | Subjects the agent subscribes to in addition to the topics its handlers declare (`get_subscribed_topics()`), deduplicated, handler topics first. Agent scope. With a `nats_connection_source`, these are declared subjects like any other: the source decides per connection which it serves (`nats_unclaimed_subjects`). Not a list -- logged and ignored. |
+| `nats_publish_mode` | `str` | unset -- follows `nats_use_jetstream` | `"core"` (fire-and-forget: reaches whoever is subscribed at that moment, not stored) or `"jetstream"` (stored in the stream; the subject must be one this client declares, see `nats_publish_subjects`). Separates publishing from durable consumption. Any other value fails startup. |
+| `nats_publish_subjects` | `list[str]` | `[]` | Subjects this client may publish to besides those in `event_publishing.topic_mapping` -- for code that passes `topic=` to `publish_event` directly. Added to the stream's subjects so a JetStream publish is stored; wildcards are refused, because a wildcard published to is taken literally. |
+
+**NATS authentication:** `nats_user`/`nats_password`, `nats_token`, `nats_creds_file`, `nats_nkey_seed` and credentials inside `nats_url` are alternatives -- configure at most one. Two at once fail startup rather than leaving the choice to the client library. All of them are read per agent, so a group can give each agent its own account with `[default.<agent>]` or `DYNACONF_<AGENT>__NATS_CREDS_FILE`. `/status/env` masks the secret keys, and the URL's credentials are stripped from logs, `/health` and `/status/env`.
+
+---
+
+## Deployment Identity (environment only)
+
+These are read straight from the environment, not from `settings.toml`, and carry the
+`BLUEPRINT_` prefix rather than Dynaconf's. They describe *where* the process runs, so they
+are used for attribution only -- the NATS connection name, the telemetry resource
+(`deployment.group`, `service.instance.id`) and the agent-down log lines -- and for nothing else:
+no queue group, durable name or dead-letter subject may be derived from them, or moving an agent
+between deployments would change which broker-side consumer it is.
+
+| Variable | Default | Description |
+|-----|---------|-------------|
+| `BLUEPRINT_GROUP` | `<ungrouped>` in the connection name | Names the group to load. The group resolved at startup -- `BLUEPRINT_GROUP`, or the only group a `BLUEPRINT_GROUP_CONFIG` file declares; with `BLUEPRINT_AGENTS` alone, `<ungrouped>` -- appears in the middle position of the NATS connection name, which is `<agent>.<group>.<pod>`. A standalone agent -- no namespace, no group -- is named after its pod alone, and sends no name if the pod cannot be determined. |
+| `POD_NAME` | -- | Replica identity, preferred over `HOSTNAME` because a deployment can set it explicitly through the Kubernetes downward API. Appears in the last position of the connection name. |
+| `HOSTNAME` | the host name, else `<unknown-pod>` | Used when `POD_NAME` is unset; the kubelet sets it to the pod name. |
+
+Every NATS connection is named `<namespace>.<group>.<pod>`, which is what makes a pod's
+contents legible in the broker's `/connz` output. A single-agent application -- no namespace and no
+group -- is named after its pod alone, and sends no name if the pod cannot be determined. So is
+the root of a group nothing named (`BLUEPRINT_AGENTS` alone), whose agents are
+`<agent>.<ungrouped>.<pod>`; the root of a named group is `<root>.<group>.<pod>`.
+
+These variables are read by the framework, not through `Config`. An agent in a group cannot read
+`blueprint_group`, `pod_name` or `hostname` through its configuration -- `get()` raises -- so that no
+agent can be written to depend on where it runs. A single-agent application's configuration reads
+them like any other key.
+
+An absent value becomes a bracketed placeholder rather than an empty segment, so a name never
+degenerates into `..pod-7`. The brackets are not decoration: they are excluded from the namespace
+alphabet (below), so no real namespace can spell one. Because a group name and a pod name come
+from the deployment and are not rejected on that ground, they are instead sanitised for display --
+`<`, `>`, `.` and whitespace become `_`. So a group called `eu.west` appears as `eu_west`, which
+keeps the name at three segments; an FQDN in `HOSTNAME` is folded the same way. Nothing derives
+from the connection name (a queue group or durable name that did would change on every restart),
+so the sanitising costs nothing downstream.
+
+### Namespace names
+
+A namespace is the agent's name and is the only thing broker-side consumer identity derives
+from, so it is validated once, where it enters the framework, and never rewritten afterwards.
+
+| Rule | Reason |
+|-----|-------------|
+| `""` (root) or `[a-z][a-z0-9_]*` | The namespace becomes a registry key prefix, a NATS queue group, part of a JetStream durable name and a telemetry service name. The alphabet is the intersection of what those accept. |
+| No `-` | `-` separates the fields of the durable name `<namespace>-<topic>-durable`. Allowing it makes that name ambiguous: `orders-eu` on `created` and `orders` on `eu-created` would be one consumer, so two agents would consume each other's events. Use `_`. The root has no namespace field, so root topic `orders-created` and agent `orders` on `created` still derive one name: the second to start finds a consumer filtering another subject and refuses to bind it (startup retries and logs why). Rename one of the topics. |
+| No `.`, `*`, `>` | Subject separator and wildcards; illegal in a NATS consumer name. |
+| No `<`, `>` | Reserved for the connection-name placeholders above. |
+| No surrounding whitespace | Not trimmed for you: the trimmed and untrimmed forms would be one agent registered under one name and subscribed under another. |
+| Not `cache`, `event_publishing`, `runtimes` or `runtime` | Configuration sections the whole process shares. An agent's settings live under its name, so an agent of one of these names would write into that shared section. |
+
+An illegal namespace fails in `Component.__init__` -- before the registry name is derived and
+before registration, and for every component including those that never register. It is not
+deferred to the first subscription, which a publish-only or Dapr-only agent never reaches.
+
+### Names that become subjects are never rewritten for you
+
+`app_name`, `nats_queue_group` and a scheduler's name all end up inside a NATS subject, a queue
+group or a consumer name. Whitespace, `*` and `>` in any of them **fails startup**, naming the key,
+the value and the subject that would have been derived.
+
+This is deliberately not forgiving. `app_name = "Health Monitor"` used to be rewritten into the
+tick subject `Health_Monitor.scheduler.nightly`, which is a subject the `CronJob` publishing that
+tick has to spell exactly -- and whoever writes that manifest has no way to know about the rewrite.
+The tick then never arrives, with nothing in either log to explain it. A name that only lives
+inside the process may be repaired; a name in a contract with something outside it may not.
+
+Two exceptions, both because nothing outside can depend on the spelling: the topic part of a
+JetStream durable name (dots are legal in subjects and illegal in consumer names, so `.` becomes
+`_`, and two topics colliding on one durable is an error), and the NATS connection name (see
+above).
+
+---
+
+## Event Deduplication
+
+Delivery is at-least-once on both transports, so a handler can be run twice for the same
+event. Deduplication is opt-in and off by default: whether replaying a handler's side
+effects is acceptable is a property of the product, not of the framework.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `idempotency_enabled` | `bool` | `false` | Skip an event whose `id` and `source` were already dispatched within the window -- on the same named connection, when it came from one (each connection is a data source of its own). Requires `idempotency_ttl` and a registered cache (`.with_cache()`); startup fails if either is missing, rather than leaving deduplication silently off. The claim is the cache's atomic set-if-absent, so replicas sharing a Redis cache cannot both dispatch the same event. A disk cache's claim holds within one process only -- replicas sharing a cache directory (or `uvicorn --workers N` run by hand) can both win it -- and a cache error fails open. A marker cannot tell a running delivery from a finished one, so startup logs a WARNING where a run can outlast its delivery: with `nats_heartbeat_enabled = false`, and under Dapr, which has no heartbeat. |
+| `idempotency_ttl` | `int` | -- | Seconds a processed event is remembered. No default on purpose -- it must outlast the broker's redelivery window (`nats_ack_wait` * `nats_max_deliver` on JetStream, the component's retry policy under Dapr), and a window that expires before the last redelivery looks exactly like deduplication not working. |
+
+---
+
+## Scheduling
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `scheduler_timezone` | `str` | unset -- the host's local time | The IANA timezone the `in_process` timer reads its crontab in (`"UTC"`, `"Europe/Berlin"`). An unknown name fails startup. In `event` mode the external cron's own timezone decides and this key changes nothing. |
+| `scheduler_mode` | `str` | -- (**required** when a scheduler is registered) | Where a scheduler's tick comes from. `"event"` starts no in-process timer: the tick arrives as an ordinary event on the scheduler's own topic (`<agent>.scheduler.<scheduler_name>`, with `app_name` for a scheduler at the root and the scheduler's name without the agent, unless overridden with `topic=` in the scheduler's constructor), published by an external `CronJob`, so the queue group already picks exactly one replica and nothing is elected -- it requires `event_bus` to be `"dapr"` or `"nats"`, since `"sessions"` cannot deliver a topic. `"in_process"` runs an APScheduler timer inside every replica and coordinates them through the registered cache: each tick is claimed under a key derived from the scheduler and the scheduled minute, and only the replica that stores the marker runs it -- across replicas only on a Redis cache; a disk cache's claim holds within one process, so with a disk cache per pod every replica runs every tick. Intended for local development and un-orchestrated Docker, where no `CronJob` exists. **With no cache registered the ticks cannot be coordinated and every replica runs every tick**; startup warns about it. **No default:** neither value is safe to inherit silently, and which one applies depends on the deployment (is a broker reachable, does more than one replica run, is there an orchestrator at all) rather than on the code, so the author states it -- the same reasoning as `idempotency_ttl`. An absent, empty or unrecognised value fails startup. |
+
+---
+
+## Event Publishing
+
+Section: `[default.event_publishing]`
+
+Controls how outbound events are published to topics.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `event_publishing_enabled` | `bool` | `false` | Top-level key (not in this section). Opt into publishing events **without consuming any**. A registered handler already implies a transport client, so a consuming application never needs this key; an application that only emits -- a scheduler reporting what it did, a REST API handing work on -- had no way to get a client at all before it existed. When set, the client is created and **nothing is subscribed**: no eventing endpoint, no subscription document, no `/events/{topic}` route. Off by default because publishing needs broker access a scheduler-only project may not have, and a client it never asked for becomes a readiness dependency on infrastructure it does not run. Requires `event_bus` to be `"dapr"` or `"nats"`; startup fails otherwise. |
+| `default_pubsub_name` | `str` | `"pubsub"` | Default pub/sub component name (used with Dapr). |
+| `topic_mapping` | `dict` | `{}` | Maps event type strings to topic names. Events not in this mapping use the event type as the topic. |
+
+---
+
+## AI / Model Runtime
+
+Section: `[default.runtimes.<name>]`
+
+Each named runtime defines model provider settings. The `default` runtime is used when no name is specified.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `model_provider` | `str` | -- | Model provider. `"openai"` for OpenAI-compatible APIs, `"vllm"` for vLLM endpoints. |
+| `model_name` | `str` | -- | Model identifier (e.g., `"gpt-4o"`, `"meta-llama/Llama-3-70b"`). |
+| `model_api_key` | `str` | -- | API key for the model provider. Can also be set via environment variable. |
+| `model_base_url` | `str` | -- | Base URL for the model API. Required for `"vllm"` and custom OpenAI-compatible endpoints. |
+| `model_max_tokens` | `int` | -- | Maximum number of tokens in the model response. |
+| `model_timeout` | `float` | `60` for `"vllm"`, the SDK's default for `"openai"` | HTTP timeout per model request, in seconds. Must be positive. Settable per runtime like the other `model_*` keys. |
+| `model_temperature` | `float` | -- | Sampling temperature. Lower values produce more deterministic output. |
+| `concurrent_requests` | `int` | -- | Maximum number of concurrent requests to the model provider. |
+
+---
+
+## Prompts
+
+Top-level settings for prompt file resolution.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `prompt_directory` | `str` | -- | Primary directory containing prompt template files. |
+| `prompt_search_paths` | `list[str]` | `[]` | Additional directories to search for prompt files, in order. |
+| `system_prompt_name` | `str` | `"system"` | Filename (without extension) of the system prompt template. |
+| `instruction_prompt_name` | `str` | `"instruction"` | Filename (without extension) of the instruction prompt template. |
+
+---
+
+## Cache
+
+Section: `[default.cache]`
+
+Cache settings used when `with_cache()` is enabled on the `AppBuilder`. In a group an agent may set its own under `[default.<agent>.cache]`. See [caching](../concepts/caching.md).
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `backend` | `str` | `"disk"` | `"disk"` or `"redis"`. Redis needs the `redis` extra. |
+| `cache_dir` | `str` | `".cache/blueprint"` | Directory for cache storage. Disk only. |
+| `size_limit` | `int` | `1000000000` | Maximum cache size in bytes (default ~1 GB). Disk only. |
+| `eviction_policy` | `str` | `"least-recently-used"` | Cache eviction policy. Disk only. |
+| `default_ttl` | `int` | `3600` | Default time-to-live for cache entries in seconds. Both backends. |
+| `key_prefix` | `str` | `""` | Prefix of every Redis key, keeping services apart in a shared Redis. |
+| `redis_url` | `str` | unset -- `"redis://localhost:6379/0"` | Redis connection URL. |
+| `redis_password` | `str` | unset | Redis password. Put it in `.secrets.toml` or the environment. |
+| `redis_db` | `int` | `0` | Redis database index. |
+| `redis_tls` | `bool` | `false` | Connect with TLS (`rediss://`). |
+| `redis_socket_timeout` | `float` | unset -- redis-py's own, 5 s | Seconds a Redis call may block, the connect included. |
+| `fallback_to_local` | `bool` | `false` | Use a disk cache when Redis is not installed or does not answer at startup; otherwise startup fails. |
+
+---
+
+## Observability
+
+OpenTelemetry and tracing settings.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `otel_enabled` | `bool` | `false` | Enable OpenTelemetry tracing and metrics export. |
+| `otel_endpoint` | `str` | -- | OTLP collector endpoint URL (e.g., `"http://localhost:4317"`). |
+| `otel_service_name` | `str` | `app_name` | `service.name` of the root namespace -- a standalone application's whole telemetry. Every agent of a group reports its own name instead, or `<agent>.otel_service_name` when the agent sets one for itself; the root's value never applies to an agent. In a group `OTEL_SERVICE_NAME` names the root only, with a WARNING at startup, and a `service.name` in `OTEL_RESOURCE_ATTRIBUTES` without it fails the start. See [observability](../concepts/observability.md). |
+| `token_metrics_enabled` | `bool` | `true` | Record LLM token usage and response latency to OpenTelemetry. Only takes effect when `otel_enabled` is also `true`. |
+
+---
+
+## Logging
+
+Additional logging behavior settings.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `suppress_noisy_loggers` | `bool` | `true` | Suppress verbose log output from third-party libraries (e.g., `httpx`, `httpcore`). |
+
+---
+
+## Health and Diagnostics
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `operator_routes_enabled` | `bool` | `true` | Whether the routes that act without authentication are served: NATS's `POST .../events/{topic}` and `.../cache/*`. `false` leaves them out of the application; Dapr's `/events/{topic}` stays, it is how the sidecar delivers. Process scope. |
+| `readiness_policy` | `str` | `"all"` | Which agents gate `/health/ready`: `"all"`, `"critical"` (only the agents the group flagged critical) or `"any"` (ready while one is up). The root gates readiness under every policy, and so does an agent latched down (its startup failed, or its transport failed for good). Any other value fails startup. Process scope. |
+| `health_check_interval_seconds` | `int` | `30` | Seconds between health polls; readiness and an agent's pause or resume follow the latest poll. Process scope. |
+| `event_loop_debug` | `bool` | `false` | asyncio debug mode, which names a blocking callback and its source. Off unless set, in every environment; with it on, the watchdog does not run. Read as a boolean (`"false"` from the environment means false); any other value fails startup. |
+| `event_loop_slow_callback_seconds` | `float` | `0.2` | Debug mode's threshold for reporting a callback. |
+| `event_loop_watchdog_enabled` | `bool` | `true` | The watchdog that reports a blocked loop and the agents that had work in flight, when debug mode is off. |
+| `event_loop_watchdog_interval_seconds` | `float` | `1.0` | How often the watchdog wakes. |
+| `event_loop_block_threshold_seconds` | `float` | `1.0` | Lag the watchdog reports. |
+
+See [observability](../concepts/observability.md) for the readiness payload and the loop watchdog.
+
+---
+
+## Example settings.toml
+
+```toml
+# Application
+app_name = "my_agent_service"
+app_port = 8000
+app_environment = "development"
+log_level = "INFO"
+log_format = "text"
+
+# Event Bus
+event_bus = "nats"
+nats_url = "nats://localhost:4222"
+# nats_queue_group = "my_agent_service"  # defaults to app_name
+event_client_max_retries = -1   # retry indefinitely
+event_client_retry_delay = 5.0  # seconds between attempts
+event_client_drain_timeout = 30.0  # shutdown budget for in-flight handlers
+
+# JetStream consumer (only when nats_use_jetstream = true)
+nats_use_jetstream = false
+nats_stream_name = "EVENTS"
+# Unset, each of these is the server's default; the framework sets none of them on its own.
+nats_ack_wait = 300.0        # must exceed the p99 handler duration
+nats_max_ack_pending = 16    # outstanding messages across all replicas
+nats_max_deliver = 5         # attempts before the message is dead-lettered
+nats_max_concurrent_runs = 8 # deliveries one (agent, connection) pair runs at once (unset: one per subscription)
+# nats_dead_letter_subject = "my_agent_service.dead-letter"  # defaults to <queue group>.dead-letter
+
+# Event deduplication (off by default; both keys are needed to turn it on)
+# idempotency_enabled = true
+# idempotency_ttl = 1500      # seconds; must outlast the redelivery window
+
+# Scheduling -- required once a scheduler is registered, no default
+scheduler_mode = "in_process"   # or "event", which needs event_bus set
+# event_publishing_enabled = true   # publish without consuming; needs event_bus
+
+# Prompts
+prompt_directory = "prompts"
+prompt_search_paths = ["shared/prompts"]
+system_prompt_name = "system"
+instruction_prompt_name = "instruction"
+
+# Logging
+suppress_noisy_loggers = true
+
+# Observability
+otel_enabled = false
+otel_endpoint = "http://localhost:4317"
+otel_service_name = "my_agent_service"
+token_metrics_enabled = true
+
+[default.event_publishing]
+default_pubsub_name = "pubsub"
+
+[default.event_publishing.topic_mapping]
+"order.created.v1" = "orders"
+"order.completed.v1" = "orders"
+
+[default.runtimes.default]
+model_provider = "openai"
+model_name = "gpt-4o"
+model_api_key = "@format {this.OPENAI_API_KEY}"
+model_max_tokens = 4096
+model_temperature = 0.7
+concurrent_requests = 5
+
+[default.runtimes.fast]
+model_provider = "openai"
+model_name = "gpt-4o-mini"
+model_api_key = "@format {this.OPENAI_API_KEY}"
+model_max_tokens = 2048
+model_temperature = 0.3
+concurrent_requests = 10
+
+[default.cache]
+cache_dir = ".cache/blueprint"
+size_limit = 1000000000
+eviction_policy = "least-recently-used"
+default_ttl = 3600
+```

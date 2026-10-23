@@ -38,8 +38,15 @@ class AgentRuntime(Agent[AgentDepsT, Any], Component):  # type: ignore[misc]
 
     @name.setter
     def name(self, value: str | None) -> None:
-        """Update name in both the pydantic_ai Agent and the Component registry."""
-        Agent.name.fset(self, value)  # type: ignore[attr-defined]  # pydantic_ai side-effects (future-proof)
+        """Rename through ``Component``, which renames the pydantic_ai side with it.
+
+        Both classes keep the name in ``self._name`` -- ``Agent.name`` reads that field and its
+        setter writes nothing else -- so ``Component``'s setter is the whole rename: it qualifies
+        the value with this agent's namespace, moves the registry key, and writes the field both
+        getters read. Calling ``Agent.name.fset`` first, as this used to, put the *unqualified*
+        value into that field before ``Component``'s setter read it as "the name I am registered
+        under", so the rename went looking for a key that had never existed.
+        """
         Component.name.fset(self, value)  # type: ignore[attr-defined]  # registry update + self._name
 
     def __init__(
@@ -49,14 +56,22 @@ class AgentRuntime(Agent[AgentDepsT, Any], Component):  # type: ignore[misc]
     ) -> None:
         """Initialize the agent runtime.
 
+        Registration is ``Component``'s, not this class's. It used to be done here by hand --
+        ``Component.__init__(should_register=False)`` followed by
+        ``self.registry.add_component(name, self)`` -- which registered the runtime under the
+        **bare** name while every other component in the process carries its namespace. Two
+        agents in one group whose runtimes shared a name therefore collided on one key instead
+        of becoming ``orders_assistant`` and ``billing_assistant``, and ``base_name`` was left
+        saying ``agent_runtime``. ``Component.__init__`` qualifies, registers and sets both
+        halves; ``Registry._lookup`` qualifies on the way in too, so ``get_agent("assistant")``
+        still resolves within the calling agent.
+
         Args:
             name: Name used for registry lookup and logging
             **kwargs: Keyword arguments forwarded to pydantic_ai.Agent
         """
         Agent.__init__(self, name=name, **kwargs)
-        Component.__init__(self, should_register=False)
-        self._name = name
-        self.registry.add_component(name, self)
+        Component.__init__(self, name=name)
 
         self._ai_client: AIClientBase | None = None
         self._prompt_cache: dict[str, str] = {}

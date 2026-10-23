@@ -1,20 +1,22 @@
-"""Application entry point for the Order Event Pipeline."""
+"""Declaration of the Order Event Pipeline agent.
+
+``agent`` records what the agent is made of; nothing is constructed until it is built.
+``create_app()`` builds it as an application of its own::
+
+    uvicorn src.main:create_app --factory
+"""
+
+from pathlib import Path
 
 from blueprint.agents import AppBuilder, Config
 
-from .handlers.order_validation_handler import OrderValidationHandler
-from .handlers.order_enrichment_handler import OrderEnrichmentHandler
-from .services.order_service import OrderService
 from .api.routes import OrderApi
+from .handlers.order_handler import OrderHandler
+from .services.order_service import OrderService
 
-config = Config(settings_files=["settings.toml"])
+agent = AppBuilder().with_service(OrderService).with_handler(OrderHandler).with_rest_api(OrderApi).with_cache()
 
-app = (
-    AppBuilder(config)
-    .with_service(OrderService)
-    .with_handler(OrderValidationHandler)
-    .with_handler(OrderEnrichmentHandler)
-    .with_rest_api(OrderApi)
-    .with_cache()
-    .build()
-)
+
+def create_app():
+    """Build this agent as an application of its own."""
+    return agent.build(Config(settings_files=["settings.toml"], root_path=str(Path(__file__).parent.parent)))

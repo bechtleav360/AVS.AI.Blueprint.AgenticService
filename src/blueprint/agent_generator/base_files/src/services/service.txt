@@ -4,7 +4,6 @@ service_description
 
 import logging
 
-from blueprint.agents.agent import AgentRuntime
 from blueprint.agents.services import ServiceBase
 
 imports

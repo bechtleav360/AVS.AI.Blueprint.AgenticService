@@ -15,7 +15,7 @@ from blueprint.agents.services.eventing.event_processing_service import (
     EventProcessingService,
 )
 
-from ..models.schemas import WebhookPayload
+from ..models.dto import WebhookPayload
 from ..services.webhook_service import WebhookService
 
 logger = logging.getLogger(__name__)
@@ -28,7 +28,9 @@ class WebhookApi(RestApiBase):
         super().__init__()
 
     async def on_startup(self) -> None:
-        """No API-specific startup needed."""
+        """Resolve the services this API delegates to."""
+        self._events = self.registry.get_service(EventProcessingService)
+        self._webhooks = self.registry.get_service(WebhookService)
 
     async def on_shutdown(self) -> None:
         """No API-specific shutdown needed."""
@@ -52,18 +54,16 @@ class WebhookApi(RestApiBase):
             data=payload.model_dump(),
         )
 
-        event_processing: EventProcessingService = self.registry.get_service(
-            EventProcessingService,
-        )
-
-        result_event = await event_processing.process_event(cloud_event)
+        processing = await self._events.process_event(cloud_event)
+        results = [result.data for result in processing.result if result.data is not None]
 
         return JSONResponse(
             status_code=202,
             content={
-                "status": "accepted",
+                "status": processing.status.value,
                 "webhook_id": webhook_id,
-                "result": result_event.data if result_event else None,
+                "message": processing.message,
+                "result": results[0] if results else None,
             },
         )
 
@@ -74,8 +74,7 @@ class WebhookApi(RestApiBase):
     )
     async def list_recent(self) -> JSONResponse:
         """Return recently processed webhooks from the cache."""
-        webhook_service: WebhookService = self.registry.get_service(WebhookService)
-        recent = webhook_service.get_recent(limit=20)
+        recent = self._webhooks.get_recent(limit=20)
         return JSONResponse(
             status_code=200,
             content={"count": len(recent), "webhooks": recent},

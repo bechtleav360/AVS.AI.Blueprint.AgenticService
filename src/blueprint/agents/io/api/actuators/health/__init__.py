@@ -1,13 +1,16 @@
 """Health check providers for the agent application."""
 
-from .health_base import HealthCheckerBase
+from .health_base import HealthCheckEntry, HealthCheckerBase
 from .cache_health import CacheHealthChecker
 from .client_health import ClientHealthChecker
+from .named_connections_health import NamedConnectionsHealthChecker
 from .sessions_health import SessionsServiceHealthChecker
 
 __all__ = [
+    "HealthCheckEntry",
     "HealthCheckerBase",
     "CacheHealthChecker",
     "ClientHealthChecker",
+    "NamedConnectionsHealthChecker",
     "SessionsServiceHealthChecker",
 ]

@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.models.schemas import HealthResult, UptimeReport
+from src.models.domain_models import HealthResult, UptimeReport
 from src.schedulers.health_check_scheduler import HealthCheckScheduler
 from src.schedulers.report_scheduler import ReportScheduler
 
@@ -34,6 +34,12 @@ def mock_monitor_service() -> AsyncMock:
         ]
     )
     svc.store_result = AsyncMock()
+    svc.run_checks = AsyncMock(
+        return_value=[
+            _make_health_result("httpbin"),
+            _make_health_result("jsonplaceholder"),
+        ]
+    )
     svc.generate_report = AsyncMock(
         return_value=UptimeReport(
             generated_at="2026-01-01T00:00:00+00:00",
@@ -47,14 +53,14 @@ def mock_monitor_service() -> AsyncMock:
 class TestHealthCheckScheduler:
     @pytest.mark.asyncio
     async def test_tick_calls_check_and_store(self, mock_monitor_service: AsyncMock) -> None:
-        """tick() should call check_all_endpoints and store each result."""
+        """tick() makes one service call: the service checks and stores."""
         scheduler = HealthCheckScheduler.__new__(HealthCheckScheduler)
         scheduler._monitor_service = mock_monitor_service
 
         await scheduler.tick()
 
-        mock_monitor_service.check_all_endpoints.assert_awaited_once()
-        assert mock_monitor_service.store_result.await_count == 2
+        mock_monitor_service.run_checks.assert_awaited_once()
+        mock_monitor_service.check_all_endpoints.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_tick_skips_when_no_service(self) -> None:

@@ -125,6 +125,7 @@ class AIConfig(BaseModel):
     api_key: str | None = Field(None, description="API key")
     base_url: str | None = Field(None, description="Base URL for API")
     max_tokens: int | None = Field(None, description="Max tokens per request")
+    timeout: float | None = Field(None, gt=0, description="HTTP timeout per model request, in seconds")
     temperature: float | None = Field(None, description="Temperature for generation")
     concurrency_limit: int | None = Field(None, description="Max concurrent requests")
     usage_limits: UsageLimits = Field(default_factory=UsageLimits, description="Usage limits")
@@ -167,6 +168,10 @@ class CacheConfig(BaseModel):
     redis_db: int = Field(default=0, description="Redis database index")
     redis_tls: bool = Field(default=False, description="Enable TLS for Redis connection")
     fallback_to_local: bool = Field(default=False, description="Fall back to DiskCacheService if Redis is unavailable at startup")
+    redis_socket_timeout: float | None = Field(
+        default=None,
+        description="Seconds a Redis call may block, connect included; unset keeps redis-py's own default (5 s since redis-py 8)",
+    )
 
 
 class RuntimeConfig(BaseModel):

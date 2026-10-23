@@ -5,7 +5,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator
 
 from .events import HandlerResult
 
@@ -67,48 +67,20 @@ class AgentOutput(BaseModel):
         return v
 
 
-class AnalysisRequest(BaseModel):
-    """A generic request to analyze a resource."""
-
-    resource_id: str | None = Field(None, description="The ID of a resource to fetch and analyze.")
-    resource: dict[str, Any] | None = Field(None, description="The full resource data to analyze directly.")
-
-    force_recheck: bool = Field(
-        default=False,
-        description="If true, forces a re-analysis even if a cached result exists.",
-    )
-
-    @model_validator(mode="before")
-    @classmethod
-    def check_resource_or_id_provided(cls, values: dict[str, Any]) -> dict[str, Any]:
-        """Ensures that either a resource or its ID is provided, but not both."""
-        if not values.get("resource_id") and not values.get("resource"):
-            raise ValueError("Either 'resource_id' or 'resource' must be provided.")
-        if values.get("resource_id") and values.get("resource"):
-            raise ValueError("Provide either 'resource_id' or 'resource', not both.")
-        return values
-
-
-class AnalysisResponse(BaseModel):
-    """A generic response containing the result of an analysis."""
-
-    success: bool = Field(..., description="Indicates whether the analysis was successfully completed.")
-    result: AgentOutput | None = Field(None, description="The output of the analysis if successful.")
-    error: str | None = Field(None, description="An error message if the analysis failed.")
-
-
 class ProcessingStatus(StrEnum):
     """Enumeration of processing outcomes."""
 
     PROCESSED = "processed"
     NO_HANDLER_FOUND = "no_handler_found"
+    # The selected handler was responsible but the event needed nothing (HandlerResult.skipped).
+    SKIPPED = "skipped"
 
 
 class ProcessingResult(BaseModel):
     """Structured result emitted by the processing service."""
 
     request_id: str = Field(..., description="Unique identifier for the processing request.")
-    status: ProcessingStatus = Field(..., description="Processing status (e.g., 'processed', 'no_handler_found').")
+    status: ProcessingStatus = Field(..., description="Processing status ('processed', 'skipped' or 'no_handler_found').")
     result: list[HandlerResult] = Field(default_factory=list, description="Handler results produced during processing.")
     metadata: dict[str, Any] = Field(default_factory=dict, description="Additional metadata about the processing run.")
     message: str | None = Field(None, description="Optional explanatory message for the processing outcome.")

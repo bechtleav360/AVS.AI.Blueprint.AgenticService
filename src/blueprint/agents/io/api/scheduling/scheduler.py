@@ -1,10 +1,31 @@
 """Abstract base class for scheduled background tasks.
 
 Subclasses implement :meth:`tick` and are registered with :class:`AppBuilder`
-via ``with_scheduler()``. The scheduler runs via APScheduler and calls
-``tick()`` according to the configured crontab expression. A REST endpoint
-for manual triggering is registered dynamically under ``/{name}/trigger``
-during startup.
+via ``with_scheduler()``. What calls ``tick()`` depends on ``scheduler_mode``
+(spec sec. 7.5):
+
+``"event"``
+    Nothing in this process keeps time. The schedule is declared here and lives
+    outside -- an external scheduler publishes to the scheduler's own topic and
+    :class:`SchedulerTickHandler` turns that delivery into a ``tick()``. The queue
+    group already picks exactly one replica, so no leader is elected. Requires
+    ``event_bus``.
+
+``"in_process"``
+    An APScheduler timer in every replica, for un-orchestrated Docker and local
+    development where no external scheduler exists. Every replica's timer fires, and
+    each tick is claimed in the agent's cache so one replica runs it -- across replicas
+    only when that cache is Redis: a disk cache's claim holds within one process (S23).
+    With no cache registered there is nothing to claim with and every replica runs every
+    tick, which startup warns about.
+
+The key has **no default**: registering a scheduler without it fails at startup. Neither
+value is safe to inherit silently, and which one applies depends on the deployment rather
+than on the code -- see :meth:`SchedulerBase._resolve_mode`.
+
+A REST endpoint for manual triggering is registered under ``/{name}/trigger`` in
+both modes: ``/api/{name}/trigger`` standalone, ``/api/<agent>/scheduler/{name}/trigger``
+in a group (spec sec. 11.2).
 
 Example::
 
@@ -18,17 +39,283 @@ Example::
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import logging
+import time
+import weakref
 from abc import abstractmethod
+from collections.abc import Iterable
+from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from opentelemetry.metrics import CallbackOptions, Observation
 
+from ....clients.io.io_client_base import TOPIC_TRANSPORTS, validate_subject_segment
 from ....component.component import traced
+from ....component.namespace import ROOT_LABEL, namespace_scope
+from ....handler.event_handler_base import EventHandlerBase
+from ....models.events import GenericCloudEvent
+from ...telemetry.providers import agent_meter
+
 from ..rest_api_base import RestApiBase
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_scheduler_timezone(value: object, scheduler: str = "") -> ZoneInfo | None:
+    """``scheduler_timezone`` as a ``ZoneInfo``, or ``None`` for the host's local time (plan D15); shared (N19).
+
+    Opt-in: unset keeps the host-local timezone every in-process scheduler has always used. Only the
+    in-process timer reads it; in event mode the external cron's own timezone decides.
+
+    Args:
+        value: The configured ``scheduler_timezone``.
+        scheduler: The scheduler's name, for the message; empty when the check is not about one.
+
+    Raises:
+        ValueError: if the value is not an IANA timezone name.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return ZoneInfo(raw)
+    except (ZoneInfoNotFoundError, ValueError):
+        of = f" of scheduler '{scheduler}'" if scheduler else ""
+        raise ValueError(
+            f"'scheduler_timezone'{of} is {raw!r}, which is not an IANA timezone name (such as 'Europe/Berlin' or 'UTC')."
+        ) from None
+
+
+SCHEDULER_MODE_EVENT = "event"
+"""No in-process timer; the tick arrives as an ordinary namespaced event."""
+
+SCHEDULER_MODE_IN_PROCESS = "in_process"
+"""An APScheduler timer inside every replica of the process."""
+
+SCHEDULER_MODES = (SCHEDULER_MODE_EVENT, SCHEDULER_MODE_IN_PROCESS)
+
+TICK_AGE_GAUGE = "blueprint.scheduler.tick_age_seconds"
+"""Seconds since this scheduler last ticked, or ``-1`` before its first tick.
+
+A tick is counted as an ordinary event, so a ``CronJob`` that stopped publishing looks like
+silence rather than a fault: nothing said "this scheduler has not ticked within two intervals".
+Event mode trades a duplicated tick for a possibly missing one, and only the second failure was
+invisible. The declared crontab is in the process and the last tick is knowable, so an alert can
+be written against this without the framework having to interpret a crontab.
+
+``-1`` rather than a large age before the first tick, so "never ticked" and "ticked a long time
+ago" are different values: a pod that has just started has not missed anything yet.
+"""
+
+TICK_CACHE_NAMESPACE = "scheduler_tick"
+"""Cache namespace holding the per-tick claims, kept away from application data."""
+
+TICK_CLAIM_TTL_SECONDS = 300
+"""How long a claimed tick slot is remembered.
+
+It only has to outlast the spread between replicas firing for the *same* slot, which is
+clock skew plus scheduler jitter -- seconds. Five minutes is generous. It does not have to
+outlast the interval between ticks, because the next tick claims a different key.
+"""
+
+_TICK_GAUGE_SCHEDULERS: weakref.WeakKeyDictionary[Any, weakref.WeakSet[SchedulerBase]] = weakref.WeakKeyDictionary()
+"""Per meter, the schedulers its one tick-age gauge reports (S26). Weak both ways: a meter replaced
+with its provider, or a scheduler gone with its application, drops out by itself."""
+
+
+def _observe_tick_ages(schedulers: weakref.WeakSet[SchedulerBase], _options: CallbackOptions) -> Iterable[Observation]:
+    return [scheduler.tick_age_observation() for scheduler in list(schedulers)]
+
+
+def normalise_scheduler_mode(raw: object) -> str:
+    """``scheduler_mode`` as the runtime reads it: trimmed and lower-cased; ``""`` when unset.
+
+    Shared with ``asbs validate`` (S27), which compared the raw value and so refused ``"Event"``,
+    a value the runtime runs.
+    """
+    return str(raw or "").strip().lower()
+
+
+def delivers_ticks(event_bus: object) -> bool:
+    """Whether ``event_bus`` names a transport that can deliver an event-mode tick (a topic subscription).
+
+    Shared with ``asbs validate`` (S27), which only checked that the key was present.
+    """
+    return str(event_bus or "").strip().lower() in TOPIC_TRANSPORTS
+
+
+def validate_crontab(crontab: str, mode: str | None = None) -> str:
+    """Return the crontab if this scheduler and an external cron read it alike, else raise.
+
+    Run in both modes (S27). In ``"event"`` mode nothing else parses the expression -- the tick
+    arrives from outside -- so without this a typo surfaces as a tick that never comes, long
+    after the process reported itself healthy.
+
+    ``croniter`` is used rather than apscheduler's parser because the consumer of this
+    expression may be an external scheduler reading the five standard fields, and apscheduler
+    accepts extensions such as a leading seconds field that no cron implementation does.
+
+    **The day of the week** (plan D14). The blueprint's dialect is apscheduler's, which runs the
+    ``"in_process"`` timer: ``0`` is Monday and ``6`` is Sunday. A standard cron counts ``0`` as
+    Sunday, so the two disagree on every number; names (``mon``, ``mon-fri``, ``sun``) read the
+    same in both. Hence ``7`` is refused everywhere (Sunday to cron, nothing to apscheduler), and
+    in ``"event"`` mode -- where an external cron fires the tick -- a day of the week given by
+    number is refused, because which day it names depends on who reads it.
+
+    Args:
+        crontab: The declared expression.
+        mode: ``"event"`` or ``"in_process"``; ``None`` leaves out the numeric-weekday check.
+
+    Raises:
+        ValueError: if the expression is empty, is not a valid cron expression, does not have
+            exactly the five standard fields, names day ``7``, or names a day by number in
+            ``"event"`` mode.
+    """
+    expression = crontab.strip()
+    if not expression:
+        raise ValueError("The declared crontab is empty.")
+
+    from croniter import croniter
+
+    if not croniter.is_valid(expression):
+        raise ValueError(f"The declared crontab '{crontab}' is not a valid cron expression.")
+
+    fields = expression.split()
+    if len(fields) != 5:
+        raise ValueError(
+            f"The declared crontab '{crontab}' has {len(fields)} fields. An external scheduler reads the five standard "
+            "ones (minute hour day-of-month month day-of-week); seconds and year are apscheduler extensions it will not "
+            "understand."
+        )
+    weekday = fields[4]
+    if _names_day_seven(weekday):
+        raise ValueError(
+            f"The declared crontab '{crontab}' names day 7 in its day-of-week field. In the blueprint 0 is Monday and 6 "
+            "is Sunday (apscheduler's count); 7 is Sunday to a standard cron and nothing to apscheduler. Name the day "
+            "instead: 'sun'."
+        )
+    if mode == SCHEDULER_MODE_EVENT and _names_a_day_by_number(weekday):
+        raise ValueError(
+            f"The declared crontab '{crontab}' gives the day of the week by number ('{weekday}'), and in event mode an "
+            "external cron fires the tick. A standard cron counts 0 as Sunday, the blueprint counts 0 as Monday, so the "
+            "number names a different day depending on who reads it. Use names, which both read the same: 'mon-fri', "
+            "'sun', 'mon,wed'."
+        )
+    return expression
+
+
+def _weekday_terms(field: str) -> list[tuple[str, str]]:
+    """The ``(base, step)`` terms of a day-of-week field: ``"mon-fri/2,sun"`` -> ``[("mon-fri", "2"), ("sun", "")]``."""
+    terms = []
+    for term in field.split(","):
+        base, _, step = term.partition("/")
+        terms.append((base, step))
+    return terms
+
+
+def _names_day_seven(field: str) -> bool:
+    """Whether a day-of-week field uses ``7`` as a day (not as a step)."""
+    return any("7" in base.split("-") for base, _ in _weekday_terms(field))
+
+
+def _names_a_day_by_number(field: str) -> bool:
+    """Whether a day-of-week field depends on how days are numbered.
+
+    A number as a day or a range end does, and so does ``*/n``: it steps from day 0, which is a
+    different day in each count. ``*`` alone and names do not.
+    """
+    for base, step in _weekday_terms(field):
+        if any(character.isdigit() for character in base):
+            return True
+        if base == "*" and step:
+            return True
+    return False
+
+
+_TOPIC_CONTEXT_KEYS = ("nats_topic", "dapr_topic", "topic")
+"""Every key a transport spells the delivery topic with.
+
+``NatsEventing`` writes ``nats_topic``, ``DaprEventing`` writes ``dapr_topic`` and the
+REST path writes ``topic``. Those keys reach user handlers, so they cannot be unified
+(see ``EventHandlingBase._process_cloud_event``) -- a consumer that wants the topic has
+to accept all three.
+"""
+
+
+class SchedulerTickHandler(EventHandlerBase):
+    """Routes an externally scheduled tick to one scheduler's :meth:`SchedulerBase.tick`.
+
+    This is the whole of ``scheduler_mode = "event"``: the schedule lives outside the
+    process and the tick is an ordinary event, so the queue group picks exactly one
+    replica (spec sec. 7.5) and dedup, telemetry and the acknowledgement contract all
+    apply to it unchanged. Nothing is elected because nothing keeps time here.
+
+    The handler claims an event only when the delivery arrived on the scheduler's own
+    topic, which no other component subscribes to. Matching the topic rather than the
+    event type is deliberate: it makes a hand-published tick (``POST /events/<topic>``
+    during development) work without the publisher having to know a type string.
+    """
+
+    PRIORITY = 10
+    """Ahead of the default handler priority of 100.
+
+    A handler that declares nothing is still evaluated for every event its namespace
+    receives (spec sec. 7.7, rule 1), so a permissive ``can_handle_event`` in user code
+    would otherwise claim the tick before the scheduler ever saw it.
+    """
+
+    def __init__(self, scheduler: SchedulerBase, topic: str) -> None:
+        """Bind this handler to one scheduler and the topic its ticks arrive on."""
+        super().__init__(priority=self.PRIORITY)
+        # Renamed here rather than by the caller, and not for readability: Component.__init__
+        # registers under the class-derived name, so a second scheduler's handler would
+        # collide with the first one on "scheduler_tick_handler". Renaming pops that key
+        # out of the registry again, which is what leaves it free for the next instance.
+        # The scheduler's base name: the setter qualifies with this handler's namespace, which
+        # is the scheduler's, so the qualified name would carry the agent twice.
+        self.name = f"{scheduler.base_name}_tick"
+        self._scheduler = scheduler
+        self._topic = topic
+
+    @property
+    def topic(self) -> str:
+        """The topic a tick for this scheduler arrives on."""
+        return self._topic
+
+    @property
+    def scheduler(self) -> SchedulerBase:
+        """The scheduler this handler ticks."""
+        return self._scheduler
+
+    async def on_startup(self) -> None:
+        """No startup of its own; the scheduler it ticks owns the lifecycle."""
+
+    async def on_shutdown(self) -> None:
+        """No shutdown actions required."""
+
+    def get_subscribed_topics(self) -> list[str]:
+        """Declare the tick topic so the transport actually subscribes to it."""
+        return [self._topic]
+
+    async def can_handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> bool:
+        """Accept anything delivered on this scheduler's own topic."""
+        return any(context.get(key) == self._topic for key in _TOPIC_CONTEXT_KEYS)
+
+    async def handle_event(self, event: GenericCloudEvent, context: dict[str, Any]) -> dict[str, Any]:
+        """Run the scheduler's tick, letting a failure reach the transport edge.
+
+        Returns a plain dict rather than a :class:`HandlerResult`: it is non-``None``, so
+        the chain stops here and the tick is not counted as an unhandled event, and it
+        carries no ``event_type``, so nothing is published downstream.
+        """
+        logger.info("Scheduler '%s' ticking from event '%s' on topic '%s'", self._scheduler.name, event.id, self._topic)
+        await self._scheduler.run_tick()
+        return {"status": "ticked", "scheduler": self._scheduler.name}
 
 
 class SchedulerBase(RestApiBase):
@@ -37,18 +324,43 @@ class SchedulerBase(RestApiBase):
     Extends :class:`RestApiBase` so subclasses have access to ``self.registry``,
     ``self.config``, and a REST endpoint for manual triggering.
 
-    The trigger route ``POST /{name}/trigger`` is registered dynamically in
-    :meth:`on_startup`, after all ``__init__`` code (including any
-    ``self.name`` overrides) has completed.
+    Config keys
+    ~~~~~~~~~~~
+    ``scheduler_mode`` (str, **required**, no default): ``"event"`` starts no timer and
+    expects the tick as an event on :attr:`tick_topic`, which needs ``event_bus`` set to
+    one of ``TOPIC_TRANSPORTS``; ``"in_process"`` runs an APScheduler timer in every
+    replica, with each tick claimed in the cache so one replica runs it (on Redis; a disk
+    cache claims within one process). See
+    :meth:`_resolve_mode` for why there is no default.
 
     Args:
-        crontab: Standard cron expression (e.g. ``"*/5 * * * *"``).
+        crontab: Standard cron expression (e.g. ``"*/5 * * * *"``). Declared here in both
+            modes: the schedule stays in agent code even when an external scheduler is what
+            fires it (spec sec. 7.5), and it is validated in event mode because nothing else
+            parses it there.
+        topic: Overrides the derived :attr:`tick_topic`. For an agent whose ticks are
+            already published on a subject someone else owns.
     """
 
-    def __init__(self, crontab: str) -> None:
+    group_segment = "scheduler"
+
+    def __init__(self, crontab: str, *, topic: str | None = None) -> None:
         super().__init__()
         self._crontab = crontab
+        self._topic_override = topic.strip() if topic else None
+        self._tick_topic: str | None = None
+        self._mode: str | None = None
+        self._tick_handler: SchedulerTickHandler | None = None
         self._scheduler: AsyncIOScheduler | None = None
+        # The in-process timer's trigger and its latest fire time known to be due, which the
+        # tick slot is read from (W2). Set by _arm_trigger.
+        self._trigger: CronTrigger | None = None
+        self._fire_cursor: datetime | None = None
+        self._started = False
+        self._gauge_registered = False
+        self._trigger_route_registered = False
+        # When this scheduler last ran its tick, for the freshness gauge. None until the first.
+        self._last_tick: float | None = None
 
     @abstractmethod
     async def tick(self) -> None:
@@ -60,30 +372,425 @@ class SchedulerBase(RestApiBase):
         raise NotImplementedError
 
     # ------------------------------------------------------------------
+    # Declaration
+    # ------------------------------------------------------------------
+
+    @property
+    def crontab(self) -> str:
+        """The declared cron expression, in both modes."""
+        return self._crontab
+
+    @property
+    def scheduler_mode(self) -> str:
+        """The resolved ``scheduler_mode``, read from config on first access.
+
+        Raises:
+            ValueError: if the key is unset or unrecognised. It has no default.
+        """
+        if self._mode is None:
+            self._mode = self._resolve_mode()
+        return self._mode
+
+    @property
+    def tick_topic(self) -> str:
+        """The topic a tick for this scheduler arrives on, resolved on first access."""
+        if self._tick_topic is None:
+            self._tick_topic = self._resolve_topic()
+        return self._tick_topic
+
+    @property
+    def tick_handler(self) -> SchedulerTickHandler | None:
+        """The handler routing ticks to this scheduler, or ``None`` outside event mode."""
+        return self._tick_handler
+
+    # ------------------------------------------------------------------
+    # Wiring
+    # ------------------------------------------------------------------
+
+    def wire(self) -> SchedulerTickHandler | None:
+        """Resolve the mode and create what it needs, before the application is built.
+
+        Called from :meth:`AppBuilder.build` rather than from :meth:`on_startup`, for two
+        reasons that both produce a scheduler that looks registered and does nothing:
+
+        - ``build()`` creates a transport and an eventing endpoint only when a handler is
+          registered. A project whose only event consumer is an event-mode scheduler would
+          otherwise get no transport at all, and nothing could ever tick it.
+        - ``include_router`` copies the routes a router holds *at that moment*. The trigger
+          route was added during startup, which is after the copy, so it lived on the
+          scheduler's own router and was served by nothing.
+
+        Idempotent: a second call returns the same handler and adds no second route.
+
+        Returns:
+            The tick handler in event mode, ``None`` in in-process mode.
+
+        Raises:
+            ValueError: if ``scheduler_mode`` is unset or unrecognised, if event mode has no
+                transport that can deliver the tick, or if the tick topic is unusable.
+        """
+        self.register_trigger_route()
+        # Both modes (S27): in in_process mode apscheduler parses it too, but only in on_startup,
+        # and it neither refuses 7 with a reason nor reads a weekday as an external cron would.
+        validate_crontab(self._crontab, self.scheduler_mode)
+
+        if self.scheduler_mode != SCHEDULER_MODE_EVENT:
+            return None
+
+        self._require_event_transport()
+        if self._tick_handler is None:
+            # In the scheduler's own namespace (M8): build() calls this outside any scope, so the
+            # handler -- a Component taking its namespace from the ambient scope -- landed at the
+            # root, in the root's chain, outside its agent's registry view and consumer (C1).
+            with namespace_scope(self.namespace):
+                self._tick_handler = SchedulerTickHandler(self, self.tick_topic)
+        return self._tick_handler
+
+    def register_trigger_route(self) -> None:
+        """Add ``POST /{name}/trigger`` to this scheduler's router, once.
+
+        Registered outside ``__init__`` because ``with_scheduler(name=...)`` may rename the
+        component afterwards, and the route path carries the name.
+        """
+        if self._trigger_route_registered:
+            return
+
+        # The base name: in a group the router is already under /api/<agent>/scheduler, and the
+        # qualified name repeated the agent -- /api/orders/scheduler/orders_nightly/trigger (M9).
+        self.router.post(
+            f"/{self.base_name}/trigger",
+            tags=["Scheduler"],
+            summary=f"Manually trigger {self.base_name}",
+        )(self._trigger_tick)
+        self._trigger_route_registered = True
+
+    def _resolve_mode(self) -> str:
+        """Read and validate ``scheduler_mode``, which has no default (spec sec. 7.5).
+
+        Registering a scheduler without stating the mode is a startup failure, and neither
+        value is a defensible thing to inherit silently. ``"in_process"`` runs a timer in
+        every replica and coordinates them through the cache, so it fires a tick once only
+        where a cache is registered (#73), and a pod hosting 20 grouped agents runs 20
+        timers. ``"event"`` is correct under an
+        orchestrator but needs something outside the process to publish the tick and a
+        transport to receive it -- a service whose only job is periodic work may have
+        neither, and would simply go quiet. Which one applies depends on facts this layer
+        cannot read: whether a broker is reachable, whether more than one replica runs,
+        whether an orchestrator exists at all. So the author states it, exactly as
+        ``idempotency_ttl`` is stated rather than defaulted (sec. 7.4).
+
+        Raises:
+            ValueError: if the key is absent or empty, or holds any other value. A typo must
+                not fall back to either mode.
+        """
+        raw = self.config.get("scheduler_mode", None)
+        mode = normalise_scheduler_mode(raw)
+        if not mode:
+            raise ValueError(
+                f"Scheduler '{self.name}' is registered but 'scheduler_mode' is not set, and it has no default. "
+                f"Set it to '{SCHEDULER_MODE_EVENT}' to take the tick as an event on '{self.tick_topic}', published "
+                f"by an external CronJob -- exactly one replica then runs it. Set it to '{SCHEDULER_MODE_IN_PROCESS}' "
+                "to run an APScheduler timer inside the process, which is correct for local development and plain "
+                "Docker but fires once per replica unless a Redis cache claims each tick."
+            )
+        if mode not in SCHEDULER_MODES:
+            raise ValueError(f"Config key 'scheduler_mode' must be one of {', '.join(SCHEDULER_MODES)}, got {raw!r}.")
+        return mode
+
+    def _resolve_timezone(self) -> Any:
+        """``scheduler_timezone`` as a ``ZoneInfo``, or ``None`` for the host's local time (plan D15).
+
+        Opt-in: unset keeps the host-local timezone every in-process scheduler has always used.
+        Only the in-process timer reads it; in event mode the external cron's own timezone
+        decides, and this key changes nothing.
+
+        Raises:
+            ValueError: if the value is not an IANA timezone name.
+        """
+        return resolve_scheduler_timezone(self.config.get("scheduler_timezone", ""), self.base_name)
+
+    def _require_event_transport(self) -> None:
+        """Fail unless a transport that can deliver a tick is configured.
+
+        In event mode the tick is an ordinary event, so without ``event_bus`` there is
+        nothing to subscribe to and the scheduler would run forever without ticking --
+        the one failure mode of event mode that is otherwise pure silence.
+
+        Raises:
+            ValueError: if ``event_bus`` is unset or set to a transport that cannot carry
+                a topic subscription.
+        """
+        bus = str(self.config.get("event_bus", "") or "").strip().lower()
+        if not delivers_ticks(bus):
+            raise ValueError(
+                f"Scheduler '{self.name}' is in '{SCHEDULER_MODE_EVENT}' mode, which delivers its tick as an event on "
+                f"'{self.tick_topic}', but 'event_bus' is {bus or 'not set'!r}. Set 'event_bus' to one of "
+                f"{', '.join(TOPIC_TRANSPORTS)}, or set 'scheduler_mode = \"{SCHEDULER_MODE_IN_PROCESS}\"' to run "
+                "an in-process timer instead."
+            )
+
+    def _resolve_topic(self) -> str:
+        """Derive the tick topic from the agent's own identity, or take the override.
+
+        ``f"{namespace}.scheduler.{name}"`` with the scheduler's own name, not the qualified one
+        that already carries the namespace (M9: ``orders.scheduler.orders_nightly``), falling
+        back to ``app_name`` only for a scheduler at the root -- the same identity the queue group derives from, so moving the scheduler
+        between deployment groups does not change the subject a ``CronJob`` has to publish to
+        (C1). An agent's name is the agent's own; ``app_name`` is a display string belonging to
+        the whole process, so deriving a namespaced scheduler's subject from it would give two
+        agents' schedulers of the same name one subject.
+
+        A derived topic is **validated, not repaired**, and both of the names it is derived
+        from -- the identity and the scheduler's own name -- are checked. This subject is the
+        contract with whatever publishes the tick: a ``CronJob`` in another repository, written
+        by someone who has never read this method. Rewriting ``app_name = "Health Monitor"``
+        into ``Health_Monitor.scheduler.nightly`` leaves that author publishing to a subject
+        this scheduler does not subscribe to, and nothing anywhere says why -- the tick simply
+        never arrives. Failing the startup of the side that knows the name is unusable is the
+        only version of this that is debuggable.
+
+        Raises:
+            ValueError: if no identity is available, or if the identity, the scheduler name or
+                an explicit ``topic`` contains whitespace or a wildcard. All are startup
+                failures rather than a silently unsubscribed scheduler.
+        """
+        if self._topic_override:
+            topic = self._topic_override
+            validate_subject_segment(topic, source=f"The tick topic given to scheduler '{self.name}'", subject=topic)
+            return topic
+
+        # The scheduler's own namespace, and only then app_name. This read was
+        # `ROOT_NAMESPACE or app_name` -- the module constant, which is always "" -- left behind
+        # as a placeholder for phase 2. Phase 2 landed, so `self.namespace` has a value, and the
+        # placeholder had become a defect: a namespaced scheduler derived its tick subject from
+        # `app_name`, which is a display string shared by the whole process. Two agents in a
+        # group each with a `nightly` scheduler would have derived the same subject and consumed
+        # each other's ticks, and moving an agent between groups could change the subject its
+        # CronJob has to publish to (C1).
+        identity = self.namespace or str(self.config.get("app_name", "") or "").strip()
+        if not identity:
+            raise ValueError(
+                f"Scheduler '{self.name}' runs in event mode but its tick topic cannot be derived: "
+                "set 'app_name', or pass topic=... to SchedulerBase.__init__."
+            )
+
+        topic = f"{identity}.scheduler.{self.base_name}"
+        source = "The scheduler's namespace" if self.namespace else "'app_name'"
+        validate_subject_segment(identity, source=source, subject=topic)
+        validate_subject_segment(self.base_name, source=f"The name of scheduler '{self.base_name}'", subject=topic)
+        return topic
+
+    # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
     async def on_startup(self) -> None:
-        """Start the APScheduler and register the manual trigger endpoint."""
-        trigger = CronTrigger.from_crontab(self._crontab)
+        """Start the in-process timer, or leave the tick to the event path.
 
-        self._scheduler = AsyncIOScheduler()
-        self._scheduler.add_job(self.tick, trigger, name=self.name)
-        self._scheduler.start()
+        Guarded against a repeated call (#43). Two ``build()`` passes in one process drive
+        the lifespan hooks twice over the same registry, and an unguarded second call
+        started a second ``AsyncIOScheduler`` on the same crontab -- one process firing
+        every tick twice, which no amount of broker-side grouping can fix, because both
+        timers sit behind the same queue-group member.
 
-        self.router.post(
-            f"/{self.name}/trigger",
-            tags=["Scheduler"],
-            summary=f"Manually trigger {self.name}",
-        )(self._trigger_tick)
+        A subclass overriding this **must** call ``super().on_startup()``, or the scheduler
+        is registered and never runs.
+        """
+        if self._started:
+            logger.warning("Scheduler '%s' is already started; ignoring the repeated startup", self.name)
+            return
+        # Marked started only once it is (S25). Set first, a startup that raised -- a crontab the
+        # timer refuses -- left the flag up, and the startup retry then found it "already started",
+        # cleared the agent's latch and reported a recovery with no timer running.
+        self._register_tick_gauge()
 
-        logger.info("Scheduler '%s' started with crontab '%s'", self.name, self._crontab)
+        # Normally already done by AppBuilder.build(); repeated here so a scheduler driven
+        # without the builder still gets its handler and its route.
+        self.wire()
+
+        if self.scheduler_mode == SCHEDULER_MODE_EVENT:
+            self._started = True
+            logger.info(
+                "Scheduler '%s' is in event mode: no in-process timer. Its tick arrives as an event on topic '%s', "
+                "on the declared crontab '%s'.",
+                self.name,
+                self.tick_topic,
+                self._crontab,
+            )
+            return
+
+        timezone = self._resolve_timezone()
+        trigger = CronTrigger.from_crontab(self._crontab, timezone=timezone)
+        self._arm_trigger(trigger, datetime.now(UTC))
+
+        scheduler = AsyncIOScheduler(timezone=timezone) if timezone is not None else AsyncIOScheduler()
+        scheduler.add_job(self._claimed_tick, trigger, name=self.name)
+        scheduler.start()
+        self._scheduler = scheduler
+        self._started = True
+
+        if self.registry.has_cache():
+            logger.info(
+                "Scheduler '%s' started an in-process timer with crontab '%s'; each tick is claimed in the cache "
+                "(across replicas only on Redis)",
+                self.name,
+                self._crontab,
+            )
+        else:
+            logger.warning(
+                "Scheduler '%s' started an in-process timer with crontab '%s' and NO cache is registered, so its ticks "
+                "cannot be coordinated: every replica of this process will run every tick. Add '.with_cache()' to the "
+                "AppBuilder chain, or use 'scheduler_mode = \"event\"' where an orchestrator schedules the tick.",
+                self.name,
+                self._crontab,
+            )
+
+    def _register_tick_gauge(self) -> None:
+        """Export how long it has been since this scheduler ticked.
+
+        Registered in ``on_startup`` rather than in the constructor, because the per-agent meter
+        providers do not exist until the lifespan configures telemetry -- an instrument created
+        at construction would be bound to the no-op global meter for the life of the process.
+
+        Both modes report it. In-process mode is where a stopped timer is already visible as a
+        missing pod; event mode is where it is not, because a ``CronJob`` that stopped publishing
+        leaves a perfectly healthy process ticking never.
+        """
+        if self._gauge_registered:
+            return
+        # One instrument per meter, reporting every scheduler of it (S26): a second
+        # create_observable_gauge of the same name on one meter is dropped by the SDK, so only the
+        # first scheduler of an agent was ever exported.
+        meter = agent_meter(self.namespace, __name__)
+        schedulers = _TICK_GAUGE_SCHEDULERS.get(meter)
+        if schedulers is None:
+            schedulers = weakref.WeakSet()
+            _TICK_GAUGE_SCHEDULERS[meter] = schedulers
+            meter.create_observable_gauge(
+                TICK_AGE_GAUGE,
+                callbacks=[functools.partial(_observe_tick_ages, schedulers)],
+                description="Seconds since this scheduler last ticked; -1 before its first",
+                unit="s",
+            )
+        schedulers.add(self)
+        self._gauge_registered = True
+
+    def tick_age_observation(self) -> Observation:
+        """This scheduler's point of the tick-age gauge."""
+        age = -1.0 if self._last_tick is None else max(0.0, time.time() - self._last_tick)
+        return Observation(age, {"scheduler": self.name, "agent": self.namespace or ROOT_LABEL, "mode": self.scheduler_mode})
+
+    async def run_tick(self) -> None:
+        """Run the tick and record that it happened.
+
+        Every path that ticks goes through here -- the in-process timer once it has won its
+        slot, the event handler, and the manual trigger -- so the freshness gauge means "this
+        scheduler did its work", not "one particular mechanism fired".
+        """
+        try:
+            await self.tick()
+        finally:
+            # In `finally` because a tick that raised still happened: the gauge answers "is this
+            # scheduler being driven", and a failing tick is a different alert from a silent one.
+            self._last_tick = time.time()
 
     async def on_shutdown(self) -> None:
         """Shut down APScheduler, waiting for any running tick to finish."""
         if self._scheduler and self._scheduler.running:
             self._scheduler.shutdown(wait=True)
+        self._scheduler = None
+        self._started = False
         logger.info("Scheduler '%s' stopped", self.name)
+
+    # ------------------------------------------------------------------
+    # In-process coordination
+    # ------------------------------------------------------------------
+
+    async def _claimed_tick(self) -> None:
+        """Run ``tick`` if this replica wins the slot, otherwise do nothing.
+
+        This is what the timer calls in ``"in_process"`` mode, and it is what makes that
+        mode survive more than one replica (#73). Every replica's own timer fires, and each
+        one tries to claim the same slot in the shared cache; the one that stores the marker
+        runs the tick and the rest return.
+
+        Spec sec. 7.5 calls for a leader lease. A *slot claim* is used instead, and it is a
+        better fit for the same requirement:
+
+        - Nothing is elected and nothing is held, so there is no renewal task to schedule --
+          and therefore no framework-created background task to leak (C7) -- and no lease to
+          be left behind by a replica that dies holding it.
+        - It answers the question spec sec. 13 leaves open, whether that mode needs true
+          failover or "one designated instance runs it, others no-op", by removing it: a
+          dead replica takes nothing with it, because the next slot is claimed from scratch
+          by whoever is alive. There is no takeover bound to specify.
+        - The failure it cannot prevent is the one the spec already accepts either way: a
+          cache that cannot be reached fails open, so every replica ticks. Deduplication
+          (sec. 7.4) is what makes a repeated tick safe, and it applies to both modes.
+
+        With no cache registered there is nothing to claim with, so the tick runs
+        unconditionally. That is the behaviour this mode had before, and ``on_startup`` warns
+        about it once rather than on every tick.
+        """
+        if not await self._claim_tick_slot():
+            logger.debug("Scheduler '%s' did not win this tick; another replica is running it", self.name)
+            return
+        await self.run_tick()
+
+    async def _claim_tick_slot(self) -> bool:
+        """Claim the current tick slot, reporting whether this replica may run it.
+
+        The key is the *slot*, not the scheduler: ``(scheduler, minute)``. Cron granularity
+        is one minute, so every replica firing for the same scheduled time derives the same
+        key, and the next scheduled time derives a different one. Keying on the scheduler
+        alone would need a compare-and-swap on every tick after the first; keying on the
+        slot needs only set-if-absent, which is what :meth:`CacheService.claim` provides
+        atomically.
+
+        The slot is the minute the tick was scheduled for (:meth:`_tick_slot`), not the clock's,
+        so replicas firing for one scheduled time derive one slot even with skewed clocks. The
+        claim is atomic across replicas only on Redis; a disk cache's holds within one process.
+        """
+        if not self.registry.has_cache():
+            return True
+
+        slot = self._tick_slot(datetime.now(UTC))
+        # In a thread: a blocking Redis round trip or disk write on the event loop (S7).
+        return await asyncio.to_thread(
+            self.registry.cache_service.claim,
+            {"scheduler": self.name, "slot": slot},
+            {"claimed_at": time.time()},
+            namespace=TICK_CACHE_NAMESPACE,
+            ttl=TICK_CLAIM_TTL_SECONDS,
+        )
+
+    def _arm_trigger(self, trigger: CronTrigger, now: datetime) -> None:
+        """Remember the timer's trigger and its first fire time from ``now``, for :meth:`_tick_slot`."""
+        self._trigger = trigger
+        self._fire_cursor = trigger.get_next_fire_time(None, now)
+
+    def _tick_slot(self, now: datetime) -> str:
+        """The minute this run was scheduled for, in UTC: the slot every replica derives (W2).
+
+        The scheduled time, not the clock at run time: a run that started late across a minute
+        boundary claimed the next minute's slot. The scheduled time is the trigger's latest fire
+        time at or before ``now``, found by walking a cursor forward from the last one -- fire
+        times that passed without a run (a misfire) are walked over, so they cannot be claimed
+        late. Without a trigger, or before its first fire time, the clock decides, as before.
+
+        With today's 1 s misfire grace and fire times on the full minute the two agree; this is
+        what keeps them agreeing if either changes.
+
+        Args:
+            now: The current time, timezone-aware.
+        """
+        cursor = self._fire_cursor
+        if self._trigger is None or cursor is None or cursor > now:
+            return now.astimezone(UTC).strftime("%Y-%m-%dT%H:%M")
+        while (following := self._trigger.get_next_fire_time(cursor, cursor)) is not None and following <= now:
+            cursor = following
+        self._fire_cursor = cursor
+        return cursor.astimezone(UTC).strftime("%Y-%m-%dT%H:%M")
 
     # ------------------------------------------------------------------
     # Manual trigger
@@ -97,5 +804,5 @@ class SchedulerBase(RestApiBase):
             Status dictionary confirming the trigger.
         """
         logger.info("Scheduler '%s' manually triggered via REST", self.name)
-        await self.tick()
+        await self.run_tick()
         return {"status": "triggered", "scheduler": self.name}

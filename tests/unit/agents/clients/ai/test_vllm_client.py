@@ -36,7 +36,7 @@ class TestVLLMClientConnection:
 
 class TestVLLMClientPubSub:
     async def test_subscribe_is_noop(self, vllm_client: VLLMClient) -> None:
-        await vllm_client.subscribe("topic", AsyncMock())
+        await vllm_client.subscribe({"topic": AsyncMock()})
 
     async def test_publish_is_noop(self, vllm_client: VLLMClient) -> None:
         await vllm_client.publish("topic", MagicMock())
@@ -104,3 +104,24 @@ class TestVLLMClientHealthCheck:
 
         assert result.status == "unhealthy"
         assert "timeout" in result.message
+
+
+class TestTheRequestTimeout:
+    """#7 -- the HTTP timeout came from max_tokens: 4096 tokens meant 68 minutes."""
+
+    def test_max_tokens_no_longer_sets_it(self, vllm_client: VLLMClient, patch_vllm_deps: dict) -> None:
+        vllm_client.create_model()
+        assert patch_vllm_deps["async_openai"].call_args.kwargs["timeout"] == 60.0
+
+    def test_model_timeout_sets_it(self, vllm_client: VLLMClient, patch_vllm_deps: dict, mock_ai_config) -> None:
+        mock_ai_config.timeout = 12.5
+        vllm_client.create_model()
+        assert patch_vllm_deps["async_openai"].call_args.kwargs["timeout"] == 12.5
+
+    def test_a_non_positive_timeout_is_refused(self) -> None:
+        from pydantic import ValidationError
+
+        from blueprint.agents.models.config import AIConfig
+
+        with pytest.raises(ValidationError):
+            AIConfig(timeout=0)

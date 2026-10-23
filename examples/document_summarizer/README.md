@@ -33,7 +33,7 @@ model_api_key = "sk-your-actual-openai-api-key"
 3. Run the service:
 
 ```bash
-uvicorn src.main:app --host 0.0.0.0 --port 8000
+uvicorn src.main:create_app --factory --host 0.0.0.0 --port 8000
 ```
 
 ## API Usage

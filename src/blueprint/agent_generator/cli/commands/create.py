@@ -1,5 +1,6 @@
 """Create command - scaffold individual components using existing generators."""
 
+import json
 import logging
 import re
 import sys
@@ -7,14 +8,18 @@ from argparse import Namespace
 from pathlib import Path
 from typing import Any
 
+from blueprint.agents.io.api.scheduling.scheduler import validate_crontab
+
 from ...generator.part_generators import (
     HandlerPartGenerator,
     ServicePartGenerator,
 )
+from ...generator.part_generators.part_generator_base import PartGeneratorBase
 from ..utils.naming_utils import (
     normalize_component_name,
     add_import_to_main,
     add_component_registration_to_main,
+    insert_before_declaration,
     read_main_py,
     write_main_py,
 )
@@ -98,7 +103,7 @@ def create_handler(args: Namespace) -> None:
 
     # Create minimal config for generator
     config: dict[str, Any] = {
-        "name": "cli_generated",
+        "name": f"{event_type} events",
         "communication_layer": {
             "handlers": {
                 class_name: {
@@ -132,13 +137,17 @@ def create_handler(args: Namespace) -> None:
 
     print(f"✓ Created handler: {output_file}")
 
+    # The generated on_startup reads <handler>.input_event_type, so the event type goes where it
+    # is read -- the way create agent writes its runtime's block -- rather than into a docstring.
+    _write_handler_settings(project_root, PartGeneratorBase.camel_to_snake(class_name), event_type)
+
     # Attempt to auto-register in main.py
     auto_registered = False
     try:
         main_content = read_main_py(project_root)
 
         # Add import statement (use snake_case module name)
-        import_statement = f"from src.handlers.{module_name} import {class_name}"
+        import_statement = f"from .handlers.{module_name} import {class_name}"
         main_content = add_import_to_main(main_content, import_statement, "handler")
 
         # Add component registration
@@ -149,8 +158,8 @@ def create_handler(args: Namespace) -> None:
 
         auto_registered = True
         print("✓ Auto-registered in src/main.py")
-        print(f"  - Added import: from src.handlers.{module_name} import {class_name}")
-        print(f"  - Added registration: .with_handler({class_name}())")
+        print(f"  - Added import: from .handlers.{module_name} import {class_name}")
+        print(f"  - Added registration: .with_handler({class_name})")
 
     except (FileNotFoundError, ValueError) as e:
         logger.debug("Could not auto-register handler: %s", e)
@@ -167,7 +176,28 @@ def create_handler(args: Namespace) -> None:
     print(f"     from .{module_name} import {class_name}")
     if not auto_registered:
         print("  3. Add to src/main.py:")
-        print(f"     .with_handler({class_name}())")
+        print(f"     .with_handler({class_name})")
+
+
+def _write_handler_settings(project_root: Path, section_key: str, event_type: str) -> None:
+    """Add ``[default.<handler>] input_event_type`` to ``settings.toml``, unless the section exists.
+
+    An existing section is the author's and is left alone; a project without a settings file is
+    told what to add instead of being given one.
+    """
+    section = f"[default.{section_key}]"
+    line = f"input_event_type = {json.dumps(event_type)}"
+    settings_file = project_root / "settings.toml"
+    if not settings_file.is_file():
+        print(f"  No settings.toml here; add this to the agent's settings.toml:\n  {section}\n  {line}")
+        return
+    content = settings_file.read_text(encoding="utf-8")
+    if section in content:
+        print(f"  settings.toml already has {section}; left alone")
+        return
+    separator = "" if content.endswith("\n") or not content else "\n"
+    settings_file.write_text(f"{content}{separator}\n{section}\n{line}\n", encoding="utf-8")
+    print(f"  Added {section} with {line} to settings.toml")
 
 
 def create_service(args: Namespace) -> None:
@@ -186,17 +216,21 @@ def create_service(args: Namespace) -> None:
         sys.exit(1)
 
     # Create minimal config for generator
+    # "name" is what the service's docstring says it is for (N: it read "Service for cli_generated.").
     config: dict[str, Any] = {
-        "name": "cli_generated",
+        "name": f"{snake_name.removesuffix('_service')} operations",
         "service_layer": {
             class_name: {
                 "description": f"Service for {snake_name} operations",
                 "uses_domain_models": [],
                 "uses_agents": [],
+                # Types the generated file can import (N9): InputData and OutputData were
+                # named and defined nowhere, so the new service did not import.
+                "type_imports": "from pydantic import BaseModel",
                 "process_function": {
                     "name": "process",
-                    "input_type": "InputData",
-                    "output_type": "OutputData",
+                    "input_type": "BaseModel",
+                    "output_type": "BaseModel",
                 },
             }
         },
@@ -231,7 +265,7 @@ def create_service(args: Namespace) -> None:
         main_content = read_main_py(project_root)
 
         # Add import statement (use snake_case module name)
-        import_statement = f"from src.services.{module_name} import {class_name}"
+        import_statement = f"from .services.{module_name} import {class_name}"
         main_content = add_import_to_main(main_content, import_statement, "service")
 
         # Add component registration
@@ -242,8 +276,8 @@ def create_service(args: Namespace) -> None:
 
         auto_registered = True
         print("✓ Auto-registered in src/main.py")
-        print(f"  - Added import: from src.services.{module_name} import {class_name}")
-        print(f"  - Added registration: .with_service({class_name}())")
+        print(f"  - Added import: from .services.{module_name} import {class_name}")
+        print(f"  - Added registration: .with_service({class_name})")
 
     except (FileNotFoundError, ValueError) as e:
         logger.debug("Could not auto-register service: %s", e)
@@ -260,7 +294,7 @@ def create_service(args: Namespace) -> None:
     print(f"     from .{module_name} import {class_name}")
     if not auto_registered:
         print("  3. Add to src/main.py:")
-        print(f"     .with_service({class_name}())")
+        print(f"     .with_service({class_name})")
 
 
 def create_api(args: Namespace) -> None:
@@ -388,7 +422,7 @@ from fastapi import HTTPException, status
 
 from blueprint.agents.io.api.rest_api_base import RestApiBase
 
-from src.models.{models_module_name} import {request_class_name}, {response_class_name}
+from ..models.{models_module_name} import {request_class_name}, {response_class_name}
 
 
 logger = logging.getLogger(__name__)
@@ -470,11 +504,11 @@ class {class_name}(RestApiBase):
         main_content = read_main_py(project_root)
 
         # Add models import (use snake_case module name)
-        models_import_statement = f"from src.models.{models_module_name} import {request_class_name}, {response_class_name}"
+        models_import_statement = f"from .models.{models_module_name} import {request_class_name}, {response_class_name}"
         main_content = add_import_to_main(main_content, models_import_statement, "api")
 
         # Add API import (use snake_case module name)
-        api_import_statement = f"from src.api.{module_name} import {class_name}"
+        api_import_statement = f"from .api.{module_name} import {class_name}"
         main_content = add_import_to_main(main_content, api_import_statement, "api")
 
         # Add component registration
@@ -485,9 +519,9 @@ class {class_name}(RestApiBase):
 
         auto_registered = True
         print("✓ Auto-registered in src/main.py")
-        print(f"  - Added import: from src.models.{models_module_name} import {request_class_name}, {response_class_name}")
-        print(f"  - Added import: from src.api.{module_name} import {class_name}")
-        print(f"  - Added registration: .with_rest_api({class_name}())")
+        print(f"  - Added import: from .models.{models_module_name} import {request_class_name}, {response_class_name}")
+        print(f"  - Added import: from .api.{module_name} import {class_name}")
+        print(f"  - Added registration: .with_rest_api({class_name})")
 
     except (FileNotFoundError, ValueError) as e:
         logger.debug("Could not auto-register API: %s", e)
@@ -507,9 +541,9 @@ class {class_name}(RestApiBase):
     print(f"     from .{module_name} import {class_name}")
     if not auto_registered:
         print("  6. Add to src/main.py:")
-        print(f"     from src.models.{models_module_name} import {request_class_name}, {response_class_name}")
-        print(f"     from src.api.{module_name} import {class_name}")
-        print(f"     .with_rest_api({class_name}())")
+        print(f"     from .models.{models_module_name} import {request_class_name}, {response_class_name}")
+        print(f"     from .api.{module_name} import {class_name}")
+        print(f"     .with_rest_api({class_name})")
     print("  6. View docs at http://localhost:8000/docs")
 
 
@@ -526,9 +560,10 @@ def create_agent(args: Namespace) -> None:
     """
 
     # Use naming utilities to normalize the agent name
-    class_name, snake_name, file_name = normalize_component_name(args.name, "agent")
-
-    module_name = file_name[:-3]  # Remove .py extension
+    # Only the names: unlike the other components, an agent runtime has no module of its own.
+    # It is a builder in main.py plus two prompt files, which is why nothing here writes a
+    # src/agents/ file and why the next steps no longer tell the reader to import one.
+    class_name, snake_name, _ = normalize_component_name(args.name, "agent")
 
     # Get project root and directories
     project_root = Path.cwd()
@@ -589,10 +624,16 @@ Provide a clear and actionable response."""
             settings_content += "model_temperature = 0.7\n"
             settings_content += "model_max_tokens = 2000\n"
 
-            settings_models_section = f"[default.runtimes.{snake_name}.models]"
-            if settings_models_section not in settings_content:
-                settings_content += f"\n{settings_models_section}\n"
-                settings_content += 'openai_reasoning_effort = "gpt-5-mini"\n'
+            # model_settings, not models: Config.get_ai_config reads
+            # runtimes.<name>.model_settings and hands it to the provider client verbatim.
+            # A [.models] table is read by nothing, so the block would look configured and
+            # be inert -- which is what it was.
+            model_settings_section = f"[default.runtimes.{snake_name}.model_settings]"
+            if model_settings_section not in settings_content:
+                settings_content += f"\n{model_settings_section}\n"
+                # An effort level, not a model: the value was a copy of model_name, and the
+                # scaffolder's own settings writer has always written "low" here.
+                settings_content += 'openai_reasoning_effort = "low"\n'
                 settings_content += 'openai_reasoning_summary = "detailed"\n'
 
             settings_file.write_text(settings_content, encoding="utf-8")
@@ -604,35 +645,39 @@ Provide a clear and actionable response."""
         logger.debug("Could not update settings.toml: %s", e)
         print(f"⚠ Could not update settings.toml: {e}")
 
+    # The registry key, derived before the attempt rather than inside it: the manual-registration
+    # instructions printed when auto-registration fails name it, and read_main_py raises for
+    # exactly the project that needs those instructions -- so deriving it inside the try left the
+    # fallback path printing an unbound local and ending in a traceback.
+    agent_name = snake_name if snake_name.lower().endswith("agent") else snake_name + "_agent"
+
     # Attempt to auto-register in main.py
     auto_registered = False
     try:
         main_content = read_main_py(project_root)
 
-        agent_name = snake_name if snake_name.lower().endswith("agent") else snake_name + "_agent"
+        # An unbuilt AgentBuilder, and no configuration. AppBuilder.build() calls
+        # agent.build(config.for_namespace(<this agent>)), so the model, prompt and metrics are
+        # read from this agent's own configuration view. Building it here instead would bind it
+        # to whatever configuration happened to be in scope at this line -- which, in a group,
+        # is a neighbour's.
+        agent_var_declaration = (
+            f"{agent_name} = (\n"
+            f'    AgentBuilder(runtime_name="{agent_name}")\n'
+            "    .with_model_from_config()\n"
+            f'    .with_system_prompt("{agent_name}_system")\n'
+            ")\n"
+        )
 
-        # Add agent variable declaration (before AppBuilder)
-        agent_var_declaration = f"""{agent_name}: AgentRuntime = (\n\tAgentBuilder(config=config, runtime_name="{agent_name}")
-        .with_model_from_config()
-        .with_system_prompt("{agent_name}_system")
-        .build(name="{agent_name}")\n)\n"""
+        if "from blueprint.agents.agent import AgentBuilder" not in main_content:
+            main_content = add_import_to_main(main_content, "from blueprint.agents.agent import AgentBuilder", "agent")
 
-        # Insert the agent variable before the 'app = (' line
-        lines = main_content.split("\n")
-        app_builder_idx = -1
-        for i, line in enumerate(lines):
-            if line.strip().startswith("app = ("):
-                app_builder_idx = i
-                break
+        main_content = insert_before_declaration(main_content, agent_var_declaration)
 
-        if app_builder_idx >= 0:
-            # Insert the agent variable declaration before the AppBuilder
-            lines.insert(app_builder_idx, agent_var_declaration)
-            main_content = "\n".join(lines)
-
-        # Add component registration to AppBuilder
-        # For agents, pass the variable name as instantiation (e.g., document_analyzer_agent)
-        instantiation = f"{agent_name}"
+        # The name is given here rather than to AgentBuilder.build(): it is the registry key the
+        # services look the runtime up by (registry.get_agent("<agent_name>")), and AppBuilder
+        # qualifies it with the agent's namespace so two agents' runtimes cannot collide.
+        instantiation = f'{agent_name}, name="{agent_name}"'
         main_content = add_component_registration_to_main(main_content, agent_name, "agent", instantiation=instantiation)
 
         # Write updated main.py
@@ -640,9 +685,8 @@ Provide a clear and actionable response."""
 
         auto_registered = True
         print("✓ Auto-registered in src/main.py")
-        print(f"  - Added import: from src.agents.{module_name} import build_{agent_name}")
-        print(f"  - Added agent declaration: {agent_name}: AgentRuntime = build_{agent_name}(config)")
-        print(f"  - Added registration: .with_agent({agent_name})")
+        print(f"  - Added declaration: {agent_name} = (AgentBuilder(...))")
+        print(f'  - Added registration: .with_agent({agent_name}, name="{agent_name}")')
 
     except (FileNotFoundError, ValueError) as e:
         logger.debug("Could not auto-register agent: %s", e)
@@ -656,13 +700,15 @@ Provide a clear and actionable response."""
     print("\nNext steps:")
     print(f"  1. Edit {system_prompt_file} to refine the system prompt")
     print(f"  2. Edit {instruction_prompt_file} to add dynamic instruction templates")
-    print("  3. Add to src/agents/__init__.py:")
-    print(f"     from .{module_name} import build_{agent_name}")
     if not auto_registered:
-        print("  4. Add to src/main.py (before app = (...)):")
-        print(f"     {agent_name}: AgentRuntime = build_{agent_name}(config)")
-        print("  5. Add to src/main.py AppBuilder chain:")
-        print(f"     .with_agent({agent_name})")
+        # Only the declaration: this command writes prompts and settings, and registers the
+        # runtime in main.py. There is no module under src/agents/ for it to be imported from.
+        print("  3. Add to src/main.py, above the AppBuilder declaration:")
+        print(f'     {agent_name} = (AgentBuilder(runtime_name="{agent_name}")')
+        print("         .with_model_from_config()")
+        print(f'         .with_system_prompt("{agent_name}_system"))')
+        print("  4. Add to src/main.py AppBuilder chain:")
+        print(f'     .with_agent({agent_name}, name="{agent_name}")')
 
 
 def create_scheduler(args: Namespace) -> None:
@@ -670,7 +716,17 @@ def create_scheduler(args: Namespace) -> None:
 
     Note: Scheduler generation is not yet implemented with generators.
     This creates a simple template file.
+
+    The crontab is checked first with the runtime's own ``validate_crontab`` -- in no mode, since
+    ``scheduler_mode`` is settings and not known here -- so an expression the scheduler would
+    refuse at startup is refused before anything is written.
     """
+    try:
+        validate_crontab(args.cron)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -699,34 +755,47 @@ class {class_name}(SchedulerBase):
     """Scheduler for {snake_name.replace("_scheduler", "")} operations."""
 
     def __init__(self) -> None:
-        """Initialize the scheduler.
+        """Declare the schedule.
 
-        Args:
-            name: Component name for registry (optional)
-            crontab: Cron expression for scheduling
+        The crontab is declared here in both scheduler modes, and 'scheduler_mode' in
+        settings.toml decides what calls tick(). It is required and has no default: with
+        'event' nothing in this process keeps time -- the tick arrives as an event on this
+        scheduler's own topic, published by an external CronJob that the deployment provides
+        (nothing in this project generates it), and 'event_bus' has to be set. With
+        'in_process' an APScheduler timer runs here, which is right for local development and
+        un-orchestrated Docker; with a cache each tick is claimed first. That claim holds
+        across replicas only on a Redis cache -- on the default disk cache it holds within one
+        process, so replicas sharing the directory can each run a tick.
+        Write days of the week as names ('mon-fri'): 0 is Monday here and Sunday to cron.
         """
         super().__init__(crontab="{args.cron}")
 
     async def on_startup(self) -> None:
-        """Initialize the scheduler."""
+        """Resolve dependencies, then let the base class wire the scheduler."""
 
         # TODO: Get services from registry
         # Example: self._service = self.registry.get_service(MyService)
 
+        # Required. The base class starts the timer (in_process mode), wires the tick
+        # handler (event mode) and registers the manual trigger route. Drop this call
+        # and the scheduler is registered but never runs.
+        await super().on_startup()
+
     async def on_shutdown(self) -> None:
         """Cleanup when shutting down."""
 
+        await super().on_shutdown()
+
     async def tick(self) -> None:
-        """Execute scheduled task."""
+        """Execute scheduled task.
 
-        try:
-            # TODO: Implement your scheduled task here
-            # Example: await self._service.do_work()
+        Let exceptions out. In event mode the transport edge decides the delivery
+        disposition from them; catching and logging one here acknowledges the tick as
+        successful work.
+        """
 
-
-        except Exception as e:
-            logger.exception("Error during %s scheduler tick: %s", __name__, e)
-            raise
+        # TODO: Implement your scheduled task here
+        # Example: await self._service.do_work()
 '''
 
     output_file.write_text(code)
@@ -740,7 +809,7 @@ class {class_name}(SchedulerBase):
         main_content = read_main_py(project_root)
 
         # Add import statement (use snake_case module name)
-        import_statement = f"from src.schedulers.{module_name} import {class_name}"
+        import_statement = f"from .schedulers.{module_name} import {class_name}"
         main_content = add_import_to_main(main_content, import_statement, "scheduler")
 
         # Add component registration
@@ -751,8 +820,8 @@ class {class_name}(SchedulerBase):
 
         auto_registered = True
         print("✓ Auto-registered in src/main.py")
-        print(f"  - Added import: from src.schedulers.{module_name} import {class_name}")
-        print(f"  - Added registration: .with_scheduler({class_name}())")
+        print(f"  - Added import: from .schedulers.{module_name} import {class_name}")
+        print(f"  - Added registration: .with_scheduler({class_name})")
 
     except (FileNotFoundError, ValueError) as e:
         logger.debug("Could not auto-register scheduler: %s", e)
@@ -769,5 +838,5 @@ class {class_name}(SchedulerBase):
     print(f"     from .{module_name} import {class_name}")
     if not auto_registered:
         print("  3. Add to src/main.py:")
-        print(f"     .with_scheduler({class_name}())")
+        print(f"     .with_scheduler({class_name})")
     print(f"\nCron expression: {args.cron}")

@@ -3,50 +3,205 @@
 import logging
 import os
 import platform
+import re
+from collections.abc import Sequence
 from importlib import metadata
 from importlib.metadata import PackageNotFoundError
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 from fastapi import HTTPException, status
 from opentelemetry import trace
 
-from ....component.component import traced
+from ....component.component import Component, traced
+from ....component.namespace import ROOT_LABEL, ROOT_NAMESPACE
+from ....component.registry import Registry
 from ....config import Config
+from ....config.config import DEFAULT_ENVVAR_PREFIX
 from ....models.api import LivenessResponse, ReadinessResponse
 from ....models.status import BuildStatus, EnvironmentStatus, LLMStatus, ServiceInfo, VLLMInfo
 from .health.health_cache import HealthCheckCache
 from ..rest_api_base import RestApiBase
-from .health.health_base import HealthCheckerBase
+from .health.health_base import HealthCheckEntry
+from .health.namespace_supervisor import NamespaceSupervisor
+from .health.readiness_policy import CONFIG_KEY as READINESS_POLICY_KEY, ReadinessPolicy
 
 logger = logging.getLogger(__name__)
+
+SECRET_KEY_MARKERS = ("key", "secret", "token", "password", "passwd", "pwd", "credential", "auth", "private", "salt")
+"""Substrings that make a configuration key too dangerous to return over HTTP.
+
+Matched as substrings, not whole keys, because the keys that actually carry secrets in this
+framework are compound: ``openai_api_key``, ``nats_password``, ``azure_client_secret``. A
+whole-key match sees none of them.
+
+Deliberately over-broad. A key such as ``api_key_header`` or ``cache_key_prefix`` is masked
+although it holds nothing sensitive, which costs a line of diagnostics; the opposite error
+publishes a credential to anything that can reach the actuator.
+"""
+
+SECRET_KEY_WORDS = frozenset({"pass", "dsn", "conn", "sig", "signature"})
+"""Words that mark a key only as a whole ``_``/``.``/``-``-delimited word (M12).
+
+As substrings they would mask half the configuration -- ``passthrough_mode``,
+``connection_timeout`` -- so they count only where they stand alone: ``db_pass``,
+``sentry_dsn``, ``db_conn``, a query string's ``sig``.
+"""
+
+CONFIG_MASK = "***"
+"""What a masked value is replaced with. Presence stays visible; the value does not."""
 
 
 class ActuatorApi(RestApiBase):
     """Encapsulates all actuator-related endpoints and logic."""
 
-    def __init__(self) -> None:
-        super().__init__(should_register=False)
-        self._health_cache: HealthCheckCache | None = None
-        self._pending_providers: dict[str, HealthCheckerBase] = {}
-
-    def add_health_providers(self, providers: dict[str, HealthCheckerBase]) -> None:
-        """Register health check providers.
+    def __init__(self, namespaces: Sequence[str] = (ROOT_NAMESPACE,), critical_agents: Sequence[str] = ()) -> None:
+        """Create the actuator, told which agents this process serves.
 
         Args:
-            providers: Mapping of component name to HealthCheckerBase instance
+            namespaces: Every namespace the process serves, the root included. Needed before
+                the first health poll so that an agent with no checks of its own is still
+                supervised and still reports ``blueprint.namespace.up`` (C7).
+            critical_agents: The agents the group flagged critical, which is what
+                ``readiness_policy = "critical"`` reads (C3). The same flag that decides whether
+                a failed import stops the process (spec sec. 9.1), because it answers the same
+                question: can this deployment run without that agent.
         """
+        super().__init__(should_register=False)
+        self._health_cache: HealthCheckCache | None = None
+        self._health_entries: list[HealthCheckEntry] = []
+        self._namespaces: tuple[str, ...] = tuple(namespaces)
+        self._critical_agents: tuple[str, ...] = tuple(critical_agents)
+        self._supervisor: NamespaceSupervisor | None = None
+        self._not_live: dict[str, str] = {}
+        self._orphaned: dict[str, str] = {}
+
+    def mark_not_live(self, namespace: str, reason: str) -> None:
+        """Make the liveness probe answer DOWN for good, naming ``namespace`` and why (D23).
+
+        For a fault no retry and no recovery can fix -- the broker's answer is final -- so the
+        orchestrator restarts the pod and the operator who looks finds the reason in the probe's
+        payload. Latched: nothing in the process can make the fault go away.
+
+        Args:
+            namespace: The agent the fault belongs to; ``""`` for the root.
+            reason: What failed and what to change, as the fault's message says it.
+        """
+        self._not_live.setdefault(namespace, reason)
+
+    def mark_orphaned(self, namespace: str, reason: str) -> None:
+        """Make the liveness probe answer DOWN while ``namespace`` consumes nothing for a reason that does not pass by itself (N12).
+
+        Not latched, unlike :meth:`mark_not_live`: the resume that keeps failing may still succeed,
+        and :meth:`clear_orphaned` takes it back then.
+        """
+        self._orphaned[namespace] = reason
+
+    def clear_orphaned(self, namespace: str) -> None:
+        """``namespace`` consumes again."""
+        self._orphaned.pop(namespace, None)
+
+    @property
+    def health_entries(self) -> tuple[HealthCheckEntry, ...]:
+        """Every check registered so far, in registration order."""
+        return tuple(self._health_entries)
+
+    @property
+    def supervisor(self) -> NamespaceSupervisor | None:
+        """Who decides whether each agent is serving; ``None`` before ``on_startup``.
+
+        Public because the lifespan reaches it: spec sec. 9.1 requires a non-critical agent
+        whose ``on_startup`` raised to be marked down and to stop consuming, and that failure
+        happens outside any health check.
+        """
+        return self._supervisor
+
+    def add_health_providers(self, providers: Sequence[HealthCheckEntry]) -> None:
+        """Register health checks, adding to the ones already registered.
+
+        **Accumulates rather than replaces**, which is a fix rather than a refinement: the
+        previous version assigned the whole mapping, so a ``with_health_checker`` call made
+        after ``build()`` -- the shape the method's own docstring documents -- discarded every
+        client and cache check the build had wired, and the readiness probe then reported one
+        component and nothing else.
+
+        A duplicate key is refused. Two checks under one name is exactly the silent loss D4
+        exists to remove: a dict kept the last one, so an agent's check could vanish with
+        nothing logged and nothing failing. **The one exception** is an application's check
+        under the entry of a built-in one (``cache``, a client's name): it replaces the
+        built-in, with a WARNING, because that is what ``with_health_checker`` did before 0.9
+        and applications rely on it to override a check (S20).
+
+        Args:
+            providers: The checks to add, each carrying the agent it belongs to.
+
+        Raises:
+            ValueError: if a key is already registered, other than a built-in one by an
+                application's check.
+        """
+        registered = {entry.key: entry for entry in self._health_entries}
+        for entry in providers:
+            existing = registered.get(entry.key)
+            if existing is not None and existing.builtin and not entry.builtin:
+                logger.warning(
+                    "Health check '%s' of agent '%s' replaces the framework's %s of the same name: the readiness "
+                    "payload shows it under '%s', and the framework's own check is not run.",
+                    entry.name,
+                    entry.agent,
+                    type(existing.checker).__name__,
+                    entry.key,
+                )
+                self._health_entries.remove(existing)
+            elif existing is not None:
+                raise ValueError(
+                    f"Health check '{entry.name}' of agent '{entry.agent}' would appear in the readiness payload as "
+                    f"'{entry.key}', which is already taken by a {type(existing.checker).__name__} of agent "
+                    f"'{existing.agent}'. Two checks under one entry cannot be told apart in the payload, so one of "
+                    "them has to be renamed."
+                )
+            registered[entry.key] = entry
+            self._health_entries.append(entry)
+
         if self._health_cache is not None:
-            self._health_cache.set_health_check_provider(providers)
-        else:
-            self._pending_providers = providers
+            self._health_cache.set_health_entries(self._health_entries)
 
     async def on_startup(self) -> None:
-        """Start the health check cache."""
-        self._health_cache = HealthCheckCache(check_interval_seconds=self.config.get("health_check_interval_seconds", 30))
-        if hasattr(self, "_pending_providers") and self._pending_providers:
-            self._health_cache.set_health_check_provider(self._pending_providers)
+        """Start the health check cache, under this deployment's readiness policy.
+
+        The supervisor is built here rather than in ``build()`` because it creates
+        OpenTelemetry instruments, and the per-agent providers those belong to (C2) do not
+        exist until the lifespan has configured telemetry -- which it does immediately before
+        this runs.
+
+        Raises:
+            ValueError: if ``readiness_policy`` names no policy. Refused rather than defaulted:
+                a misspelt value read as ``all`` would remove a whole group from rotation the
+                first time a non-critical agent wobbled, with nothing to say the key had not
+                taken effect.
+        """
+        policy = ReadinessPolicy.parse(self.config.get(READINESS_POLICY_KEY, ReadinessPolicy.ALL.value))
+        registry: Registry = Component.shared_registry  # type: ignore[assignment]
+        self._supervisor = NamespaceSupervisor(registry, self._namespaces, critical=self._critical_agents)
+        logger.info(
+            "Readiness policy '%s' over %d namespace(s); critical: %s",
+            policy.value,
+            len(self._namespaces),
+            ", ".join(self._critical_agents) or "none flagged",
+        )
+        self._health_cache = HealthCheckCache(
+            check_interval_seconds=self.config.get("health_check_interval_seconds", 30),
+            policy=policy,
+            supervisor=self._supervisor,
+        )
+        if self._health_entries:
+            self._health_cache.set_health_entries(self._health_entries)
         await self._health_cache.start()
+
+    async def refresh_health(self) -> None:
+        """Recompute readiness now, for a change no health check observes (a latch set or released)."""
+        if self._health_cache is not None:
+            await self._health_cache.refresh()
 
     async def on_shutdown(self) -> None:
         """Stop the health check cache."""
@@ -102,7 +257,20 @@ class ActuatorApi(RestApiBase):
             # httpGet readiness probe (which only inspects the status code) sees
             # the failure and removes the pod from service rotation.
             if response.status != "UP":
-                logger.warning("Readiness probe failed: %s", response.components)
+                # The agents, not only the components: in a group the first question asked of a
+                # failing probe is whose failure took the pod out, and the payload's per-agent
+                # section is the only thing that answers it under a policy other than 'all'.
+                if not any(self._namespaces):
+                    # A standalone agent: no policy and no agents to name, so the line it always logged.
+                    logger.warning("Readiness probe failed: %s", response.components)
+                else:
+                    degraded = [name for name, agent in (response.namespaces or {}).items() if agent.status != "UP"]
+                    logger.warning(
+                        "Readiness probe failed under policy '%s'; degraded agent(s): %s; components: %s",
+                        response.policy,
+                        ", ".join(degraded) or "none reported",
+                        response.components,
+                    )
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail=response.model_dump(),
@@ -129,7 +297,15 @@ class ActuatorApi(RestApiBase):
         Returns 200 OK even if configuration has validation errors, as restarting
         the pod won't fix configuration issues. Configuration errors should be
         caught by the readiness probe instead.
+
+        Answers 503 once an agent hit a transport fault no retry can fix (:meth:`mark_not_live`,
+        D23), and while an agent is orphaned (:meth:`mark_orphaned`, N12), with each such agent and
+        its reason in the payload.
         """
+        if self._not_live or self._orphaned:
+            failures = {namespace or ROOT_LABEL: reason for namespace, reason in {**self._orphaned, **self._not_live}.items()}
+            logger.warning("Liveness probe failed: %s", failures)
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail={"status": "DOWN", "agents": failures})
         if self.config and self.config.has_validation_errors():
             logger.warning(
                 "Liveness probe: configuration validation errors present: %s",
@@ -146,19 +322,59 @@ class ActuatorApi(RestApiBase):
         "/status/env", response_model=EnvironmentStatus, tags=["Status"], summary="Returns a snapshot of the current configuration."
     )
     async def env_status(self) -> EnvironmentStatus:
-        """Expose the current configuration state (with secrets masked)."""
+        """Expose the current configuration state (with secrets masked).
+
+        In a grouped process the settings tree holds every co-hosted agent's configuration, and
+        flattened into one dictionary it says nothing about which agent a key belongs to. So the
+        response separates them: ``settings`` is what the root namespace resolves, and
+        ``namespaces`` carries one entry per agent -- each one flattened the way that agent reads
+        it, root keys included, so a value inherited from the root is visible where it is used
+        rather than only where it is declared.
+
+        ``envvar_prefix`` is reported because an override that is ignored and an override that is
+        misspelled look identical from outside the process.
+        """
 
         config = self._ensure_config()
-        try:
-            raw_config = config.settings.as_dict()
-        except AttributeError:  # pragma: no cover - defensive
-            raw_config = {}
 
-        logger.info("Returning environment status for env %s", config.settings.current_env)
+        # One read of the raw tree per request, not one per field. Config.settings is audited
+        # (it logs every raw-tree access), so re-reading it for current_env and again for the
+        # log line turned a single operator request into three records.
+        settings = config.settings
+        environment = getattr(settings, "current_env", "unknown")
+
+        # One call, both shapes: on the application's own configuration this is the whole tree,
+        # and on a view it is that agent's own resolved keys. The branch used to hand a view
+        # `settings.as_dict()` -- the *unscoped* tree -- while its comment claimed the opposite,
+        # so a scoped actuator would have served every agent's configuration over HTTP.
+        raw_config = config.resolved_settings()
+
+        # The per-agent breakdown is the operator's view of the whole process, so it exists only
+        # on the application's own configuration. Listing neighbours from inside an agent is the
+        # thing C6 exists to prevent, and `config.namespaces` refuses on a view for that reason.
+        # It exists only for a group, too: a standalone agent's response has no "namespaces" key.
+        namespaces: dict[str, dict[str, Any]] | None = None
+        if not config.is_view and config.namespaces:
+            namespaces = {name: self._sanitize_config(config.resolved_settings(name)) for name in config.namespaces}
+
+        overrides = f"{config.envvar_prefix}_*" if config.envvar_prefix else "the whole process environment, unprefixed"
+        if namespaces is not None:
+            logger.info(
+                "Returning environment status for env %s (%d namespace(s), overrides read from %s)",
+                environment,
+                len(namespaces),
+                overrides,
+            )
+        elif config.envvar_prefix == DEFAULT_ENVVAR_PREFIX:
+            logger.info("Returning environment status for env %s", environment)
+        else:
+            logger.info("Returning environment status for env %s (overrides read from %s)", environment, overrides)
 
         return EnvironmentStatus(
-            environment=config.settings.current_env,
+            environment=environment,
+            envvar_prefix=config.envvar_prefix if isinstance(config.envvar_prefix, str) else None,
             settings=self._sanitize_config(raw_config),
+            namespaces=namespaces,
         )
 
     @RestApiBase.get("/status/llm", response_model=LLMStatus, tags=["Status"], summary="Returns AI provider configuration and diagnostics.")
@@ -226,30 +442,142 @@ class ActuatorApi(RestApiBase):
 
         logger.info("Returning build status for service %s", config.get("app_name"))
 
+        # One read of the audited raw tree, as in env_status: current_env and settings_files
+        # are two fields of the same object, not two reasons to reach past the scoped getters.
+        settings = config.settings
+
         return BuildStatus(
             app_name=config.get("app_name"),
             app_version=config.get("app_version", "unknown"),
-            environment=config.settings.current_env,
+            environment=getattr(settings, "current_env", "unknown"),
             python_version=platform.python_version(),
             platform=platform.platform(),
-            settings_files=list(config.settings.settings_files or []),
+            settings_files=list(getattr(settings, "settings_files", None) or []),
             build_commit=os.getenv("BUILD_COMMIT", "unknown"),
             build_timestamp=os.getenv("BUILD_TIMESTAMP", "unknown"),
         )
 
     def _sanitize_config(self, data: dict[str, Any]) -> dict[str, Any]:
-        """Mask sensitive keys in configuration dictionaries."""
+        """Return ``data`` with everything that could be a credential masked.
 
-        sensitive = {"api_key", "secret", "token", "password"}
-        sanitized: dict[str, Any] = {}
-        for key, value in data.items():
-            if key.lower() in sensitive:
-                sanitized[key] = "***"
-            elif isinstance(value, dict):
-                sanitized[key] = self._sanitize_config(value)
-            else:
-                sanitized[key] = value
-        return sanitized
+        This endpoint publishes configuration over HTTP, so the bias is towards masking: a
+        false positive loses a line of diagnostics, a false negative publishes a secret.
+
+        The rules, in order:
+
+        1. A key containing any of :data:`SECRET_KEY_MARKERS`, or one of
+           :data:`SECRET_KEY_WORDS` as a whole word, is masked, whatever its value -- a section
+           or a list under it included, whole (M12: ``credentials = {user, value}`` named
+           nothing below it and came back in clear).
+        2. A string value is cleaned whatever its key: a URL loses its userinfo, failing
+           closed -- the whole value masked -- when the userinfo cannot be told from the rest
+           (a password containing ``/``, ``?`` or ``#``) or the URL does not parse; a query
+           parameter or a ``Name=value;`` segment with a secret name loses its value
+           (``?token=``, ``&sig=``, ``AccountKey=``).
+        3. Booleans pass through even under a matching key. A flag cannot carry a credential,
+           and ``auth_enabled`` is exactly the kind of value someone reads this endpoint for.
+
+        Dictionaries and lists are walked, because a masked key is worthless if the same
+        secret sits one level down in a list of provider entries.
+        """
+        return {key: self._sanitize_value(key, value) for key, value in data.items()}
+
+    def _sanitize_value(self, key: str, value: Any) -> Any:
+        """Apply the rules in :meth:`_sanitize_config` to one key/value pair."""
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, dict):
+            return CONFIG_MASK if self._is_secret_key(key) and value else self._sanitize_config(value)
+        if isinstance(value, (list, tuple)):
+            if self._is_secret_key(key) and any(isinstance(item, (dict, list, tuple)) for item in value):
+                return CONFIG_MASK
+            return [self._sanitize_value(key, item) for item in value]
+        if self._is_secret_key(key):
+            return CONFIG_MASK
+        if isinstance(value, str):
+            return self._sanitize_string(value)
+        return value
+
+    @staticmethod
+    def _is_secret_key(key: str) -> bool:
+        """Return whether a configuration key may carry a credential."""
+        lowered = key.lower()
+        if any(marker in lowered for marker in SECRET_KEY_MARKERS):
+            return True
+        return any(word in SECRET_KEY_WORDS for word in re.split(r"[_.\-]+", lowered))
+
+    def _sanitize_string(self, value: str) -> str:
+        """Clean one string value: URL userinfo, secret query parameters, secret ``Name=value;`` segments."""
+        value = self._strip_url_userinfo(value)
+        if value == CONFIG_MASK:
+            return value
+        value = self._mask_secret_query(value)
+        return self._mask_secret_segments(value)
+
+    def _mask_secret_query(self, value: str) -> str:
+        """Mask the value of each query parameter with a secret name (``?token=``, ``&sig=``)."""
+        if "://" not in value or "?" not in value:
+            return value
+        try:
+            parts = urlsplit(value)
+        except ValueError:
+            return CONFIG_MASK
+        if not parts.query:
+            return value
+        pairs = parse_qsl(parts.query, keep_blank_values=True)
+        if not any(self._is_secret_key(name) for name, _ in pairs):
+            return value
+        masked = [(name, CONFIG_MASK if self._is_secret_key(name) else item) for name, item in pairs]
+        query = urlencode(masked, safe="*")
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))
+
+    def _mask_secret_segments(self, value: str) -> str:
+        """Mask the value of each ``Name=value`` segment with a secret name, in a ``;``-separated string.
+
+        The shape of a connection string -- ``AccountName=x;AccountKey=...`` -- whose own key
+        (``storage``, ``connection``) names nothing a marker would catch.
+        """
+        if "=" not in value or ";" not in value:
+            return value
+        segments = value.split(";")
+        changed = False
+        for index, segment in enumerate(segments):
+            name, sep, _ = segment.partition("=")
+            if sep and self._is_secret_key(name.strip()):
+                segments[index] = f"{name}={CONFIG_MASK}"
+                changed = True
+        return ";".join(segments) if changed else value
+
+    @staticmethod
+    def _strip_url_userinfo(value: str) -> str:
+        """Return ``value`` with ``user:password@`` removed if it is a URL that carries it.
+
+        Unlike ``_sanitize_redis_url``, which is handed a value already known to be a Redis
+        URL and returns a placeholder when it cannot parse it, this is handed *every* string
+        in the configuration. So anything that does not parse as a URL with userinfo is
+        returned unchanged -- most configuration values are not URLs, and replacing them with
+        a placeholder would empty the endpoint.
+        """
+        scheme_end = value.find("://")
+        if scheme_end < 0 or "@" not in value[scheme_end + 3 :]:
+            return value
+        try:
+            parts = urlsplit(value)
+            port = parts.port  # raises for a non-numeric port, '${PORT}' among them (M12)
+        except ValueError:
+            return CONFIG_MASK
+        if not parts.username and not parts.password:
+            # An '@' after '://' that is not userinfo: a password holding '/', '?' or '#' ends
+            # the authority early, and the rest of it sits in the path, query or fragment.
+            return CONFIG_MASK
+        host = parts.hostname or ""
+        if ":" in host:
+            host = f"[{host}]"
+        netloc = f"{host}:{port}" if port is not None else host
+        stripped = urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+        # Fail closed (M12): an '@' left after '://' means the userinfo did not end where the
+        # parser thought, and part of a password is still in the value.
+        return CONFIG_MASK if "@" in stripped[scheme_end + 3 :] else stripped
 
     def _ensure_config(self) -> Config:
         if not self.config:

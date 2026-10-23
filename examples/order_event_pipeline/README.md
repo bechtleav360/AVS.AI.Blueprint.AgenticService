@@ -1,28 +1,24 @@
 # Order Event Pipeline
 
 An e-commerce order processing pipeline built with the Blueprint Agents framework,
-demonstrating Dapr pub/sub event processing with a handler chain-of-responsibility pattern.
+demonstrating Dapr pub/sub event processing: one handler translates, one service decides.
 
 ## Overview
 
 This example shows how to build an event-driven order processing system where:
 
 1. An `order.created` CloudEvent arrives via Dapr pub/sub.
-2. The **OrderValidationHandler** (priority 10) validates the order payload. If
-   validation fails it publishes an `order.rejected` event and short-circuits the
-   chain. If the order is valid it passes control to the next handler.
-3. The **OrderEnrichmentHandler** (priority 20) enriches valid orders with tax
-   calculations, shipping estimates, and timestamps, then publishes an
-   `order.validated` event.
-4. A REST API exposes cached order statuses for querying.
+2. The **OrderHandler** routes it (envelope only), extracts the `OrderPayload` DTO, turns it into
+   an `Order` domain value and calls `OrderService.process_order()` **once**.
+3. `process_order()` decides: an invalid order is cached as `rejected` and comes back with its
+   errors; a valid one is enriched (tax, shipping estimate, timestamp) and cached as `validated`.
+4. The handler publishes the answer as `order.rejected` or `order.validated`.
+5. A REST API exposes cached order statuses for querying.
 
 ```
-order.created --> [ValidationHandler] --invalid--> order.rejected
-                        |
-                      valid
-                        |
-                        v
-                 [EnrichmentHandler] --> order.validated
+order.created --> [OrderHandler] --> OrderService.process_order()
+                                        |-- invalid --> order.rejected
+                                        '-- valid ----> enrich --> order.validated
 ```
 
 ## Project Structure
@@ -34,10 +30,10 @@ order_event_pipeline/
   src/
     main.py              # Application entry point
     models/
-      schemas.py         # Pydantic data models
+      dto.py             # DTO: OrderPayload (event data)
+      domain_models.py   # Domain: Order, ValidationError, OrderOutcome
     handlers/
-      order_validation_handler.py
-      order_enrichment_handler.py
+      order_handler.py   # order.created -> OrderService.process_order()
     services/
       order_service.py   # Business logic (validation, enrichment)
     api/
@@ -52,7 +48,7 @@ order_event_pipeline/
 ### With Dapr
 
 ```bash
-dapr run --app-id order-pipeline --app-port 8000 -- uvicorn src.main:app --host 0.0.0.0 --port 8000
+dapr run --app-id order-pipeline --app-port 8000 -- uvicorn src.main:create_app --factory --host 0.0.0.0 --port 8000
 ```
 
 ### Without Dapr (development mode)
@@ -60,10 +56,10 @@ dapr run --app-id order-pipeline --app-port 8000 -- uvicorn src.main:app --host 
 Set `event_bus = ""` in `settings.toml` to disable Dapr integration, then run:
 
 ```bash
-uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn src.main:create_app --factory --host 0.0.0.0 --port 8000 --reload
 ```
 
-The handler chain still processes events submitted via the REST API, but no
+The handler still processes events submitted via the REST API, but no
 pub/sub publishing occurs.
 
 ## Example CloudEvent Payload
