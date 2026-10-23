@@ -59,7 +59,7 @@ class RestApiBase(IOBase, ABC):
 
     Routes are registered by decorating methods with the class-level HTTP verb
     helpers (``RestApiBase.get``, ``RestApiBase.post``, ``RestApiBase.put``,
-    ``RestApiBase.delete``, ``RestApiBase.patch``).  The base class wires those
+    ``RestApiBase.delete``, ``RestApiBase.patch``, ``RestApiBase.head``).  The base class wires those
     decorated methods onto ``self.router`` during ``__init__``, so subclasses
     never need to call ``_wire_routes()`` or touch the router directly.
     """
@@ -185,6 +185,16 @@ class RestApiBase(IOBase, ABC):
 
         def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
             func._route = ("patch", path, kwargs)  # type: ignore[attr-defined]
+            return func
+
+        return decorator
+
+    @staticmethod
+    def head(path: str, **kwargs: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        """Decorator: register a HEAD route on the instance router."""
+
+        def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+            func._route = ("head", path, kwargs)  # type: ignore[attr-defined]
             return func
 
         return decorator

@@ -149,7 +149,7 @@ Two things about that chain are worth knowing up front:
 |-----------|-----------|---------|
 | **Event Handler** | `EventHandlerBase` | Route CloudEvents (priority chain) and translate each into one service call; returns a result, `HandlerResult.skipped(reason)` or `None` |
 | **Service** | `ServiceBase` | All business logic, including whether an event needs work; runs the agents |
-| **REST API** | `RestApiBase` | Define HTTP endpoints with `@get()`, `@post()`, `@put()`, `@delete()`, `@patch()` decorators |
+| **REST API** | `RestApiBase` | Define HTTP endpoints with `@get()`, `@post()`, `@put()`, `@delete()`, `@patch()`, `@head()` decorators |
 | **Agent** | `AgentRuntime` | Run LLM agents with structured outputs, tool calling, and prompt management |
 | **Scheduler** | `SchedulerBase` | Execute cron-based background tasks with auto-registered trigger endpoints |
 

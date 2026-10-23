@@ -262,6 +262,7 @@ Use these to decorate methods on your subclass:
 | `@RestApiBase.put(path, **kwargs)` | Register a PUT endpoint. |
 | `@RestApiBase.delete(path, **kwargs)` | Register a DELETE endpoint. |
 | `@RestApiBase.patch(path, **kwargs)` | Register a PATCH endpoint. |
+| `@RestApiBase.head(path, **kwargs)` | Register a HEAD endpoint, e.g. a cheap existence check before a GET. |
 
 `**kwargs` are forwarded to the underlying FastAPI route registration.
 

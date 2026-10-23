@@ -367,6 +367,9 @@ Full migration path, including the one decision to get right before the first de
   behaviour except `scheduler_mode`, which is required — see **Breaking**.
 - `pyyaml>=6.0` is now a declared dependency (it reads the group file). Already present in every
   environment via `uvicorn[standard]`, so no installed set changes.
+- **`@RestApiBase.head(path, **kwargs)`** registers a HEAD route, like the other verb decorators
+  (#63). A service that needed one, for a cheap existence check before a GET, had to write its own
+  decorator.
 
 ### Changed
 
