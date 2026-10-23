@@ -241,3 +241,11 @@ class TestAViewResolvesItself:
         resolved = two_agent_config.for_namespace("orders").resolved_settings()
 
         assert "billing" not in {str(key).lower() for key in resolved}
+
+    def test_a_view_without_its_loader_raises_even_under_optimisation(self, two_agent_config: Config) -> None:
+        """An ``assert`` here would vanish under ``python -O`` and fail later with an AttributeError."""
+        view = two_agent_config.for_namespace("orders")
+        view._loader = None
+
+        with pytest.raises(RuntimeError, match="has no loader"):
+            view.resolved_settings()

@@ -1691,12 +1691,12 @@ class NATSClient(IOClientBase):
         """
         pattern_tokens = pattern.split(".")
         subject_tokens = subject.split(".")
-        for index, token in enumerate(pattern_tokens):
-            if token == ">":
+        for index, segment in enumerate(pattern_tokens):
+            if segment == ">":
                 return index < len(subject_tokens)
             if index >= len(subject_tokens):
                 return False
-            if token != "*" and token != subject_tokens[index]:
+            if segment != "*" and segment != subject_tokens[index]:
                 return False
         return len(pattern_tokens) == len(subject_tokens)
 
