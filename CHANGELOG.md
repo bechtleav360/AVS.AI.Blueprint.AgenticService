@@ -208,6 +208,13 @@ Full migration path, including the one decision to get right before the first de
 
 ### Added
 
+- **A delivery continues the trace its event was published under.** An event carrying the
+  CloudEvents distributed-tracing extension (`traceparent`, optionally `tracestate`) is dispatched
+  with that trace context current, so `process_event`, the handler spans and every instrumented
+  call the handler makes (httpx) join the producer's trace instead of starting one of their own.
+  Applies to NATS, Dapr (the delivered event first, then its envelope) and the sessions bus. A
+  missing, empty or malformed `traceparent` changes nothing, and a caller that already has a span
+  current keeps it as the parent.
 - **`examples/site_readings`: named connections end to end.** One agent, two sites, each its own
   NATS account, supplied by a `ConnectionSource` (claims, a per-connection subject prefix, `validate`,
   `run_scope`), with the example broker, a provisioning script and offline tests.
